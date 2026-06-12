@@ -47,7 +47,10 @@ Per game-spec §11:
 
 - [x] fork `praxsim-core` → `econ`; conformance suite green; lab goldens
       replay byte-identical through the fork
-- [ ] behavior-preserving O(N²) fixes (Concern-5 list), golden-guarded
+- [x] `aggregate_input_goods` O(N²) scan → order-preserving index map
+      (identical output by construction; golden-guarded)
+- [ ] per-tick provisioning recompute (Concern-5) — DEFERRED: a real
+      caching refactor, not a drop-in; belongs with the G2 perf budget
 - [ ] tape retention design — DEFERRED to the inspector/WorldView work
       (G2): an in-memory ring buffer changes test-visible tape contents,
       so it is not a behavior-preserving G0a change; the design decision

@@ -4,6 +4,7 @@ use crate::agent::AgentId;
 use crate::good::{Gold, GoodId, Stock, FOOD};
 use crate::project::Tick;
 pub use crate::purpose::{M2ProjectId, ProjectPlanId};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ProjectLineId(pub u16);
@@ -167,15 +168,20 @@ pub fn start_project(
 }
 
 pub(crate) fn aggregate_input_goods(input_goods: &[(GoodId, u32)]) -> Vec<(GoodId, u32)> {
+    // First-appearance order is part of the contract (input debits follow
+    // it); the index map only replaces the O(N) scan per entry.
     let mut required: Vec<(GoodId, u32)> = Vec::new();
+    let mut index: BTreeMap<GoodId, usize> = BTreeMap::new();
     for (good, qty) in input_goods {
-        if let Some((_, total)) = required
-            .iter_mut()
-            .find(|(required_good, _)| required_good == good)
-        {
-            *total = total.saturating_add(*qty);
-        } else {
-            required.push((*good, *qty));
+        match index.get(good) {
+            Some(&at) => {
+                let (_, total) = &mut required[at];
+                *total = total.saturating_add(*qty);
+            }
+            None => {
+                index.insert(*good, required.len());
+                required.push((*good, *qty));
+            }
         }
     }
     required
