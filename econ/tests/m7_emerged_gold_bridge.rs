@@ -41,11 +41,11 @@ fn bridge_seed_matches_menger_gold_promotion_state() {
         }
     }
 
-    let actual = seed_rows(&society.agents);
+    let actual = seed_rows(society.agents.as_slice());
     let expected = seed_rows(&emerged_gold_bridge_agents());
 
     assert_eq!(actual, expected);
-    assert_eq!(total_agent_gold(&society.agents), Gold(16));
+    assert_eq!(total_agent_gold(society.agents.as_slice()), Gold(16));
     assert!(society
         .agents
         .iter()
@@ -329,7 +329,7 @@ fn purchases_by_first_receivers(society: &Society, tick: u64) -> Vec<Purchase> {
 
 fn ledger_agent(id: u32, gold: Gold) -> Agent {
     Agent {
-        id: AgentId(id),
+        id: AgentId(u64::from(id)),
         scale: Vec::new(),
         stock: Stock::new(ORE.0),
         gold,

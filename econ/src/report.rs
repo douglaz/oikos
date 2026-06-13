@@ -103,8 +103,8 @@ pub fn render_tape(trades: &[Trade]) -> String {
             "{},{},{},{},{},{}\n",
             trade.tick,
             good_name(trade.good),
-            trade.buyer.0,
-            trade.seller.0,
+            trade.buyer,
+            trade.seller,
             trade.price.0,
             trade.qty
         ));
@@ -119,8 +119,8 @@ pub fn render_barter_tape(trades: &[BarterTrade]) -> String {
         out.push_str(&format!(
             "{},{},{},{},{},{},{},{}\n",
             trade.tick,
-            trade.a.0,
-            trade.b.0,
+            trade.a,
+            trade.b,
             good_name(trade.a_gives),
             good_name(trade.b_gives),
             trade.qty,
@@ -164,13 +164,13 @@ pub fn render_loan_tape(trades: &[LoanTrade]) -> String {
         let lender = trade
             .lender
             .agent()
-            .map(|agent| agent.0.to_string())
+            .map(|agent| agent.to_string())
             .unwrap_or_default();
         out.push_str(&format!(
             "{},{},{},{},{},{},{},{},{},{},{}\n",
             trade.tick,
             lender,
-            trade.borrower.0,
+            trade.borrower,
             trade.present.0,
             trade.future_due.0,
             trade.horizon,
@@ -190,7 +190,7 @@ pub fn render_labor_tape(trades: &[LaborTrade]) -> String {
     for trade in trades {
         out.push_str(&format!(
             "{},{},{},{},{},{}\n",
-            trade.tick, trade.employer.0, trade.worker.0, trade.wage.0, trade.qty, trade.project.0
+            trade.tick, trade.employer, trade.worker, trade.wage.0, trade.qty, trade.project.0
         ));
     }
     out
@@ -206,7 +206,7 @@ pub fn render_money_tape(records: &[MoneyAuditRecord]) -> String {
         out.push_str(&format!(
             "{},{},{},{},{},{}\n",
             record.tick,
-            record.agent.0,
+            record.agent,
             record.public_specie.0,
             record.public_fiat.0,
             record.demand_claims.0,
@@ -224,8 +224,8 @@ pub fn render_payment_tape(records: &[PaymentAuditRecord]) -> String {
             "{},{},{},{},{},{},{},{},{}\n",
             record.tick,
             payment_kind_name(record.kind),
-            record.from.0,
-            record.to.0,
+            record.from,
+            record.to,
             record.amount.0,
             record.public_fiat.0,
             record.demand_claims.0,
@@ -244,8 +244,8 @@ pub fn render_wage_payment_tape(records: &[WagePaymentAuditRecord]) -> String {
             "{},{},{},{},{},{},{},{},{},{},{}\n",
             record.tick,
             record.project.0,
-            record.employer.0,
-            record.worker.0,
+            record.employer,
+            record.worker,
             record.wage.0,
             record.qty,
             record.amount.0,
@@ -266,8 +266,8 @@ pub fn render_debt_payment_tape(records: &[DebtPaymentAuditRecord]) -> String {
             "{},{},{},{},{},{},{},{},{},{},{},{}\n",
             record.tick,
             record.debt,
-            record.from.0,
-            record.to.0,
+            record.from,
+            record.to,
             record.owed.0,
             record.paid.0,
             record.remaining.0,
@@ -289,7 +289,7 @@ pub fn render_bank_repayment_tape(records: &[BankRepaymentAuditRecord]) -> Strin
             "{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
             record.tick,
             record.debt,
-            record.borrower.0,
+            record.borrower,
             record.bank.0,
             record.owed.0,
             record.paid.0,
@@ -316,7 +316,7 @@ pub fn render_issuer_repayment_tape(records: &[IssuerRepaymentAuditRecord]) -> S
             "{},{},{},{},{},{},{},{},{},{},{},{}\n",
             record.tick,
             record.debt,
-            record.borrower.0,
+            record.borrower,
             record.issuer.0,
             record.owed.0,
             record.paid.0,
@@ -344,7 +344,7 @@ pub fn render_tax_tape(records: &[TaxAuditRecord]) -> String {
             "{},{},{},{},{},{},{},{},{},{},{}\n",
             record.tick,
             record.debt,
-            record.agent.0,
+            record.agent,
             record.issuer.0,
             record.owed.0,
             record.paid.0,
@@ -404,7 +404,7 @@ pub fn render_redemption_tape(records: &[RedemptionAuditRecord]) -> String {
             "{},{},{},{},{},{},{}\n",
             record.tick,
             record.bank.0,
-            record.agent.0,
+            record.agent,
             record.requested.0,
             record.honored.0,
             record.failed.0,

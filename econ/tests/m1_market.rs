@@ -36,7 +36,7 @@ fn market_gold_is_conserved() {
             society.step();
             assert_eq!(society.total_gold(), initial_gold);
             assert_eq!(society.records.last().unwrap().total_gold, initial_gold);
-            for agent in &society.agents {
+            for agent in society.agents.as_slice() {
                 assert!(society.reservations.reserved_gold(agent.id) <= agent.gold);
             }
         }
@@ -707,7 +707,7 @@ fn agent(id: u32, gold: Gold, food: u32) -> Agent {
     let mut stock = Stock::new(3);
     stock.add(FOOD, food);
     Agent {
-        id: AgentId(id),
+        id: AgentId(u64::from(id)),
         scale: vec![Want {
             kind: WantKind::Good(FOOD),
             horizon: Horizon::Next,
@@ -756,7 +756,7 @@ fn market_test_agent(
     let mut expect = vec![PriceBelief::new(Gold::ZERO, Gold(1)); 4];
     expect[usize::from(FOOD.0)] = PriceBelief::new(food_expected, Gold(1));
     Agent {
-        id: AgentId(id),
+        id: AgentId(u64::from(id)),
         scale,
         stock,
         gold,
@@ -769,7 +769,7 @@ fn market_test_agent(
 
 fn order(agent: u32, side: OrderSide, limit: Gold, qty: u32, seq: u64) -> Order {
     Order {
-        agent: AgentId(agent),
+        agent: AgentId(u64::from(agent)),
         side,
         good: FOOD,
         limit,
@@ -798,8 +798,8 @@ fn fnv1a_market(records: &[MarketRecord], trades: &[econ::market::Trade]) -> u64
     for trade in trades {
         hash_u64(&mut hash, trade.tick);
         hash_u16(&mut hash, trade.good.0);
-        hash_u32(&mut hash, trade.buyer.0);
-        hash_u32(&mut hash, trade.seller.0);
+        hash_u32(&mut hash, trade.buyer.index());
+        hash_u32(&mut hash, trade.seller.index());
         hash_u64(&mut hash, trade.price.0);
         hash_u32(&mut hash, trade.qty);
     }

@@ -97,7 +97,7 @@ impl fmt::Display for CreditSource {
 impl fmt::Display for CreditLender {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            CreditLender::Agent(agent) => write!(f, "Agent({})", agent.0),
+            CreditLender::Agent(agent) => write!(f, "Agent({agent})"),
             CreditLender::Bank(bank) => write!(f, "Bank({})", bank.0),
             CreditLender::Issuer(issuer) => write!(f, "Issuer({})", issuer.0),
         }

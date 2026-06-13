@@ -146,7 +146,7 @@ fn claim_spot_tender_transfers_claim_without_redemption() {
     let legal_bank = bank_at(&legal.bank_audit, CLAIM_SPOT_TICK);
     let base_money = base.money_system.as_ref().expect("base M3 money system");
     let legal_money = legal.money_system.as_ref().expect("legal M3 money system");
-    let buyer = agent(&legal.agents, CLAIM_BUYER);
+    let buyer = agent(legal.agents.as_slice(), CLAIM_BUYER);
 
     assert_eq!(legal_tick.demand_claims, Gold(4));
     assert_eq!(legal_tick.bank_reserves, Gold(2));
@@ -216,8 +216,14 @@ fn seed_stock_event_is_goods_only() {
 
     society.step();
 
-    assert_eq!(agent(&society.agents, AgentId(1)).stock.get(FOOD), 2);
-    assert_eq!(agent(&society.agents, AgentId(1)).stock.get(GOLD), 0);
+    assert_eq!(
+        agent(society.agents.as_slice(), AgentId(1)).stock.get(FOOD),
+        2
+    );
+    assert_eq!(
+        agent(society.agents.as_slice(), AgentId(1)).stock.get(GOLD),
+        0
+    );
     assert_eq!(society.money_system, before_money);
     assert_eq!(society.debts, before_debts);
     assert_eq!(society.loan_trades, before_loans);

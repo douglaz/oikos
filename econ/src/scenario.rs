@@ -1993,7 +1993,7 @@ const TAX_WORKER: AgentId = AgentId(61);
 /// so it neither trades nor spends — a controlled tax subject.
 fn tax_specie_holder(id: AgentId, gold: u64) -> Agent {
     bridge_agent(
-        id.0,
+        id.index(),
         gold,
         0,
         0,
@@ -2060,7 +2060,7 @@ fn fiat_employer(id: AgentId) -> Agent {
         labor_capacity: 0,
         roles: vec![Role::Capitalist],
         ..v2_agent(
-            id.0,
+            id.index(),
             emerged_gold_bridge_stock(0, 0, 0, 0),
             // The future-money want exceeds the printed-fiat endowment so the
             // capitalist has unprovided later money and therefore lending
@@ -2080,7 +2080,7 @@ fn leisure_default_worker(id: AgentId) -> Agent {
         labor_capacity: 1,
         roles: vec![Role::Household],
         ..v2_agent(
-            id.0,
+            id.index(),
             emerged_gold_bridge_stock(0, 0, 0, 0),
             scale(&[
                 (WantKind::Good(GOLD), Horizon::Later(6), 1),
@@ -2791,7 +2791,7 @@ fn market_agent(
     expect[usize::from(WOOD.0)] = PriceBelief::new(wood_expected, step);
 
     Agent {
-        id: AgentId(id),
+        id: AgentId(u64::from(id)),
         scale,
         stock,
         gold,
@@ -2812,7 +2812,7 @@ fn v2_agent(id: u32, stock: Stock, scale: Vec<Want>) -> Agent {
     let expect = vec![PriceBelief::new(Gold(2), Gold(1)); belief_slots];
 
     Agent {
-        id: AgentId(id),
+        id: AgentId(u64::from(id)),
         scale,
         stock,
         gold: Gold::ZERO,
@@ -2843,7 +2843,7 @@ fn m2_agent(
     expect[usize::from(WOOD.0)] = PriceBelief::new(Gold(1), Gold(1));
 
     Agent {
-        id: AgentId(id),
+        id: AgentId(u64::from(id)),
         scale,
         stock,
         gold,

@@ -41,9 +41,14 @@ The praxsim repo stays alive as the clean-room: new economic *mechanisms*
 are proven there against its invariant suite, then ported here
 (game-spec §13).
 
-## Status: G0a (fork) — in progress
+## Status: G0b (engine migrations) — complete
 
-Per game-spec §11:
+Per game-spec §11. G0a forked the lab verbatim; G0b is the first deliberate
+divergence — three migrations, each behind a compatibility surface that keeps
+the lab goldens byte-identical. Every deliberate divergence is recorded in
+[`docs/engine-divergence.md`](docs/engine-divergence.md).
+
+G0a (fork):
 
 - [x] fork `praxsim-core` → `econ`; conformance suite green; lab goldens
       replay byte-identical through the fork
@@ -56,8 +61,22 @@ Per game-spec §11:
       so it is not a behavior-preserving G0a change; the design decision
       is recorded here rather than smuggled in
 
-G0b (dynamic `GoodRegistry`, generational `AgentId` arena, `Command`
-result/error semantics — all behind a compat shim) is the next milestone.
+G0b (migrations behind compatibility):
+
+- [x] dynamic `GoodRegistry` — goods become data; `lab_default()` interns the
+      exact lab set in the exact id order; the `GoodId` constants and
+      `good_name` stay as lab-compat surface
+- [x] generational `AgentId` — `u32 → u64` packing `(generation, index)`;
+      generation-0 ids are byte-identical in ordering and formatting
+- [x] `AgentArena` — stable-identity storage replacing `Vec<Agent>` +
+      id-resolution; id-ordered, deterministic, no `HashMap`; slot reuse and
+      generation bumping unit-tested (no engine path frees yet)
+- [x] `Command` result/error semantics — additive `apply_command` returning
+      `Applied | Rejected(reason)`, sharing the event path's logic; the
+      scenario event path keeps its silent-tolerance semantics
+
+The conformance suite stays green natively and all goldens are byte-identical;
+see `econ/tests/g0b_engine_migrations.rs` for the migration acceptance tests.
 
 ## Build and test
 

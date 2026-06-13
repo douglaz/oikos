@@ -4,6 +4,7 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::agent::{Agent, AgentId};
+use crate::arena::AgentLookup;
 use crate::bank::Bank;
 use crate::good::Gold;
 use crate::issuer::Issuer;
@@ -201,7 +202,11 @@ impl LoanReservations {
         &self.future_due
     }
 
-    pub fn reserve_order(&mut self, agents: &[Agent], order: &LoanOrder) -> bool {
+    pub fn reserve_order<A: AgentLookup + ?Sized>(
+        &mut self,
+        agents: &A,
+        order: &LoanOrder,
+    ) -> bool {
         match order.side {
             LoanSide::Lend => {
                 if !matches!(order.funding, CreditSource::Commodity) {
@@ -210,7 +215,7 @@ impl LoanReservations {
                 let CreditLender::Agent(lender) = order.lender else {
                     return false;
                 };
-                let Some(agent) = agents.iter().find(|agent| agent.id == order.agent) else {
+                let Some(agent) = agents.get_agent(order.agent) else {
                     return false;
                 };
                 if agent.id != lender {
@@ -229,9 +234,9 @@ impl LoanReservations {
         }
     }
 
-    pub fn reserve_order_m3(
+    pub fn reserve_order_m3<A: AgentLookup + ?Sized>(
         &mut self,
-        agents: &[Agent],
+        agents: &A,
         order: &LoanOrder,
         banks: &[Bank],
         issuers: &[Issuer],
@@ -2107,7 +2112,7 @@ mod tests {
 
     fn agent(id: u32, gold: Gold) -> Agent {
         Agent {
-            id: AgentId(id),
+            id: AgentId(u64::from(id)),
             scale: vec![Want {
                 kind: WantKind::Good(GOLD),
                 horizon: Horizon::Later(4),
@@ -2125,8 +2130,8 @@ mod tests {
 
     fn order(agent: u32, side: LoanSide, future_limit: Gold, seq: u64) -> LoanOrder {
         LoanOrder {
-            agent: AgentId(agent),
-            lender: CreditLender::Agent(AgentId(agent)),
+            agent: AgentId(u64::from(agent)),
+            lender: CreditLender::Agent(AgentId(u64::from(agent))),
             side,
             present: Gold(1),
             future_limit,
@@ -2161,7 +2166,7 @@ mod tests {
 
     fn bank_lend(seq: u64) -> LoanOrder {
         LoanOrder {
-            agent: AgentId(u32::MAX - 1),
+            agent: AgentId(u64::from(u32::MAX - 1)),
             lender: CreditLender::Bank(BankId(1)),
             side: LoanSide::Lend,
             present: Gold(1),
@@ -2198,7 +2203,7 @@ mod tests {
 
     fn issuer_lend(seq: u64) -> LoanOrder {
         LoanOrder {
-            agent: AgentId(u32::MAX - 1_001),
+            agent: AgentId(u64::from(u32::MAX - 1_001)),
             lender: CreditLender::Issuer(IssuerId(1)),
             side: LoanSide::Lend,
             present: Gold(1),
@@ -2761,7 +2766,7 @@ mod tests {
         );
 
         assert_eq!(trades.len(), 1);
-        assert_eq!(trades[0].borrower, AgentId(u32::MAX - 1));
+        assert_eq!(trades[0].borrower, AgentId(u64::from(u32::MAX - 1)));
         assert_eq!(trades[0].lender, CreditLender::Bank(BankId(1)));
         assert_eq!(agents[0].gold, Gold(1));
         assert_eq!(money.snapshot().demand_claims, Gold(1));

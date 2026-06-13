@@ -1371,7 +1371,7 @@ mod tests {
 
     fn agent(id: u32, gold: Gold) -> Agent {
         Agent {
-            id: AgentId(id),
+            id: AgentId(u64::from(id)),
             scale: Vec::new(),
             stock: Stock::new(3),
             gold,

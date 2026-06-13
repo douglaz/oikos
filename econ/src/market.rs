@@ -4,6 +4,7 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::agent::{Agent, AgentId};
+use crate::arena::AgentLookup;
 use crate::good::{Gold, GoodId, Stock};
 use crate::ledger::{MoneyComposition, MoneySystem};
 use crate::money::AcceptedMedia;
@@ -94,13 +95,13 @@ impl Reservations {
             .unwrap_or(0)
     }
 
-    pub fn reserve_order(&mut self, agents: &[Agent], order: &Order) -> bool {
+    pub fn reserve_order<A: AgentLookup + ?Sized>(&mut self, agents: &A, order: &Order) -> bool {
         match order.side {
             OrderSide::Bid => {
                 let Some(amount) = order.limit.mul_qty(order.qty) else {
                     return false;
                 };
-                let Some(agent) = agents.iter().find(|agent| agent.id == order.agent) else {
+                let Some(agent) = agents.get_agent(order.agent) else {
                     return false;
                 };
                 if self.free_gold(agent) < amount {
@@ -113,7 +114,7 @@ impl Reservations {
                 true
             }
             OrderSide::Ask => {
-                let Some(agent) = agents.iter().find(|agent| agent.id == order.agent) else {
+                let Some(agent) = agents.get_agent(order.agent) else {
                     return false;
                 };
                 if self.free_stock(agent, order.good) < order.qty {
@@ -568,7 +569,7 @@ mod tests {
         let mut stock = Stock::new(3);
         stock.add(FOOD, food);
         Agent {
-            id: AgentId(id),
+            id: AgentId(u64::from(id)),
             scale: vec![Want {
                 kind: WantKind::Good(FOOD),
                 horizon: Horizon::Next,
@@ -586,7 +587,7 @@ mod tests {
 
     fn order(agent: u32, side: OrderSide, limit: Gold, qty: u32, seq: u64) -> Order {
         Order {
-            agent: AgentId(agent),
+            agent: AgentId(u64::from(agent)),
             side,
             good: FOOD,
             limit,

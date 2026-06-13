@@ -35,7 +35,7 @@ const ISSUER: IssuerId = IssuerId(1);
 
 fn agent(id: u32) -> Agent {
     Agent {
-        id: AgentId(id),
+        id: AgentId(u64::from(id)),
         scale: vec![Want {
             kind: WantKind::Good(GOLD),
             horizon: Horizon::Later(4),

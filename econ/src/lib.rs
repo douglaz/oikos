@@ -6,11 +6,13 @@
 
 pub mod agent;
 pub mod agio;
+pub mod arena;
 pub mod bank;
 pub mod barter;
 pub mod bundle;
 pub mod cantillon;
 pub mod capital;
+pub mod command;
 pub mod emergence;
 pub mod expect;
 pub mod factor;
@@ -24,6 +26,7 @@ pub mod money;
 pub mod project;
 pub mod purpose;
 pub mod record;
+pub mod registry;
 pub mod report;
 pub mod rng;
 pub mod scenario;

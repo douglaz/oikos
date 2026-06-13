@@ -226,3 +226,27 @@ modules):
 - Record each divergence (id width, registry, command plumbing) in
   `docs/engine-divergence.md` with the lab commit the fork left from.
 - `git add` new files so the diff-scoped reviewer sees them.
+
+## Scope clarifications (spec-owner, added during review 2026-06-13)
+
+These dispose recurring review threads; they are AUTHORITATIVE for this
+milestone's definition of done:
+
+1. **Renderer/report registry-awareness is G3 scope.** Until `content/`
+   exists, no code path can construct a non-lab good, so `report.rs`
+   consulting the lab-compat `good_name` shim is correct-by-construction
+   today. Migrating renderers to registry-aware naming lands with the
+   first dynamic content (G3) or the G2 inspectors, whichever comes
+   first — recorded in `engine-divergence.md`, not done here.
+2. **`AgentArena::free` performance and Society-cache reconciliation are
+   G4 scope.** G0b's contract for `free` is CORRECTNESS only (stale ids
+   resolve `None`, no revival, iteration excludes freed agents), proven
+   at unit level; no engine path frees. The O(N) cost and the cache
+   reconciliation design are documented G4 prerequisites in
+   `engine-divergence.md`. Re-raising them does not block G0b.
+3. **Generation saturation**: `free` refusing (or saturating safely)
+   when a slot's generation cannot advance is in scope as a one-line
+   correctness guard — accepted.
+4. Remaining review effort should target: golden integrity, event-path
+   behavior preservation, command-rejection atomicity, and arena/registry
+   CORRECTNESS — not future-milestone performance or rendering work.

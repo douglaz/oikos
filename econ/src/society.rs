@@ -4,19 +4,37 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::agent::{Agent, AgentId, Role, TickProvisions, WantKind};
 use crate::agio::AgioSchedule;
+use crate::arena::AgentArena;
 use crate::bank::{Bank, BankPolicy};
 use crate::barter::{BarterBook, BarterOffer, BarterReason, BarterTrade};
 use crate::bundle::{
     appraise_project_bundle_for_money, ProjectBundleCandidate, ProjectBundleEndowment,
 };
-use crate::cantillon::{CantillonReceipt, CantillonRouter};
+use crate::cantillon::{CantillonReceipt, CantillonRoute, CantillonRouter};
 use crate::capital::{
     abandon_project, aggregate_input_goods, borrow_to_build_line, builtin_project_lines,
     committed_input_goods, credit_boom_long_line, find_line, mature_project, record_project_sale,
     start_project, M2Project, M2ProjectId, M2ProjectState, ProjectFundingPlan, ProjectLine,
     ProjectLineId, ProjectOutputLot,
 };
+use crate::command::{CommandResult, RejectReason};
 use crate::expect::PriceBelief;
+
+/// Which path is applying an [`EventKind`].
+///
+/// The mutation logic is shared (game-spec §7); the *only* behavioural
+/// difference is a handful of existence preconditions the lab tolerated
+/// silently on the authored-event path but a player command must reject. `Event`
+/// keeps the lab's unconditional mutation (byte-for-byte the goldens); `Command`
+/// rejects those cases loudly and side-effect-free. See
+/// [`Society::apply_event_kind`] and `docs/engine-divergence.md`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ApplyMode {
+    /// Authored scenario event: lab-faithful mutation, silent tolerance.
+    Event,
+    /// Player command: reject missing targets rather than silently mutate.
+    Command,
+}
 use crate::factor::{
     FactorSide, LaborBook, LaborMarketView, LaborOrder, LaborReservations, LaborTrade,
 };
@@ -41,6 +59,7 @@ use crate::record::{
     PaymentKind, RedemptionAuditRecord, RedemptionOutcome, TaxAuditRecord, V2Phase, V2Record,
     WagePaymentAuditRecord,
 };
+use crate::registry::GoodRegistry;
 use crate::rng::Rng;
 use crate::scenario::{
     Event, EventKind, MarketScenario, RedemptionRoute, ScenarioKind, ScenarioName,
@@ -188,8 +207,11 @@ pub enum V2PromotionFailureReason {
 
 pub struct Society {
     pub tick: Tick,
-    pub agents: Vec<Agent>,
+    pub agents: AgentArena,
     initial_agents: Vec<Agent>,
+    /// The good catalog. Constructed `lab_default()` so `GoodId` values, names,
+    /// and `Stock`/belief slot counts are bit-for-bit the lab's (G0b).
+    registry: GoodRegistry,
     pub recipes: Vec<Recipe>,
     pub books: Vec<OrderBook>,
     pub records: Vec<MarketRecord>,
@@ -259,7 +281,6 @@ pub struct Society {
     max_good_id: u16,
     live_quotes: Vec<LiveQuote>,
     agent_order: Vec<usize>,
-    agent_index: Vec<(AgentId, usize)>,
     m2_enabled: bool,
     m3_enabled: bool,
     regime: Regime,
@@ -318,11 +339,11 @@ impl Society {
             !v2_enabled && !uses_emergent_money && (!m3_enabled || money_system.is_some());
         let reservations = Reservations::new(&agents, max_good_id);
         let agent_order = agent_order_for(scenario.scenario.agent_order_priority(), &agents);
-        let agent_index = agent_index_for(&agents);
         Ok(Self {
             tick: Tick(0),
-            agents,
+            agents: AgentArena::from_cast(agents),
             initial_agents,
+            registry: GoodRegistry::lab_default(),
             recipes: scenario.recipes,
             books,
             records: Vec::new(),
@@ -391,7 +412,6 @@ impl Society {
             max_good_id,
             live_quotes: Vec::new(),
             agent_order,
-            agent_index,
             m2_enabled,
             m3_enabled,
             regime,
@@ -629,11 +649,11 @@ impl Society {
             self.run_direct_pass_without_money();
             let provisional_leader = self.v2_provisional_leader();
             self.barter_book
-                .cancel_invalid(&self.agents, provisional_leader);
+                .cancel_invalid(self.agents.as_slice(), provisional_leader);
             self.generate_direct_barter_offers(provisional_leader);
             self.generate_indirect_barter_offers(provisional_leader);
             tick_barter_trades = self.barter_book.clear_matches_with_provisional_leader(
-                &mut self.agents,
+                self.agents.as_mut_slice(),
                 self.tick.0,
                 provisional_leader,
             );
@@ -720,7 +740,7 @@ impl Society {
                 .as_mut()
                 .expect("M3 society has a money system");
             settle_due_debts_m3(DebtSettlementM3Context {
-                agents: &mut self.agents,
+                agents: self.agents.as_mut_slice(),
                 debts: &mut self.debts,
                 tick: self.tick,
                 money_system,
@@ -835,7 +855,7 @@ impl Society {
         self.tick_self_funded_project_starts.clear();
         self.apply_events();
         let project_debt_payment_snapshot = self.project_debt_payment_snapshot();
-        let _settlement = settle_due_debts(&mut self.agents, &mut self.debts, self.tick);
+        let _settlement = settle_due_debts(self.agents.as_mut_slice(), &mut self.debts, self.tick);
         if let Some(snapshot) = &project_debt_payment_snapshot {
             self.release_project_funding_reserves_for_debt_payments(snapshot);
         }
@@ -961,7 +981,7 @@ impl Society {
     pub fn money_ledgers_reconcile(&self) -> bool {
         match &self.money_system {
             Some(money_system) => {
-                money_system.invariants_hold_with_banks(&self.agents, &self.banks)
+                money_system.invariants_hold_with_banks(self.agents.as_slice(), &self.banks)
             }
             None => true,
         }
@@ -973,14 +993,45 @@ impl Society {
         while index < self.events.len() {
             if self.events[index].tick <= tick {
                 let event = self.events.remove(index);
-                self.apply_event_kind(event.kind);
+                self.apply_event(event.kind);
             } else {
                 index += 1;
             }
         }
     }
 
-    fn apply_event_kind(&mut self, kind: EventKind) {
+    /// Apply an authored scenario event, then drop the result. Authored
+    /// scenarios may silently tolerate a missing target (game-spec §7); the
+    /// command path keeps the same mutation logic but surfaces the result.
+    fn apply_event(&mut self, kind: EventKind) {
+        // The event path is intentionally silent and lab-faithful: it performs
+        // the lab's mutations (including the lab's silent tolerance) and
+        // discards the result. It never enforces the command-only preconditions.
+        let _ = self.apply_event_kind(kind, ApplyMode::Event);
+    }
+
+    /// Apply a player command over the existing `EventKind` surface, returning
+    /// `Applied | Rejected(reason)`. Shares every check and mutation with the
+    /// event path (G0b, game-spec §7) — nothing in `econ` calls this yet
+    /// besides tests; it is plumbing for the sim crate's command queue.
+    pub fn apply_command(&mut self, kind: EventKind) -> CommandResult {
+        self.apply_event_kind(kind, ApplyMode::Command)
+    }
+
+    /// The shared logic both paths run. Each currently-silent event no-op
+    /// becomes a named rejection; the event path discards it, the command path
+    /// returns it. The mutations are byte-for-byte the lab's — the goldens gate
+    /// this.
+    ///
+    /// Most rejections are mutation-preserving: the lab also performed *no*
+    /// mutation when the target was missing, so an event-path `Rejected` (which
+    /// is discarded) is byte-identical to the lab's silent no-op. A few handlers
+    /// are *not* symmetric — the lab mutated regardless of whether an agent or
+    /// bank existed (the silent-tolerance no-ops of game-spec §7). Those
+    /// existence preconditions are gated on [`ApplyMode::Command`] so the event
+    /// path keeps the lab's unconditional mutation while a command rejects
+    /// loudly and side-effect-free.
+    fn apply_event_kind(&mut self, kind: EventKind, mode: ApplyMode) -> CommandResult {
         match kind {
             EventKind::DisableRecipe(recipe_id) => {
                 if let Some(recipe) = self
@@ -989,42 +1040,56 @@ impl Society {
                     .find(|recipe| recipe.id == recipe_id)
                 {
                     recipe.enabled = false;
+                    CommandResult::Applied
+                } else {
+                    CommandResult::rejected(
+                        RejectReason::UnknownRecipe,
+                        format!("no recipe {recipe_id:?}"),
+                    )
                 }
             }
             EventKind::SetRegime(regime) => {
                 self.regime = regime;
+                CommandResult::Applied
             }
             EventKind::SetPublicSpotTender(policy) => {
                 self.public_spot_tender = policy;
                 // Events apply before this tick's matching pass, so live quotes
                 // must be rechecked under the new accepted-media policy now.
                 self.cancel_changed_live_quotes();
+                CommandResult::Applied
             }
             EventKind::SetPublicDebtTender(policy) => {
                 self.public_debt_tender = policy;
+                CommandResult::Applied
             }
             EventKind::SetBankRepaymentTender(policy) => {
                 self.bank_repayment_tender = policy;
+                CommandResult::Applied
             }
             EventKind::SetIssuerRepaymentTender(policy) => {
                 self.issuer_repayment_tender = policy;
+                CommandResult::Applied
             }
             EventKind::SetLaborWageTender(policy) => {
                 self.labor_wage_tender = policy;
+                CommandResult::Applied
             }
             EventKind::SetTaxReceivability(policy) => {
                 self.tax_receivability = policy;
+                CommandResult::Applied
             }
             EventKind::LevyTax {
                 agent,
                 amount,
                 due_tick,
-            } => {
-                self.apply_levy_tax(agent, amount, due_tick);
-            }
+            } => self.apply_levy_tax(agent, amount, due_tick, mode),
             EventKind::SetDebtDueTick { debt, due_tick } => {
                 if let Some(entry) = self.debts.iter_mut().find(|entry| entry.id == debt) {
                     entry.due_tick = due_tick;
+                    CommandResult::Applied
+                } else {
+                    CommandResult::rejected(RejectReason::UnknownDebt, format!("no debt {debt:?}"))
                 }
             }
             EventKind::SeedCommodityDebt {
@@ -1035,61 +1100,131 @@ impl Society {
                 due_tick,
                 purpose,
             } => {
-                self.apply_seed_commodity_debt(lender, borrower, principal, due, due_tick, purpose);
+                // Command-only precondition: the lab event path seeds the debt
+                // regardless of whether the parties are live agents (silent
+                // tolerance, game-spec §7); a command rejects an unowned debt.
+                if mode == ApplyMode::Command {
+                    if self.agents.get(lender).is_none() {
+                        return CommandResult::rejected(
+                            RejectReason::UnknownAgent,
+                            format!("no lender {lender}"),
+                        );
+                    }
+                    if self.agents.get(borrower).is_none() {
+                        return CommandResult::rejected(
+                            RejectReason::UnknownAgent,
+                            format!("no borrower {borrower}"),
+                        );
+                    }
+                }
+                self.apply_seed_commodity_debt(lender, borrower, principal, due, due_tick, purpose)
             }
-            EventKind::SeedStock { agent, good, qty } => {
-                self.apply_seed_stock(agent, good, qty);
-            }
+            EventKind::SeedStock { agent, good, qty } => self.apply_seed_stock(agent, good, qty),
             EventKind::SetReserveRatio { bank, ratio } => {
                 if let Some(entry) = self.banks.iter_mut().find(|entry| entry.id == bank) {
                     entry.reserve_ratio_bps = ratio;
+                    CommandResult::Applied
+                } else {
+                    CommandResult::rejected(RejectReason::UnknownBank, format!("no bank {bank:?}"))
                 }
             }
             EventKind::SetBankConvertibility { bank, convertible } => {
                 if let Some(entry) = self.banks.iter_mut().find(|entry| entry.id == bank) {
                     entry.convertible = convertible;
+                    CommandResult::Applied
+                } else {
+                    CommandResult::rejected(RejectReason::UnknownBank, format!("no bank {bank:?}"))
                 }
             }
             EventKind::SetBankCreditPolicy { bank, policy } => {
                 if let Some(entry) = self.banks.iter_mut().find(|entry| entry.id == bank) {
                     entry.policy = policy;
+                    CommandResult::Applied
+                } else {
+                    CommandResult::rejected(RejectReason::UnknownBank, format!("no bank {bank:?}"))
                 }
             }
             EventKind::StopBankCredit { bank } => {
-                if let Some(entry) = self.banks.iter_mut().find(|entry| entry.id == bank) {
-                    entry.policy.enabled = false;
+                let position = self.banks.iter().position(|entry| entry.id == bank);
+                // A command for a missing bank rejects *before* touching the
+                // order book, so a rejected command is side-effect-free. The
+                // event path skips this and keeps the lab's unconditional cancel.
+                if position.is_none() && mode == ApplyMode::Command {
+                    return CommandResult::rejected(
+                        RejectReason::UnknownBank,
+                        format!("no bank {bank:?}"),
+                    );
                 }
+                if let Some(index) = position {
+                    self.banks[index].policy.enabled = false;
+                }
+                // Cancelling outstanding lender quotes is unconditional, exactly
+                // as the lab does it — the result reports only the policy target.
                 self.loan_book
                     .cancel_lender(CreditLender::Bank(bank), &mut self.loan_reservations);
+                if position.is_some() {
+                    CommandResult::Applied
+                } else {
+                    CommandResult::rejected(RejectReason::UnknownBank, format!("no bank {bank:?}"))
+                }
             }
             EventKind::RedeemDemandClaims {
                 bank,
                 route,
                 max_per_agent,
-            } => self.apply_redemption_event(bank, &route, max_per_agent),
+            } => self.apply_redemption_event(bank, &route, max_per_agent, mode),
             EventKind::FiatPrint {
                 issuer,
                 amount,
                 route,
-            } => self.apply_fiat_print(issuer, amount, &route),
+            } => self.apply_fiat_print(issuer, amount, &route, mode),
             EventKind::ResetPublicSpotBook => {
                 self.cancel_all_live_quotes();
+                CommandResult::Applied
             }
             EventKind::SetIssuerPolicy { issuer, policy } => {
                 if let Some(entry) = self.issuers.iter_mut().find(|entry| entry.id == issuer) {
                     entry.policy = policy;
+                    CommandResult::Applied
+                } else {
+                    CommandResult::rejected(
+                        RejectReason::UnknownIssuer,
+                        format!("no issuer {issuer:?}"),
+                    )
                 }
             }
             EventKind::StopIssuerCredit { issuer } => {
-                if let Some(entry) = self.issuers.iter_mut().find(|entry| entry.id == issuer) {
-                    entry.policy.credit_enabled = false;
+                let position = self.issuers.iter().position(|entry| entry.id == issuer);
+                // As with `StopBankCredit`: a command for a missing issuer
+                // rejects before the unconditional cancel; the event path keeps
+                // the lab's unconditional cancel.
+                if position.is_none() && mode == ApplyMode::Command {
+                    return CommandResult::rejected(
+                        RejectReason::UnknownIssuer,
+                        format!("no issuer {issuer:?}"),
+                    );
+                }
+                if let Some(index) = position {
+                    self.issuers[index].policy.credit_enabled = false;
                 }
                 self.loan_book
                     .cancel_lender(CreditLender::Issuer(issuer), &mut self.loan_reservations);
+                if position.is_some() {
+                    CommandResult::Applied
+                } else {
+                    CommandResult::rejected(
+                        RejectReason::UnknownIssuer,
+                        format!("no issuer {issuer:?}"),
+                    )
+                }
             }
         }
     }
 
+    /// Seed a commodity debt — the lab mutation, unconditional. This is the
+    /// event path's byte-for-byte behavior (it seeds the debt regardless of
+    /// whether the parties are live agents — game-spec §7 silent tolerance). The
+    /// command path's `UnknownAgent` precondition lives in the dispatch arm.
     fn apply_seed_commodity_debt(
         &mut self,
         lender: AgentId,
@@ -1098,7 +1233,7 @@ impl Society {
         due: Gold,
         due_tick: Tick,
         purpose: DebtPurpose,
-    ) {
+    ) -> CommandResult {
         self.debts.push(DebtContract {
             id: DebtId(self.next_debt_id),
             lender: CreditLender::Agent(lender),
@@ -1116,6 +1251,7 @@ impl Society {
             .next_debt_id
             .checked_add(1)
             .expect("seeded debt id overflow");
+        CommandResult::Applied
     }
 
     /// Levies a tax (M21): seeds a `DebtContract` with the scenario's single
@@ -1123,16 +1259,46 @@ impl Society {
     /// at levy time — the liability appears in the borrower's payables view and
     /// the existing earn-to-cover behavior does the rest. Without exactly one
     /// issuer the event is a no-op (no debt, no panic).
-    fn apply_levy_tax(&mut self, agent: AgentId, amount: Gold, due_tick: Tick) {
+    fn apply_levy_tax(
+        &mut self,
+        agent: AgentId,
+        amount: Gold,
+        due_tick: Tick,
+        mode: ApplyMode,
+    ) -> CommandResult {
         // `LevyTax` intentionally carries no issuer id in M21: the controlled
         // tax scenarios have one state issuer. Future multi-issuer taxes need
         // an explicit event field instead of guessing which issuer receives it.
+        // The issuer-count check is mutation-preserving (the lab also seeds no
+        // debt without exactly one issuer), so it runs on both paths.
         let mut issuer_ids = self.issuers.iter().map(|issuer| issuer.id);
         let Some(issuer_id) = issuer_ids.next() else {
-            return;
+            return CommandResult::rejected(
+                RejectReason::NoIssuer,
+                "levy needs one issuer; found 0",
+            );
         };
         if issuer_ids.next().is_some() {
-            return;
+            return CommandResult::rejected(
+                RejectReason::NoIssuer,
+                "levy needs one issuer; found several",
+            );
+        }
+        // Command-only preconditions. The lab event path seeds the tax debt
+        // unconditionally after the one-issuer check (silent tolerance,
+        // game-spec §7): a zero amount seeds an open zero-due liability, and a
+        // missing borrower an unowned one. A player command rejects both loudly
+        // and side-effect-free, before mutating.
+        if mode == ApplyMode::Command {
+            if amount == Gold::ZERO {
+                return CommandResult::rejected(RejectReason::Ineligible, "tax levy of zero");
+            }
+            if self.agents.get(agent).is_none() {
+                return CommandResult::rejected(
+                    RejectReason::UnknownAgent,
+                    format!("no agent {agent}"),
+                );
+            }
         }
         self.debts.push(DebtContract {
             id: DebtId(self.next_debt_id),
@@ -1158,14 +1324,26 @@ impl Society {
         {
             issuer.record_tax_levied(amount);
         }
+        CommandResult::Applied
     }
 
-    fn apply_seed_stock(&mut self, agent: AgentId, good: GoodId, qty: u32) {
+    fn apply_seed_stock(&mut self, agent: AgentId, good: GoodId, qty: u32) -> CommandResult {
+        // The zero-qty / money-good guard is *mutation-preserving*: the lab event
+        // path already returned early (silent no-op) for both cases, so it runs on
+        // both paths and is intentionally NOT command-only. The event path
+        // discards this `Rejected` and so stays byte-for-byte the lab's no-op; the
+        // command path reports it loudly. (Reviewer-3: not a behavior change.)
         if qty == 0 || self.money.is_money_good(good) {
-            return;
+            return CommandResult::rejected(
+                RejectReason::Ineligible,
+                "seed stock needs a nonzero, non-money good",
+            );
         }
-        if let Some(entry) = self.agents.iter_mut().find(|entry| entry.id == agent) {
+        if let Some(entry) = self.agents.get_mut(agent) {
             entry.stock.add(good, qty);
+            CommandResult::Applied
+        } else {
+            CommandResult::rejected(RejectReason::UnknownAgent, format!("no agent {agent}"))
         }
     }
 
@@ -1174,10 +1352,51 @@ impl Society {
         bank_id: BankId,
         route: &RedemptionRoute,
         max_per_agent: Option<Gold>,
-    ) {
+        mode: ApplyMode,
+    ) -> CommandResult {
         let Some(money_system) = self.money_system.as_mut() else {
-            return;
+            return CommandResult::rejected(
+                RejectReason::NotApplicableToKernel,
+                "redemption needs a money system",
+            );
         };
+        let bank_index = self.banks.iter().position(|bank| bank.id == bank_id);
+        if mode == ApplyMode::Command {
+            if bank_index.is_none() {
+                return CommandResult::rejected(
+                    RejectReason::UnknownBank,
+                    format!("no bank {bank_id:?}"),
+                );
+            }
+            // A zero per-agent cap requests nothing: every holder takes the
+            // zero-request `continue` in the loop below, so the command would
+            // otherwise fall through to `Applied` having mutated nothing — the
+            // silent no-op the command surface exists to prevent. The event path
+            // keeps that tolerance (and still records `NoClaim` rows for explicit
+            // zero-claim holders, so this stays command-only); a command rejects.
+            if max_per_agent == Some(Gold::ZERO) {
+                return CommandResult::rejected(
+                    RejectReason::Ineligible,
+                    "redemption cap of zero requests nothing",
+                );
+            }
+            if let RedemptionRoute::Agents(agents) = route {
+                if agents.is_empty() {
+                    return CommandResult::rejected(
+                        RejectReason::Ineligible,
+                        "redemption route reached no requesters",
+                    );
+                }
+                for &agent in agents {
+                    if self.agents.get(agent).is_none() {
+                        return CommandResult::rejected(
+                            RejectReason::UnknownAgent,
+                            format!("no redemption requester {agent}"),
+                        );
+                    }
+                }
+            }
+        }
         let requesters = match route {
             RedemptionRoute::AllClaimHolders => money_system
                 .demand_claim_holders(bank_id)
@@ -1190,11 +1409,27 @@ impl Society {
                 .map(|agent| (agent, None, true))
                 .collect::<Vec<_>>(),
         };
-        let bank_index = self.banks.iter().position(|bank| bank.id == bank_id);
+        // The command path already rejected a missing bank above, so only the
+        // event path can still reach here with one. The lab records `BankMissing`
+        // audit rows for a non-empty explicit `Agents` route but is a silent
+        // no-op when the route reached no requesters (an empty `AllClaimHolders`
+        // set or empty `Agents` list) — preserve that by bailing before the loop.
+        if bank_index.is_none() && requesters.is_empty() {
+            return CommandResult::rejected(
+                RejectReason::UnknownBank,
+                format!("no bank {bank_id:?}"),
+            );
+        }
+        if mode == ApplyMode::Command && requesters.is_empty() {
+            return CommandResult::rejected(
+                RejectReason::Ineligible,
+                "redemption route reached no requesters",
+            );
+        }
         let tick = self.tick.0;
         let regime = self.regime;
         let banks = &mut self.banks;
-        let agents = &mut self.agents;
+        let agents = self.agents.as_mut_slice();
         let redemption_audit = &mut self.redemption_audit;
         let mut cache_needs_reconcile = false;
 
@@ -1304,50 +1539,85 @@ impl Society {
         if cache_needs_reconcile {
             money_system.reconcile_agent_cache(agents);
         }
+        CommandResult::Applied
     }
 
     fn apply_fiat_print(
         &mut self,
         issuer_id: crate::ledger::IssuerId,
         amount: Gold,
-        route: &crate::cantillon::CantillonRoute,
-    ) {
+        route: &CantillonRoute,
+        mode: ApplyMode,
+    ) -> CommandResult {
         if amount == Gold::ZERO {
-            return;
+            return CommandResult::rejected(RejectReason::Ineligible, "fiat print of zero");
         }
         let Some(issuer_pos) = self
             .issuers
             .iter()
             .position(|issuer| issuer.id == issuer_id)
         else {
-            return;
+            return CommandResult::rejected(
+                RejectReason::UnknownIssuer,
+                format!("no issuer {issuer_id:?}"),
+            );
         };
-        let credits = CantillonRouter::route(route, &self.agents, amount);
+        if mode == ApplyMode::Command {
+            if let CantillonRoute::Agents(agents) = route {
+                if agents.is_empty() {
+                    return CommandResult::rejected(
+                        RejectReason::Ineligible,
+                        "route reached no recipients",
+                    );
+                }
+                for &agent in agents {
+                    if self.agents.get(agent).is_none() {
+                        return CommandResult::rejected(
+                            RejectReason::UnknownAgent,
+                            format!("no fiat recipient {agent}"),
+                        );
+                    }
+                }
+            }
+        }
+        let credits = CantillonRouter::route(route, self.agents.as_slice(), amount);
         if credits.is_empty() {
-            return;
+            return CommandResult::rejected(
+                RejectReason::Ineligible,
+                "route reached no recipients",
+            );
         }
         let source = CreditSource::FiatFiscal(issuer_id);
         let mut staged_issuer = self.issuers[issuer_pos].clone();
         let already_issued =
             fiscal_issued_this_tick(&self.tick_fiat_fiscal_issued_by_issuer, issuer_id);
         if already_issued.saturating_add(amount) > staged_issuer.policy.max_fiscal_issue_per_tick {
-            return;
+            return CommandResult::rejected(
+                RejectReason::Ineligible,
+                "exceeds max fiscal issue per tick",
+            );
         }
         if staged_issuer.fiscal_issue(self.regime, amount).is_err() {
-            return;
+            return CommandResult::rejected(
+                RejectReason::Ineligible,
+                "issuer refused fiscal issue",
+            );
         }
         let Some(mut staged_money) = self.money_system.clone() else {
-            return;
+            return CommandResult::rejected(
+                RejectReason::NotApplicableToKernel,
+                "fiat print needs a money system",
+            );
         };
         for (agent, share) in &credits {
             if staged_money.credit_fiat(*agent, *share).is_err() {
-                return;
+                return CommandResult::rejected(RejectReason::Ineligible, "fiat credit failed");
             }
         }
         self.issuers[issuer_pos] = staged_issuer;
         self.money_system = Some(staged_money);
         if let Some(money_system) = &self.money_system {
-            money_system.reconcile_agent_cache(&mut self.agents);
+            money_system.reconcile_agent_cache(self.agents.as_mut_slice());
         }
         self.tick_fiat_fiscal_issued = self.tick_fiat_fiscal_issued.saturating_add(amount);
         record_fiscal_issued_this_tick(
@@ -1357,6 +1627,7 @@ impl Society {
         );
         self.cantillon_receipts
             .extend(CantillonRouter::receipts(self.tick, &credits, source));
+        CommandResult::Applied
     }
 
     fn purge_expired_orders(&mut self) -> u32 {
@@ -1695,7 +1966,7 @@ impl Society {
 
         for offer in previous {
             self.barter_book.post_offer_with_provisional_leader(
-                &self.agents,
+                self.agents.as_slice(),
                 offer,
                 self.tick.0,
                 provisional_leader,
@@ -1726,7 +1997,7 @@ impl Society {
             expires_tick: self.tick.0.saturating_add(ORDER_TTL),
         };
         self.barter_book.post_offer_with_provisional_leader(
-            &self.agents,
+            self.agents.as_slice(),
             offer,
             self.tick.0,
             provisional_leader,
@@ -1793,7 +2064,7 @@ impl Society {
         money_good: GoodId,
     ) -> Result<(), V2PromotionFailureReason> {
         let mut new_balances = Vec::with_capacity(self.agents.len());
-        for agent in &self.agents {
+        for agent in self.agents.as_slice() {
             if agent.gold != Gold::ZERO {
                 return Err(V2PromotionFailureReason::NonZeroMoneyBalance);
             }
@@ -1814,7 +2085,7 @@ impl Society {
             }
         }
 
-        for (agent, new_balance) in self.agents.iter_mut().zip(new_balances) {
+        for (agent, new_balance) in self.agents.as_mut_slice().iter_mut().zip(new_balances) {
             let qty = agent.stock.get(money_good);
             if qty > 0 {
                 let removed = agent.stock.remove(money_good, qty);
@@ -1898,9 +2169,13 @@ impl Society {
         amount: Gold,
     ) -> Option<(Gold, Option<Gold>)> {
         if amount == Gold::ZERO {
-            return self.agents.get(agent_index).map(|agent| (agent.gold, None));
+            return self
+                .agents
+                .as_slice()
+                .get(agent_index)
+                .map(|agent| (agent.gold, None));
         }
-        let agent = self.agents.get(agent_index)?;
+        let agent = self.agents.as_slice().get(agent_index)?;
         let new_gold = agent.gold.checked_add(amount)?;
         let ledger_credit = if self.m3_enabled {
             self.money_system
@@ -1920,9 +2195,13 @@ impl Society {
         amount: Gold,
     ) -> Option<(Gold, Option<Gold>)> {
         if amount == Gold::ZERO {
-            return self.agents.get(agent_index).map(|agent| (agent.gold, None));
+            return self
+                .agents
+                .as_slice()
+                .get(agent_index)
+                .map(|agent| (agent.gold, None));
         }
-        let agent = self.agents.get(agent_index)?;
+        let agent = self.agents.as_slice().get(agent_index)?;
         let new_gold = agent.gold.checked_sub(amount)?;
         let ledger_debit = if self.m3_enabled {
             self.money_system
@@ -1950,7 +2229,7 @@ impl Society {
                 .credit_specie(agent, amount)
                 .expect("M3 money credit was preflighted");
         }
-        if let Some(agent) = self.agents.get_mut(agent_index) {
+        if let Some(agent) = self.agents.as_mut_slice().get_mut(agent_index) {
             agent.gold = new_gold;
         }
     }
@@ -1969,13 +2248,13 @@ impl Society {
             if money_system.debit_specie(agent, amount).is_err() {
                 return false;
             }
-            if let Some(agent) = self.agents.get_mut(agent_index) {
+            if let Some(agent) = self.agents.as_mut_slice().get_mut(agent_index) {
                 agent.gold = new_gold;
                 true
             } else {
                 false
             }
-        } else if let Some(agent) = self.agents.get_mut(agent_index) {
+        } else if let Some(agent) = self.agents.as_mut_slice().get_mut(agent_index) {
             agent.gold = new_gold;
             true
         } else {
@@ -2108,14 +2387,19 @@ impl Society {
             self.books[book_index].add_order_m3(
                 order,
                 self.tick.0,
-                &mut self.agents,
+                self.agents.as_mut_slice(),
                 &mut self.reservations,
                 money_system,
                 tender.accepted_media(),
             )
         } else {
             self.books[book_index]
-                .add_order(order, self.tick.0, &mut self.agents, &mut self.reservations)
+                .add_order(
+                    order,
+                    self.tick.0,
+                    self.agents.as_mut_slice(),
+                    &mut self.reservations,
+                )
                 .into_iter()
                 .map(|trade| ExecutedTrade {
                     trade,
@@ -3083,7 +3367,7 @@ impl Society {
                     None
                 };
                 let mut market = LaborMarketView {
-                    agents: &mut self.agents,
+                    agents: self.agents.as_mut_slice(),
                     reservations: &mut self.labor_reservations,
                     projects: &mut self.m2_projects,
                     lines: &self.project_lines,
@@ -3223,7 +3507,7 @@ impl Society {
                     None
                 };
                 let mut market = LaborMarketView {
-                    agents: &mut self.agents,
+                    agents: self.agents.as_mut_slice(),
                     reservations: &mut self.labor_reservations,
                     projects: &mut self.m2_projects,
                     lines: &self.project_lines,
@@ -3253,7 +3537,7 @@ impl Society {
             return;
         }
 
-        let labor_capacity = self.agents.iter().fold(0u32, |total, agent| {
+        let labor_capacity = self.agents.as_slice().iter().fold(0u32, |total, agent| {
             total.saturating_add(agent.labor_capacity)
         });
         let labor_used = self
@@ -3262,7 +3546,7 @@ impl Society {
             .fold(0u32, |total, (_, used)| total.saturating_add(*used));
         #[cfg(debug_assertions)]
         {
-            let labor_used_by_agent = self.agents.iter().fold(0u32, |total, agent| {
+            let labor_used_by_agent = self.agents.as_slice().iter().fold(0u32, |total, agent| {
                 total.saturating_add(self.tick_labor_used(agent.id))
             });
             debug_assert_eq!(labor_used, labor_used_by_agent);
@@ -3279,7 +3563,7 @@ impl Society {
             .expect("metric accumulator exists after early return");
         let observation = accumulator.observe(MetricObservationInput {
             tick: self.tick.0,
-            agents: &self.agents,
+            agents: self.agents.as_slice(),
             initial_agents: &self.initial_agents,
             money_system: self.money_system.as_ref(),
             receipts: &self.cantillon_receipts,
@@ -3590,7 +3874,7 @@ impl Society {
                 order,
                 self.tick.0,
                 LoanM3Context {
-                    agents: &mut self.agents,
+                    agents: self.agents.as_mut_slice(),
                     reservations: &mut self.loan_reservations,
                     debts: &mut self.debts,
                     next_debt_id: &mut self.next_debt_id,
@@ -3704,7 +3988,7 @@ impl Society {
                 order,
                 self.tick.0,
                 LoanM3Context {
-                    agents: &mut self.agents,
+                    agents: self.agents.as_mut_slice(),
                     reservations: &mut self.loan_reservations,
                     debts: &mut self.debts,
                     next_debt_id: &mut self.next_debt_id,
@@ -3894,7 +4178,7 @@ impl Society {
                 order,
                 self.tick.0,
                 LoanM3Context {
-                    agents: &mut self.agents,
+                    agents: self.agents.as_mut_slice(),
                     reservations: &mut self.loan_reservations,
                     debts: &mut self.debts,
                     next_debt_id: &mut self.next_debt_id,
@@ -3908,7 +4192,7 @@ impl Society {
             self.loan_book.add_order(
                 order,
                 self.tick.0,
-                &mut self.agents,
+                self.agents.as_mut_slice(),
                 &mut self.loan_reservations,
                 &mut self.debts,
                 &mut self.next_debt_id,
@@ -4260,7 +4544,12 @@ impl Society {
         let mut total = 0i64;
         let mut count = 0i64;
         for agent in cohort {
-            let Some(current) = self.agents.iter().find(|entry| entry.id == *agent) else {
+            let Some(current) = self
+                .agents
+                .as_slice()
+                .iter()
+                .find(|entry| entry.id == *agent)
+            else {
                 continue;
             };
             let Some(initial) = self.initial_agents.iter().find(|entry| entry.id == *agent) else {
@@ -4347,10 +4636,19 @@ impl Society {
     }
 
     fn agent_index_for(&self, agent: AgentId) -> Option<usize> {
-        self.agent_index
-            .binary_search_by_key(&agent, |(id, _)| *id)
-            .ok()
-            .map(|index| self.agent_index[index].1)
+        self.agents.position_of(agent)
+    }
+
+    /// The society's good catalog (lab-default in G0b). The registry-aware
+    /// successor to the free [`crate::good::good_name`] shim.
+    pub fn good_registry(&self) -> &GoodRegistry {
+        &self.registry
+    }
+
+    /// The name of a good via the society's registry — the registry-aware
+    /// naming path. Equals [`crate::good::good_name`] for the lab catalog.
+    pub fn good_name(&self, good: GoodId) -> &str {
+        self.registry.name(good)
     }
 
     fn reserved_gold_all(&self, agent: AgentId) -> Gold {
@@ -4668,7 +4966,7 @@ impl Society {
             .map(|owner| {
                 let gold = self
                     .agent_index_for(*owner)
-                    .and_then(|index| self.agents.get(index))
+                    .and_then(|index| self.agents.as_slice().get(index))
                     .map(|agent| agent.gold)
                     .unwrap_or(Gold::ZERO);
                 (*owner, gold)
@@ -5110,7 +5408,7 @@ fn synthetic_order_agent(id: u32, offset: u32) -> AgentId {
         .checked_mul(2)
         .and_then(|value| value.checked_add(offset))
         .unwrap_or(u32::MAX);
-    AgentId(u32::MAX.saturating_sub(scaled))
+    AgentId(u64::from(u32::MAX.saturating_sub(scaled)))
 }
 
 fn fiscal_issued_this_tick(
@@ -5215,16 +5513,6 @@ fn project_salvage_value(agent: &Agent, project: &M2Project, money_good: Option<
         project.salvage_bps,
         money_good,
     )
-}
-
-fn agent_index_for(agents: &[Agent]) -> Vec<(AgentId, usize)> {
-    let mut index = agents
-        .iter()
-        .enumerate()
-        .map(|(index, agent)| (agent.id, index))
-        .collect::<Vec<_>>();
-    index.sort_by_key(|(agent, _)| *agent);
-    index
 }
 
 fn add_good_volume(volumes: &mut Vec<(GoodId, u32)>, good: GoodId, qty: u32) {
@@ -5468,7 +5756,7 @@ mod tests {
 
     fn redemption_agent(id: u32, gold: Gold) -> Agent {
         Agent {
-            id: AgentId(id),
+            id: AgentId(u64::from(id)),
             scale: Vec::new(),
             stock: Stock::new(3),
             gold,
@@ -5494,10 +5782,11 @@ mod tests {
         society.banks[0].reserves = Gold(1);
         society.banks[0].demand_deposits = Gold(2);
         society.banks[0].fiduciary_issued = Gold(1);
-        society.money_system =
-            Some(MoneySystem::from_agents_with_banks(&society.agents, &society.banks).unwrap());
+        society.money_system = Some(
+            MoneySystem::from_agents_with_banks(society.agents.as_slice(), &society.banks).unwrap(),
+        );
         if let Some(money_system) = &society.money_system {
-            money_system.reconcile_agent_cache(&mut society.agents);
+            money_system.reconcile_agent_cache(society.agents.as_mut_slice());
         }
         society
     }
@@ -5517,10 +5806,11 @@ mod tests {
         society.banks[0].reserves = Gold(1);
         society.banks[0].demand_deposits = Gold(2);
         society.banks[0].fiduciary_issued = Gold(1);
-        society.money_system =
-            Some(MoneySystem::from_agents_with_banks(&society.agents, &society.banks).unwrap());
+        society.money_system = Some(
+            MoneySystem::from_agents_with_banks(society.agents.as_slice(), &society.banks).unwrap(),
+        );
         if let Some(money_system) = &society.money_system {
-            money_system.reconcile_agent_cache(&mut society.agents);
+            money_system.reconcile_agent_cache(society.agents.as_mut_slice());
         }
         society
     }
@@ -5538,7 +5828,12 @@ mod tests {
     fn redemption_event_honors_until_reserves_exhausted() {
         let mut society = small_redemption_society();
 
-        society.apply_redemption_event(BankId(1), &RedemptionRoute::AllClaimHolders, None);
+        society.apply_redemption_event(
+            BankId(1),
+            &RedemptionRoute::AllClaimHolders,
+            None,
+            ApplyMode::Event,
+        );
 
         assert_eq!(society.redemption_audit.len(), 2);
         assert_eq!(society.redemption_audit[0].agent, AgentId(1));
@@ -5566,7 +5861,12 @@ mod tests {
     fn redemption_event_partially_honors_single_oversized_claim() {
         let mut society = partial_redemption_society();
 
-        society.apply_redemption_event(BankId(1), &RedemptionRoute::AllClaimHolders, None);
+        society.apply_redemption_event(
+            BankId(1),
+            &RedemptionRoute::AllClaimHolders,
+            None,
+            ApplyMode::Event,
+        );
 
         assert_eq!(society.redemption_audit.len(), 1);
         assert_eq!(society.redemption_audit[0].agent, AgentId(1));
@@ -5586,7 +5886,12 @@ mod tests {
     fn targeted_redemption_route_honors_named_claim_holder() {
         let mut society = small_redemption_society();
 
-        society.apply_redemption_event(BankId(1), &RedemptionRoute::Agents(vec![AgentId(2)]), None);
+        society.apply_redemption_event(
+            BankId(1),
+            &RedemptionRoute::Agents(vec![AgentId(2)]),
+            None,
+            ApplyMode::Event,
+        );
 
         assert_eq!(society.redemption_audit.len(), 1);
         assert_eq!(society.redemption_audit[0].agent, AgentId(2));
@@ -5613,16 +5918,18 @@ mod tests {
         let mut society = partial_redemption_society();
         society.banks[0].reserves = Gold(2);
         society.banks[0].fiduciary_issued = Gold::ZERO;
-        society.money_system =
-            Some(MoneySystem::from_agents_with_banks(&society.agents, &society.banks).unwrap());
+        society.money_system = Some(
+            MoneySystem::from_agents_with_banks(society.agents.as_slice(), &society.banks).unwrap(),
+        );
         if let Some(money_system) = &society.money_system {
-            money_system.reconcile_agent_cache(&mut society.agents);
+            money_system.reconcile_agent_cache(society.agents.as_mut_slice());
         }
 
         society.apply_redemption_event(
             BankId(1),
             &RedemptionRoute::Agents(vec![AgentId(1)]),
             Some(Gold(1)),
+            ApplyMode::Event,
         );
 
         assert_eq!(society.redemption_audit.len(), 1);
@@ -5646,12 +5953,13 @@ mod tests {
         let mut society = partial_redemption_society();
         let bank_before = society.banks.clone();
         let money_before = society.money_system.clone();
-        let agent_gold_before = agent_gold_rows(&society.agents);
+        let agent_gold_before = agent_gold_rows(society.agents.as_slice());
 
         society.apply_redemption_event(
             BankId(1),
             &RedemptionRoute::Agents(vec![AgentId(1)]),
             Some(Gold::ZERO),
+            ApplyMode::Event,
         );
 
         // A zero cap requests nothing: it is neither a nonzero request nor a failure, so
@@ -5659,7 +5967,10 @@ mod tests {
         assert!(society.redemption_audit.is_empty());
         assert_eq!(society.banks, bank_before);
         assert_eq!(society.money_system, money_before);
-        assert_eq!(agent_gold_rows(&society.agents), agent_gold_before);
+        assert_eq!(
+            agent_gold_rows(society.agents.as_slice()),
+            agent_gold_before
+        );
         assert!(society.money_ledgers_reconcile());
     }
 
@@ -5669,9 +5980,14 @@ mod tests {
         society.regime = Regime::SuspendedConvertibility;
         let bank_before = society.banks.clone();
         let money_before = society.money_system.clone();
-        let agent_gold_before = agent_gold_rows(&society.agents);
+        let agent_gold_before = agent_gold_rows(society.agents.as_slice());
 
-        society.apply_redemption_event(BankId(1), &RedemptionRoute::AllClaimHolders, None);
+        society.apply_redemption_event(
+            BankId(1),
+            &RedemptionRoute::AllClaimHolders,
+            None,
+            ApplyMode::Event,
+        );
 
         assert_eq!(society.redemption_audit.len(), 2);
         assert!(society.redemption_audit.iter().all(|row| {
@@ -5682,7 +5998,10 @@ mod tests {
         }));
         assert_eq!(society.banks, bank_before);
         assert_eq!(society.money_system, money_before);
-        assert_eq!(agent_gold_rows(&society.agents), agent_gold_before);
+        assert_eq!(
+            agent_gold_rows(society.agents.as_slice()),
+            agent_gold_before
+        );
         assert!(society.money_ledgers_reconcile());
     }
 
@@ -5691,9 +6010,14 @@ mod tests {
         let mut society = small_redemption_society();
         let bank_before = society.banks.clone();
         let money_before = society.money_system.clone();
-        let agent_gold_before = agent_gold_rows(&society.agents);
+        let agent_gold_before = agent_gold_rows(society.agents.as_slice());
 
-        society.apply_redemption_event(BankId(1), &RedemptionRoute::Agents(vec![AgentId(3)]), None);
+        society.apply_redemption_event(
+            BankId(1),
+            &RedemptionRoute::Agents(vec![AgentId(3)]),
+            None,
+            ApplyMode::Event,
+        );
 
         assert_eq!(society.redemption_audit.len(), 1);
         assert_eq!(society.redemption_audit[0].agent, AgentId(3));
@@ -5706,10 +6030,18 @@ mod tests {
         );
         assert_eq!(society.banks, bank_before);
         assert_eq!(society.money_system, money_before);
-        assert_eq!(agent_gold_rows(&society.agents), agent_gold_before);
+        assert_eq!(
+            agent_gold_rows(society.agents.as_slice()),
+            agent_gold_before
+        );
 
         society.redemption_audit.clear();
-        society.apply_redemption_event(BankId(2), &RedemptionRoute::Agents(vec![AgentId(1)]), None);
+        society.apply_redemption_event(
+            BankId(2),
+            &RedemptionRoute::Agents(vec![AgentId(1)]),
+            None,
+            ApplyMode::Event,
+        );
 
         assert_eq!(society.redemption_audit.len(), 1);
         assert_eq!(society.redemption_audit[0].agent, AgentId(1));
@@ -5722,7 +6054,10 @@ mod tests {
         );
         assert_eq!(society.banks, bank_before);
         assert_eq!(society.money_system, money_before);
-        assert_eq!(agent_gold_rows(&society.agents), agent_gold_before);
+        assert_eq!(
+            agent_gold_rows(society.agents.as_slice()),
+            agent_gold_before
+        );
         assert!(society.money_ledgers_reconcile());
     }
 
@@ -5846,7 +6181,7 @@ mod tests {
             }),
         });
         assert!(society.barter_book.post_offer(
-            &society.agents,
+            society.agents.as_slice(),
             BarterOffer {
                 agent: AgentId(1),
                 give_good: FOOD,
@@ -5912,7 +6247,7 @@ mod tests {
             }),
         });
         assert!(society.barter_book.post_offer(
-            &society.agents,
+            society.agents.as_slice(),
             BarterOffer {
                 agent: AgentId(1),
                 give_good: FOOD,
@@ -6376,7 +6711,7 @@ mod tests {
 
     fn cash_poor_project_capitalist(id: u32) -> Agent {
         let mut agent = test_capitalist(Stock::new(3));
-        agent.id = AgentId(id);
+        agent.id = AgentId(u64::from(id));
         agent.gold = Gold::ZERO;
         agent.scale = scale_entries(&[(WantKind::Good(GOLD), Horizon::Later(7), 6)]);
         agent.roles = vec![Role::Capitalist];
@@ -6536,7 +6871,9 @@ mod tests {
             seq: 1,
             expires_tick: 3,
         };
-        assert!(society.reservations.reserve_order(&society.agents, &ask));
+        assert!(society
+            .reservations
+            .reserve_order(society.agents.as_slice(), &ask));
 
         society.ensure_project_started(0, &project_schedule(), GOLD);
 
@@ -7519,7 +7856,10 @@ mod tests {
         ));
         let before = society.money_system.clone();
 
-        society.apply_event_kind(EventKind::SetPublicSpotTender(PublicSpotTender::SpecieOnly));
+        society.apply_event_kind(
+            EventKind::SetPublicSpotTender(PublicSpotTender::SpecieOnly),
+            ApplyMode::Event,
+        );
 
         assert_eq!(society.public_spot_tender, PublicSpotTender::SpecieOnly);
         assert_eq!(society.money_system, before);
@@ -7539,7 +7879,7 @@ mod tests {
             .money_system
             .as_ref()
             .unwrap()
-            .reconcile_agent_cache(&mut society.agents);
+            .reconcile_agent_cache(society.agents.as_mut_slice());
         society.public_spot_tender = PublicSpotTender::SpecieOnly;
 
         let mut filled = Vec::new();
@@ -7578,7 +7918,7 @@ mod tests {
             .money_system
             .as_ref()
             .expect("M3 ledger is initialized")
-            .reconcile_agent_cache(&mut society.agents);
+            .reconcile_agent_cache(society.agents.as_mut_slice());
         society.labor_wage_tender = LaborWageTender::SpecieOnly;
 
         let spot_bid = Order {
@@ -7592,7 +7932,7 @@ mod tests {
         };
         assert!(society
             .reservations
-            .reserve_order(&society.agents, &spot_bid));
+            .reserve_order(society.agents.as_slice(), &spot_bid));
 
         assert_eq!(society.free_gold_after_all_reserves(AgentId(1)), Gold(6));
         assert_eq!(society.wage_tender_spendable_cap(AgentId(1), None), Gold(1));
@@ -7605,7 +7945,7 @@ mod tests {
         };
         assert!(society
             .reservations
-            .reserve_order(&society.agents, &larger_spot_bid));
+            .reserve_order(society.agents.as_slice(), &larger_spot_bid));
 
         assert_eq!(society.free_gold_after_all_reserves(AgentId(1)), Gold(3));
         assert_eq!(
@@ -7660,7 +8000,7 @@ mod tests {
                 .as_mut()
                 .expect("M3 ledger is initialized");
             money_system.credit_fiat(AgentId(1), Gold(5)).unwrap();
-            money_system.reconcile_agent_cache(&mut society.agents);
+            money_system.reconcile_agent_cache(society.agents.as_mut_slice());
         }
         society.labor_wage_tender = LaborWageTender::FiatAndSpecie;
 
@@ -7674,10 +8014,10 @@ mod tests {
         };
         assert!(society
             .labor_reservations
-            .reserve_order(&society.agents, &hire));
+            .reserve_order(society.agents.as_slice(), &hire));
         {
             let mut market = LaborMarketView {
-                agents: &mut society.agents,
+                agents: society.agents.as_mut_slice(),
                 reservations: &mut society.labor_reservations,
                 projects: &mut society.m2_projects,
                 lines: &society.project_lines,
@@ -7696,7 +8036,10 @@ mod tests {
             Gold(5)
         );
 
-        society.apply_event_kind(EventKind::SetLaborWageTender(LaborWageTender::SpecieOnly));
+        society.apply_event_kind(
+            EventKind::SetLaborWageTender(LaborWageTender::SpecieOnly),
+            ApplyMode::Event,
+        );
 
         let unchanged = society
             .labor_book
@@ -7719,10 +8062,10 @@ mod tests {
         };
         assert!(society
             .labor_reservations
-            .reserve_order(&society.agents, &work));
+            .reserve_order(society.agents.as_slice(), &work));
         let trades = {
             let mut market = LaborMarketView {
-                agents: &mut society.agents,
+                agents: society.agents.as_mut_slice(),
                 reservations: &mut society.labor_reservations,
                 projects: &mut society.m2_projects,
                 lines: &society.project_lines,
@@ -7761,7 +8104,7 @@ mod tests {
             .money_system
             .as_ref()
             .unwrap()
-            .reconcile_agent_cache(&mut society.agents);
+            .reconcile_agent_cache(society.agents.as_mut_slice());
         society.public_spot_tender = PublicSpotTender::FiatAndSpecie;
 
         let mut filled = Vec::new();
@@ -7782,7 +8125,10 @@ mod tests {
         assert_eq!(society.books[0].live_order_counts().0, 1);
         assert_eq!(society.reservations.reserved_gold(AgentId(1)), Gold(1));
 
-        society.apply_event_kind(EventKind::SetPublicSpotTender(PublicSpotTender::SpecieOnly));
+        society.apply_event_kind(
+            EventKind::SetPublicSpotTender(PublicSpotTender::SpecieOnly),
+            ApplyMode::Event,
+        );
 
         assert_eq!(society.public_spot_tender, PublicSpotTender::SpecieOnly);
         assert!(society.live_quotes.is_empty());
@@ -7820,7 +8166,10 @@ mod tests {
         assert_eq!(society.live_quotes.len(), 1);
         assert_eq!(society.books[0].live_order_counts().1, 1);
 
-        society.apply_event_kind(EventKind::SetPublicSpotTender(PublicSpotTender::SpecieOnly));
+        society.apply_event_kind(
+            EventKind::SetPublicSpotTender(PublicSpotTender::SpecieOnly),
+            ApplyMode::Event,
+        );
 
         assert_eq!(society.public_spot_tender, PublicSpotTender::SpecieOnly);
         assert_eq!(society.live_quotes.len(), 1);
@@ -7855,7 +8204,7 @@ mod tests {
         assert!(filled.is_empty());
         assert_eq!(society.live_quotes.len(), 1);
 
-        society.apply_event_kind(EventKind::ResetPublicSpotBook);
+        society.apply_event_kind(EventKind::ResetPublicSpotBook, ApplyMode::Event);
 
         assert!(society.live_quotes.is_empty());
         assert_eq!(society.books[0].live_order_counts().1, 0);
@@ -7887,7 +8236,7 @@ mod tests {
             .money_system
             .as_ref()
             .unwrap()
-            .reconcile_agent_cache(&mut society.agents);
+            .reconcile_agent_cache(society.agents.as_mut_slice());
         society.public_spot_tender = PublicSpotTender::FiatAndSpecie;
 
         let seller_index = society.agent_index_for(AgentId(2)).unwrap();

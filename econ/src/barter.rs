@@ -936,7 +936,7 @@ mod tests {
             stock.add(*good, *qty);
         }
         Agent {
-            id: AgentId(id),
+            id: AgentId(u64::from(id)),
             scale: wants
                 .iter()
                 .map(|(good, horizon, qty)| Want {
@@ -967,7 +967,7 @@ mod tests {
         seq: u64,
     ) -> BarterOffer {
         BarterOffer {
-            agent: AgentId(agent),
+            agent: AgentId(u64::from(agent)),
             give_good,
             receive_good,
             qty: 1,
@@ -985,7 +985,7 @@ mod tests {
         expires_tick: u64,
     ) -> BarterOffer {
         BarterOffer {
-            agent: AgentId(agent),
+            agent: AgentId(u64::from(agent)),
             give_good,
             receive_good,
             qty: 1,

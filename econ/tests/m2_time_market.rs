@@ -357,8 +357,8 @@ fn fnv1a_m2(society: &Society) -> u64 {
     for trade in &society.trades {
         hash_u64(&mut hash, trade.tick);
         hash_u32(&mut hash, u32::from(trade.good.0));
-        hash_u32(&mut hash, trade.buyer.0);
-        hash_u32(&mut hash, trade.seller.0);
+        hash_u32(&mut hash, trade.buyer.index());
+        hash_u32(&mut hash, trade.seller.index());
         hash_u64(&mut hash, trade.price.0);
         hash_u32(&mut hash, trade.qty);
     }
@@ -369,10 +369,10 @@ fn fnv1a_m2(society: &Society) -> u64 {
             trade
                 .lender
                 .agent()
-                .map(|agent| agent.0)
+                .map(|agent| agent.index())
                 .unwrap_or_default(),
         );
-        hash_u32(&mut hash, trade.borrower.0);
+        hash_u32(&mut hash, trade.borrower.index());
         hash_u64(&mut hash, trade.present.0);
         hash_u64(&mut hash, trade.future_due.0);
         hash_u32(&mut hash, u32::from(trade.horizon));
@@ -382,8 +382,8 @@ fn fnv1a_m2(society: &Society) -> u64 {
     }
     for trade in &society.labor_trades {
         hash_u64(&mut hash, trade.tick);
-        hash_u32(&mut hash, trade.employer.0);
-        hash_u32(&mut hash, trade.worker.0);
+        hash_u32(&mut hash, trade.employer.index());
+        hash_u32(&mut hash, trade.worker.index());
         hash_u64(&mut hash, trade.wage.0);
         hash_u32(&mut hash, trade.qty);
         hash_u64(&mut hash, trade.project.0);

@@ -829,7 +829,7 @@ mod tests {
 
     fn agent(id: u32, gold: Gold, scale: Vec<Want>) -> Agent {
         Agent {
-            id: AgentId(id),
+            id: AgentId(u64::from(id)),
             scale,
             stock: Stock::new(3),
             gold,
@@ -843,8 +843,8 @@ mod tests {
     fn debt(lender: u32, borrower: u32, due_tick: u64, due: Gold) -> DebtContract {
         DebtContract {
             id: DebtId(1),
-            lender: CreditLender::Agent(AgentId(lender)),
-            borrower: AgentId(borrower),
+            lender: CreditLender::Agent(AgentId(u64::from(lender))),
+            borrower: AgentId(u64::from(borrower)),
             opened_tick: Tick(0),
             due_tick: Tick(due_tick),
             principal: Gold(1),

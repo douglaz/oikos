@@ -83,8 +83,8 @@ fn base_pays_every_wage_in_fiat() {
     assert_eq!(society.wage_payment_audit.len(), 6);
     for (index, row) in society.wage_payment_audit.iter().enumerate() {
         let pair = u32::try_from(index).unwrap();
-        let expected_employer = AgentId(200 + pair * 2);
-        let expected_worker = AgentId(201 + pair * 2);
+        let expected_employer = AgentId(u64::from(200 + pair * 2));
+        let expected_worker = AgentId(u64::from(201 + pair * 2));
 
         assert!(row.tick == 1 || row.tick == 2);
         assert_eq!(row.project, M2ProjectId(u64::try_from(index + 1).unwrap()));
@@ -606,7 +606,7 @@ fn fiat_spot_payment(tender: PublicSpotTender) -> econ::ledger::MoneyComposition
 
 fn labor_order(agent: u32, side: FactorSide, wage_limit: u64, seq: u64) -> LaborOrder {
     LaborOrder {
-        agent: AgentId(agent),
+        agent: AgentId(u64::from(agent)),
         side,
         wage_limit: Gold(wage_limit),
         qty: 1,
@@ -617,7 +617,7 @@ fn labor_order(agent: u32, side: FactorSide, wage_limit: u64, seq: u64) -> Labor
 
 fn spot_order(agent: u32, side: OrderSide, limit: Gold, seq: u64) -> Order {
     Order {
-        agent: AgentId(agent),
+        agent: AgentId(u64::from(agent)),
         side,
         good: FOOD,
         limit,
@@ -631,7 +631,7 @@ fn test_agent(id: u32, gold: Gold, food: u32, labor_capacity: u32) -> Agent {
     let mut stock = Stock::new(FOOD.0);
     stock.add(FOOD, food);
     Agent {
-        id: AgentId(id),
+        id: AgentId(u64::from(id)),
         scale: vec![Want {
             kind: WantKind::Good(GOLD),
             horizon: Horizon::Now,

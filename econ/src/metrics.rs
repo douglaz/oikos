@@ -864,8 +864,8 @@ fn extend_trade_fingerprint(mut fingerprint: u128, trade: &Trade) -> u128 {
     for part in [
         trade.tick,
         u64::from(trade.good.0),
-        u64::from(trade.buyer.0),
-        u64::from(trade.seller.0),
+        trade.buyer.0,
+        trade.seller.0,
         trade.price.0,
         u64::from(trade.qty),
     ] {
@@ -1642,7 +1642,7 @@ mod tests {
 
     fn metric_agent(id: u32) -> Agent {
         Agent {
-            id: AgentId(id),
+            id: AgentId(u64::from(id)),
             scale: Vec::new(),
             stock: Stock::new(3),
             gold: Gold::ZERO,

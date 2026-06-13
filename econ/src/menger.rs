@@ -517,8 +517,8 @@ mod tests {
     fn trade(a: u32, b: u32, a_gives: GoodId, b_gives: GoodId) -> BarterTrade {
         BarterTrade {
             tick: 0,
-            a: AgentId(a),
-            b: AgentId(b),
+            a: AgentId(u64::from(a)),
+            b: AgentId(u64::from(b)),
             a_gives,
             b_gives,
             qty: 1,

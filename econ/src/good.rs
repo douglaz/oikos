@@ -11,6 +11,17 @@ pub const SALT: GoodId = GoodId(4);
 pub const CLOTH: GoodId = GoodId(5);
 pub const ORE: GoodId = GoodId(6);
 
+/// The lab-default good table: names in `GoodId` order, index `== GoodId.0`.
+///
+/// This is the single source of truth that the dynamic `GoodRegistry`
+/// (`registry.rs`) interns for `lab_default()` and that `good_name` shims over.
+/// The constants above are exactly these positions. Keeping it here lets
+/// `good.rs` stay self-contained while the registry derives from it (G0b
+/// divergence: goods become data, the constants/`good_name` stay as lab-compat
+/// surface). Do not reorder — the four series goldens depend on these ids.
+pub(crate) const LAB_GOOD_NAMES: [&str; 7] =
+    ["gold", "food", "wood", "net", "salt", "cloth", "ore"];
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Gold(pub u64);
 
@@ -38,17 +49,16 @@ impl Gold {
     }
 }
 
+/// Lab-compat name lookup: a thin shim over the lab-default table.
+///
+/// Retained as the display surface every series golden covers; registry-aware
+/// callers prefer [`crate::registry::GoodRegistry::name`]. Not removed in G0b
+/// (recorded in `docs/engine-divergence.md`).
 pub fn good_name(good: GoodId) -> &'static str {
-    match good {
-        GOLD => "gold",
-        FOOD => "food",
-        WOOD => "wood",
-        NET => "net",
-        SALT => "salt",
-        CLOTH => "cloth",
-        ORE => "ore",
-        _ => "unknown",
-    }
+    LAB_GOOD_NAMES
+        .get(usize::from(good.0))
+        .copied()
+        .unwrap_or("unknown")
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

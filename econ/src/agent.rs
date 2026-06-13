@@ -5,8 +5,49 @@ use std::fmt;
 use crate::expect::PriceBelief;
 use crate::good::{Gold, GoodId, Horizon, Stock, FOOD, GOLD};
 
+/// Stable colonist identity.
+///
+/// G0b widens the lab's bare `u32` to a `u64` that packs a generation into the
+/// high 32 bits and the numeric index into the low 32 bits. A bare
+/// `AgentId(212)` literal still compiles and still means *index 212,
+/// generation 0*, because the literal infers `u64` and its high bits are zero.
+/// For generation-0 ids the packed value equals the index, so `Ord` matches the
+/// old `u32` ordering and every tape/CSV digit is unchanged. A regenerated id
+/// (generation ≥ 1) sorts after its generation-0 ancestor and formats
+/// distinguishably — a surface no existing golden can reference.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct AgentId(pub u32);
+pub struct AgentId(pub u64);
+
+impl AgentId {
+    /// The numeric index — the low 32 bits. For lab casts this is the authored id.
+    pub fn index(self) -> u32 {
+        (self.0 & 0xFFFF_FFFF) as u32
+    }
+
+    /// The generation — the high 32 bits. Zero for every lab id.
+    pub fn generation(self) -> u32 {
+        (self.0 >> 32) as u32
+    }
+
+    /// Pack an `(index, generation)` pair. `with_generation(n, 0) == AgentId(u64::from(n))`.
+    pub fn with_generation(index: u32, generation: u32) -> Self {
+        AgentId((u64::from(generation) << 32) | u64::from(index))
+    }
+}
+
+impl fmt::Display for AgentId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Generation-0 ids print exactly their index, byte-identical to the
+        // pre-widening `u32` formatting every lab golden depends on. A
+        // regenerated id gains a `#<gen>` suffix — a never-before-printed
+        // surface, so it cannot move a golden.
+        if self.generation() == 0 {
+            write!(f, "{}", self.index())
+        } else {
+            write!(f, "{}#{}", self.index(), self.generation())
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WantKind {

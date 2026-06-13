@@ -350,7 +350,7 @@ fn sum_debt_fiat(records: &[DebtPaymentAuditRecord]) -> Gold {
 
 fn agent(id: u32, gold: Gold) -> Agent {
     Agent {
-        id: AgentId(id),
+        id: AgentId(u64::from(id)),
         scale: vec![Want {
             kind: WantKind::Good(GOLD),
             horizon: Horizon::Later(4),

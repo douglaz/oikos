@@ -544,7 +544,7 @@ fn build_agent(id: u16, stock: Stock, scale: Vec<Want>, max_good_id: u16) -> Age
     let belief_slots = usize::from(max_good_id) + 1;
     let expect = vec![PriceBelief::new(Gold(2), Gold(1)); belief_slots];
     Agent {
-        id: AgentId(u32::from(id)),
+        id: AgentId(u64::from(id)),
         scale,
         stock,
         gold: Gold::ZERO,

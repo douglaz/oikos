@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::agent::{Agent, AgentId, WantKind};
 use crate::agio::{temporal_provisioning_bitmap_for_money, TemporalEndowment};
+use crate::arena::AgentLookup;
 use crate::capital::{
     advance_project, find_line, M2Project, M2ProjectId, M2ProjectState, ProjectLine,
 };
@@ -80,10 +81,14 @@ impl LaborReservations {
             .unwrap_or(0)
     }
 
-    pub fn reserve_order(&mut self, agents: &[Agent], order: &LaborOrder) -> bool {
+    pub fn reserve_order<A: AgentLookup + ?Sized>(
+        &mut self,
+        agents: &A,
+        order: &LaborOrder,
+    ) -> bool {
         match order.side {
             FactorSide::Hire => {
-                let Some(agent) = agents.iter().find(|agent| agent.id == order.agent) else {
+                let Some(agent) = agents.get_agent(order.agent) else {
                     return false;
                 };
                 let Some(amount) = order.wage_limit.mul_qty(order.qty) else {
@@ -96,7 +101,7 @@ impl LaborReservations {
                 true
             }
             FactorSide::Work => {
-                let Some(agent) = agents.iter().find(|agent| agent.id == order.agent) else {
+                let Some(agent) = agents.get_agent(order.agent) else {
                     return false;
                 };
                 if agent
@@ -816,7 +821,7 @@ mod tests {
 
     fn agent(id: u32, gold: Gold, labor_capacity: u32, scale: Vec<Want>) -> Agent {
         Agent {
-            id: AgentId(id),
+            id: AgentId(u64::from(id)),
             scale,
             stock: Stock::new(3),
             gold,
