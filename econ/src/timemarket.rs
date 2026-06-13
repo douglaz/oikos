@@ -804,6 +804,47 @@ impl LoanOrderBook {
         canceled
     }
 
+    /// Cancel every resting order an agent posted on either side (lend or
+    /// borrow), releasing each order's reservation. This is the time-market
+    /// analogue of cancelling an agent's resting spot quotes: it removes the
+    /// agent's own orders and un-earmarks the gold it had reserved against them
+    /// — the gold stays with the agent, nothing settles to a counterparty. The
+    /// G1 death tombstone calls it so a dead agent's resting credit orders can
+    /// never match a later counterparty (G1 itself runs M1, where the loan book
+    /// is empty; this keeps the public death hook's "posts no orders, holdings
+    /// frozen" contract complete for any society kind). Returns the count
+    /// cancelled.
+    pub fn cancel_agent(&mut self, agent: AgentId, reservations: &mut LoanReservations) -> u32 {
+        let mut canceled = 0;
+        let lend_keys = self
+            .lends
+            .iter()
+            .filter(|(_, order)| order.agent == agent)
+            .map(|(key, _)| *key)
+            .collect::<Vec<_>>();
+        for key in lend_keys {
+            if let Some(order) = self.lends.remove(&key) {
+                self.live_seqs.remove(&order.seq);
+                reservations.release_order(&order);
+                canceled += 1;
+            }
+        }
+        let borrow_keys = self
+            .borrows
+            .iter()
+            .filter(|(_, order)| order.agent == agent)
+            .map(|(key, _)| *key)
+            .collect::<Vec<_>>();
+        for key in borrow_keys {
+            if let Some(order) = self.borrows.remove(&key) {
+                self.live_seqs.remove(&order.seq);
+                reservations.release_order(&order);
+                canceled += 1;
+            }
+        }
+        canceled
+    }
+
     pub fn has_live(&self, agent: AgentId, side: LoanSide, present: Gold, horizon: u8) -> bool {
         let matches_order = |order: &LoanOrder| {
             is_agent_order_for(order, agent)
@@ -1290,10 +1331,22 @@ pub fn settle_due_debts(
     debts: &mut [DebtContract],
     tick: Tick,
 ) -> DebtSettlementSummary {
+    settle_due_debts_excluding_agents(agents, debts, tick, &[])
+}
+
+pub fn settle_due_debts_excluding_agents(
+    agents: &mut [Agent],
+    debts: &mut [DebtContract],
+    tick: Tick,
+    frozen_agents: &[AgentId],
+) -> DebtSettlementSummary {
     let mut summary = DebtSettlementSummary::default();
     let agent_index = sorted_agent_index(agents);
     for debt in debts.iter_mut() {
         if debt.state != DebtState::Open || debt.due_tick > tick {
+            continue;
+        }
+        if debt_touches_frozen_agent(debt, frozen_agents) {
             continue;
         }
         let CreditLender::Agent(lender) = debt.lender else {
@@ -1351,6 +1404,13 @@ pub fn settle_due_debts(
 }
 
 pub fn settle_due_debts_m3(context: DebtSettlementM3Context<'_>) -> DebtSettlementSummary {
+    settle_due_debts_m3_excluding_agents(context, &[])
+}
+
+pub fn settle_due_debts_m3_excluding_agents(
+    context: DebtSettlementM3Context<'_>,
+    frozen_agents: &[AgentId],
+) -> DebtSettlementSummary {
     let DebtSettlementM3Context {
         agents,
         debts,
@@ -1370,6 +1430,9 @@ pub fn settle_due_debts_m3(context: DebtSettlementM3Context<'_>) -> DebtSettleme
     let mut summary = DebtSettlementSummary::default();
     for debt in debts.iter_mut() {
         if debt.state != DebtState::Open || debt.due_tick > tick {
+            continue;
+        }
+        if debt_touches_frozen_agent(debt, frozen_agents) {
             continue;
         }
         let owed = debt.remaining_due();
@@ -2042,6 +2105,14 @@ fn finish_settlement(debt: &mut DebtContract, summary: &mut DebtSettlementSummar
     }
 }
 
+fn debt_touches_frozen_agent(debt: &DebtContract, frozen_agents: &[AgentId]) -> bool {
+    frozen_agents.contains(&debt.borrower)
+        || debt
+            .lender
+            .agent()
+            .is_some_and(|lender| frozen_agents.contains(&lender))
+}
+
 fn sorted_agent_index(agents: &[Agent]) -> Vec<(AgentId, usize)> {
     let mut index = agents
         .iter()
@@ -2446,6 +2517,49 @@ mod tests {
 
         assert_eq!(book.purge_expired(3, &mut reservations), 1);
         assert_eq!(reservations.reserved_gold(AgentId(1)), Gold::ZERO);
+    }
+
+    #[test]
+    fn cancel_agent_clears_resting_orders_and_releases_only_its_reserves() {
+        // Two agents each rest one non-crossing order: agent 1 lends (demanding
+        // a high future limit) and agent 2 borrows (offering a low one), so they
+        // never match and both sit in the book. This mirrors the death
+        // tombstone's need to clear a dead agent's resting credit orders.
+        let agents = vec![agent(1, Gold(5)), agent(2, Gold(5))];
+        let mut reservations = LoanReservations::new();
+        let mut book = LoanOrderBook::new();
+
+        let lend = order(1, LoanSide::Lend, Gold(5), 1);
+        assert!(reservations.reserve_order(&agents, &lend));
+        book.add_order(
+            lend,
+            0,
+            &mut agents.clone(),
+            &mut reservations,
+            &mut Vec::new(),
+            &mut 1,
+        );
+        let borrow = order(2, LoanSide::Borrow, Gold(2), 2);
+        assert!(reservations.reserve_order(&agents, &borrow));
+        book.add_order(
+            borrow,
+            0,
+            &mut agents.clone(),
+            &mut reservations,
+            &mut Vec::new(),
+            &mut 1,
+        );
+        assert_eq!(book.live_order_counts(), (1, 1));
+        assert_eq!(reservations.reserved_gold(AgentId(1)), Gold(1));
+
+        // Tombstoning agent 1 drops its lend order and releases its reserve only.
+        assert_eq!(book.cancel_agent(AgentId(1), &mut reservations), 1);
+        assert_eq!(book.live_order_counts(), (0, 1));
+        assert_eq!(reservations.reserved_gold(AgentId(1)), Gold::ZERO);
+        // Agent 2's resting borrow order is untouched.
+        assert!(book.has_live(AgentId(2), LoanSide::Borrow, Gold(1), 4));
+        // Cancelling an agent with no resting orders is a no-op.
+        assert_eq!(book.cancel_agent(AgentId(1), &mut reservations), 0);
     }
 
     #[test]

@@ -72,8 +72,9 @@ use crate::sim::{
     execute_direct_recipe_for_agent_for_money, DirectRecipeAction,
 };
 use crate::timemarket::{
-    settle_due_debts, settle_due_debts_m3, DebtContract, DebtId, DebtSettlementM3Context,
-    DebtState, LoanM3Context, LoanOrder, LoanOrderBook, LoanReservations, LoanSide, LoanTrade,
+    settle_due_debts_excluding_agents, settle_due_debts_m3_excluding_agents, DebtContract, DebtId,
+    DebtSettlementM3Context, DebtState, LoanM3Context, LoanOrder, LoanOrderBook, LoanReservations,
+    LoanSide, LoanTrade,
 };
 
 const ORDER_TTL: u64 = 3;
@@ -281,6 +282,7 @@ pub struct Society {
     max_good_id: u16,
     live_quotes: Vec<LiveQuote>,
     agent_order: Vec<usize>,
+    tombstoned_agents: Vec<AgentId>,
     m2_enabled: bool,
     m3_enabled: bool,
     regime: Regime,
@@ -291,6 +293,12 @@ pub struct Society {
     capital_goods_consumed: u32,
     capital_gold_loss: Gold,
     tick_self_funded_project_starts: Vec<(AgentId, ProjectLineId)>,
+    /// G1 (`life` crate): per-tick per-agent consumed-good quantities, captured
+    /// during the consume phase. Off by default and read by no engine path, so
+    /// the conformance goldens are byte-identical; the `Camp` driver enables it
+    /// to read realized FOOD/WOOD consumption back for need replenishment.
+    consumption_log: Vec<(AgentId, GoodId, u32)>,
+    consumption_log_enabled: bool,
 }
 
 impl Society {
@@ -412,6 +420,7 @@ impl Society {
             max_good_id,
             live_quotes: Vec::new(),
             agent_order,
+            tombstoned_agents: Vec::new(),
             m2_enabled,
             m3_enabled,
             regime,
@@ -422,6 +431,8 @@ impl Society {
             capital_goods_consumed: 0,
             capital_gold_loss: Gold::ZERO,
             tick_self_funded_project_starts: Vec::new(),
+            consumption_log: Vec::new(),
+            consumption_log_enabled: false,
         })
     }
 
@@ -575,6 +586,9 @@ impl Society {
     fn step_m1(&mut self) {
         let money_good = self.legacy_money_good();
         self.tick_labor_used.clear();
+        if self.consumption_log_enabled {
+            self.consumption_log.clear();
+        }
         self.apply_events();
         let expired_orders = self.purge_expired_orders();
 
@@ -585,6 +599,9 @@ impl Society {
             self.agents[index].recompute_satisfaction_for_money(money_good);
             let (_, mut provisions) =
                 self.agents[index].consume_now_wants_with_provisions_for_money(money_good);
+            if self.consumption_log_enabled {
+                self.record_consumption_log(index, &provisions);
+            }
             self.allocate_direct_labor(index, &mut provisions, Some(money_good), None);
             self.agents[index]
                 .recompute_satisfaction_with_provisions_for_money(&provisions, money_good);
@@ -739,22 +756,25 @@ impl Society {
                 .money_system
                 .as_mut()
                 .expect("M3 society has a money system");
-            settle_due_debts_m3(DebtSettlementM3Context {
-                agents: self.agents.as_mut_slice(),
-                debts: &mut self.debts,
-                tick: self.tick,
-                money_system,
-                banks: &mut self.banks,
-                issuers: &mut self.issuers,
-                public_debt_tender: self.public_debt_tender,
-                bank_repayment_tender: self.bank_repayment_tender,
-                issuer_repayment_tender: self.issuer_repayment_tender,
-                tax_receivability: self.tax_receivability,
-                debt_payment_audit: &mut self.debt_payment_audit,
-                bank_repayment_audit: &mut self.bank_repayment_audit,
-                issuer_repayment_audit: &mut self.issuer_repayment_audit,
-                tax_audit: &mut self.tax_audit,
-            })
+            settle_due_debts_m3_excluding_agents(
+                DebtSettlementM3Context {
+                    agents: self.agents.as_mut_slice(),
+                    debts: &mut self.debts,
+                    tick: self.tick,
+                    money_system,
+                    banks: &mut self.banks,
+                    issuers: &mut self.issuers,
+                    public_debt_tender: self.public_debt_tender,
+                    bank_repayment_tender: self.bank_repayment_tender,
+                    issuer_repayment_tender: self.issuer_repayment_tender,
+                    tax_receivability: self.tax_receivability,
+                    debt_payment_audit: &mut self.debt_payment_audit,
+                    bank_repayment_audit: &mut self.bank_repayment_audit,
+                    issuer_repayment_audit: &mut self.issuer_repayment_audit,
+                    tax_audit: &mut self.tax_audit,
+                },
+                &self.tombstoned_agents,
+            )
         };
         if let Some(snapshot) = &project_debt_payment_snapshot {
             self.release_project_funding_reserves_for_debt_payments(snapshot);
@@ -855,7 +875,12 @@ impl Society {
         self.tick_self_funded_project_starts.clear();
         self.apply_events();
         let project_debt_payment_snapshot = self.project_debt_payment_snapshot();
-        let _settlement = settle_due_debts(self.agents.as_mut_slice(), &mut self.debts, self.tick);
+        let _settlement = settle_due_debts_excluding_agents(
+            self.agents.as_mut_slice(),
+            &mut self.debts,
+            self.tick,
+            &self.tombstoned_agents,
+        );
         if let Some(snapshot) = &project_debt_payment_snapshot {
             self.release_project_funding_reserves_for_debt_payments(snapshot);
         }
@@ -2540,10 +2565,30 @@ impl Society {
         }
     }
 
-    fn cancel_changed_live_quotes_for_agents(&mut self, agents: &[AgentId]) {
+    /// Cancel resting spot quotes for any listed agent whose reservation no
+    /// longer matches its current scale, holdings, or tender state.
+    ///
+    /// This batch form lets a driver rewrite many scales between ticks and scan
+    /// the live quote list once after all rewrites.
+    ///
+    /// The changed-agent list is normalized once, then probed by binary search
+    /// while scanning live quotes, so the hot pass stays hash-free and avoids a
+    /// `live_quotes * agents` membership walk.
+    pub fn cancel_changed_live_quotes_for_agents(&mut self, agents: &[AgentId]) {
+        if agents.is_empty() {
+            return;
+        }
+        let mut changed_agents = agents.to_vec();
+        changed_agents.sort();
+        changed_agents.dedup();
+
         let mut index = 0;
         while index < self.live_quotes.len() {
-            if agents.contains(&self.live_quotes[index].agent) && self.live_quote_changed(index) {
+            if changed_agents
+                .binary_search(&self.live_quotes[index].agent)
+                .is_ok()
+                && self.live_quote_changed(index)
+            {
                 self.cancel_existing(Some(index));
             } else {
                 index += 1;
@@ -2674,7 +2719,19 @@ impl Society {
     fn mature_waiting_projects(&mut self) {
         let money_good = self.money.current_money_good();
         let mut lots = Vec::new();
-        for project in &mut self.m2_projects {
+        // A tombstoned owner's project stays frozen: G1 death does not settle
+        // estates, so the project never matures and its output is neither minted
+        // nor credited (without this guard `agent_index_for` still resolves the
+        // dead owner's arena slot and would credit it, violating the tombstone's
+        // "holdings frozen" contract). Committed inputs, advanced gold, and the
+        // arena slot stay in place until G4 estate settlement (see `tombstone`
+        // and docs/engine-divergence.md). The guard reads the tombstone list —
+        // empty in every conformance scenario — so the goldens are byte-identical.
+        let tombstoned = &self.tombstoned_agents;
+        for project in self.m2_projects.iter_mut() {
+            if tombstoned.binary_search(&project.owner).is_ok() {
+                continue;
+            }
             if let Some(lot) = mature_project(project, self.tick) {
                 lots.push(lot);
             }
@@ -2874,6 +2931,9 @@ impl Society {
             project.state,
             M2ProjectState::Forming | M2ProjectState::Waiting
         ) {
+            return false;
+        }
+        if self.tombstoned_agents.binary_search(&project.owner).is_ok() {
             return false;
         }
         let Some(line) = find_line(&self.project_lines, project.line) else {
@@ -3530,6 +3590,178 @@ impl Society {
             .find(|(entry, _)| *entry == agent)
             .map(|(_, labor)| *labor)
             .unwrap_or(0)
+    }
+
+    /// The most recent realized spot price for `good` (the last trade's price),
+    /// or `None` if no trade in `good` has ever cleared. Read accessor only — it
+    /// is the G1 camp's window onto market scarcity (e.g. a harvest shock raising
+    /// the FOOD price); it changes no engine behavior.
+    pub fn realized_price(&self, good: GoodId) -> Option<Gold> {
+        self.realized_prices.get(&good).copied()
+    }
+
+    /// Enable the per-tick consumption log (off by default). The G1 `Camp` calls
+    /// this once after construction so it can read realized FOOD/WOOD consumption
+    /// back via [`Society::consumption_log_last_tick`]. Goldens never enable it,
+    /// so the conformance suite stays byte-identical.
+    ///
+    /// Regime contract: the log is captured **only** by the M1 consume path
+    /// (`step_m1`); the M2/M3/V2 step paths never touch it. Enabling
+    /// it on a non-M1 society is therefore not *incorrect* but *inert* — the log
+    /// simply stays empty, so a caller that reads it back would see no
+    /// consumption and (in the camp's case) replenish no needs. The
+    /// `debug_assert!` below turns that silent no-op into a loud failure in
+    /// debug/test builds; in release builds the assert is compiled out and the
+    /// inert-empty-log behavior is the documented fallback. G1 only ever runs
+    /// M1, so the assert never fires in practice. A future milestone that wants
+    /// consumption logging under another regime must extend the capture in that
+    /// regime's step path rather than rely on this hook alone.
+    pub fn enable_consumption_log(&mut self) {
+        debug_assert!(
+            !self.m2_enabled && !self.m3_enabled && !self.v2_enabled,
+            "consumption logging currently records only the M1 consume path"
+        );
+        self.consumption_log_enabled = true;
+        self.consumption_log.clear();
+    }
+
+    /// The tick-local consumption log captured by [`Society::enable_consumption_log`].
+    ///
+    /// The log is read-only and only populated by the M1 consume path. It is
+    /// captured before direct-labor provisioning, so direct-labor recipes that
+    /// satisfy a current want are not credited here. The G1 `Camp` scans this
+    /// conservative slice once per tick to replenish needs without changing any
+    /// econ rule or conformance output.
+    pub fn consumption_log_last_tick(&self) -> &[(AgentId, GoodId, u32)] {
+        &self.consumption_log
+    }
+
+    /// Tick-local labor usage by agent for the most recently completed tick.
+    ///
+    /// Read accessor only; the engine already maintains this tally for labor
+    /// accounting, and `Camp` uses it to make rest depletion follow actual work.
+    pub fn labor_used_last_tick(&self) -> &[(AgentId, u32)] {
+        &self.tick_labor_used
+    }
+
+    /// Cancel any resting spot quotes for `agent` whose reservation no longer
+    /// matches its current scale, holdings, or tender state.
+    ///
+    /// G1's `Camp` overwrites value scales between econ ticks. Calling this
+    /// immediately after a scale rewrite releases stale reservations before the
+    /// next consume phase, so an agent's old ask cannot hide FOOD/WOOD it now
+    /// needs to consume. Additive; no engine path calls it by default.
+    pub fn cancel_changed_live_quotes_for_agent(&mut self, agent: AgentId) -> bool {
+        if self.agents.position_of(agent).is_none() {
+            return false;
+        }
+        self.cancel_changed_live_quotes_for_agents(&[agent]);
+        true
+    }
+
+    fn record_consumption_log(&mut self, agent_index: usize, provisions: &TickProvisions) {
+        let agent_id = self.agents[agent_index].id;
+        // `provisions.allocated` is built index-parallel to `agent.scale`
+        // (`vec![0; scale.len()]`), so position i is the allocation for want i.
+        // This is the same contract `record_metric_consumption` relies on; the
+        // assert pins it so a future reordering of the consume phase fails loudly
+        // rather than silently misattributing consumption.
+        debug_assert_eq!(
+            self.agents[agent_index].scale.len(),
+            provisions.allocated.len(),
+            "consumption log requires scale/allocated index-parallelism"
+        );
+        for (want, qty) in self.agents[agent_index]
+            .scale
+            .iter()
+            .zip(&provisions.allocated)
+        {
+            if *qty == 0 {
+                continue;
+            }
+            if let WantKind::Good(good) = want.kind {
+                self.consumption_log.push((agent_id, good, *qty));
+            }
+        }
+    }
+
+    /// Tombstone an agent (G1 death-by-starvation, game-spec §5.6).
+    ///
+    /// This is the declared G1 death seam: the agent is marked dead by emptying
+    /// its value scale (so it posts no orders) and zeroing its labor capacity (so
+    /// it produces nothing), its resting quotes are cancelled and their
+    /// reservations released, future debt settlement skips contracts involving
+    /// the tombstone, any capital project it still owns is frozen in place (no
+    /// output mint/credit and no abandonment salvage/loss),
+    /// and it is dropped from the activation order. The arena slot is **NOT
+    /// freed** and the holdings (gold + stock) are **NOT settled** — they stay
+    /// frozen in place and remain in the conservation totals
+    /// ([`Society::total_gold`] / [`Society::total_stock`]). Full estate
+    /// settlement and the `AgentArena::free` + cache-reconciliation work are G4
+    /// (see `docs/engine-divergence.md`). Returns `false` if the id is unknown or
+    /// already tombstoned/freed.
+    ///
+    /// Caller contract (the declared seam): the engine tombstone is one-way and
+    /// idempotent, but the *driver* owns the dead/alive bookkeeping. A driver MUST
+    /// stop regenerating a tombstoned agent's scale (a non-empty scale would make
+    /// it post orders again) and exclude it from any per-agent endowment or
+    /// readback. G1's `Camp` driver (in the `life` crate) does this by mirroring
+    /// the tombstone in a per-colonist `alive` flag it checks in every step phase;
+    /// a later driver must keep the same invariant until G4 makes death a
+    /// first-class arena operation.
+    pub fn tombstone(&mut self, agent: AgentId) -> bool {
+        let Some(position) = self.agents.position_of(agent) else {
+            return false;
+        };
+        if !self.agent_order.contains(&position) {
+            return false;
+        }
+        // Empty the scale and freeze production: an empty scale yields no
+        // reservations, so the order/quote machinery posts nothing for it.
+        {
+            let dead = &mut self.agents[position];
+            dead.scale.clear();
+            dead.labor_capacity = 0;
+        }
+        // Cancel any resting quotes the agent still holds and release their
+        // reservations; with an empty scale `live_quote_changed` reports every
+        // one as stale.
+        self.cancel_changed_live_quotes_for_agents(&[agent]);
+        // Non-M1 societies may also have resting labor orders. Cancel them and
+        // release wage/labor reserves so a tombstoned agent cannot be matched by
+        // a later factor-market order.
+        while self
+            .labor_book
+            .cancel(agent, FactorSide::Work, &mut self.labor_reservations)
+        {}
+        while self
+            .labor_book
+            .cancel(agent, FactorSide::Hire, &mut self.labor_reservations)
+        {}
+        // Non-M1 societies may also have resting time-market (loan) orders.
+        // Cancel them and release their reservations so a tombstoned agent
+        // cannot be matched by a later credit-market order — the same
+        // "posts-no-orders, holdings-frozen" guarantee the spot and labor
+        // cancellations above give. Releasing a reservation only un-earmarks the
+        // dead agent's own gold (it stays with the agent); nothing settles to a
+        // counterparty, so this does not touch the G4-parked estate/free path.
+        self.loan_book
+            .cancel_agent(agent, &mut self.loan_reservations);
+        // Existing debts are not estates; G1 freezes them. Due-debt settlement
+        // will skip any open contract whose borrower or agent-lender is listed
+        // here, preserving tombstoned holdings until G4 implements estate
+        // settlement. Insert in sorted position (the early `agent_order` guard
+        // already rejects a repeat tombstone, so the agent is never present yet)
+        // so the list stays ordered without a re-sort per death —
+        // project lifecycle checks binary-search it to freeze a dead owner's
+        // output and abandonment/salvage paths.
+        if let Err(slot) = self.tombstoned_agents.binary_search(&agent) {
+            self.tombstoned_agents.insert(slot, agent);
+        }
+        // Drop it from the activation order so no later tick processes it.
+        self.agent_order
+            .retain(|&order_index| order_index != position);
+        true
     }
 
     fn capture_metric_observation(&mut self, tick_trades: &[Trade]) {
@@ -6622,6 +6854,50 @@ mod tests {
     }
 
     #[test]
+    fn tombstone_freezes_owner_waiting_project_output() {
+        // The same Waiting project that `money_good_project_output_moves_to_money_balance`
+        // matures into a Gold credit must instead stay frozen once its owner is
+        // tombstoned: G1 death does not settle estates, so the project never
+        // matures or abandons, and the dead owner's holdings are untouched.
+        // Without the lifecycle tombstone guards, a normal step would first skip
+        // maturation but then abandon the project because the owner has no active
+        // schedule, returning salvage into the tombstoned arena slot.
+        let mut society = test_society(test_capitalist(Stock::new(3)));
+        let owner_gold_before = society.agents[0].gold;
+        society.m2_projects.push(M2Project {
+            id: M2ProjectId(99),
+            owner: AgentId(1),
+            line: ProjectLineId(99),
+            state: M2ProjectState::Waiting,
+            started_at: Tick(0),
+            maturity: Tick(0),
+            labor_advanced: 1,
+            input_goods_committed: Vec::new(),
+            input_cost_basis: Gold::ZERO,
+            advanced_gold: Gold(1),
+            expected_revenue: Gold(3),
+            output_good: GOLD,
+            output_qty: 3,
+            salvage_bps: 5000,
+        });
+
+        assert!(society.tombstone(AgentId(1)));
+        society.step();
+
+        // Frozen: the project is still Waiting (not Mature/Sold), no output lot
+        // was minted, no abandonment loss was recorded, and the dead owner's
+        // gold/stock are exactly as before.
+        assert_eq!(society.m2_projects[0].state, M2ProjectState::Waiting);
+        assert!(society.project_output_lots.is_empty());
+        assert_eq!(society.project_revenue, Gold::ZERO);
+        assert_eq!(society.capital_goods_consumed, 0);
+        assert_eq!(society.capital_labor_consumed, 0);
+        assert_eq!(society.capital_gold_loss, Gold::ZERO);
+        assert_eq!(society.agents[0].gold, owner_gold_before);
+        assert_eq!(society.agents[0].stock.get(GOLD), 0);
+    }
+
+    #[test]
     fn m3_project_money_good_output_updates_ledgers() {
         let mut agent = test_capitalist(Stock::new(6));
         agent.gold = Gold(2);
@@ -8209,6 +8485,168 @@ mod tests {
         assert!(society.live_quotes.is_empty());
         assert_eq!(society.books[0].live_order_counts().1, 0);
         assert_eq!(society.reservations.reserved_stock(AgentId(1), FOOD), 0);
+    }
+
+    #[test]
+    fn scale_rewrite_invalidation_releases_stale_spot_reservation() {
+        let mut seller = redemption_agent(1, Gold::ZERO);
+        seller.stock.add(FOOD, 1);
+        seller.scale = vec![Want {
+            kind: WantKind::Good(GOLD),
+            horizon: Horizon::Next,
+            qty: 1,
+            satisfied: false,
+        }];
+        let mut society = test_m3_society(seller, GOLD, Vec::new());
+
+        let mut filled = Vec::new();
+        society.ensure_ask(0, FOOD, &mut filled);
+
+        assert!(filled.is_empty());
+        assert_eq!(society.live_quotes.len(), 1);
+        assert_eq!(society.books[0].live_order_counts().1, 1);
+        assert_eq!(society.reservations.reserved_stock(AgentId(1), FOOD), 1);
+
+        society.agents[0].scale = vec![Want {
+            kind: WantKind::Good(FOOD),
+            horizon: Horizon::Now,
+            qty: 1,
+            satisfied: false,
+        }];
+
+        assert!(society.cancel_changed_live_quotes_for_agent(AgentId(1)));
+        assert!(society.live_quotes.is_empty());
+        assert_eq!(society.books[0].live_order_counts().1, 0);
+        assert_eq!(society.reservations.reserved_stock(AgentId(1), FOOD), 0);
+    }
+
+    #[test]
+    fn tombstone_returns_false_for_repeated_call() {
+        let society_agent = redemption_agent(1, Gold(1));
+        let mut society = test_m3_society(society_agent, GOLD, Vec::new());
+
+        assert!(society.tombstone(AgentId(1)));
+        assert!(!society.tombstone(AgentId(1)));
+        assert!(society.agent_order.is_empty());
+        assert!(society.agents.get(AgentId(1)).is_some());
+    }
+
+    #[test]
+    fn tombstone_cancels_resting_labor_order() {
+        let mut worker = redemption_agent(1, Gold::ZERO);
+        worker.labor_capacity = 1;
+        let mut society = test_m3_society(worker, GOLD, Vec::new());
+        let work = LaborOrder {
+            agent: AgentId(1),
+            side: FactorSide::Work,
+            wage_limit: Gold(1),
+            qty: 1,
+            seq: 1,
+            expires_tick: 3,
+        };
+        assert!(society
+            .labor_reservations
+            .reserve_order(society.agents.as_slice(), &work));
+        let trades = {
+            let mut market = LaborMarketView {
+                agents: society.agents.as_mut_slice(),
+                reservations: &mut society.labor_reservations,
+                projects: &mut society.m2_projects,
+                lines: &society.project_lines,
+                money_system: society.money_system.as_mut(),
+                wage_media: society.labor_wage_tender.accepted_media(),
+                wage_audit: Some(&mut society.wage_payment_audit),
+                wage_tender: society.labor_wage_tender,
+            };
+            society.labor_book.add_order(work, None, 0, &mut market)
+        };
+
+        assert!(trades.is_empty());
+        assert!(society.labor_book.has_live(AgentId(1), FactorSide::Work));
+        assert_eq!(society.labor_reservations.reserved_labor(AgentId(1)), 1);
+
+        assert!(society.tombstone(AgentId(1)));
+
+        assert!(!society.labor_book.has_live(AgentId(1), FactorSide::Work));
+        assert_eq!(society.labor_reservations.reserved_labor(AgentId(1)), 0);
+        assert!(society.agents[0].scale.is_empty());
+        assert_eq!(society.agents[0].labor_capacity, 0);
+    }
+
+    #[test]
+    fn tombstone_skips_m2_due_debt_settlement_for_borrower() {
+        let borrower = redemption_agent(1, Gold(5));
+        let lender = redemption_agent(2, Gold::ZERO);
+        let mut society = Society::from_scenario(MarketScenario {
+            name: "m2-tombstone-debt-freeze",
+            scenario: ScenarioName::TimeMarketBasic,
+            seed: 1,
+            periods: 1,
+            agents: vec![borrower, lender],
+            recipes: Vec::new(),
+            events: Vec::new(),
+            money: MarketMoneyConfig::Designated(DesignatedMoney { good: GOLD }),
+        });
+        society.debts.push(DebtContract {
+            id: DebtId(901),
+            lender: CreditLender::Agent(AgentId(2)),
+            borrower: AgentId(1),
+            opened_tick: Tick(0),
+            due_tick: Tick(0),
+            principal: Gold(3),
+            due: Gold(3),
+            paid: Gold::ZERO,
+            state: DebtState::Open,
+            purpose: DebtPurpose::Consumption,
+            funding: CreditSource::Commodity,
+        });
+
+        assert!(society.tombstone(AgentId(1)));
+        society.step();
+
+        assert_eq!(society.agents.get(AgentId(1)).unwrap().gold, Gold(5));
+        assert_eq!(society.agents.get(AgentId(2)).unwrap().gold, Gold::ZERO);
+        assert_eq!(society.debts[0].paid, Gold::ZERO);
+        assert_eq!(society.debts[0].state, DebtState::Open);
+    }
+
+    #[test]
+    fn tombstone_skips_m3_due_debt_settlement_for_agent_lender() {
+        let lender = redemption_agent(1, Gold::ZERO);
+        let borrower = redemption_agent(2, Gold(5));
+        let mut society = Society::from_scenario(MarketScenario {
+            name: "m3-tombstone-debt-freeze",
+            scenario: ScenarioName::CommodityCreditNeutral,
+            seed: 1,
+            periods: 1,
+            agents: vec![lender, borrower],
+            recipes: Vec::new(),
+            events: Vec::new(),
+            money: MarketMoneyConfig::Designated(DesignatedMoney { good: GOLD }),
+        });
+        society.debts.push(DebtContract {
+            id: DebtId(902),
+            lender: CreditLender::Agent(AgentId(1)),
+            borrower: AgentId(2),
+            opened_tick: Tick(0),
+            due_tick: Tick(0),
+            principal: Gold(3),
+            due: Gold(3),
+            paid: Gold::ZERO,
+            state: DebtState::Open,
+            purpose: DebtPurpose::Consumption,
+            funding: CreditSource::Commodity,
+        });
+
+        assert!(society.tombstone(AgentId(1)));
+        society.step();
+
+        assert_eq!(society.agents.get(AgentId(1)).unwrap().gold, Gold::ZERO);
+        assert_eq!(society.agents.get(AgentId(2)).unwrap().gold, Gold(5));
+        assert_eq!(society.debts[0].paid, Gold::ZERO);
+        assert_eq!(society.debts[0].state, DebtState::Open);
+        assert!(society.debt_payment_audit.is_empty());
+        assert!(society.money_ledgers_reconcile());
     }
 
     #[test]

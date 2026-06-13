@@ -178,3 +178,105 @@ above — not re-litigated as a G0b regression.
 - No game `Command` enum (DesignateZone etc. are sim-crate work, G2+) — only
   the result-semantics plumbing over the existing `EventKind`.
 - No lab back-port: the lab keeps its own shapes; this log is the bridge.
+
+---
+
+## G1 — needs → wants (the `life` crate, `docs/impl-g1.md`)
+
+G1 adds the `life` crate (the first genuinely new game code) and the
+needs→wants transformation: a colonist's value scale is **generated from need
+state each tick** rather than authored once. `life` depends on `econ` and must
+not change its economic behavior — the conformance suite stays byte-identical,
+proven green by `cargo test` across the workspace. The only `econ` changes are
+**additive** and are recorded here.
+
+### 1. Additive public hooks on `Society` (no behavior change)
+
+The `Camp` driver builds a `Society` and, between steps, reads realized
+quantities back to advance needs, invalidates stale quotes after overwriting a
+scale, and tombstones starvation deaths. The public surface is additive;
+goldens never touch it:
+
+- `realized_price(GoodId) -> Option<Gold>` — the last trade price for a good
+  (reads the existing `realized_prices` map).
+- `enable_consumption_log()` / `consumption_log_last_tick() ->
+  &[(AgentId, GoodId, u32)]` — an **opt-in, off-by-default** per-tick log of
+  consumed-good quantities, captured in the consume phase of `step_m1` only when
+  enabled. The capture happens before direct-labor provisioning, so it is a
+  conservative readback (a direct-labor recipe that satisfies a current want is
+  not credited here). The capture is gated behind a flag the goldens never set,
+  so the M1 series golden is byte-identical; the camp scans the batch slice each
+  tick to read FOOD/WOOD consumption back for need replenishment.
+- `labor_used_last_tick() -> &[(AgentId, u32)]` — batch read access to the
+  existing per-tick labor tally, so the G1 camp can update rest without a
+  per-agent scan.
+- `cancel_changed_live_quotes_for_agent(AgentId) -> bool` — an explicit
+  invalidation hook for callers that rewrite an agent's scale between econ
+  ticks. It cancels only quotes whose reservation no longer matches the current
+  scale/holdings/tender state, releasing stale reservations before the next
+  consume phase.
+- `cancel_changed_live_quotes_for_agents(&[AgentId])` — the same invalidation
+  hook in batch form for drivers that rewrite many scales at once.
+- `tombstone(AgentId) -> bool` — the G1 starvation-death hook recorded below.
+
+The field additions (`consumption_log`, `consumption_log_enabled`) are inert
+unless the flag is set. The conformance suite is the proof.
+
+### 2. Death by starvation is a **tombstone**, not an arena free (the seam)
+
+When a colonist's hunger holds at its critical ceiling for the death window,
+`Society::tombstone(AgentId)` marks it dead:
+
+- its value scale is **emptied** (so the order/quote machinery posts nothing
+  for it) and its labor capacity zeroed;
+- its resting orders across every book — spot quotes, labor-book orders, and
+  time-market (loan) orders — are cancelled and their reservations released, so
+  no stale order can match a counterparty after death (releasing a reservation
+  only un-earmarks the dead agent's own gold; nothing settles to anyone);
+- due-debt settlement skips open contracts whose borrower or agent-lender is
+  tombstoned, so existing debts cannot move a dead agent's frozen holdings;
+- any capital project it still owns is **frozen in place** — project maturity
+  neither mints the output nor credits the dead owner, and abandonment never
+  returns salvage or records capital loss for a tombstoned owner's project. G1
+  itself runs M1, which has no projects; this keeps the public hook's "holdings
+  frozen" guarantee complete for any society kind;
+- it is **dropped from the activation order** so no later tick processes it.
+
+The arena slot is **NOT freed** and the holdings (gold + stock) are **NOT
+settled** to anyone — they stay frozen in place. Consequences, all deliberate
+for G1:
+
+- a dead colonist's gold/stock remain in the conservation totals
+  (`total_gold` / `total_stock`) — *frozen-holdings-in-conservation is the
+  correct G1 behavior*; the smoke test tracks **living** colonists separately;
+- `AgentArena::free` is **not** called (its cache reconciliation is the G0b-
+  documented G4 prerequisite above);
+- no estate settlement, no birth/aging/households, and none of the `Society`
+  position caches that a real `free` would have to reconcile are touched.
+
+This is the honest minimal death model. **Full estate settlement, the
+`AgentArena::free` + Society-cache-reconciliation path, and demography are G4**
+(game-spec §5.6); G1 does not pretend to do them. The tombstone is the declared
+seam parked here until then.
+
+> **Architectural note for G4.** G1 enforces tombstone inertness with a
+> guard in each agent-iterating phase (order books, debt settlement, project
+> maturity, project abandonment) rather than a single aliveness gate — the
+> coverage is complete and tested, but it is N guards, one per phase. When
+> G4 adds real `free`/estate settlement it should consolidate these into one
+> `is_tombstoned`/activation check that every phase consults, so a future
+> agent-iterating phase cannot silently reintroduce a leak. This was a
+> deliberate G1 stopgap, recorded so the cleanup is explicit and not
+> rediscovered.
+
+### Excluded from G1 (deferred)
+
+- No spatial structure, movement, stockpiles, or two-rate loop (G2); the `Camp`
+  driver is the lean pre-`sim` stand-in, to be absorbed by `sim` at G2.
+- No birth/aging/households/migration/estate settlement; no arena free (G4).
+- No new goods/recipes/tech (G3); the good set is the lab's.
+- The G1 need set is the load-bearing trio that maps onto existing lab goods —
+  hunger↔FOOD, warmth↔fuel (WOOD), rest↔Leisure. Shelter/social/security
+  (game-spec §5.2) wait until they have goods/buildings to satisfy them (G2/G3).
+- No balance tuning or asserted economic magnitudes — the acceptance suite
+  asserts scale-generation *properties* and non-collapse only.

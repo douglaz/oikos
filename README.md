@@ -16,14 +16,15 @@ policy by causal necessity.
 
 ```
 econ/    the economy engine — fork of praxsim-core (pure std, deterministic)
+life/    needs → wants: colonist value scales generated from need state (G1)
 docs/    the game spec and design documents
 ```
 
 Future crates per the spec's §4.1: `world/` (map, movement, stockpiles),
-`life/` (needs, demography), `content/` (data-driven goods/recipes/tech),
-`sim/` (orchestrator, two-rate loop, commands), `ui/` (Bevy client),
-`tools/` (headless runners, balance CI). They arrive with their milestones
-(G1, G2, …) — empty scaffolding is not kept ahead of need.
+`content/` (data-driven goods/recipes/tech), `sim/` (orchestrator, two-rate
+loop, commands), `ui/` (Bevy client), `tools/` (headless runners, balance CI).
+They arrive with their milestones (G2, G3, …) — empty scaffolding is not kept
+ahead of need.
 
 ## Provenance and the lab relationship
 
@@ -77,6 +78,53 @@ G0b (migrations behind compatibility):
 
 The conformance suite stays green natively and all goldens are byte-identical;
 see `econ/tests/g0b_engine_migrations.rs` for the migration acceptance tests.
+
+## Status: G1 (needs → wants, the `life` crate) — complete
+
+Per game-spec §11. G1 adds the `life` crate and the single most important
+transformation the game makes to the lab engine: **a colonist's ordinal value
+scale is generated from need state each tick, not authored once.** The heart is
+one pure, deterministic function:
+
+```
+regenerate_scale(&NeedState, &CultureParams, &KnownGoods) -> Vec<Want>
+```
+
+It emits wants in strict descending urgency with each marginal unit listed
+separately (diminishing marginal utility is positional, no cardinal magnitude),
+keeps Leisure always present (so labor supply stays emergent), is satiation-
+monotone, and is never empty. The need set is the load-bearing trio that maps
+onto existing lab goods — hunger↔FOOD, warmth↔fuel (WOOD), rest↔Leisure.
+
+A lean `Camp` driver (the pre-`sim` stand-in, to be absorbed by `sim` at G2)
+feeds that output to the **real, unchanged** econ market: a camp that feeds,
+fuels, and rests itself through trade and labor. Death by starvation is a
+**tombstone** — the colonist is marked dead, its scale emptied, and it is
+dropped from activation with its holdings frozen in place; open debts involving
+the tombstone are not settled. The arena slot is **not** freed and estates are
+**not** settled (that, and demography, is G4).
+
+G1 is deliberately mechanism-only and pre-spatial: the acceptance suite asserts
+scale-generation *properties* and non-collapse, never balance numbers. `life`
+adds no econ economic-behavior change — the `econ` edits are additive public
+hooks/accessors for reading consumption, invalidating stale quotes after a scale
+rewrite, and tombstoning starvation deaths, proven harmless by the unchanged
+conformance suite. See `life/tests/g1_needs_to_wants.rs` for the eleven
+acceptance tests and `docs/engine-divergence.md` for the tombstone-death seam
+and deferred estate/free work.
+
+G1:
+
+- [x] `life` workspace crate (depends on `econ`, pure std, deterministic)
+- [x] `NeedState` (hunger/warmth/rest) + integer per-tick dynamics
+- [x] `CultureParams` (time-preference / leisure-weight, integer bps)
+- [x] `regenerate_scale` — the pure, deterministic milestone function
+- [x] `Camp` driver: generate colonists, update needs, tombstone deaths,
+      regenerate scales, step the econ market, read consumption/labor back
+- [x] additive-only `econ` hooks/accessors (read price/labor/consumption,
+      invalidate stale quotes after scale rewrites, tombstone);
+      goldens byte-identical
+- [x] acceptance suite + divergence-log and README updates
 
 ## Build and test
 
