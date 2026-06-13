@@ -3,5 +3,6 @@ members = [
     "econ",
     "life",
     "world",
+    "sim",
 ]
 resolver = "2"

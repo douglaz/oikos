@@ -61,6 +61,25 @@ impl Stockpile {
         accepted
     }
 
+    /// Remove up to `min(qty, get(good))` units of `good`, returning the amount
+    /// removed. The mirror of [`Stockpile::deposit`]: a unit withdrawn is
+    /// *relocated* to the caller, never destroyed here. This is the world side of
+    /// the G2b world→econ transfer seam — the exchange stockpile is drained into
+    /// econ stock once per econ tick (see `docs/engine-divergence.md`). It is an
+    /// out-of-tick accessor; `World::tick` never calls it, so the G2a per-tick
+    /// conservation receipt and every G2a test are untouched.
+    pub fn withdraw(&mut self, good: GoodId, qty: u32) -> u32 {
+        let Some(held) = self.contents.get_mut(&good) else {
+            return 0;
+        };
+        let removed = qty.min(*held);
+        *held -= removed;
+        if *held == 0 {
+            self.contents.remove(&good);
+        }
+        removed
+    }
+
     /// Iterate stored `(good, qty)` pairs in `GoodId` order (deterministic).
     pub fn contents(&self) -> impl Iterator<Item = (GoodId, u32)> + '_ {
         self.contents.iter().map(|(&good, &qty)| (good, qty))
@@ -128,6 +147,36 @@ mod tests {
         sp.deposit(FOOD, 1);
         let goods: Vec<_> = sp.contents().map(|(g, _)| g).collect();
         assert_eq!(goods, vec![FOOD, WOOD]);
+    }
+
+    #[test]
+    fn withdraw_relocates_up_to_held_and_conserves() {
+        let mut sp = pile(10);
+        sp.deposit(FOOD, 6);
+        sp.deposit(WOOD, 2);
+
+        // Withdraw fewer than held: exactly that many leave, the rest stay.
+        assert_eq!(sp.withdraw(FOOD, 4), 4);
+        assert_eq!(sp.get(FOOD), 2);
+        assert_eq!(sp.total(), 4);
+
+        // Withdraw more than held: clamps to what is there, empties the entry.
+        assert_eq!(sp.withdraw(FOOD, 5), 2);
+        assert_eq!(sp.get(FOOD), 0);
+        assert_eq!(sp.total(), 2);
+
+        // An absent good withdraws nothing, never underflows.
+        assert_eq!(sp.withdraw(FOOD, 1), 0);
+        assert_eq!(sp.get(WOOD), 2);
+    }
+
+    #[test]
+    fn deposit_then_full_withdraw_round_trips_to_empty() {
+        let mut sp = pile(5);
+        assert_eq!(sp.deposit(FOOD, 5), 5);
+        assert_eq!(sp.withdraw(FOOD, 5), 5);
+        assert_eq!(sp.total(), 0);
+        assert_eq!(sp.room(), 5, "room is restored after a full withdraw");
     }
 
     #[test]

@@ -1,0 +1,9 @@
+[package]
+name = "sim"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+econ = { path = "../econ" }
+life = { path = "../life" }
+world = { path = "../world" }

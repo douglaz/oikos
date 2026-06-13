@@ -674,6 +674,22 @@ impl World {
             .unwrap_or(0)
     }
 
+    /// Remove up to `qty` units of `good` from a stockpile, returning the amount
+    /// removed (0 for an unknown stockpile). The mirror of a deposit: the units
+    /// are *relocated out of the world* to the caller — this is the only public
+    /// world sink, and it exists for the G2b world→econ transfer seam (the
+    /// exchange stockpile is drained into econ stock once per econ tick;
+    /// `docs/engine-divergence.md`). It is **out-of-tick**: `World::tick` never
+    /// calls it, so the per-tick [`TickReport`] and the G2a conservation/tick
+    /// tests are unaffected. After a withdraw, [`World::total_goods`] drops by
+    /// exactly the amount removed (the world's only way to lose a unit).
+    pub fn stockpile_withdraw(&mut self, id: StockpileId, good: GoodId, qty: u32) -> u32 {
+        self.stockpiles
+            .get_mut(id.0 as usize)
+            .map(|s| s.withdraw(good, qty))
+            .unwrap_or(0)
+    }
+
     /// The shortest-path step distance between two tiles around impassable
     /// terrain, or `None` if `to` is unreachable from `from`. On an open grid
     /// this equals their Manhattan distance and is monotone in separation.
@@ -1020,6 +1036,37 @@ mod tests {
         let report = world.tick();
         assert_eq!(report.regenerated, 0); // already at cap
         assert_eq!(report.net, 0);
+    }
+
+    #[test]
+    fn stockpile_withdraw_is_the_only_world_sink() {
+        // Harvest then deposit into a stockpile (conserving), then withdraw —
+        // the withdraw is the one path that lowers the world total, by exactly
+        // the amount removed. This is the world side of the G2b transfer seam.
+        let mut world = open_world(3, 1);
+        let agent = world.add_agent(Pos::new(0, 0), 10, 5).unwrap();
+        let node = world
+            .add_node(ResourceNode::new(Pos::new(1, 0), FOOD, 7, 0, 7))
+            .unwrap();
+        let sp = world
+            .add_stockpile(Stockpile::new(Pos::new(2, 0), 100))
+            .unwrap();
+        world.assign_task(agent, Task::GoHarvest(node, 7));
+        world.tick();
+        world.assign_task(agent, Task::GoDeposit(sp));
+        world.tick();
+        assert_eq!(world.stockpile_get(sp, FOOD), 7);
+        let total_before = world.total_goods();
+
+        // Withdraw 5: the world total drops by exactly 5; an unknown stockpile
+        // is a deterministic no-op.
+        assert_eq!(world.stockpile_withdraw(sp, FOOD, 5), 5);
+        assert_eq!(world.stockpile_get(sp, FOOD), 2);
+        assert_eq!(world.total_goods(), total_before - 5);
+        assert_eq!(world.stockpile_withdraw(StockpileId(9), FOOD, 1), 0);
+        // Over-withdraw clamps to what is held.
+        assert_eq!(world.stockpile_withdraw(sp, FOOD, 9), 2);
+        assert_eq!(world.total_goods(), total_before - 7);
     }
 
     #[test]

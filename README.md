@@ -18,13 +18,13 @@ policy by causal necessity.
 econ/    the economy engine — fork of praxsim-core (pure std, deterministic)
 life/    needs → wants: colonist value scales generated from need state (G1)
 world/   the spatial substrate — grid, terrain, nodes, stockpiles, movement (G2a)
+sim/     the two-rate orchestrator — world delivery under the econ tick (G2b)
 docs/    the game spec and design documents
 ```
 
 Future crates per the spec's §4.1: `content/` (data-driven goods/recipes/tech),
-`sim/` (orchestrator, two-rate loop, commands), `ui/` (Bevy client), `tools/`
-(headless runners, balance CI). They arrive with their milestones (G2b+, G3, …)
-— empty scaffolding is not kept ahead of need.
+`ui/` (Bevy client), `tools/` (headless runners, balance CI). They arrive with
+their milestones (G3, …) — empty scaffolding is not kept ahead of need.
 
 ## Provenance and the lab relationship
 
@@ -184,6 +184,59 @@ G2a:
 
 See `world/tests/g2a_world.rs` and `docs/engine-divergence.md` (the G2a entry and
 the recorded G2 decomposition).
+
+## Status: G2b (two-rate loop + delivery escrow, the `sim` crate) — complete
+
+Per game-spec §11 (the G2 decomposition above). G2b makes space **economically
+meaningful** by wiring `world` delivery under the economy. The new `sim` crate is
+the two-rate orchestrator (§4.1, §4.3): a `Settlement` owns a `world::World`,
+per-colonist `life` need state, and an `econ::Society`, and runs the fast loop
+(`FAST_TICKS_PER_ECON_TICK` `world` ticks of movement / harvest / haul) under one
+economic tick (transfer → needs/tombstone → scale regeneration → market clearing
+→ consumption read-back → task reassignment). `sim` **supersedes** `life::Camp` as
+the driver (Camp stays as the G1 non-spatial reference harness).
+
+The load-bearing design is the **world→econ transfer seam**: a good has one owner
+at a time — `world` (node / carry / stockpile) **or** `econ` (agent stock). The
+econ-tick transfer is the only crossing and it is net-zero (`world` −n, `econ`
++n): delivered exchange-stockpile units are credited to the depositing
+colonist's econ stock and withdrawn from the world. If stock headroom is not
+available yet, they remain world-owned in the exchange and retry later.
+Carry-while-moving **is** the §4.3 delivery escrow — there is no separate escrow
+ledger — so goods that don't arrive (a blocked or dead hauler) are **retained**
+in carry, never destroyed.
+
+The milestone proves two things. **Conservation is exact:** every physical good
+is accounted across its full node → carry → stockpile → econ → consumed lifecycle,
+with node regen the only source and consumption the only sink, checked every econ
+tick. **Distance affects realized prices:** a node farther from the exchange
+delivers fewer units per econ tick, so the good realizes a strictly higher price
+(sign only — no magnitude is pinned). `sim` reuses `world` / `life` / `econ`
+as-is; the only engine edits are two additive, conserving accessors that realize
+the seam (`world::World::stockpile_withdraw`, `econ::Society::credit_stock`),
+proven harmless by the unchanged eight conformance goldens. Determinism is
+inherited and mandatory: integer state, the `Rng` consumed only at generation,
+nothing drawn in either loop, `AgentId`-ordered iteration, `BTreeMap`/`Vec` only.
+
+G2b:
+
+- [x] `sim` workspace crate (`world` + `life` + `econ` path deps, pure std,
+      deterministic)
+- [x] `Settlement` / `SettlementConfig` orchestrator: a `World`, per-colonist
+      `NeedState`/`CultureParams`, and a `Society`; one exchange stockpile and
+      resource nodes at chosen positions
+- [x] the two-rate loop + haul-escrow: in-transit (carried) goods accounted as
+      escrow; arrival transfers to econ; non-arrival (blocked/dead) retains
+- [x] the world→econ transfer seam — additive `world` withdraw + `econ`
+      stock-credit accessors; goldens byte-identical
+- [x] a whole-system conservation check + per-econ-tick report; realized-price
+      and digest accessors
+- [x] acceptance suite (`sim/tests/g2b_two_rate.rs`: the eight acceptance tests
+      + three unit tests) + per-module unit tests; divergence-log and README updates
+
+See `sim/tests/g2b_two_rate.rs` and `docs/engine-divergence.md` (the G2b entry:
+the `sim` crate, the transfer seam, escrow-as-carry, and `sim` superseding
+`Camp`).
 
 ## Build and test
 

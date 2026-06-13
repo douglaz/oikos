@@ -371,3 +371,126 @@ carried by agents.
 - No `life`/`Camp` changes — G2b rewires the driver onto `world`.
 - No RNG in `tick`; no `HashMap` in logic; no new external dependencies (pure std
   besides the `econ` primitive dep).
+
+---
+
+## G2b — two-rate loop + delivery escrow (the `sim` crate, `docs/impl-g2b.md`)
+
+G2b adds the `sim` crate — the two-rate orchestrator (game-spec §4.1, §4.3) — and
+wires `world` delivery under the econ tick for **one** settlement. `sim` owns a
+`world::World`, per-colonist `life` need state, and an `econ::Society`, and runs
+the fast loop (`FAST_TICKS_PER_ECON_TICK` `world` ticks of movement / harvest /
+haul) under one economic tick (transfer → needs/tombstone → scale regeneration →
+`Society::step` → consumption read-back → task reassignment). It reuses `life`'s
+`regenerate_scale` / `NeedState` / `CultureParams` / tombstone and `world` /
+`econ` as-is; the only engine edits are the two **additive, conserving**
+accessors that realize the world↔econ seam, recorded below. The conformance
+suite (the four series goldens M0/M1/M2/M3, the M18/M20 emergence goldens, and
+the M5/M6 anchors) and the entire G1 (`life`) and G2a (`world`) suites stay
+green and byte-identical — the proof is the unchanged workspace `cargo test`.
+
+### 0. `sim` supersedes `Camp` as the driver (Camp kept)
+
+`life::Camp` was the lean pre-`sim` G1 stand-in. `sim::Settlement` absorbs its
+role — generate colonists, update needs, tombstone deaths, regenerate scales,
+step the econ market, read consumption back — and adds the spatial fast loop and
+the transfer seam. `Camp` is **not deleted**: it stays as the G1 non-spatial
+reference harness with its 11 tests intact, keeping the G1 proof and bounding the
+diff. Going forward `sim` is the driver.
+
+### 1. The world→econ transfer seam (the load-bearing design)
+
+A good has **one owner at a time** — `world` (node / carry / stockpile) **or**
+`econ` (agent stock) — never both. The lifecycle is
+
+```
+node stock --harvest--> hauler carry --deposit--> exchange stockpile
+  --[econ-tick transfer]--> econ agent stock --trade/consume--> (econ)
+```
+
+While in `node` / `carry` / `stockpile` a unit is a `world` good (G2a's
+conservation owns it). Carry-while-moving **is** the §4.3 delivery escrow:
+committed to delivery, conserved, **retained** (never destroyed) if the hauler is
+blocked or dies. There is **no separate escrow ledger** — escrow is just carry.
+At each econ tick `sim` performs the transfer: delivered exchange-stockpile units
+are *credited to the depositing colonist's econ stock* and then *withdrawn from
+the world*, atomically and conservingly. A unit that cannot be credited stays
+world-owned in the exchange stockpile, never destroyed and never double-counted in
+econ — two cases: a **live** depositor whose stock is momentarily at the `u32`
+ceiling is transient (the attribution is retried each econ tick and transfers once
+consumption opens headroom), while a **tombstoned** depositor is rejected
+permanently, so its pending units freeze in the exchange for good (still conserved
+and world-owned, just never crossing the seam). The transfer is **net-zero**
+(`world` −n, `econ` +n); harvest
+and deposit are net-zero relocations; node regen (source) and consumption (sink)
+are the only non-zero deltas, each independently accounted. This is the
+whole-system ledger invariant `sim` checks every econ tick (the G2b conservation
+DoD, the test-2 tripwire).
+
+### 2. Two additive accessors realize the seam (goldens byte-identical)
+
+The seam needs one new capability on each side of the world↔econ boundary. Both
+are purely additive — they touch no existing path, no scale/quote/money/market
+state — and are called by **no** engine path, so the goldens cannot move (the
+unchanged suite is the proof). Each is unit-tested in its own crate.
+
+- **`world`: `World::stockpile_withdraw(StockpileId, GoodId, u32) -> u32`** (and
+  its `Stockpile::withdraw` mirror of `deposit`). `world`'s public API had no
+  sink — through it the world total is monotonically non-decreasing — so
+  realizing the spec's "**removed from the world stockpile**" required exactly
+  this one accessor: the mirror of a deposit, relocating units *out of the world*
+  to the caller. It is **out-of-tick** — `World::tick` never calls it, so the G2a
+  per-tick `TickReport` and every G2a conservation/movement test are untouched
+  and byte-identical. After a withdraw, `World::total_goods` drops by exactly the
+  amount removed (the world's only way to lose a unit). This is the `world` side
+  of the seam, the analog of the `econ` accessor below; G2a's "no econ-tick
+  coupling" boundary is unchanged (the *coupling* lives in `sim`, the accessor is
+  inert plumbing).
+- **`econ`: `Society::credit_stock(AgentId, GoodId, u32) -> bool`** — credit a
+  good to a live agent's stock (returns `false` for an unknown, stale, or
+  tombstoned id, then credits nothing). The `econ` side of the seam: `sim`
+  credits a depositing colonist exactly the units it will withdraw from the
+  world once the credit succeeds. Additive and off-by-default like the G1 hooks;
+  rejecting tombstoned agents preserves the frozen-holdings death contract.
+
+### 3. The settlement economy (mechanism, not balance)
+
+The minimal division of labor the spec calls for: **gatherers** harvest FOOD
+from a node and haul it to the exchange (the transfer credits it to their econ
+stock; they sell it); **consumers** sit at the exchange and buy/eat FOOD. The
+distance→price experiment moves the gatherers' node and compares two otherwise
+identical runs (`SettlementConfig::price_probe`); fewer units reach the market
+per econ tick (test 6, monotone), so the realized FOOD price is strictly higher
+(test 5, **sign only** — no magnitude is pinned; price tuning is G2+/later).
+Notes on the modeling choices, so they are explicit and not mistaken for engine
+changes:
+
+- **FOOD** is the spatial good (source = its node's regen, sink = consumption).
+  **WOOD** is a closed provisioning good (it never enters the world; source none,
+  sink consumption — so test 2 holds for it with regen 0): the colonists' warmth
+  staple and the medium that recirculates gold so the market stays liquid.
+- **Money is closed in every settlement config**: no `sim` path mints or burns
+  gold, so the fast loop never moves money and `Society::step` only redistributes
+  a conserved total (the §4.3 rule; test 4). The distance *probe* uses a larger
+  initial consumer gold balance, not loop-time income, so scarce supply can lift
+  bids without any money mutation outside `Society::step`.
+- **Sustenance is a smoke test** (test 7): a supply-rich, closed-gold `viable()`
+  config runs several econ-years without collapse (both vocations populated,
+  hunger bounded), deterministic. It is not a balance claim.
+
+### Excluded from G2b (deferred)
+
+- No multi-settlement and no `Society`-monolith extraction (**G2c**).
+- No binary, viewer, or inspectors (**G2d**).
+- No **wage-labor escrow** — the same §4.3 escrow pattern, but it needs spatial
+  hiring/projects that arrive later; G2b's escrow is the haul form only (noted,
+  not built).
+- No deletion of `life::Camp` or any change to `econ`/`world`/`life` *behavior* —
+  the two seam accessors are additive and the goldens stay byte-identical.
+- No balance tuning or asserted magnitudes — conservation is exact and
+  distance→price is **sign only**.
+- No RNG in either loop (consumed only at `Settlement::generate`); no `HashMap`
+  in logic; no new external dependencies (pure std over the three path deps).
+- No pre-optimization against imagined scale — the G2a-deferred per-tick BFS and
+  stockpile-sum costs did not bite under the two-rate load (8–16 agents, a
+  corridor grid), so they stay deferred, not re-litigated here.

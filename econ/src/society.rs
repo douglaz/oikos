@@ -3659,6 +3659,40 @@ impl Society {
         true
     }
 
+    /// Credit `qty` units of `good` to a live agent's stock, returning `false`
+    /// for an unknown, stale, or tombstoned `agent` (then nothing is credited).
+    ///
+    /// The G2b world→econ transfer seam (`docs/impl-g2b.md`). The `sim` crate's
+    /// two-rate loop hauls a physical good through `world` (node → carry →
+    /// exchange stockpile) and, once per econ tick, **relocates** the units it
+    /// withdrew from that stockpile into the depositing colonist's econ stock
+    /// via this accessor — the only crossing of the world↔econ boundary, and it
+    /// is net-zero (world −n, econ +n). It is **purely additive**: it touches no
+    /// scale, quote, money balance, or market state and is called by no engine
+    /// path, so the conformance goldens are byte-identical (the proof is the
+    /// unchanged suite). Liveness is the tombstone test (an O(log n) lookup in
+    /// the sorted tombstone list), not an O(n) activation-order scan, so a large
+    /// population's per-econ-tick transfer stays cheap.
+    ///
+    /// A driver must only ever credit goods it has just removed from the world,
+    /// and only up to the agent's remaining headroom — the stock add saturates at
+    /// the `u32` ceiling — or conservation is broken on its side of the seam
+    /// (`sim`'s transfer clamps to that headroom and leaves any remainder in the
+    /// world stockpile, never losing it).
+    pub fn credit_stock(&mut self, agent: AgentId, good: GoodId, qty: u32) -> bool {
+        let Some(position) = self.agents.position_of(agent) else {
+            return false;
+        };
+        // A resolved id is live iff it has not been tombstoned: no lab path frees
+        // an agent, so "present in the activation order" and "not tombstoned"
+        // coincide, and the tombstone list is already sorted for binary search.
+        if self.tombstoned_agents.binary_search(&agent).is_ok() {
+            return false;
+        }
+        self.agents[position].stock.add(good, qty);
+        true
+    }
+
     fn record_consumption_log(&mut self, agent_index: usize, provisions: &TickProvisions) {
         let agent_id = self.agents[agent_index].id;
         // `provisions.allocated` is built index-parallel to `agent.scale`
@@ -5971,6 +6005,44 @@ mod tests {
             events: Vec::new(),
             money: MarketMoneyConfig::Designated(DesignatedMoney { good: GOLD }),
         })
+    }
+
+    #[test]
+    fn credit_stock_is_additive_and_id_addressed() {
+        // The G2b transfer seam: credit a good to a live agent's stock and read
+        // it back. Additive only — gold and scale are untouched — and a stale id
+        // credits nothing (returns false).
+        let mut society = test_society(test_capitalist(Stock::new(WOOD.0)));
+        let id = AgentId(1);
+        let gold_before = society.total_gold();
+
+        assert_eq!(society.total_stock(FOOD), 0);
+        assert!(society.credit_stock(id, FOOD, 5));
+        assert!(society.credit_stock(id, FOOD, 2));
+        assert_eq!(society.agents.get(id).unwrap().stock.get(FOOD), 7);
+        assert_eq!(society.total_stock(FOOD), 7);
+        assert_eq!(
+            society.total_gold(),
+            gold_before,
+            "credit must not mint money"
+        );
+
+        // An unknown id is rejected and changes nothing.
+        assert!(!society.credit_stock(AgentId(99), FOOD, 4));
+        assert_eq!(society.total_stock(FOOD), 7);
+    }
+
+    #[test]
+    fn credit_stock_rejects_tombstoned_agent() {
+        // Tombstoning freezes holdings in the arena slot; the additive seam must
+        // not thaw that frozen stock by resolving the still-present id.
+        let mut society = test_society(test_capitalist(Stock::new(WOOD.0)));
+        let id = AgentId(1);
+
+        assert!(society.tombstone(id));
+        assert!(!society.credit_stock(id, FOOD, 5));
+        assert_eq!(society.agents.get(id).unwrap().stock.get(FOOD), 0);
+        assert_eq!(society.total_stock(FOOD), 0);
     }
 
     fn test_m3_society(agent: Agent, money_good: GoodId, recipes: Vec<Recipe>) -> Society {
