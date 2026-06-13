@@ -280,3 +280,94 @@ seam parked here until then.
   (game-spec §5.2) wait until they have goods/buildings to satisfy them (G2/G3).
 - No balance tuning or asserted economic magnitudes — the acceptance suite
   asserts scale-generation *properties* and non-collapse only.
+
+---
+
+## G2a — the `world` crate (spatial substrate, `docs/impl-g2a.md`)
+
+G2a adds the `world` crate (the spatial substrate) and, with it, a planning
+decision: **G2 is decomposed.** This is recorded here because it changes the
+roadmap shape, not because it changes any engine behavior — the standing rule
+above is satisfied *vacuously*, since `econ` is not edited at all.
+
+### 0. The G2 decomposition (supersedes the single-G2 lump in game-spec §11)
+
+The roadmap's G2 bundles four large pieces — the `world` crate, the two-rate loop
+with the §4.3 delivery-escrow contract, the `Society`-monolith extraction for
+multiple settlements, and the debug viewer with inspectors — into one milestone.
+That is far too much for one reviewed change (G1, a pure function plus a driver,
+took eight review rounds). G2 is therefore sliced in dependency order:
+
+- **G2a (this entry): the `world` crate** — the spatial substrate, standalone and
+  econ-independent.
+- **G2b: two-rate loop + escrow** — wire `world` delivery under the econ tick via
+  the §4.3 delivery-escrow contract for one settlement (DoD: distance measurably
+  affects realized prices; delivery escrow conserves exactly).
+- **G2c: settlement-scoped service extraction** — pull market/labor/barter books
+  out of the `Society` monolith so multiple settlements exist.
+- **G2d: debug viewer + inspectors** — the first binary; the price→trades and
+  colonist→scale-and-why inspectors the game-spec mandates for G2.
+
+G2a is the lowest-risk slice and the foundation G2b/G2c/G2d build on; it is needed
+next regardless of how the rest is sliced, so it is built first.
+
+### 1. New **leaf** crate — no econ coupling, goldens safe by construction
+
+`world` is a new workspace member that depends on `econ` **only** for the shared
+primitives `GoodId` / `AgentId` / `Rng` (re-exported from `world` so G2b can
+bridge world↔econ with no type translation — mirroring how `life` depends on
+`econ`). Crucially:
+
+- `world` calls **no** econ economic logic and **no** mutation path on any econ
+  type beyond constructing/reading the three primitives; it changes no econ
+  behavior.
+- `econ` does **not** depend on `world` — the dependency edge is one-way. `world`
+  is a leaf: nothing in the engine, in `life`, or in the conformance suite can
+  observe it.
+
+So the econ conformance goldens (the four series goldens M0/M1/M2/M3, the M18/M20
+emergence goldens, and the M5/M6 anchors) and the entire G1 `life` suite are
+**byte-identical and green by construction** — adding a leaf crate cannot move
+them. There is no compatibility shim to keep here because nothing in the engine
+was touched; the acceptance test `econ_and_life_unchanged` re-runs econ scenarios
+from `world`'s own workspace as a usability/non-perturbation check, and the
+workspace-wide `cargo test` / `cargo clippy --workspace --all-targets -- -D
+warnings` / `cargo fmt --check` are the gate.
+
+### 2. The spatial substrate, and what it deliberately is *not*
+
+`world` provides a tile `Grid` with passable/impassable terrain, `ResourceNode`s
+(a good, a stock, an optional per-tick regen clamped to a cap), `Stockpile`s
+(capacity-bounded integer storage), and agent spatial state (position + carried
+inventory + a `Task`). `World::tick()` advances movement along **deterministic
+BFS shortest paths** around obstacles, applies arrivals (harvest into carry /
+deposit into stockpile), regenerates nodes, and emits a per-tick conservation
+report. `World::generate(seed, &WorldGen)` builds a world from a seed.
+
+Two invariants are enforced and tested:
+
+- **Determinism.** Integer state; the `Rng` is consumed at *generation* only and
+  `tick()` draws nothing; agents iterate in `AgentId` order; storage is
+  `BTreeMap`/`Vec`, never `HashMap`. Same seed + same command sequence →
+  byte-identical world (`canonical_bytes` / `digest`).
+- **Conservation.** Node regen is the *only* source of goods (clamped to `cap`,
+  fully accounted in the per-tick report); movement, harvest, and deposit
+  relocate units without creating or destroying one; a deposit that overflows a
+  stockpile's capacity leaves the remainder carried, never destroyed. The world
+  total changes per tick by exactly the report's `regenerated`.
+
+It is a **pure spatial** layer: it does **not** know prices, money, wants, or
+trades. Goods are tracked only as integer quantities of `GoodId` at locations or
+carried by agents.
+
+### Excluded from G2a (deferred)
+
+- No econ-tick coupling, prices, money, wants, or trades; no escrow ledger — the
+  two-rate loop and the §4.3 delivery-escrow contract are **G2b** (`world` only
+  reports delivered/undelivered quantities; the escrow accounting lives in the
+  integration).
+- No multiple settlements / `Society` monolith extraction (**G2c**).
+- No binary, viewer, or inspectors (**G2d**).
+- No `life`/`Camp` changes — G2b rewires the driver onto `world`.
+- No RNG in `tick`; no `HashMap` in logic; no new external dependencies (pure std
+  besides the `econ` primitive dep).

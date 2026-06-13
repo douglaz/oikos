@@ -17,14 +17,14 @@ policy by causal necessity.
 ```
 econ/    the economy engine — fork of praxsim-core (pure std, deterministic)
 life/    needs → wants: colonist value scales generated from need state (G1)
+world/   the spatial substrate — grid, terrain, nodes, stockpiles, movement (G2a)
 docs/    the game spec and design documents
 ```
 
-Future crates per the spec's §4.1: `world/` (map, movement, stockpiles),
-`content/` (data-driven goods/recipes/tech), `sim/` (orchestrator, two-rate
-loop, commands), `ui/` (Bevy client), `tools/` (headless runners, balance CI).
-They arrive with their milestones (G2, G3, …) — empty scaffolding is not kept
-ahead of need.
+Future crates per the spec's §4.1: `content/` (data-driven goods/recipes/tech),
+`sim/` (orchestrator, two-rate loop, commands), `ui/` (Bevy client), `tools/`
+(headless runners, balance CI). They arrive with their milestones (G2b+, G3, …)
+— empty scaffolding is not kept ahead of need.
 
 ## Provenance and the lab relationship
 
@@ -125,6 +125,65 @@ G1:
       invalidate stale quotes after scale rewrites, tombstone);
       goldens byte-identical
 - [x] acceptance suite + divergence-log and README updates
+
+## Status: G2a (the `world` crate — spatial substrate) — complete
+
+Per game-spec §11. G2 in the roadmap bundles four large pieces — the `world`
+crate, the two-rate loop with the §4.3 delivery-escrow contract, the
+Society-monolith extraction for multiple settlements, and the debug viewer — into
+one milestone. That is too much for one reviewed change (G1, a pure function plus
+a driver, took eight rounds), so **G2 is decomposed** (this supersedes the
+single-G2 lump in game-spec §11):
+
+- **G2a (this milestone): the `world` crate** — the spatial substrate as a
+  standalone, econ-*independent* component.
+- **G2b: two-rate loop + escrow** — wire `world` delivery under the econ tick via
+  the §4.3 delivery-escrow contract for one settlement (distance affects realized
+  prices; escrow conserves exactly).
+- **G2c: settlement-scoped service extraction** — pull market/labor/barter books
+  out of the `Society` monolith so multiple settlements exist.
+- **G2d: debug viewer + inspectors** — the first binary; the price→trades and
+  colonist→scale-and-why inspectors the game-spec mandates for G2.
+
+G2a is the lowest-risk slice and the foundation the rest build on. The `world`
+crate is a **pure spatial substrate**: a tile grid with passable/impassable
+terrain, resource nodes (a good, a stock, an optional regen), stockpiles
+(capacity-bounded storage), and agents with positions and carried inventory that
+move along **deterministic BFS shortest paths** around obstacles and harvest /
+deposit on arrival.
+
+It knows positions, terrain, movement, harvest yields, and storage — and **no
+economics**: no prices, money, wants, or trades (those are G2b). It depends on
+`econ` only for the shared primitives `GoodId` / `AgentId` / `Rng`; it calls no
+econ economic logic and changes no econ behavior, and `econ` does not depend on
+`world`, so the conformance goldens and the G1 tests are safe by construction.
+
+Two invariants are the contract. **Determinism:** integer state, the `Rng`
+consumed at world *generation* only (`tick()` draws nothing), `AgentId`-ordered
+iteration, `BTreeMap`/`Vec` only — same seed + same command sequence yields a
+byte-identical world. **Conservation:** node regen is the *only* source of goods
+(clamped to `cap`, fully accounted in a per-tick report); movement, harvest, and
+deposit relocate units without ever creating or destroying one, and deposits that
+overflow a stockpile's capacity stay carried, never destroyed.
+
+G2a:
+
+- [x] `world` workspace crate (depends on `econ` for primitives, pure std
+      otherwise, deterministic)
+- [x] `Grid` + `Pos` + terrain (passable / impassable), placement validation
+- [x] `ResourceNode` (good, stock, optional regen, cap) with conserving harvest
+- [x] `Stockpile` (capacity-bounded, integer contents) with overflow-safe deposit
+- [x] agent spatial state (position + carried inventory) and `Task`
+      (go-to-node-and-harvest, go-to-stockpile-and-deposit, go-to-tile)
+- [x] deterministic BFS pathfinding around impassable terrain with a fixed
+      tie-break; unreachable targets set `Blocked` (no panic)
+- [x] `World::tick()` — movement, arrivals, regen, and a per-tick conservation
+      report; `World::generate(seed, &WorldGen)`; query accessors
+- [x] acceptance suite (`world/tests/g2a_world.rs`, eleven tests) + per-module
+      unit tests; divergence-log and README updates
+
+See `world/tests/g2a_world.rs` and `docs/engine-divergence.md` (the G2a entry and
+the recorded G2 decomposition).
 
 ## Build and test
 

@@ -2,5 +2,6 @@
 members = [
     "econ",
     "life",
+    "world",
 ]
 resolver = "2"
