@@ -26,7 +26,7 @@ mod cli;
 mod render;
 mod scenarios;
 
-use sim::{EconTickReport, GoodId, Settlement, Vocation};
+use sim::{EconTickReport, GoodId, Region, RegionConfig, Settlement, Vocation};
 
 pub use scenarios::{config_for, scenarios_text};
 
@@ -74,6 +74,12 @@ pub fn help_text() -> String {
     \x20   help       show this message\n",
     );
     out.push_str(
+        "\nThe `region` and `region-control` scenarios (run only) advance a two-settlement\n\
+         Region with / without a caravan and render the per-settlement prices and the\n\
+         convergence gap over time (G2c). The price/colonist inspectors apply to the\n\
+         single-settlement scenarios only.\n",
+    );
+    out.push_str(
         "\nThe viewer is deterministic: the same (scenario, ticks, seed) prints byte-\n\
          identical output. It renders from read-only accessors and changes no simulation\n\
          behavior. Defaults: seed 1; run ticks 20; inspect ticks 12.\n",
@@ -81,11 +87,28 @@ pub fn help_text() -> String {
     out
 }
 
+/// The region scenario name → [`RegionConfig`] lookup (the G2c multi-settlement
+/// dashboards). Returns `None` for a non-region name, so the settlement path and
+/// the inspectors keep handling the single-settlement scenarios. Read-only: it
+/// authors no economics, only selects the `sim` constructors.
+fn region_config_for(name: &str) -> Option<RegionConfig> {
+    match name {
+        "region" => Some(RegionConfig::two_settlements()),
+        "region-control" => Some(RegionConfig::two_settlements_control()),
+        _ => None,
+    }
+}
+
 /// Run the `run` dashboard: advance `scenario` for `ticks` econ ticks from
-/// `seed`, capturing a per-tick row, then render the dashboard.
+/// `seed`, capturing a per-tick row, then render the dashboard. A `region` /
+/// `region-control` scenario advances a two-settlement [`Region`] and renders the
+/// per-settlement prices + convergence gap instead (G2c).
 pub fn run_dashboard(scenario: &str, ticks: u64, seed: u64) -> Result<String, String> {
     if ticks == 0 {
         return Err("--ticks must be >= 1".to_string());
+    }
+    if let Some(region_config) = region_config_for(scenario) {
+        return Ok(run_region_dashboard(scenario, &region_config, ticks, seed));
     }
     let config = config_for(scenario)?;
     let gatherers = config.gatherers;
@@ -133,6 +156,44 @@ pub fn run_dashboard(scenario: &str, ticks: u64, seed: u64) -> Result<String, St
         consumers,
         &rows,
     ))
+}
+
+/// Advance a two-settlement [`Region`] for `ticks` econ ticks from `seed`,
+/// capturing a per-tick row, then render the region dashboard: the realized FOOD
+/// price at each settlement, their convergence gap, the conservation flag, and the
+/// in-transit caravan escrow. Read-only — it draws only from the `Region`'s
+/// accessors over a seeded run, so the same `(scenario, ticks, seed)` is
+/// byte-identical.
+fn run_region_dashboard(scenario: &str, config: &RegionConfig, ticks: u64, seed: u64) -> String {
+    let mut region = Region::generate(seed, config);
+    let good = region.traded_good();
+    let good_label = region
+        .settlement(0)
+        .map(|s| s.society().good_name(good).to_string())
+        .unwrap_or_else(|| "good".to_string());
+
+    let mut rows = Vec::with_capacity(ticks as usize);
+    for _ in 0..ticks {
+        let report = region.econ_tick();
+        rows.push(render::RegionDashboardRow {
+            econ_tick: report.econ_tick,
+            price_a: region.realized_price(0, good),
+            price_b: region.realized_price(1, good),
+            gap: region.price_gap(good),
+            conserves: report.conserves(),
+            escrow_good: u64::from(region.escrow_good()),
+            escrow_gold: region.escrow_gold(),
+        });
+    }
+
+    render::format_region_dashboard(
+        scenario,
+        seed,
+        ticks,
+        &good_label,
+        region.caravans_enabled(),
+        &rows,
+    )
 }
 
 /// Run the price → trades inspector for `good` at `at_tick` over a run of

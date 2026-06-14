@@ -297,10 +297,70 @@ G2d:
 - [x] acceptance suite (`viewer/tests/g2d_viewer.rs`: the seven acceptance tests
       + extras) and per-module unit tests; README + divergence-log updates
 
-This completes the revised G2 except for the multi-settlement extraction (G2c),
-which follows. See `viewer/tests/g2d_viewer.rs` and `docs/engine-divergence.md`
-(the G2d entry: the first binary, the read-only viewer, and the additive `sim`
-re-exports).
+See `viewer/tests/g2d_viewer.rs` and `docs/engine-divergence.md` (the G2d entry:
+the first binary, the read-only viewer, and the additive `sim` re-exports).
+
+## Status: G2c (multiple settlements + caravans, the `Region`) — complete
+
+The final G2 slice: **multiple settlements exist and trade**, completing the
+revised G2 (space → space-meets-economy → viewer → here). The game-spec frames
+this as "extract settlement-scoped services from the `Society` monolith." We
+reach the *end* — several independent settlement economies that trade — **by
+composition, not internal surgery**: a `Region` holds N self-contained
+`Settlement`s (each **unchanged** from G2b — its own `World` + `Society`), linked
+by an abstract inter-settlement **route**, with a **caravan** carrying a good from
+where it is cheap to where it is dear. No `Society` and no `Settlement` internal
+behaviour changes, so the six econ goldens and the whole G1/G2a/G2b/G2d suites
+stay byte-identical *by construction*.
+
+The caravan is the load-bearing design. Runtime agent-roster mutation (the
+`AgentArena` free/cache reconciliation) is G4-deferred, so a caravan is a **pair
+of permanent resident trader agents** — one per linked settlement, created at
+generation — and the `Region` shuttles their **wealth** between them as route
+escrow, never the agents. So each settlement's agent count is constant for the
+whole run. A trader takes the lowest id in its settlement (it leads the
+id-ordered market) and is otherwise inert (an empty value scale posts no orders)
+until the `Region` activates it for a buy or a sell.
+
+It proves two things, the DoD:
+
+1. **Region-wide conservation is exact.** For every good and for all gold, the
+   total over all settlements **plus** the in-transit route escrow changes only by
+   accounted node regen (the source) and consumption (the sink). Every caravan
+   transfer is **net-zero** (the additive `econ` accessors `debit_stock` /
+   `credit_gold` / `debit_gold` MOVE value, never mint or burn it), and escrow in
+   transit is conserved and **retained** if a leg never completes — never
+   destroyed. The `Region` roll-up is the ledger, checked every econ tick.
+2. **Trade converges prices.** With a caravan active between two settlements that
+   price a good differently, the realized-price gap narrows over time **versus a
+   no-caravan control** (the falsification twin keeps the gap). Sign only — no
+   price magnitude is pinned.
+
+```bash
+cargo test -p sim                                     # incl. sim/tests/g2c_region.rs
+cargo run -p viewer -- run region --ticks 30          # per-settlement prices + gap
+cargo run -p viewer -- run region-control --ticks 30  # the no-caravan twin
+```
+
+G2c:
+
+- [x] a `Region` type in `sim` (holds `Vec<Settlement>` unchanged + a route + a
+      caravan + a region-wide conservation roll-up + per-settlement realized-price
+      and gap accessors); `RegionConfig` with a `caravans_enabled` control toggle
+- [x] abstract inter-settlement **routes** (a transit-tick count) and the
+      **caravan** operator (permanent trader pairs; `Region`-shuttled wealth as
+      route escrow; a deterministic buy-low/sell-high on the realized differential)
+- [x] additive, conserving `econ` accessors `debit_stock` / `credit_gold` /
+      `debit_gold` (reject unknown/tombstoned ids, never go negative, move value),
+      goldens byte-identical
+- [x] a read-only `region` / `region-control` scenario in the `oikos` viewer
+      (per-settlement prices + the convergence gap over time)
+- [x] acceptance suite (`sim/tests/g2c_region.rs`: the eight acceptance tests +
+      extras) and per-module unit tests; README + divergence-log updates
+
+This completes the revised G2. See `sim/tests/g2c_region.rs` and
+`docs/engine-divergence.md` (the G2c entry: multi-settlement by composition, the
+caravan-as-trader-pair model, and why no `Society` internal extraction).
 
 ## Build and test
 
@@ -318,4 +378,6 @@ The `oikos` binary (G2d) is the workspace's first runnable artifact:
 cargo run -p viewer -- help          # usage
 cargo run -p viewer -- scenarios     # list the scenarios
 cargo run -p viewer -- run viable --ticks 20
+cargo run -p viewer -- run region --ticks 30          # G2c: two settlements + a caravan
+cargo run -p viewer -- run region-control --ticks 30  # the no-caravan twin
 ```

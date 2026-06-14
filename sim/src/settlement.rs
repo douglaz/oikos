@@ -91,6 +91,28 @@ pub enum Vocation {
     Consumer,
 }
 
+/// The endowment of a **resident trader** — a permanent econ agent the `Region`
+/// (G2c caravans) adds to a settlement at generation, beyond the colonist roster.
+///
+/// A resident trader is one half of a caravan's permanent trader *pair* (the
+/// other lives in the linked settlement): it is an `econ::Society` agent the
+/// settlement does **not** itself manage — it has no [`Vocation`], no
+/// [`NeedState`], is never tombstoned, and the settlement's per-econ-tick phases
+/// (needs, scales, tasks) skip it entirely. The `Region` owns its value scale and
+/// shuttles its wealth as caravan route escrow. Created at generation so no agent
+/// is ever added to or removed from a `Society` at runtime (the G4-deferred
+/// roster mutation). A plain settlement has none, so every G2b config and golden
+/// is byte-identical.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TraderEndowment {
+    /// Working-capital gold the trader starts with (its initial buying power).
+    pub gold: u64,
+    /// Initial physical stock, as `(good, qty)` pairs. Every good here is tracked
+    /// for whole-system conservation (it joins `self.goods`), so a trader cannot
+    /// hold an untracked good. GOLD (money) is rejected: it is not a physical good.
+    pub stock: Vec<(GoodId, u32)>,
+}
+
 /// A resource node to place: a good, a tile, and its stock/regen/cap.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NodeSpec {
@@ -138,6 +160,13 @@ pub struct SettlementConfig {
     pub consumer_time_preference_base_bps: u16,
     pub leisure_weight_base_bps: u16,
     pub dynamics: NeedDynamics,
+    /// Permanent **resident traders** (G2c caravans), one econ agent each, added
+    /// at generation **before** the colonist roster (taking the **lowest** ids, so
+    /// they lead the id-ordered market as the price-setting makers). Empty for
+    /// every plain settlement, so the existing configs and the six econ goldens are
+    /// byte-identical by construction. The `Region` populates this (one trader per
+    /// linked settlement) and manages the agents; see [`TraderEndowment`].
+    pub resident_traders: Vec<TraderEndowment>,
 }
 
 impl SettlementConfig {
@@ -183,6 +212,10 @@ impl SettlementConfig {
             consumer_time_preference_base_bps: 500,
             leisure_weight_base_bps: 3_000,
             dynamics: NeedDynamics::lab_default(),
+            // A plain settlement has no resident traders; the `Region` adds them
+            // for caravans (G2c). Empty here keeps every G2b config and the six
+            // econ goldens byte-identical.
+            resident_traders: Vec::new(),
         }
     }
 
@@ -242,6 +275,14 @@ impl SettlementConfig {
         let x = self.exchange.x.saturating_add(distance);
         assert!(x < self.width, "node distance puts the node off the grid");
         self.nodes[0].pos = Pos::new(x, y);
+        self
+    }
+
+    /// Attach the resident-trader endowments (G2c caravans), replacing any already
+    /// set. The `Region` calls this when wiring a settlement into a caravan; a
+    /// plain settlement leaves the list empty. Holding everything else fixed.
+    pub fn with_resident_traders(mut self, traders: Vec<TraderEndowment>) -> Self {
+        self.resident_traders = traders;
         self
     }
 }
@@ -339,6 +380,16 @@ pub struct Settlement {
     /// succeeds. The map exists solely to retry a clipped credit against the
     /// original depositor once headroom opens.
     pending_deposits: BTreeMap<(AgentId, GoodId), u32>,
+    /// The ids of the resident-trader agents (G2c caravans), in generation order
+    /// — the agents the settlement does NOT manage (no need/scale/task phase
+    /// touches them). The `Region` addresses its caravan trader pair through
+    /// these. Empty for a plain settlement.
+    trader_ids: Vec<AgentId>,
+    /// The numeric id of colonist slot 0 — equal to the resident-trader count,
+    /// since traders take the lowest ids. Zero for a plain settlement (colonist
+    /// `i` has `AgentId(i)`, exactly as in G2b). Lets [`Settlement::slot_for_id`]
+    /// map a colonist id back to its slot in O(1) despite the trader offset.
+    colonist_id_base: u64,
     econ_tick: u64,
     last_report: EconTickReport,
 }
@@ -383,18 +434,46 @@ impl Settlement {
             node_ids.push(id);
         }
 
-        // Consumers take the LOWER ids so their FOOD bids rest first and set the
-        // realized price (the supply-sensitive, buyers-lead book; see the module
-        // docs). Gatherers follow. World `AgentId`s match econ `AgentId`s by
-        // construction (both assigned 0,1,2,… in this order).
         let consumers = usize::from(config.consumers);
         let gatherers = usize::from(config.gatherers);
         let population = consumers + gatherers;
 
+        // Resident traders (G2c caravans) take the LOWEST ids, *before* the
+        // colonists, so they are processed first in the id-ordered market and their
+        // resting orders are the **price-setting makers** the rest of the book
+        // crosses (a caravan trader leads the book: a seller's cheap ask becomes the
+        // realized price, pulling a dear market down toward the cheap one). A trader
+        // is otherwise inert at generation — an EMPTY scale posts no orders until
+        // the `Region` activates it — and it is not a colonist (no need/scale/task
+        // phase touches it). It is given a *parked* world agent at the exchange (so
+        // world and econ `AgentId`s stay coincident for the colonists that follow);
+        // routes are abstract, so the trader is never tasked and its world agent
+        // just idles, carrying nothing. No randomness is drawn for traders — the
+        // `Region`, not the settlement, drives them deterministically.
+        let num_traders = config.resident_traders.len();
         let mut colonists = Vec::with_capacity(population);
-        let mut agents = Vec::with_capacity(population);
+        let mut agents = Vec::with_capacity(num_traders + population);
+        let mut trader_ids = Vec::with_capacity(num_traders);
+        for (offset, endowment) in config.resident_traders.iter().enumerate() {
+            let id = AgentId(offset as u64);
+            let placed = world
+                .add_agent(config.exchange, config.carry_cap, config.move_speed)
+                .expect("trader lands on the exchange tile");
+            debug_assert_eq!(placed, id, "world and econ trader ids must coincide");
+            agents.push(build_trader_agent(id, endowment));
+            trader_ids.push(id);
+        }
+
+        // Consumers take the LOWER colonist ids so their FOOD bids rest before the
+        // gatherers' asks and set the realized price (the supply-sensitive,
+        // buyers-lead book; see the module docs). Gatherers follow. Colonist ids
+        // begin at `num_traders` (the trader pair, if any, leads); for a plain
+        // settlement `num_traders == 0`, so colonists keep ids 0,1,2,… exactly as
+        // in G2b and every existing config and golden is byte-identical. World
+        // `AgentId`s match econ `AgentId`s by construction (assigned in this order).
+        let colonist_id_base = num_traders as u64;
         for index in 0..population {
-            let id = AgentId(index as u64);
+            let id = AgentId(colonist_id_base + index as u64);
             // World agent for every colonist (consumers idle at the exchange,
             // gatherers haul); placement at the exchange tile is always passable.
             let placed = world
@@ -431,8 +510,8 @@ impl Settlement {
         }
 
         // The goods tracked for conservation: node goods plus anything a colonist
-        // starts holding (FOOD via nodes/buffers, WOOD via endowments). Money is
-        // not a physical good, so it is excluded.
+        // or resident trader starts holding (FOOD via nodes/buffers, WOOD via
+        // endowments). Money is not a physical good, so it is excluded.
         let mut goods: Vec<GoodId> = Vec::new();
         let push_good = |g: GoodId, goods: &mut Vec<GoodId>| {
             if g != GOLD && !goods.contains(&g) {
@@ -475,6 +554,8 @@ impl Settlement {
             carry_cap: config.carry_cap,
             goods,
             pending_deposits: BTreeMap::new(),
+            trader_ids,
+            colonist_id_base,
             econ_tick: 0,
             last_report: EconTickReport::default(),
         }
@@ -847,11 +928,17 @@ impl Settlement {
     }
 
     fn slot_for_id(&self, id: AgentId) -> Option<usize> {
-        // Colonist `i` has `AgentId(i)`, so the numeric index is its slot — an
-        // O(1) hit. Fall back to a search to stay correct if that ever changes.
-        let guess = id.index() as usize;
-        if self.colonists.get(guess).map(|c| c.id) == Some(id) {
-            return Some(guess);
+        // Colonist slot `s` has `AgentId(colonist_id_base + s)` (the resident-trader
+        // pair, if any, takes the lower ids), so subtracting the base is its slot —
+        // an O(1) hit. A non-colonist id (a trader, below the base) or any mismatch
+        // falls back to a search, which returns `None` for a trader. (Traders never
+        // appear in the consumption/labor logs this resolves, so the fallback is
+        // belt-and-braces, not a hot path.)
+        if let Some(guess) = (u64::from(id.index())).checked_sub(self.colonist_id_base) {
+            let guess = guess as usize;
+            if self.colonists.get(guess).map(|c| c.id) == Some(id) {
+                return Some(guess);
+            }
         }
         self.colonists.iter().position(|c| c.id == id)
     }
@@ -859,13 +946,14 @@ impl Settlement {
     // ---- accessors ------------------------------------------------------
 
     /// The whole-system total of `good`: every node, carry, and stockpile
-    /// (`world`) plus every colonist's econ stock. The conserved quantity.
+    /// (`world`) plus every agent's econ stock — colonists **and** any resident
+    /// traders. The conserved quantity.
     pub fn whole_system_total(&self, good: GoodId) -> u64 {
         self.world.total_goods_of(good) + self.econ_stock_total(good)
     }
 
     /// Total of `good` held in econ agent stock across all (living and frozen)
-    /// colonists.
+    /// agents, including resident traders.
     pub fn econ_stock_total(&self, good: GoodId) -> u64 {
         self.society
             .agents
@@ -903,6 +991,28 @@ impl Settlement {
     /// Read-only access to the underlying society (holdings/price assertions).
     pub fn society(&self) -> &Society {
         &self.society
+    }
+
+    /// Mutable access to the underlying society — **the `Region`/caravan seam**
+    /// (G2c). The `Region` reaches through this to drive its resident-trader pair:
+    /// set a trader's value scale (then cancel its stale quotes) and shuttle its
+    /// wealth with the additive `econ` transfer accessors
+    /// ([`Society::debit_stock`] / [`Society::credit_stock`] /
+    /// [`Society::debit_gold`] / [`Society::credit_gold`]). It must touch **only**
+    /// the [`Settlement::resident_trader_ids`] agents: the settlement owns every
+    /// colonist's scale, liveness, and per-tick phase, and mutating a colonist
+    /// here would desynchronize its `alive`/need bookkeeping. Caravan moves run
+    /// **between** econ ticks (outside [`Settlement::econ_tick`]), so the
+    /// settlement's own per-tick conservation receipt is unaffected.
+    pub fn society_mut(&mut self) -> &mut Society {
+        &mut self.society
+    }
+
+    /// The ids of the resident-trader agents (G2c caravans), in generation order.
+    /// Empty for a plain settlement. These are econ-only agents the settlement
+    /// does not manage; the `Region` drives them through [`Settlement::society_mut`].
+    pub fn resident_trader_ids(&self) -> &[AgentId] {
+        &self.trader_ids
     }
 
     /// The exchange stockpile id.
@@ -1150,6 +1260,32 @@ fn build_agent(
     }
 }
 
+/// Build a resident-trader agent (G2c caravans) from its endowment: working gold,
+/// an initial physical stock, an **empty** value scale (so it posts no orders
+/// until the `Region` activates it), and the [`Role::Trader`]. Draws no
+/// randomness — traders are `Region`-driven, not culture-generated.
+fn build_trader_agent(id: AgentId, endowment: &TraderEndowment) -> Agent {
+    let mut stock = Stock::new(NET.0);
+    for &(good, qty) in &endowment.stock {
+        assert!(
+            good != GOLD,
+            "a resident trader cannot be endowed with the money good (GOLD); \
+             pass working capital via TraderEndowment::gold instead"
+        );
+        stock.add(good, qty);
+    }
+    Agent {
+        id,
+        scale: Vec::new(),
+        stock,
+        gold: Gold(endowment.gold),
+        labor_capacity: 0,
+        hunger_deficit: 0,
+        roles: vec![Role::Trader],
+        expect: belief_vec(),
+    }
+}
+
 fn push_dynamics_bytes(out: &mut Vec<u8>, d: &NeedDynamics) {
     out.extend_from_slice(&d.need_max.to_le_bytes());
     out.extend_from_slice(&d.hunger_deplete.to_le_bytes());
@@ -1232,6 +1368,65 @@ mod tests {
     fn tracked_goods_are_food_and_wood_only() {
         let s = Settlement::generate(1, &SettlementConfig::viable());
         assert_eq!(s.tracked_goods(), &[FOOD, WOOD]);
+    }
+
+    #[test]
+    fn resident_traders_take_the_lowest_ids_and_start_idle() {
+        let config = SettlementConfig::viable().with_resident_traders(vec![TraderEndowment {
+            gold: 500,
+            stock: Vec::new(),
+        }]);
+        let s = Settlement::generate(1, &config);
+        let population = usize::from(config.consumers) + usize::from(config.gatherers);
+
+        // The trader takes id 0 (a price-setting maker, processed first) and is NOT
+        // a colonist; colonists shift up to ids 1..=population.
+        assert_eq!(s.population(), population, "traders are not colonists");
+        assert_eq!(s.resident_trader_ids(), &[AgentId(0)]);
+        assert_eq!(
+            s.colonist_id(0),
+            Some(AgentId(1)),
+            "colonists shift up by one"
+        );
+
+        // It is a real econ agent: present in the arena with its endowment, an
+        // empty (idle) scale, the Trader role, and a parked world agent at the
+        // exchange (so world/econ ids stay coincident for the colonists).
+        let trader = s
+            .society()
+            .agents
+            .get(AgentId(0))
+            .expect("trader resolves in the arena");
+        assert_eq!(trader.gold.0, 500);
+        assert!(trader.scale.is_empty(), "a fresh trader posts no orders");
+        assert_eq!(trader.roles, vec![Role::Trader]);
+        assert_eq!(
+            s.world().agent_pos(AgentId(0)),
+            Some(config.exchange),
+            "a trader parks at the exchange, never tasked"
+        );
+    }
+
+    #[test]
+    fn no_resident_traders_is_byte_identical_to_a_plain_settlement() {
+        // The additive field must not move a trader-less settlement's digest — the
+        // G2b determinism tripwire and the econ goldens depend on this.
+        let plain = Settlement::generate(7, &SettlementConfig::viable());
+        let explicit_empty = Settlement::generate(
+            7,
+            &SettlementConfig::viable().with_resident_traders(Vec::new()),
+        );
+        assert_eq!(plain.digest(), explicit_empty.digest());
+    }
+
+    #[test]
+    #[should_panic(expected = "cannot be endowed with the money good")]
+    fn resident_trader_rejects_gold_stock() {
+        let config = SettlementConfig::viable().with_resident_traders(vec![TraderEndowment {
+            gold: 0,
+            stock: vec![(GOLD, 10)],
+        }]);
+        let _ = Settlement::generate(1, &config);
     }
 
     #[test]

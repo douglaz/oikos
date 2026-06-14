@@ -108,6 +108,7 @@ pub fn scenarios_text() -> String {
         .unwrap_or(0)
         .max("scenario".len());
 
+    let name_width = name_width.max("region-control".len());
     let mut out = String::new();
     out.push_str("Available scenarios:\n\n");
     for scenario in SCENARIOS {
@@ -118,6 +119,21 @@ pub fn scenarios_text() -> String {
             width = name_width
         ));
     }
+    // The G2c multi-settlement scenarios — for the `run` dashboard only (they
+    // advance a two-settlement Region, not a single Settlement, so the price /
+    // colonist inspectors do not apply).
+    out.push_str(&format!(
+        "    {:<width$}  {}\n",
+        "region",
+        "two settlements + a caravan (run only): the FOOD-price gap narrows",
+        width = name_width
+    ));
+    out.push_str(&format!(
+        "    {:<width$}  {}\n",
+        "region-control",
+        "the no-caravan twin (run only): the gap is kept",
+        width = name_width
+    ));
     out.push_str("\nAliases: near-node = near, far-node = far\n");
     out
 }

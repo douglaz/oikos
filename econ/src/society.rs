@@ -38,7 +38,7 @@ enum ApplyMode {
 use crate::factor::{
     FactorSide, LaborBook, LaborMarketView, LaborOrder, LaborReservations, LaborTrade,
 };
-use crate::good::{Gold, GoodId, Stock, FOOD, NET, WOOD};
+use crate::good::{Gold, GoodId, Stock, FOOD, GOLD, NET, WOOD};
 use crate::issuer::{Issuer, IssuerPolicy};
 use crate::ledger::{BankId, MoneySystem};
 use crate::market::{ExecutedTrade, Order, OrderBook, OrderSide, Reservations, Trade};
@@ -3693,6 +3693,109 @@ impl Society {
         true
     }
 
+    /// Debit `qty` units of `good` from a live agent's stock, returning `false`
+    /// for an unknown, stale, or tombstoned `agent`, **or** when the agent holds
+    /// fewer than `qty` (then nothing is debited — the stock never goes
+    /// negative). The withdrawing mirror of [`Society::credit_stock`].
+    ///
+    /// The G2c caravan seam (`docs/impl-g2c.md`). A `Region` shuttles a resident
+    /// trader's wealth between two settlements: it debits the trader here and
+    /// credits the same amount into its own route escrow, so the move is
+    /// **net-zero** across the `[society ∪ escrow]` ledger — value is moved, never
+    /// minted or burned. Like `credit_stock` it is **purely additive**: it touches
+    /// no scale, quote, money balance, or market state and is called by no engine
+    /// path, so the conformance goldens are byte-identical. The atomic
+    /// [`Stock::remove`] is the never-negative guarantee.
+    ///
+    /// Caller contract (the seam): a driver must debit only an agent it has first
+    /// quieted — a tombstoned id is rejected here, and a live trader must have its
+    /// resting quotes cancelled (its reservations released) before its stock or
+    /// gold is debited, or a stale order could reference goods the agent no longer
+    /// holds. `Region` clears a departing trader's scale and cancels its quotes
+    /// before withdrawing its wealth into escrow.
+    pub fn debit_stock(&mut self, agent: AgentId, good: GoodId, qty: u32) -> bool {
+        let Some(position) = self.agents.position_of(agent) else {
+            return false;
+        };
+        if self.tombstoned_agents.binary_search(&agent).is_ok() {
+            return false;
+        }
+        self.agents[position].stock.remove(good, qty)
+    }
+
+    /// Whether this society uses the legacy **closed-GOLD M1** money model — the
+    /// only regime the gold accessors may touch. True iff there is no
+    /// [`MoneySystem`] ledger (so [`Society::total_gold`] sums `Agent.gold`, making
+    /// the gold field itself the money) **and** the market-money regime is
+    /// `Designated`-GOLD.
+    ///
+    /// It is false for ledger-backed M3 societies (the `MoneySystem`, not the agent
+    /// cache, is the source of truth) and — the case `money_system.is_some()` alone
+    /// misses — for emergent-money regimes such as `MengerSaltMoney`, where the
+    /// circulating medium is a *good* held in stock and keeps no `MoneySystem`, so
+    /// `Agent.gold` is not money at all. Crediting `Agent.gold` there would mint a
+    /// phantom balance that [`Society::total_gold`] would wrongly count.
+    fn uses_closed_gold_money(&self) -> bool {
+        self.money_system.is_none()
+            && matches!(
+                &self.money,
+                MarketMoneyState::Designated(money) if money.money_good() == GOLD
+            )
+    }
+
+    /// Credit `amount` gold to a live agent's balance, returning `false` for an
+    /// unknown, stale, or tombstoned `agent` or on overflow (then nothing is
+    /// credited). The gold analog of [`Society::credit_stock`] and the depositing
+    /// half of the G2c caravan seam (see [`Society::debit_stock`]).
+    ///
+    /// Operates only on the legacy closed-money model the `sim` settlement uses
+    /// (a `Designated`-GOLD M1 society with no `money_system`), where
+    /// [`Society::total_gold`] sums agent gold, so a `Region` can account a paired
+    /// debit/credit as a conserved move. Both ledger-backed (M3) and emergent-money
+    /// regimes are rejected up front via [`Society::uses_closed_gold_money`] —
+    /// in neither is `Agent.gold` the circulating money, so touching it would
+    /// desynchronize a `MoneySystem` or mint a phantom non-money balance.
+    pub fn credit_gold(&mut self, agent: AgentId, amount: Gold) -> bool {
+        if !self.uses_closed_gold_money() {
+            return false;
+        }
+        let Some(position) = self.agents.position_of(agent) else {
+            return false;
+        };
+        if self.tombstoned_agents.binary_search(&agent).is_ok() {
+            return false;
+        }
+        let Some(updated) = self.agents[position].gold.checked_add(amount) else {
+            return false;
+        };
+        self.agents[position].gold = updated;
+        true
+    }
+
+    /// Debit `amount` gold from a live agent's balance, returning `false` for an
+    /// unknown, stale, or tombstoned `agent`, **or** when the agent holds less
+    /// than `amount` (then nothing is debited — the balance never goes negative).
+    /// The withdrawing mirror of [`Society::credit_gold`]: legacy closed-GOLD M1
+    /// societies only (see [`Society::uses_closed_gold_money`]), rejecting both
+    /// ledger-backed and emergent-money regimes before any mutation. See
+    /// [`Society::debit_stock`] for the caller contract.
+    pub fn debit_gold(&mut self, agent: AgentId, amount: Gold) -> bool {
+        if !self.uses_closed_gold_money() {
+            return false;
+        }
+        let Some(position) = self.agents.position_of(agent) else {
+            return false;
+        };
+        if self.tombstoned_agents.binary_search(&agent).is_ok() {
+            return false;
+        }
+        let Some(updated) = self.agents[position].gold.checked_sub(amount) else {
+            return false;
+        };
+        self.agents[position].gold = updated;
+        true
+    }
+
     fn record_consumption_log(&mut self, agent_index: usize, provisions: &TickProvisions) {
         let agent_id = self.agents[agent_index].id;
         // `provisions.allocated` is built index-parallel to `agent.scale`
@@ -6043,6 +6146,137 @@ mod tests {
         assert!(!society.credit_stock(id, FOOD, 5));
         assert_eq!(society.agents.get(id).unwrap().stock.get(FOOD), 0);
         assert_eq!(society.total_stock(FOOD), 0);
+    }
+
+    #[test]
+    fn debit_and_credit_gold_move_value_without_minting() {
+        // The G2c caravan seam: the additive accessors MOVE value (debit one side,
+        // credit another by the same amount) — they never create or destroy a unit
+        // or a coin, and they never let a balance go negative.
+        let mut society = test_society(test_capitalist(Stock::new(WOOD.0)));
+        let id = AgentId(1);
+        let gold_before = society.total_gold();
+
+        // Stock first: credit, then debit it back out — net zero.
+        assert!(society.credit_stock(id, FOOD, 5));
+        assert!(society.debit_stock(id, FOOD, 2));
+        assert_eq!(society.agents.get(id).unwrap().stock.get(FOOD), 3);
+        assert_eq!(society.total_stock(FOOD), 3);
+        // Over-debit is rejected atomically — nothing leaves, no negative.
+        assert!(!society.debit_stock(id, FOOD, 4));
+        assert_eq!(society.total_stock(FOOD), 3);
+
+        // Gold: credit then debit, balance and total move together, no mint/burn.
+        assert!(society.credit_gold(id, Gold(7)));
+        assert_eq!(
+            society.total_gold(),
+            gold_before.saturating_add(Gold(7)),
+            "credit_gold adds exactly the amount"
+        );
+        assert!(society.debit_gold(id, Gold(7)));
+        assert_eq!(
+            society.total_gold(),
+            gold_before,
+            "the paired debit restores the total"
+        );
+        // Over-debit gold is rejected; the balance never goes negative.
+        let balance = society.agents.get(id).unwrap().gold;
+        assert!(!society.debit_gold(id, balance.saturating_add(Gold(1))));
+        assert_eq!(society.agents.get(id).unwrap().gold, balance);
+    }
+
+    #[test]
+    fn additive_accessors_reject_unknown_and_tombstoned_ids() {
+        let mut society = test_society(test_capitalist(Stock::new(WOOD.0)));
+        let id = AgentId(1);
+        // Seed some holdings to debit later.
+        assert!(society.credit_stock(id, FOOD, 5));
+        assert!(society.credit_gold(id, Gold(5)));
+
+        // Unknown ids are rejected on every accessor and change nothing.
+        let unknown = AgentId(99);
+        assert!(!society.debit_stock(unknown, FOOD, 1));
+        assert!(!society.credit_gold(unknown, Gold(1)));
+        assert!(!society.debit_gold(unknown, Gold(1)));
+        assert_eq!(society.total_stock(FOOD), 5);
+
+        // Tombstoning freezes holdings; the additive seam must not thaw them.
+        let frozen_gold = society.total_gold();
+        assert!(society.tombstone(id));
+        assert!(!society.debit_stock(id, FOOD, 1));
+        assert!(!society.credit_gold(id, Gold(1)));
+        assert!(!society.debit_gold(id, Gold(1)));
+        assert_eq!(society.total_stock(FOOD), 5, "frozen stock is untouched");
+        assert_eq!(
+            society.total_gold(),
+            frozen_gold,
+            "frozen gold is untouched"
+        );
+    }
+
+    #[test]
+    fn gold_accessors_reject_ledger_backed_societies() {
+        let mut society = small_redemption_society();
+        let id = AgentId(1);
+        let total_before = society.total_gold();
+        let agent_gold_before = agent_gold_rows(society.agents.as_slice());
+        let money_before = society.money_system.clone();
+
+        assert!(society.money_ledgers_reconcile());
+        assert!(!society.credit_gold(id, Gold(1)));
+        assert!(!society.debit_gold(id, Gold(1)));
+
+        assert_eq!(society.total_gold(), total_before);
+        assert_eq!(
+            agent_gold_rows(society.agents.as_slice()),
+            agent_gold_before
+        );
+        assert_eq!(society.money_system, money_before);
+        assert!(society.money_ledgers_reconcile());
+    }
+
+    #[test]
+    fn gold_accessors_reject_emergent_money_societies() {
+        // Emergent (Mengerian) money: the circulating medium is a *good* that
+        // emerges from barter, not the `Agent.gold` field, and there is no
+        // `MoneySystem` ledger — so `money_system.is_some()` alone would not catch
+        // this regime. The gold accessors must still refuse to touch `Agent.gold`
+        // here (it is not money), so they cannot mint a phantom balance that
+        // `total_gold` would count.
+        let mut society =
+            Society::from_scenario(builtin_market_scenario(ScenarioName::MengerSaltMoney));
+        assert!(
+            society.money_system.is_none(),
+            "Mengerian emergent money keeps no M3 ledger"
+        );
+        assert!(
+            !society.uses_closed_gold_money(),
+            "emergent money is not the closed-GOLD M1 regime"
+        );
+
+        let id = society.agents.as_slice()[0].id;
+        let total_before = society.total_gold();
+        let agent_gold_before = agent_gold_rows(society.agents.as_slice());
+
+        assert!(
+            !society.credit_gold(id, Gold(1)),
+            "emergent money must reject credit_gold"
+        );
+        assert!(
+            !society.debit_gold(id, Gold(1)),
+            "emergent money must reject debit_gold"
+        );
+
+        assert_eq!(
+            society.total_gold(),
+            total_before,
+            "no phantom gold was minted in an emergent-money regime"
+        );
+        assert_eq!(
+            agent_gold_rows(society.agents.as_slice()),
+            agent_gold_before,
+            "no agent gold balance changed in an emergent-money regime"
+        );
     }
 
     fn test_m3_society(agent: Agent, money_good: GoodId, recipes: Vec<Recipe>) -> Society {

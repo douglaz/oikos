@@ -1,4 +1,4 @@
-//! `sim` — the two-rate orchestrator (game milestone G2b).
+//! `sim` — the two-rate orchestrator (G2b) and the multi-settlement region (G2c).
 //!
 //! G2a built the spatial substrate (`world`) in isolation; G2b makes space
 //! **economically meaningful** by wiring it under the economy. `sim` owns a
@@ -40,12 +40,30 @@
 //! [`Settlement::generate`]; neither the fast loop nor the econ tick draws any
 //! randomness; iteration is `AgentId`-ordered; storage is `BTreeMap`/`Vec`,
 //! never `HashMap`. Same seed + same [`SettlementConfig`] → byte-identical run.
+//!
+//! ## G2c — multiple settlements that trade (the [`Region`])
+//!
+//! [`Region`] composes the milestone's final slice **by composition, not internal
+//! surgery**: it holds a `Vec<Settlement>`, each one **unchanged** from G2b, linked
+//! by an abstract inter-settlement [`Route`] (a transit-tick count), with one
+//! caravan carrying a good from where it is cheap to where it is dear.
+//! The caravan is a **pair of permanent resident trader agents** (one per linked
+//! settlement, created at generation — never a runtime roster change), whose wealth
+//! the region shuttles along the route as escrow using the additive, conserving
+//! `econ` transfer accessors. Because no `Settlement` and no `Society` internal
+//! behaviour changes, the six econ conformance goldens and the whole G1/G2a/G2b/G2d
+//! suites stay byte-identical. The region proves region-wide conservation is exact
+//! (every good and all gold across all settlements plus the in-transit escrow) and
+//! that trade converges prices (the gap narrows versus a no-caravan control — sign
+//! only). See [`mod@region`].
 
+pub mod region;
 pub mod settlement;
 
+pub use region::{Region, RegionConfig, RegionTickReport, Route};
 pub use settlement::{
-    EconTickReport, NodeSpec, Settlement, SettlementConfig, Vocation, ECON_TICKS_PER_YEAR,
-    FAST_TICKS_PER_ECON_TICK,
+    EconTickReport, NodeSpec, Settlement, SettlementConfig, TraderEndowment, Vocation,
+    ECON_TICKS_PER_YEAR, FAST_TICKS_PER_ECON_TICK,
 };
 
 /// Read-only re-exports of the `econ`/`life` types that make up the settlement's

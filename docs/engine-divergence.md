@@ -581,3 +581,148 @@ committed.
 - No `HashMap` in logic; no new external dependencies (pure std over the `sim`
   path dep; `econ` is a *test-only* dev-dependency for the read-only
   non-perturbation check).
+
+---
+
+## G2c — multiple settlements + caravans (the `Region`, `docs/impl-g2c.md`)
+
+G2c completes the revised G2 (G2a space, G2b space-meets-economy, G2d viewer,
+G2c here): **multiple settlements exist and trade.** The game-spec frames this as
+"extract settlement-scoped services from the `Society` monolith." We achieve the
+*end* — several independent settlement economies that trade — **by composition,
+not internal surgery**, and that choice is the headline divergence recorded here.
+The only engine/`sim` edits are **additive**; the six conformance goldens (the
+four series M0/M1/M2/M3, the M18/M20 emergence goldens, the M5/M6 anchors) and the
+whole G1/G2a/G2b/G2d suites stay green and byte-identical — the unchanged
+workspace `cargo test` is the proof.
+
+### 0. Multi-settlement by **composition**, not `Society`-monolith extraction
+
+The roadmap's G2c is "pull market/labor/barter books out of the `Society`
+monolith so multiple settlements exist." We deliberately **do not** carve up
+`Society`. Instead a new `sim::Region` holds a `Vec<Settlement>`, each
+`Settlement` **unchanged** from G2b — its own `World`, `Society`, colonists,
+exchange, and per-econ-tick conservation receipt. Several settlement economies
+therefore exist and trade with **zero** `Society` internal change.
+
+Why composition and not extraction:
+
+- **Golden safety by construction.** Splitting the books out of `Society` would
+  touch the exact clearing/settlement code every conformance golden exercises —
+  the highest-risk possible edit against the standing rule (§10.1). Composing N
+  whole `Society`s touches none of it: the goldens cannot move because the engine
+  is not edited. The acceptance test `econ_settlement_unchanged` plus the
+  workspace gate confirm it.
+- **G2b `Settlement` tests stay valid.** A plain settlement (no resident traders)
+  is byte-identical to G2b — proven by `no_resident_traders_is_byte_identical_to_a_plain_settlement`
+  and the unchanged G2b suite.
+- **The end is reached.** The DoD is "several independent settlement economies
+  that trade," and composition delivers exactly that. A genuine `Society`
+  service-extraction (sharing books/markets across settlements in one process)
+  buys nothing G2c needs and is left for if/when a later milestone actually
+  requires cross-settlement shared infrastructure.
+
+### 1. The caravan is a **permanent resident trader pair** (the G4 deferral)
+
+Runtime agent-roster mutation — `AgentArena::free` + the Society position-cache
+reconciliation — is the **G4-deferred** work (recorded in the G0b and G1 entries
+above). So a caravan must **never** add or remove an agent from a `Society` at
+runtime. Instead a caravan is a **pair of permanent resident trader agents** —
+one per linked settlement, created at *generation* — and the `Region` shuttles
+their **wealth** between them as route escrow, never the agents. Consequences:
+
+- Each settlement's agent count is **constant** for the whole run (guarded by
+  `trader_pairs_are_permanent_no_roster_mutation`); the caravan moves value, not
+  agents.
+- A trader is an `econ::Society` agent the settlement does **not** manage: it has
+  no `Vocation`, no `NeedState`, is never tombstoned, and the settlement's
+  per-econ-tick phases (needs, scale regeneration, task assignment) skip it. Its
+  scale starts **empty** (an empty scale posts no orders, so it is inert), and the
+  `Region` sets it to a buy or sell ladder when it activates the trader.
+- The trader takes the **lowest** id in its settlement (so it leads the
+  id-ordered market) and is given a *parked* world agent at the exchange — never
+  tasked — purely to keep world and econ `AgentId`s coincident for the colonists,
+  which now begin at id `num_traders`. For a plain settlement `num_traders == 0`,
+  so colonists keep ids `0,1,2,…` exactly as in G2b and nothing moves.
+
+### 2. Three additive `econ` accessors realize the caravan seam (goldens safe)
+
+G2b added `credit_stock` (the world→econ deposit). G2c adds its peers — the
+**withdraw/transfer** half of the wealth-shuttle:
+
+- **`Society::debit_stock(AgentId, GoodId, u32) -> bool`** — the mirror of
+  `credit_stock`; removes stock from a live agent, returning `false` for an
+  unknown/stale/tombstoned id **or** when the agent holds less than asked (the
+  atomic `Stock::remove` is the never-negative guarantee).
+- **`Society::credit_gold(AgentId, Gold) -> bool`** / **`debit_gold(...)`** — the
+  gold analogs, operating on the agent's `gold` balance (the legacy closed-money
+  model the `sim` settlement uses — a `Designated`-GOLD M1 society with no
+  `money_system`, where `total_gold` sums agent gold). Both first gate on the
+  actual money regime (`uses_closed_gold_money`): they reject not only
+  ledger-backed (M3) societies but also **emergent-money** regimes such as
+  `MengerSaltMoney`, where `money_system` is `None` yet the circulating medium is a
+  *good* held in stock — there `Agent.gold` is not money, so touching it would mint
+  a phantom balance `total_gold` would wrongly count.
+
+Each is **purely additive**: it touches no scale, quote, market, or
+`money_system` state, and is **called by no engine path**, so the goldens cannot
+move (the unchanged suite is the proof). Each rejects tombstoned ids (the same
+frozen-holdings death contract `credit_stock` honours) and is unit-tested
+(`additive_accessors_*`). They are **half-moves**: a `debit_stock` on a departing
+trader is paired with a `+escrow` credit in the `Region`, so the move is
+**net-zero** across the `[Σ societies ∪ escrow]` ledger — value is moved, never
+minted or burned. The `Region` is the ledger that accounts the pairing.
+
+`Settlement` gains two additive seams the `Region` drives the pair through:
+`society_mut()` (documented as the caravan seam — it must touch only the
+resident-trader ids; the settlement owns every colonist) and
+`resident_trader_ids()`. Caravan moves run **between** econ ticks (outside
+`Settlement::econ_tick`), so each settlement's own per-tick conservation receipt
+is untouched.
+
+### 3. The region-wide conservation invariant, and convergence (sign only)
+
+`Region::econ_tick` advances each settlement's econ tick (the unchanged G2b
+loop), runs the caravan step (decide / escrow-move / (de)activate traders), then
+rolls up a region-wide report. The invariant it checks every tick:
+
+```
+for each good X:  Σ_settlements whole_system_total(X)  +  route_escrow_X
+for gold:         Σ_settlements total_gold             +  route_escrow_gold
+  change only by  (+regen per settlement, accounted) (−consumed per settlement, accounted)
+  every caravan transfer is net-zero; escrow in transit is conserved and
+  RETAINED if a leg never completes (the G2b escrow ethos, now inter-settlement).
+```
+
+This is checked by `region_conserves_every_econ_tick` and
+`caravan_escrow_in_transit_is_conserved` (a 10 000-tick transit strands goods
+mid-leg; the escrow is counted in the roll-up, at no settlement, and never
+destroyed).
+
+**Convergence is proven SIGN ONLY against a no-caravan control.** With the
+caravan, the realized FOOD-price gap between the cheap settlement (A, a near node)
+and the dear one (B, a far node that starts FOOD-scarce) narrows over the run; the
+no-caravan control twin (`caravans_enabled = false`, the pair present but idle —
+so agent counts still match) keeps the gap. The realized price in this buyers-lead
+book is the consumers' marginal willingness to pay; the caravan lowers B's by
+relieving its scarcity (the inverse of the G2b distance→price mechanism) and the
+control leaves it. Tests `caravan_narrows_the_price_gap` and
+`no_caravan_control_keeps_the_gap` are the falsification pair; no magnitude is
+pinned. Determinism is inherited — integer state, the econ `Rng` consumed only at
+generation, nothing drawn in the region loop or caravan step, settlement/id-ordered
+iteration, `BTreeMap`/`Vec` — `region_run_is_deterministic` is the tripwire.
+
+### Excluded from G2c (deferred)
+
+- No `Society` internal change (we compose N societies; goldens byte-identical)
+  and no `Settlement` behaviour change (G2b tests untouched; the resident-trader
+  field and `society_mut` seam are additive and opt-in).
+- No runtime agent roster mutation — the **G4** deferral is respected; trader
+  pairs are permanent.
+- No caravan **loss/risk**, no **roads-as-projects**, no **>2 settlements**, and
+  no **multi-good / dynamic multi-hop** routing (all later); routes are abstract
+  transit-tick counts, not intra-settlement grid movement.
+- No balance tuning or asserted price magnitudes — convergence is **sign only**
+  (gap-narrows-vs-control) and conservation is exact.
+- No `HashMap` in logic; no new external dependencies (pure std over the existing
+  path deps); nothing drawn in the loops.

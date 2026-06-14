@@ -400,6 +400,69 @@ fn distance_contrast_is_visible() {
     );
 }
 
+// ---- 5b. the G2c region dashboard (multi-settlement + caravans) -----------
+
+/// The `region` run dashboard is deterministic, conserves every tick, and shows
+/// the convergence gap shrinking — while the `region-control` twin keeps it. This
+/// surfaces the G2c result in the read-only viewer (sign only).
+#[test]
+fn region_dashboard_shows_convergence_versus_the_control() {
+    let ticks = 30u64;
+    let caravan = viewer::run_dashboard("region", ticks, 1).expect("region dashboard");
+    let control = viewer::run_dashboard("region-control", ticks, 1).expect("control dashboard");
+
+    // Deterministic: byte-identical across runs.
+    assert_eq!(
+        caravan,
+        viewer::run_dashboard("region", ticks, 1).unwrap(),
+        "the region dashboard is not byte-identical across runs"
+    );
+
+    // The header announces the caravan vs the control twin.
+    assert!(caravan.contains("caravan active"));
+    assert!(control.contains("no-caravan control"));
+
+    // Conservation holds every tick in both modes (never a VIOLATED cell).
+    assert!(
+        !caravan.contains("VIOLATED"),
+        "the caravan run broke conservation"
+    );
+    assert!(
+        !control.contains("VIOLATED"),
+        "the control run broke conservation"
+    );
+
+    // One table row per econ tick, gap column present.
+    let caravan_rows = table_rows(&caravan);
+    assert_eq!(caravan_rows.len() as u64, ticks, "one row per econ tick");
+
+    // The gap (column index 3) at the LAST tick is smaller with the caravan than
+    // in the control — the caravan closes what the control leaves open (sign only).
+    let last_gap = |rows: &[Vec<String>]| -> u64 {
+        rows.last()
+            .and_then(|r| r.get(3))
+            .and_then(|c| c.parse::<u64>().ok())
+            .expect("the last row has a numeric gap")
+    };
+    let control_rows = table_rows(&control);
+    assert!(
+        last_gap(&caravan_rows) < last_gap(&control_rows),
+        "the caravan did not narrow the gap below the control: caravan={} control={}",
+        last_gap(&caravan_rows),
+        last_gap(&control_rows)
+    );
+}
+
+/// The price / colonist inspectors reject the region scenarios: those advance a
+/// two-settlement Region, not a single Settlement, so they are `run`-only.
+#[test]
+fn inspectors_reject_region_scenarios() {
+    let err = viewer::run(&argv(&["inspect", "price", "region", "--good", "food"]))
+        .expect_err("region is not an inspectable settlement scenario");
+    assert!(err.contains("unknown scenario"));
+    assert!(err.contains("USAGE:"));
+}
+
 // ---- 6. loud errors ------------------------------------------------------
 
 #[test]

@@ -245,6 +245,97 @@ pub fn format_dashboard(
     out
 }
 
+/// One captured row of the `region` dashboard (G2c) — the per-econ-tick snapshot
+/// of the two settlements' realized FOOD price, their convergence gap, the
+/// region-wide conservation flag, and the in-transit caravan escrow.
+pub struct RegionDashboardRow {
+    pub econ_tick: u64,
+    /// Realized price of the traded good at settlement A / B, `None` if uncleared.
+    pub price_a: Option<Gold>,
+    pub price_b: Option<Gold>,
+    /// `|price_A − price_B|`, `None` until both have cleared — the convergence
+    /// observable.
+    pub gap: Option<u64>,
+    pub conserves: bool,
+    /// Units of the traded good / gold in route escrow (mid-transit) this tick.
+    pub escrow_good: u64,
+    pub escrow_gold: u64,
+}
+
+/// Render the `region` dashboard (G2c): a header block then one table row per econ
+/// tick — the realized price of the traded good at settlement A and B, their gap
+/// (the convergence observable), the region-wide conservation flag, and the
+/// in-transit caravan escrow. Read-only, deterministic, std formatting only.
+pub fn format_region_dashboard(
+    scenario: &str,
+    seed: u64,
+    ticks: u64,
+    good_label: &str,
+    caravans_enabled: bool,
+    rows: &[RegionDashboardRow],
+) -> String {
+    let mut out = String::new();
+    let mode = if caravans_enabled {
+        "caravan active (buys cheap at A, sells at B)"
+    } else {
+        "no-caravan control (the falsification twin)"
+    };
+    let _ = writeln!(
+        out,
+        "oikos run — region {scenario:?}: two settlements, one route — {mode}"
+    );
+    let _ = writeln!(
+        out,
+        "seed {seed} · {ticks} econ ticks · traded good {good_label:?} · A = cheap/near, B = dear/far"
+    );
+    let _ = writeln!(
+        out,
+        "the {good_label} price gap |A−B| narrows over time only with the caravan (sign only)"
+    );
+    out.push('\n');
+
+    let headers = [
+        "tick".to_string(),
+        format!("{good_label}@A"),
+        format!("{good_label}@B"),
+        "gap|A-B|".to_string(),
+        "consv".to_string(),
+        format!("esc.{good_label}"),
+        "esc.gold".to_string(),
+    ];
+    let aligns = [
+        Align::Right,
+        Align::Right,
+        Align::Right,
+        Align::Right,
+        Align::Left,
+        Align::Right,
+        Align::Right,
+    ];
+    let table_rows: Vec<Vec<String>> = rows
+        .iter()
+        .map(|row| {
+            let gap = match row.gap {
+                Some(g) => g.to_string(),
+                None => "—".to_string(),
+            };
+            vec![
+                row.econ_tick.to_string(),
+                price_cell(row.price_a),
+                price_cell(row.price_b),
+                gap,
+                if row.conserves { "OK" } else { "VIOLATED" }.to_string(),
+                row.escrow_good.to_string(),
+                row.escrow_gold.to_string(),
+            ]
+        })
+        .collect();
+
+    let header_refs: Vec<&str> = headers.iter().map(String::as_str).collect();
+    out.push_str(&render_table(&header_refs, &table_rows, &aligns));
+    out
+}
+
 /// Render the **price → trades** inspector: the realized price for `good` and
 /// exactly the trades in `society().trades` for that good at `at_tick`.
 pub fn format_price(
