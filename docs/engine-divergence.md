@@ -726,3 +726,125 @@ iteration, `BTreeMap`/`Vec` — `region_run_is_deterministic` is the tripwire.
   (gap-narrows-vs-control) and conservation is exact.
 - No `HashMap` in logic; no new external dependencies (pure std over the existing
   path deps); nothing drawn in the loops.
+
+---
+
+## G3a — production chains (content recipes, seeded) (`docs/impl-g3a.md`)
+
+G3a adds **production**: a content-defined recipe chain — grain → flour → bread —
+transforms goods through seeded producer roles. It is content + `sim` wiring + a
+conservation generalization, with **no new recipe logic in `econ`**. Per the
+game-spec's two-step G3 gate, this is the seeded half; role *emergence* is **G3b**.
+
+### 1. The recipe mechanism is reused, not rebuilt
+
+`econ::Recipe` already models the whole mechanism — `{ labor, input_good:
+Option<(GoodId, u32)>, required_tool: Option<GoodId>, output_good, output_qty }`.
+A single-input recipe **chains naturally** (grain→flour→bread, each one input), and
+`required_tool` already models a tool as a **capital gate** (a held good the
+recipe needs). The recipe data lives in `sim`'s `ContentSet`, while application
+reuses econ's existing `execute_direct_recipe_for_agent` path through the
+additive `Society::execute_direct_recipe_for_agent_checked` seam. That wrapper
+rejects unknown/tombstoned agents, preflights output headroom so `Stock::add`
+cannot saturate after inputs are removed, delegates the mutation to the existing
+direct-recipe executor, records labor, and returns the accounted conversion
+(labor, input consumed, output produced) for `sim`'s conservation report. No market
+clearing behavior changes. `econ`'s only G3a edits are additive and inert unless a
+driver calls them: two `RecipeId` variants (`Mill`, `Bake`) for content recipe ids,
+`Society::intern_good`, the checked direct-recipe accessor, and a `PartialEq`/`Eq`
+derive on `Recipe` so the content `ContentSet` can compare equal (the determinism
+check). **Tools are durable**: `required_tool` is checked by the direct recipe
+executor but never removed.
+
+### 2. Content is a code-level `ContentSet` (the loader is deferred)
+
+`sim/src/content.rs` defines `ContentSet::grain_flour_bread()`: it interns the five
+chain goods (grain, flour, bread, mill, oven) through `econ::GoodRegistry` over the
+lab catalog, so they take ids **after** the seven lab goods (`grain = 7 … oven =
+11`) and never collide with `GOLD`/`FOOD`/`WOOD`/`NET`, which the spatial economy
+still uses. It then builds the two recipes as data (mill: grain + mill → flour;
+bake: flour + oven → bread). This is the G0b `GoodRegistry` "goods as data" seam
+(recorded there: *"a future `content/` layer (G3) can define them"*) realized at
+the code level. A **TOML content-file loader is deferred** (game-spec G3-later);
+the `ContentSet` API is the forward-compatible shape that loader will populate, and
+`content/` graduates to a standalone crate then. `Society::intern_good` is an
+additive naming accessor the `Settlement` calls to register the content names so
+the viewer resolves them (it touches no market state; a society whose driver never
+calls it keeps the lab catalog and every golden).
+
+### 3. Seeded producer vocations + a production phase in the settlement tick
+
+`sim` gains two vocations, `Miller` and `Baker`, **opt-in** behind a new
+`SettlementConfig.chain: Option<ChainConfig>` field — `None` for every G2b/G2c
+config, so each one (and the six econ goldens, and the G2d viewer goldens) is
+byte-identical by construction; every chain code path is skipped. On the chain
+path **bread is the staple** (`hunger ↔ bread`), grain is the gathered raw good (a
+world node yields grain exactly as FOOD nodes do in G2b), and producers are
+hand-placed holding their durable tool. The econ tick gains a **production phase**
+*after* the market (so a producer has the input it just bought on hand): each
+living producer applies its recipe up to a throughput cap via
+`Society::execute_direct_recipe_for_agent_checked`, recording the transformation.
+The scale phase appends two production wants to a producer's regenerated need
+scale — a top-ranked tool **anchor** (so the durable tool is held, never sold) and
+**input** wants (so it buys what it transforms, below food/warmth but above
+savings). Both are deterministic; no RNG is drawn.
+
+### 4. Conservation generalized across transformations
+
+G2b's whole-system invariant was, per good, `Δ = +regen − consumed` (the transfer
+net-zero). G3a generalizes it: a recipe is a **conserved conversion** — it consumes
+an accounted input and produces an accounted output. The `EconTickReport` gains
+`produced` / `consumed_as_input` maps (and `produced_of` / `consumed_as_input_of`),
+and the invariant becomes, per good X:
+
+```text
+after(X) == before(X) + regen(X) + produced(X) − consumed_as_input(X) − consumed(X)
+```
+
+For a plain settlement both new maps are empty, so it reduces **exactly** to the
+G2b form (every G2b/G2c conservation test stays green). A recipe is *not*
+conservation of one good; it is a conserved transformation, with the recipe's ratio
+the accounted conversion — the input and output goods each keep their own ledger,
+so a yield ratio other than 1:1 is not a mass leak. **Tools are durable**: they
+appear in neither production term, so a recipe needing a tool never moves the
+tool's ledger (test 3 pins this). The whole-system snapshot is taken *after* the
+production phase, so production is on the balanced side of the receipt.
+
+The same generalization reaches the **region** (G2c) ledger: `RegionTickReport`
+gains the matching `produced` / `consumed_as_input` maps and rolls them up from
+each settlement's report, so its invariant is the identical generalized form
+(Σ settlements + route escrow). A chain settlement composed into a `Region` (one
+or both sides) therefore conserves region-wide instead of tripping the old
+`+regen − consumed` assertion on its first transform; for a plain region the maps
+stay empty and it reduces to the G2c form (`region_conserves_with_a_composed_chain_settlement`
+pins the chain case).
+
+### A note on chain throughput and the seeded roster
+
+The CDA market clears **one unit per seller per good per econ tick**, so each
+stage's flour/bread throughput is bounded by its *seller* count. A market-routed
+staple chain therefore cannot fully feed an arbitrary roster from trade alone; the
+seeded config is producer-heavy and gives producers input buffers and consumers a
+staple buffer, so the chain operates and **runs collapse-free over the smoke
+horizon** while all three goods still realize a price from real trades. This is a
+seeded-content tuning choice (mechanism, not balance); G3b's price-spread emergence
+is what makes the producer mix arise rather than be hand-set.
+
+### Excluded from G3a (deferred)
+
+- **No role emergence (G3b).** Producers are seeded (hand-placed millers/bakers);
+  that an entrepreneur *chooses* to mill because the spread pays is the next slice.
+- **No TOML content loader.** Content is a code `ContentSet`; the file loader and a
+  standalone `content/` crate come later.
+- **No multi-input buildings-as-`Project`s.** G3a uses single-input `Recipe`s;
+  `capital.rs`'s `ProjectLine` (multi-input) waits for a later slice.
+- **No tool production / wear / depreciation.** Tools are durable and pre-placed;
+  tool economics come later.
+- **No demography (G4)** and **no change to `econ` market behaviour** — every
+  `econ` edit is additive (the `Mill`/`Bake` ids, the `Recipe` `PartialEq`/`Eq`
+  derive, `Society::intern_good`, and the checked direct-recipe accessor);
+  `ContentSet` and the opt-in `chain` field live in `sim`; the six goldens are
+  byte-identical and `econ_unchanged` confirms it.
+- No balance tuning or asserted magnitudes beyond the chain operating and
+  conserving; no `HashMap` in logic; nothing drawn in the loops. Determinism is
+  inherited (`chain_run_is_deterministic` is the tripwire).

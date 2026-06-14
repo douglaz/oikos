@@ -127,7 +127,7 @@ pub(crate) struct TickProvisions {
 }
 
 impl TickProvisions {
-    fn new(wants: usize) -> Self {
+    pub(crate) fn new(wants: usize) -> Self {
         Self {
             provided: vec![false; wants],
             allocated: vec![0; wants],

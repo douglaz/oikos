@@ -131,6 +131,10 @@ pub struct DashboardRow {
     pub prices: Vec<Option<Gold>>,
     /// Units transferred world→econ this tick, per tracked good.
     pub transferred: Vec<u64>,
+    /// Units produced by recipes this tick, per tracked good.
+    pub produced: Vec<u64>,
+    /// Units consumed as recipe inputs this tick, per tracked good.
+    pub consumed_as_input: Vec<u64>,
     /// Units consumed this tick, per tracked good.
     pub consumed: Vec<u64>,
     pub conserves: bool,
@@ -159,8 +163,7 @@ pub fn format_dashboard(
     scenario: &str,
     seed: u64,
     ticks: u64,
-    gatherers: u16,
-    consumers: u16,
+    population_label: &str,
     rows: &[DashboardRow],
 ) -> String {
     let goods = settlement.tracked_goods();
@@ -177,14 +180,15 @@ pub fn format_dashboard(
     );
     let _ = writeln!(
         out,
-        "seed {seed} · {ticks} econ ticks · population {} ({gatherers} gatherers, {consumers} consumers)",
-        u64::from(gatherers) + u64::from(consumers)
+        "seed {seed} · {ticks} econ ticks · population {population_label}"
     );
     let _ = writeln!(out, "tracked goods: {}", good_names.join(", "));
     out.push('\n');
 
-    // Headers: the per-tick fixed columns, then a price/xfer/eaten triple per
-    // tracked good.
+    // Headers: the per-tick fixed columns, then price/volume columns per tracked
+    // good. Chain settlements include the production receipt columns too; plain
+    // G2 dashboards keep their original shape.
+    let show_production = settlement.content().is_some();
     let mut headers: Vec<String> = vec![
         "tick".to_string(),
         "gath".to_string(),
@@ -204,9 +208,17 @@ pub fn format_dashboard(
     for name in &good_names {
         headers.push(format!("{name}.px"));
         headers.push(format!("{name}.xfer"));
+        if show_production {
+            headers.push(format!("{name}.made"));
+            headers.push(format!("{name}.input"));
+        }
         headers.push(format!("{name}.eaten"));
         aligns.push(Align::Right);
         aligns.push(Align::Right);
+        if show_production {
+            aligns.push(Align::Right);
+            aligns.push(Align::Right);
+        }
         aligns.push(Align::Right);
     }
 
@@ -235,6 +247,10 @@ pub fn format_dashboard(
         for good_index in 0..goods.len() {
             cells.push(price_cell(row.prices[good_index]));
             cells.push(row.transferred[good_index].to_string());
+            if show_production {
+                cells.push(row.produced[good_index].to_string());
+                cells.push(row.consumed_as_input[good_index].to_string());
+            }
             cells.push(row.consumed[good_index].to_string());
         }
         table_rows.push(cells);
@@ -468,6 +484,8 @@ pub fn format_colonist(
     let vocation = match settlement.vocation_of(index) {
         Some(sim::Vocation::Gatherer) => "gatherer",
         Some(sim::Vocation::Consumer) => "consumer",
+        Some(sim::Vocation::Miller) => "miller",
+        Some(sim::Vocation::Baker) => "baker",
         None => "unknown",
     };
     let alive = settlement.is_alive(index);

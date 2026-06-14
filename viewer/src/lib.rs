@@ -111,8 +111,6 @@ pub fn run_dashboard(scenario: &str, ticks: u64, seed: u64) -> Result<String, St
         return Ok(run_region_dashboard(scenario, &region_config, ticks, seed));
     }
     let config = config_for(scenario)?;
-    let gatherers = config.gatherers;
-    let consumers = config.consumers;
     let mut settlement = Settlement::generate(seed, &config);
     let goods: Vec<GoodId> = settlement.tracked_goods().to_vec();
 
@@ -124,6 +122,11 @@ pub fn run_dashboard(scenario: &str, ticks: u64, seed: u64) -> Result<String, St
             .map(|&g| settlement.realized_price(g))
             .collect();
         let transferred = goods.iter().map(|&g| report.transferred_of(g)).collect();
+        let produced = goods.iter().map(|&g| report.produced_of(g)).collect();
+        let consumed_as_input = goods
+            .iter()
+            .map(|&g| report.consumed_as_input_of(g))
+            .collect();
         let consumed = goods.iter().map(|&g| report.consumed_of(g)).collect();
         let conserves = report.conserves();
         let offending_good = if conserves {
@@ -138,6 +141,8 @@ pub fn run_dashboard(scenario: &str, ticks: u64, seed: u64) -> Result<String, St
             living_consumers: settlement.living_count(Vocation::Consumer),
             prices,
             transferred,
+            produced,
+            consumed_as_input,
             consumed,
             conserves,
             offending_good,
@@ -152,10 +157,34 @@ pub fn run_dashboard(scenario: &str, ticks: u64, seed: u64) -> Result<String, St
         scenario,
         seed,
         ticks,
-        gatherers,
-        consumers,
+        &population_label(&settlement),
         &rows,
     ))
+}
+
+/// The dashboard's population line: the total plus the per-vocation roster. A
+/// plain settlement reads `"12 (8 gatherers, 4 consumers)"` exactly as G2b; a
+/// chain settlement appends its seeded producers (`", 3 millers, 5 bakers"`).
+fn population_label(settlement: &Settlement) -> String {
+    let mut parts = vec![
+        format!(
+            "{} gatherers",
+            settlement.vocation_count(Vocation::Gatherer)
+        ),
+        format!(
+            "{} consumers",
+            settlement.vocation_count(Vocation::Consumer)
+        ),
+    ];
+    let millers = settlement.vocation_count(Vocation::Miller);
+    if millers > 0 {
+        parts.push(format!("{millers} millers"));
+    }
+    let bakers = settlement.vocation_count(Vocation::Baker);
+    if bakers > 0 {
+        parts.push(format!("{bakers} bakers"));
+    }
+    format!("{} ({})", settlement.population(), parts.join(", "))
 }
 
 /// Advance a two-settlement [`Region`] for `ticks` econ ticks from `seed`,
@@ -314,13 +343,18 @@ fn resolve_good(settlement: &Settlement, name: &str) -> Result<GoodId, String> {
 
 /// The first tracked good whose whole-system ledger failed to balance this tick,
 /// for the dashboard's loud `VIOLATED:<good>` cell. `None` when all balance.
+/// Uses the G3a generalized invariant (production accounted), so it agrees with
+/// [`EconTickReport::conserves`]; for a plain settlement the extra terms are zero
+/// and it reduces to G2b's `before + regen − consumed`.
 fn first_offending_good(report: &EconTickReport, goods: &[GoodId]) -> Option<GoodId> {
     goods.iter().copied().find(|&good| {
         let before = i128::from(report.whole_system_before_of(good));
         let after = i128::from(report.whole_system_after_of(good));
         let regen = i128::from(report.regen_of(good));
+        let produced = i128::from(report.produced_of(good));
+        let consumed_as_input = i128::from(report.consumed_as_input_of(good));
         let consumed = i128::from(report.consumed_of(good));
-        after != before + regen - consumed
+        after != before + regen + produced - consumed_as_input - consumed
     })
 }
 

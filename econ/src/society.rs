@@ -193,6 +193,18 @@ impl std::fmt::Display for SocietyBuildError {
 
 impl std::error::Error for SocietyBuildError {}
 
+/// The accounted result of applying a direct [`Recipe`] to one live agent.
+///
+/// This is an additive driver seam: callers outside `econ` can reuse the
+/// existing direct-recipe executor and record the exact conversion without
+/// changing market clearing or planner behavior.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DirectRecipeExecution {
+    pub labor: u32,
+    pub input: Option<(GoodId, u32)>,
+    pub output: (GoodId, u32),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct V2PromotionFailure {
     pub tick: u64,
@@ -5018,6 +5030,64 @@ impl Society {
     /// naming path. Equals [`crate::good::good_name`] for the lab catalog.
     pub fn good_name(&self, good: GoodId) -> &str {
         self.registry.name(good)
+    }
+
+    /// Intern `name` into the society's good catalog, returning its [`GoodId`]
+    /// (the existing id if already known, else the next one). This is the G3a
+    /// content seam: a driver that introduces content goods (grain/flour/bread
+    /// and the tools) registers their names here so [`Society::good_name`]
+    /// resolves them. Purely a naming extension — it touches no market state, so
+    /// a society whose driver never calls it keeps the lab catalog and every
+    /// golden byte-identical.
+    pub fn intern_good(&mut self, name: &str) -> GoodId {
+        self.registry.intern(name)
+    }
+
+    /// Apply the direct recipe `recipe_id` to a live agent using the existing
+    /// `econ` direct-recipe executor, returning the accounted conversion.
+    ///
+    /// This is an additive seam for external drivers such as `sim`'s seeded G3a
+    /// producers. It preflights output headroom so the underlying stock add
+    /// cannot saturate after inputs are removed, rejects unknown/tombstoned
+    /// agents, records recipe labor in the tick-local labor log, and otherwise
+    /// delegates the mutation to `execute_direct_recipe_for_agent`.
+    pub fn execute_direct_recipe_for_agent_checked(
+        &mut self,
+        agent: AgentId,
+        recipe_id: RecipeId,
+    ) -> Option<DirectRecipeExecution> {
+        let position = self.agent_index_for(agent)?;
+        if self.tombstoned_agents.binary_search(&agent).is_ok() {
+            return None;
+        }
+
+        let recipe = self
+            .recipes
+            .iter()
+            .find(|recipe| recipe.id == recipe_id)?
+            .clone();
+        self.agents[position]
+            .stock
+            .get(recipe.output_good)
+            .checked_add(recipe.output_qty)?;
+
+        let mut provisions = TickProvisions::new(self.agents[position].scale.len());
+        let labor = execute_direct_recipe_for_agent(
+            &mut self.agents[position],
+            &self.recipes,
+            recipe_id,
+            recipe.labor,
+            0,
+            &mut provisions,
+        )?;
+        if labor > 0 {
+            self.add_tick_labor_used(agent, labor);
+        }
+        Some(DirectRecipeExecution {
+            labor,
+            input: recipe.input_good,
+            output: (recipe.output_good, recipe.output_qty),
+        })
     }
 
     fn reserved_gold_all(&self, agent: AgentId) -> Gold {

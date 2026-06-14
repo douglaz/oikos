@@ -58,10 +58,11 @@
 
 use std::collections::BTreeMap;
 
-use econ::agent::{Agent, AgentId, Role, WantKind};
+use econ::agent::{Agent, AgentId, Role, Want, WantKind};
 use econ::expect::PriceBelief;
 use econ::good::{Gold, GoodId, Horizon, Stock, FOOD, GOLD, NET, WOOD};
 use econ::money::{DesignatedMoney, MarketMoneyConfig};
+use econ::project::{Recipe, RecipeId};
 use econ::rng::Rng;
 use econ::scenario::{MarketScenario, ScenarioName};
 use econ::society::Society;
@@ -69,6 +70,8 @@ use econ::society::Society;
 use life::{regenerate_scale, CultureParams, KnownGoods, NeedDynamics, NeedIntake, NeedState};
 
 use world::{AgentStatus, Grid, NodeId, Pos, ResourceNode, Stockpile, StockpileId, Task, World};
+
+use crate::content::ContentSet;
 
 /// Fast `world` ticks per economic tick — the two-rate ratio (game-spec §4.1).
 /// A gatherer's round trip to a node costs `2 × distance` fast ticks, so a node
@@ -82,13 +85,42 @@ pub const FAST_TICKS_PER_ECON_TICK: u64 = 24;
 pub const ECON_TICKS_PER_YEAR: u64 = 12;
 
 /// A colonist's role in the settlement's minimal division of labor.
+///
+/// G2b has only [`Gatherer`](Vocation::Gatherer)/[`Consumer`](Vocation::Consumer).
+/// G3a adds the two **seeded producer** vocations
+/// ([`Miller`](Vocation::Miller)/[`Baker`](Vocation::Baker)) that run the
+/// grain→flour→bread chain — they are hand-placed (the spec defers *who chooses*
+/// to produce to G3b). A plain settlement has neither, so its config and digest
+/// stay byte-identical to G2b.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Vocation {
-    /// Harvests FOOD from its node and hauls it to the exchange; sells FOOD,
-    /// buys WOOD.
+    /// Harvests its node's good (FOOD in G2b, grain in the G3a chain) and hauls
+    /// it to the exchange; sells the haul, buys what it needs.
     Gatherer,
-    /// Sits at the exchange; sells its WOOD endowment, buys and eats FOOD.
+    /// Sits at the exchange; sells its provisioning endowment, buys and eats the
+    /// staple (FOOD in G2b, bread in the G3a chain).
     Consumer,
+    /// G3a producer: holds a **mill** (durable tool) and, in the production
+    /// phase, mills grain it holds into flour, then sells the flour.
+    Miller,
+    /// G3a producer: holds an **oven** (durable tool) and, in the production
+    /// phase, bakes flour it holds into bread, eats some, and sells the rest.
+    Baker,
+}
+
+impl Vocation {
+    /// A stable serialization tag for [`Settlement::canonical_bytes`]. Consumer
+    /// and Gatherer keep the values G2b's `u8::from(== Gatherer)` produced
+    /// (`0`/`1`), so every pre-G3a digest is byte-identical; the producers extend
+    /// the space with `2`/`3`.
+    fn tag(self) -> u8 {
+        match self {
+            Vocation::Consumer => 0,
+            Vocation::Gatherer => 1,
+            Vocation::Miller => 2,
+            Vocation::Baker => 3,
+        }
+    }
 }
 
 /// The endowment of a **resident trader** — a permanent econ agent the `Region`
@@ -121,6 +153,74 @@ pub struct NodeSpec {
     pub stock: u32,
     pub regen: u32,
     pub cap: u32,
+}
+
+/// The G3a **production chain** overlay on a settlement (the seeded
+/// grain→flour→bread chain). `None` on a plain G2b/G2c settlement, so every such
+/// config and the six econ goldens stay byte-identical by construction; `Some`
+/// turns the settlement into a chain economy where **bread is the staple**
+/// (`hunger ↔ bread`), grain is the gathered raw good, and the millers/bakers
+/// transform it.
+///
+/// Roles are **seeded** (hand-placed): the gatherers ([`SettlementConfig::gatherers`])
+/// harvest the grain node, the [`millers`](ChainConfig::millers) hold mills and
+/// the [`bakers`](ChainConfig::bakers) hold ovens, and the
+/// [`consumers`](SettlementConfig::consumers) eat bread. No emergence of
+/// who-produces-what (that is G3b). The buffers are generous *mechanism* knobs:
+/// they bridge the pipeline fill and keep the smoke horizon collapse-free; they
+/// pin no magnitude.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChainConfig {
+    /// The interned chain goods and recipes (built once at generation).
+    pub content: ContentSet,
+    /// Seeded millers (hold a mill, mill grain → flour).
+    pub millers: u16,
+    /// Seeded bakers (hold an oven, bake flour → bread).
+    pub bakers: u16,
+    /// Per-producer, per-econ-tick cap on recipe applications — a deterministic
+    /// throughput bound (nothing is drawn). A producer applies its recipe up to
+    /// this many times, limited by the input it holds.
+    pub throughput: u32,
+    /// Grain a miller is seeded holding (a buffer so milling fires before the
+    /// market routes the first grain to it; the market then replenishes it).
+    pub miller_grain_buffer: u32,
+    /// Flour a baker is seeded holding (a buffer so baking fires from tick 1).
+    pub baker_flour_buffer: u32,
+    /// Bread every colonist is seeded holding — the staple buffer that bridges
+    /// the pipeline fill and keeps hunger bounded over the smoke horizon.
+    pub bread_buffer: u32,
+    /// WOOD every colonist is seeded holding — a warmth battery. Warmth never
+    /// kills (only hunger does), so this just keeps the warmth need low/bounded.
+    pub wood_buffer: u32,
+    /// Working gold a producer (miller/baker) starts with — capital to buy its
+    /// input while it sells its output.
+    pub producer_gold: u64,
+}
+
+impl ChainConfig {
+    /// The default grain→flour→bread chain content with seeded buffers tuned so a
+    /// modest roster runs the chain collapse-free over the smoke horizon.
+    pub fn grain_flour_bread() -> Self {
+        Self {
+            content: ContentSet::grain_flour_bread(),
+            // The roster is producer-heavy because the market clears one unit per
+            // seller per good per tick: a stage's bread/flour throughput is capped
+            // by its seller count, so enough millers/bakers keep the staple
+            // flowing to the mouths. Seeded (hand-placed) — no role emergence.
+            millers: 3,
+            bakers: 5,
+            throughput: 2,
+            miller_grain_buffer: 16,
+            baker_flour_buffer: 16,
+            // A modest staple buffer: large enough to bridge the pipeline fill,
+            // small enough that consumers re-enter the bread market once it
+            // drains (so bread realizes a price too), and the chain's surplus
+            // keeps hunger bounded over the smoke horizon.
+            bread_buffer: 24,
+            wood_buffer: 48,
+            producer_gold: 24,
+        }
+    }
 }
 
 /// The settlement recipe: geometry (grid, exchange, FOOD nodes), the
@@ -167,6 +267,12 @@ pub struct SettlementConfig {
     /// byte-identical by construction. The `Region` populates this (one trader per
     /// linked settlement) and manages the agents; see [`TraderEndowment`].
     pub resident_traders: Vec<TraderEndowment>,
+    /// The G3a production chain, or `None` for a plain G2b/G2c settlement. `None`
+    /// keeps every existing config and the six econ goldens byte-identical (every
+    /// chain code path is skipped); `Some` seeds the grain→flour→bread chain (the
+    /// node good is grain, the staple is bread, and millers/bakers transform it).
+    /// See [`ChainConfig`] and [`SettlementConfig::grain_flour_bread_chain`].
+    pub chain: Option<ChainConfig>,
 }
 
 impl SettlementConfig {
@@ -216,6 +322,59 @@ impl SettlementConfig {
             // for caravans (G2c). Empty here keeps every G2b config and the six
             // econ goldens byte-identical.
             resident_traders: Vec::new(),
+            // No production chain by default — a plain G2b settlement. The chain
+            // is opt-in via `grain_flour_bread_chain`, so `viable`/`price_probe`/
+            // `starved_hauler` and every golden stay byte-identical.
+            chain: None,
+        }
+    }
+
+    /// A viable G3a **production-chain** settlement: a grain node a short distance
+    /// east of the exchange, grain gatherers hauling grain, seeded millers
+    /// (grain → flour) and bakers (flour → bread), and bread consumers. Bread is
+    /// the staple (`hunger ↔ bread`); WOOD is the closed warmth battery as in
+    /// [`Self::viable`]. The chain operates end-to-end and conserves; the buffers
+    /// are sized so it runs collapse-free over the smoke horizon. Mechanism, not
+    /// balance.
+    pub fn grain_flour_bread_chain() -> Self {
+        let chain = ChainConfig::grain_flour_bread();
+        let exchange = Pos::new(0, 0);
+        Self {
+            width: 64,
+            height: 1,
+            exchange,
+            exchange_cap: 1_000_000,
+            // The single raw node yields GRAIN (not FOOD): grain is the only good
+            // a world node produces in the chain; flour and bread are recipe
+            // outputs. Rich + close so grain supply stays loose.
+            nodes: vec![NodeSpec {
+                good: chain.content.grain(),
+                pos: Pos::new(4, 0),
+                stock: 8_000,
+                regen: 24,
+                cap: 8_000,
+            }],
+            gatherers: 2,
+            consumers: 1,
+            carry_cap: 2,
+            move_speed: 1,
+            starting_gold_gatherer: 12,
+            starting_gold_consumer: 24,
+            // These FOOD-buffer knobs are unused on the chain path (the staple is
+            // bread, seeded via `ChainConfig::bread_buffer`); kept at viable()'s
+            // values so the config reads consistently.
+            gatherer_food_buffer: 0,
+            gatherer_wood_buffer: 0,
+            consumer_food_buffer: 0,
+            consumer_wood_endowment: 0,
+            // Patient on both sides so surplus keeps being offered and the chain's
+            // intermediate goods keep clearing (the same discipline as viable()).
+            gatherer_time_preference_base_bps: 500,
+            consumer_time_preference_base_bps: 500,
+            leisure_weight_base_bps: 3_000,
+            dynamics: NeedDynamics::lab_default(),
+            resident_traders: Vec::new(),
+            chain: Some(chain),
         }
     }
 
@@ -300,8 +459,16 @@ pub struct EconTickReport {
     pub regen: BTreeMap<GoodId, u64>,
     /// Goods relocated world→econ by the transfer (net-zero for the whole system).
     pub transferred: BTreeMap<GoodId, u64>,
-    /// Goods consumed in [`Society::step`] (the only sink).
+    /// Goods consumed in [`Society::step`] (a sink — eaten).
     pub consumed: BTreeMap<GoodId, u64>,
+    /// Goods **produced** by the production phase's recipe applications (G3a) —
+    /// the output side of every accounted transformation (e.g. flour, bread).
+    pub produced: BTreeMap<GoodId, u64>,
+    /// Goods **consumed as a recipe input** by the production phase (G3a) — the
+    /// input side of every accounted transformation (e.g. grain milled, flour
+    /// baked). Distinct from `consumed` (eaten): an input is *transformed*, not a
+    /// final sink. Tools (`required_tool`) are durable and never appear here.
+    pub consumed_as_input: BTreeMap<GoodId, u64>,
     /// Whole-system total per good at the start of the econ tick.
     pub whole_system_before: BTreeMap<GoodId, u64>,
     /// Whole-system total per good at the end of the econ tick.
@@ -326,6 +493,14 @@ impl EconTickReport {
     pub fn consumed_of(&self, good: GoodId) -> u64 {
         self.consumed.get(&good).copied().unwrap_or(0)
     }
+    /// Units of `good` produced by recipe applications this tick (G3a).
+    pub fn produced_of(&self, good: GoodId) -> u64 {
+        self.produced.get(&good).copied().unwrap_or(0)
+    }
+    /// Units of `good` consumed as a recipe input this tick (G3a).
+    pub fn consumed_as_input_of(&self, good: GoodId) -> u64 {
+        self.consumed_as_input.get(&good).copied().unwrap_or(0)
+    }
     pub fn whole_system_before_of(&self, good: GoodId) -> u64 {
         self.whole_system_before.get(&good).copied().unwrap_or(0)
     }
@@ -333,16 +508,32 @@ impl EconTickReport {
         self.whole_system_after.get(&good).copied().unwrap_or(0)
     }
 
-    /// Whether the whole-system ledger balances for every tracked good:
-    /// `after == before + regen − consumed`, with the transfer net-zero. This is
+    /// Whether the whole-system ledger balances for every tracked good. This is
     /// the conservation DoD; [`Settlement::econ_tick`] also `debug_assert`s it.
+    ///
+    /// G2b's invariant was `after == before + regen − consumed` (the transfer
+    /// net-zero). G3a **generalizes it across transformations**: a recipe is a
+    /// conserved conversion — it consumes an accounted input and produces an
+    /// accounted output — so per good X:
+    ///
+    /// ```text
+    /// after(X) == before(X) + regen(X) + produced(X)
+    ///                       − consumed_as_input(X) − consumed(X)
+    /// ```
+    ///
+    /// For a plain settlement `produced`/`consumed_as_input` are empty, so this
+    /// reduces exactly to the G2b form (every existing test stays green). Tools
+    /// are durable — they appear in neither production term, so a recipe that
+    /// needs a tool never moves the tool's ledger.
     pub fn conserves(&self) -> bool {
         self.whole_system_before.keys().all(|good| {
             let before = self.whole_system_before_of(*good) as i128;
             let after = self.whole_system_after_of(*good) as i128;
             let regen = self.regen_of(*good) as i128;
             let consumed = self.consumed_of(*good) as i128;
-            after == before + regen - consumed
+            let produced = self.produced_of(*good) as i128;
+            let consumed_as_input = self.consumed_as_input_of(*good) as i128;
+            after == before + regen + produced - consumed_as_input - consumed
         })
     }
 }
@@ -390,8 +581,19 @@ pub struct Settlement {
     /// `i` has `AgentId(i)`, exactly as in G2b). Lets [`Settlement::slot_for_id`]
     /// map a colonist id back to its slot in O(1) despite the trader offset.
     colonist_id_base: u64,
+    /// The G3a production-chain runtime (content + throughput), or `None` for a
+    /// plain settlement. Drives the econ tick's scale-injection and production
+    /// phases; `None` skips both, so a plain settlement is byte-identical to G2b.
+    chain: Option<ChainRuntime>,
     econ_tick: u64,
     last_report: EconTickReport,
+}
+
+/// The per-settlement production-chain runtime (G3a): the interned content and
+/// the per-producer throughput cap. Read-only after generation.
+struct ChainRuntime {
+    content: ContentSet,
+    throughput: u32,
 }
 
 impl Settlement {
@@ -415,7 +617,18 @@ impl Settlement {
              physical good and never crosses the world→econ transfer seam"
         );
         let dynamics = config.dynamics;
-        let known = KnownGoods::lab_default();
+        // The need→good mapping. A plain settlement uses the lab default
+        // (hunger ↔ FOOD). The G3a chain makes **bread the staple**
+        // (hunger ↔ bread) so the chain's final good is what colonists eat to
+        // live; warmth stays WOOD and savings stays GOLD.
+        let known = match &config.chain {
+            Some(chain) => KnownGoods {
+                hunger: chain.content.bread(),
+                warmth: WOOD,
+                savings: GOLD,
+            },
+            None => KnownGoods::lab_default(),
+        };
         let mut rng = Rng::new(seed);
 
         // ---- world: grid, exchange stockpile, FOOD nodes ----
@@ -436,7 +649,13 @@ impl Settlement {
 
         let consumers = usize::from(config.consumers);
         let gatherers = usize::from(config.gatherers);
-        let population = consumers + gatherers;
+        // The seeded producer counts (G3a): zero without a chain, so a plain
+        // settlement's population, ids, and digest are byte-identical to G2b.
+        let (millers, bakers) = match &config.chain {
+            Some(chain) => (usize::from(chain.millers), usize::from(chain.bakers)),
+            None => (0, 0),
+        };
+        let population = consumers + gatherers + millers + bakers;
 
         // Resident traders (G2c caravans) take the LOWEST ids, *before* the
         // colonists, so they are processed first in the id-ordered market and their
@@ -481,18 +700,34 @@ impl Settlement {
                 .expect("colonist lands on the exchange tile");
             debug_assert_eq!(placed, id, "world and econ agent ids must coincide");
 
+            // Vocation by id band: consumers (lowest ids, so their bids lead the
+            // book), then gatherers, then the seeded producers — millers, then
+            // bakers. Producers do not gather (no node) and use the patient
+            // consumer time-preference base so they keep offering their output.
             let (vocation, node, tp_base) = if index < consumers {
                 (
                     Vocation::Consumer,
                     None,
                     config.consumer_time_preference_base_bps,
                 )
-            } else {
+            } else if index < consumers + gatherers {
                 let node = node_ids[(index - consumers) % node_ids.len()];
                 (
                     Vocation::Gatherer,
                     Some(node),
                     config.gatherer_time_preference_base_bps,
+                )
+            } else if index < consumers + gatherers + millers {
+                (
+                    Vocation::Miller,
+                    None,
+                    config.consumer_time_preference_base_bps,
+                )
+            } else {
+                (
+                    Vocation::Baker,
+                    None,
+                    config.consumer_time_preference_base_bps,
                 )
             };
             let culture = draw_culture(&mut rng, tp_base, config.leisure_weight_base_bps);
@@ -526,8 +761,22 @@ impl Settlement {
                 push_good(g, &mut goods);
             }
         }
+        // Every chain good is tracked even if no agent is seeded holding it yet
+        // (flour, for instance, only appears once a miller produces it): the
+        // production phase mints it into econ stock, and the conservation report
+        // and the canonical digest must already account it.
+        if let Some(chain) = &config.chain {
+            for g in chain.content.goods() {
+                push_good(g, &mut goods);
+            }
+        }
         goods.sort();
 
+        let recipes = config
+            .chain
+            .as_ref()
+            .map(|chain| chain.content.recipes().to_vec())
+            .unwrap_or_default();
         let scenario = MarketScenario {
             name: "settlement",
             // A SoundGold M1 (designated-gold spot) scenario, exactly as `Camp`
@@ -537,12 +786,32 @@ impl Settlement {
             seed,
             periods: 0,
             agents,
-            recipes: Vec::new(),
+            recipes,
             events: Vec::new(),
             money: MarketMoneyConfig::Designated(DesignatedMoney { good: GOLD }),
         };
         let mut society = Society::from_scenario(scenario);
         society.enable_consumption_log();
+
+        // Build the production-chain runtime and register the content good names
+        // so the society's registry resolves them (the viewer reads names through
+        // `Society::good_name`). The ids the society interns must equal those the
+        // `ContentSet` assigned — both intern over the same lab catalog in the
+        // same order — which the assert pins loudly.
+        let chain = config.chain.as_ref().map(|chain| {
+            for (name, id) in chain.content.good_entries() {
+                let interned = society.intern_good(name);
+                assert_eq!(
+                    interned, id,
+                    "content good {name:?} interned to {interned:?} in the society, \
+                     not the ContentSet id {id:?}"
+                );
+            }
+            ChainRuntime {
+                content: chain.content.clone(),
+                throughput: chain.throughput,
+            }
+        });
 
         Self {
             world,
@@ -556,6 +825,7 @@ impl Settlement {
             pending_deposits: BTreeMap::new(),
             trader_ids,
             colonist_id_base,
+            chain,
             econ_tick: 0,
             last_report: EconTickReport::default(),
         }
@@ -622,15 +892,25 @@ impl Settlement {
         self.regenerate_scales();
 
         // ---- 5. MARKET: the unchanged econ clearing; money is redistributed
-        // between colonists here.
+        // between colonists here. Producers have bought their inputs (a miller a
+        // unit of grain, a baker a unit of flour) and sold last tick's output.
         self.society.step();
         report.total_gold_after_step = self.society.total_gold().0;
 
-        // ---- 6. READ-BACK happens at the top of the next tick's NEEDS phase.
+        // ---- 6. PRODUCTION (G3a): each living producer applies its recipe to the
+        // input it now holds, transforming it into output. A conserved conversion:
+        // the input consumed and the output produced are both recorded so the
+        // whole-system ledger accounts every transformed unit. Runs after the
+        // market (so the input a producer just bought is on hand) and is a no-op
+        // for a plain settlement (no chain).
+        self.run_production(&mut report);
 
-        // Conservation receipt: consumed (the sink) is this tick's consumption
-        // log; the whole-system after-totals must balance against before + regen
-        // − consumed for every good.
+        // ---- 7. READ-BACK happens at the top of the next tick's NEEDS phase.
+
+        // Conservation receipt: consumed (the eating sink) is this tick's
+        // consumption log; the whole-system after-totals (taken AFTER production)
+        // must balance against before + regen + produced − consumed_as_input −
+        // consumed for every good.
         for &(_, good, qty) in self.society.consumption_log_last_tick() {
             *report.consumed.entry(good).or_insert(0) += u64::from(qty);
         }
@@ -909,13 +1189,27 @@ impl Settlement {
 
     /// SCALES phase: regenerate every living colonist's value scale from its need
     /// state, overwriting the econ scale, then cancel now-stale resting quotes.
+    ///
+    /// For a **seeded producer** (G3a) the regenerated need scale is then extended
+    /// with two production wants (see [`producer_scale_extension`]): a top-ranked
+    /// tool anchor (so the durable tool is never sold) and an input want (so the
+    /// producer buys the good it transforms). These are deterministic and pure;
+    /// no RNG is drawn here.
     fn regenerate_scales(&mut self) {
         let mut rewritten = Vec::new();
         for colonist in &self.colonists {
             if !colonist.alive {
                 continue;
             }
-            let scale = regenerate_scale(&colonist.need, &colonist.culture, &self.known);
+            let mut scale = regenerate_scale(&colonist.need, &colonist.culture, &self.known);
+            if let Some(chain) = &self.chain {
+                producer_scale_extension(
+                    &mut scale,
+                    colonist.vocation,
+                    &chain.content,
+                    chain.throughput,
+                );
+            }
             self.society
                 .agents
                 .get_mut(colonist.id)
@@ -925,6 +1219,48 @@ impl Settlement {
         }
         self.society
             .cancel_changed_live_quotes_for_agents(&rewritten);
+    }
+
+    /// PRODUCTION phase (G3a): each living producer applies its recipe to the
+    /// input it holds, up to the throughput cap, recording the conserved
+    /// conversion (input consumed, output produced) into `report`. A no-op
+    /// without a chain. Deterministic: id-ordered, no RNG, integer state.
+    fn run_production(&mut self, report: &mut EconTickReport) {
+        let Some(chain) = &self.chain else {
+            return;
+        };
+        let throughput = chain.throughput;
+        let mill_recipe = chain.content.mill_recipe().id;
+        let bake_recipe = chain.content.bake_recipe().id;
+        // `chain`/`colonists` (immutable) and `society` (mutable) are disjoint
+        // fields, so id-ordered iteration here borrows them side by side. The
+        // recipe ids are content data; mutation delegates to econ's existing
+        // direct-recipe executor through an additive `Society` accessor.
+        for slot in 0..self.colonists.len() {
+            let colonist = &self.colonists[slot];
+            if !colonist.alive {
+                continue;
+            }
+            let recipe_id = match colonist.vocation {
+                Vocation::Miller => mill_recipe,
+                Vocation::Baker => bake_recipe,
+                Vocation::Gatherer | Vocation::Consumer => continue,
+            };
+            for _ in 0..throughput {
+                let Some(applied) = self
+                    .society
+                    .execute_direct_recipe_for_agent_checked(colonist.id, recipe_id)
+                else {
+                    // Out of input (or missing tool): nothing more to mill/bake.
+                    break;
+                };
+                let (out_good, out_qty) = applied.output;
+                *report.produced.entry(out_good).or_insert(0) += u64::from(out_qty);
+                if let Some((in_good, in_qty)) = applied.input {
+                    *report.consumed_as_input.entry(in_good).or_insert(0) += u64::from(in_qty);
+                }
+            }
+        }
     }
 
     fn slot_for_id(&self, id: AgentId) -> Option<usize> {
@@ -965,6 +1301,13 @@ impl Settlement {
     /// The goods tracked for whole-system conservation (`GoodId`-ordered).
     pub fn tracked_goods(&self) -> &[GoodId] {
         &self.goods
+    }
+
+    /// The G3a production-chain content (interned goods + recipes), or `None` for
+    /// a plain settlement. Read-only — the viewer and acceptance tests resolve the
+    /// chain's good ids and recipes through it.
+    pub fn content(&self) -> Option<&ContentSet> {
+        self.chain.as_ref().map(|chain| &chain.content)
     }
 
     /// The most recent realized spot price for `good` (the last trade), or `None`
@@ -1072,6 +1415,14 @@ impl Settlement {
             .count()
     }
 
+    /// All colonists of a vocation (living and dead) — the seeded roster count.
+    pub fn vocation_count(&self, vocation: Vocation) -> usize {
+        self.colonists
+            .iter()
+            .filter(|c| c.vocation == vocation)
+            .count()
+    }
+
     /// Total living colonists.
     pub fn living_total(&self) -> usize {
         self.colonists.iter().filter(|c| c.alive).count()
@@ -1105,6 +1456,20 @@ impl Settlement {
         out.extend_from_slice(&self.carry_cap.to_le_bytes());
         out.extend_from_slice(&self.exchange.0.to_le_bytes());
         push_dynamics_bytes(&mut out, &self.dynamics);
+        if let Some(chain) = &self.chain {
+            out.extend_from_slice(&chain.throughput.to_le_bytes());
+            let entries = chain.content.good_entries();
+            out.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+            for (name, id) in entries {
+                out.extend_from_slice(&id.0.to_le_bytes());
+                out.extend_from_slice(&(name.len() as u32).to_le_bytes());
+                out.extend_from_slice(name.as_bytes());
+            }
+            out.extend_from_slice(&(chain.content.recipes().len() as u32).to_le_bytes());
+            for recipe in chain.content.recipes() {
+                push_recipe_bytes(&mut out, recipe);
+            }
+        }
 
         // Delivered exchange-stockpile units that are still awaiting econ credit
         // affect future transfers, so attribution belongs in the canonical state.
@@ -1169,7 +1534,11 @@ impl Settlement {
         for colonist in &self.colonists {
             out.extend_from_slice(&colonist.id.0.to_le_bytes());
             out.push(u8::from(colonist.alive));
-            out.push(u8::from(colonist.vocation == Vocation::Gatherer));
+            // The vocation tag (Consumer=0, Gatherer=1 — exactly G2b's
+            // `u8::from(== Gatherer)` — plus Miller=2, Baker=3). Pre-G3a
+            // settlements only ever emit 0/1, so every G2b/G2c digest is
+            // byte-identical; the producers extend the space.
+            out.push(colonist.vocation.tag());
             out.extend_from_slice(&colonist.need.hunger.to_le_bytes());
             out.extend_from_slice(&colonist.need.warmth.to_le_bytes());
             out.extend_from_slice(&colonist.need.rest.to_le_bytes());
@@ -1234,20 +1603,50 @@ fn build_agent(
     config: &SettlementConfig,
 ) -> Agent {
     let mut stock = Stock::new(NET.0);
-    let (gold, food, wood) = match vocation {
-        Vocation::Gatherer => (
-            config.starting_gold_gatherer,
-            config.gatherer_food_buffer,
-            config.gatherer_wood_buffer,
-        ),
-        Vocation::Consumer => (
-            config.starting_gold_consumer,
-            config.consumer_food_buffer,
-            config.consumer_wood_endowment,
-        ),
+    let gold = match &config.chain {
+        // ---- G3a chain endowments: bread is the staple everyone eats, WOOD the
+        // warmth battery. Producers also hold their durable tool and an input
+        // buffer so production fires before the market routes the first input.
+        Some(chain) => {
+            stock.add(chain.content.bread(), chain.bread_buffer);
+            stock.add(WOOD, chain.wood_buffer);
+            match vocation {
+                Vocation::Consumer => config.starting_gold_consumer,
+                Vocation::Gatherer => config.starting_gold_gatherer,
+                Vocation::Miller => {
+                    stock.add(chain.content.mill(), 1);
+                    stock.add(chain.content.grain(), chain.miller_grain_buffer);
+                    chain.producer_gold
+                }
+                Vocation::Baker => {
+                    stock.add(chain.content.oven(), 1);
+                    stock.add(chain.content.flour(), chain.baker_flour_buffer);
+                    chain.producer_gold
+                }
+            }
+        }
+        // ---- G2b endowments (unchanged; producers never occur without a chain).
+        None => {
+            let (gold, food, wood) = match vocation {
+                Vocation::Gatherer => (
+                    config.starting_gold_gatherer,
+                    config.gatherer_food_buffer,
+                    config.gatherer_wood_buffer,
+                ),
+                Vocation::Consumer => (
+                    config.starting_gold_consumer,
+                    config.consumer_food_buffer,
+                    config.consumer_wood_endowment,
+                ),
+                Vocation::Miller | Vocation::Baker => {
+                    unreachable!("producer vocations require a production chain config")
+                }
+            };
+            stock.add(FOOD, food);
+            stock.add(WOOD, wood);
+            gold
+        }
     };
-    stock.add(FOOD, food);
-    stock.add(WOOD, wood);
     Agent {
         id,
         scale: regenerate_scale(need, culture, known),
@@ -1258,6 +1657,74 @@ fn build_agent(
         roles: vec![Role::Household],
         expect: belief_vec(),
     }
+}
+
+/// Extend a producer's regenerated need scale with its two production wants
+/// (G3a). Pure and deterministic; a no-op for a non-producer vocation.
+///
+/// - a **tool anchor**: a top-ranked `Next` want for the durable tool the
+///   producer holds (a mill / an oven). Because the producer holds the tool, the
+///   want is always provisioned (it posts no bid), and a sale would un-provision
+///   a want ranked above any gold it could gain — so the producer never sells its
+///   capital. Tools stay durable.
+/// - **input wants**: `throughput` unit `Next` wants for the good the producer
+///   transforms (grain for a miller, flour for a baker), placed *below* every
+///   current survival-good want (eat and warm first), then before the lower
+///   remainder of the regenerated scale. If a patient, low-need colonist ranks a
+///   savings want above a current bread/wood unit, that generated priority is
+///   preserved rather than letting recipe inputs jump ahead of survival goods.
+///   Unit wants so each is providable by one market buy; their count is the
+///   input buffer the producer aims to keep on hand. `Next` (not `Now`) so the
+///   input is reserved for the recipe, never eaten.
+fn producer_scale_extension(
+    scale: &mut Vec<Want>,
+    vocation: Vocation,
+    content: &ContentSet,
+    throughput: u32,
+) {
+    let (tool, input_good) = match vocation {
+        Vocation::Miller => (content.mill(), content.grain()),
+        Vocation::Baker => (content.oven(), content.flour()),
+        Vocation::Gatherer | Vocation::Consumer => return,
+    };
+
+    // Input wants sit after every present good want (bread/wood in the chain).
+    // Savings can legitimately interleave above low-urgency present wants for a
+    // patient colonist; using the first `Later` slot would put recipe inputs
+    // ahead of those survival goods.
+    let insert_at = scale
+        .iter()
+        .rposition(|want| {
+            matches!(want.kind, WantKind::Good(_)) && matches!(want.horizon, Horizon::Now)
+        })
+        .map(|position| position + 1)
+        .or_else(|| {
+            scale
+                .iter()
+                .position(|want| matches!(want.horizon, Horizon::Later(_)))
+        })
+        .unwrap_or(scale.len());
+    let input_wants = throughput.max(1) as usize;
+    let mut base = std::mem::take(scale);
+    scale.reserve(base.len() + input_wants + 1);
+
+    // Tool anchor at the very top.
+    scale.push(Want {
+        kind: WantKind::Good(tool),
+        horizon: Horizon::Next,
+        qty: 1,
+        satisfied: false,
+    });
+    scale.extend(base.drain(..insert_at));
+    for _ in 0..input_wants {
+        scale.push(Want {
+            kind: WantKind::Good(input_good),
+            horizon: Horizon::Next,
+            qty: 1,
+            satisfied: false,
+        });
+    }
+    scale.extend(base);
 }
 
 /// Build a resident-trader agent (G2c caravans) from its endowment: working gold,
@@ -1328,6 +1795,41 @@ fn push_horizon_bytes(out: &mut Vec<u8>, horizon: Horizon) {
             out.push(ticks);
         }
     }
+}
+
+fn push_recipe_bytes(out: &mut Vec<u8>, recipe: &Recipe) {
+    push_recipe_id_bytes(out, recipe.id);
+    out.extend_from_slice(&(recipe.name.len() as u32).to_le_bytes());
+    out.extend_from_slice(recipe.name.as_bytes());
+    out.extend_from_slice(&recipe.labor.to_le_bytes());
+    match recipe.input_good {
+        Some((good, qty)) => {
+            out.push(1);
+            out.extend_from_slice(&good.0.to_le_bytes());
+            out.extend_from_slice(&qty.to_le_bytes());
+        }
+        None => out.push(0),
+    }
+    match recipe.required_tool {
+        Some(good) => {
+            out.push(1);
+            out.extend_from_slice(&good.0.to_le_bytes());
+        }
+        None => out.push(0),
+    }
+    out.extend_from_slice(&recipe.output_good.0.to_le_bytes());
+    out.extend_from_slice(&recipe.output_qty.to_le_bytes());
+    out.push(u8::from(recipe.enabled));
+}
+
+fn push_recipe_id_bytes(out: &mut Vec<u8>, id: RecipeId) {
+    out.push(match id {
+        RecipeId::GatherFood => 0,
+        RecipeId::CutWood => 1,
+        RecipeId::FishWithNet => 2,
+        RecipeId::Mill => 3,
+        RecipeId::Bake => 4,
+    });
 }
 
 fn belief_vec() -> Vec<PriceBelief> {

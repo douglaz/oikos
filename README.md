@@ -18,14 +18,15 @@ policy by causal necessity.
 econ/    the economy engine — fork of praxsim-core (pure std, deterministic)
 life/    needs → wants: colonist value scales generated from need state (G1)
 world/   the spatial substrate — grid, terrain, nodes, stockpiles, movement (G2a)
-sim/     the two-rate orchestrator — world delivery under the econ tick (G2b)
+sim/     the two-rate orchestrator (G2b) + region (G2c) + content & production chain (G3a)
 viewer/  the oikos binary — read-only debug viewer + price/colonist inspectors (G2d)
 docs/    the game spec and design documents
 ```
 
-Future crates per the spec's §4.1: `content/` (data-driven goods/recipes/tech),
-`ui/` (Bevy client), `tools/` (headless runners, balance CI). They arrive with
-their milestones (G3, …) — empty scaffolding is not kept ahead of need.
+Future crates per the spec's §4.1: a standalone `content/` crate (a TOML loader
+over the `ContentSet` seam G3a establishes as a `sim` module), `ui/` (Bevy
+client), `tools/` (headless runners, balance CI). They arrive with their
+milestones — empty scaffolding is not kept ahead of need.
 
 ## Provenance and the lab relationship
 
@@ -362,6 +363,93 @@ This completes the revised G2. See `sim/tests/g2c_region.rs` and
 `docs/engine-divergence.md` (the G2c entry: multi-settlement by composition, the
 caravan-as-trader-pair model, and why no `Society` internal extraction).
 
+## Status: G3a (production chains — content recipes, seeded) — complete
+
+G2 gave colonists needs, space, a spatial economy, and trade, but goods were only
+*gathered* and *consumed*. G3a adds **production**: multi-stage transformation of
+goods via recipes, with tools as productivity capital. The signature target is the
+**grain → flour → bread chain** — flour is the *output* of one recipe and the
+*input* of the next. Per the game-spec's two-step G3 gate, this is the **seeded**
+half: the chain operates end-to-end with hand-placed producer roles. That the
+chain *arises* from price spreads (entrepreneurs choosing to mill/bake because the
+spread pays) is **G3b**, deliberately deferred.
+
+The mechanism is **reused, not rebuilt**. `econ::Recipe` already models a recipe —
+`{ labor, input_good, required_tool, output_good, output_qty }` — and a single-
+input recipe chains naturally (grain→flour→bread, each one input). G3a is content
++ sim wiring + a conservation generalization, **not** new recipe logic in `econ`:
+
+- **content as a code-level `ContentSet`** (`sim/src/content.rs`): the chain goods
+  (grain, flour, bread, plus the mill/oven tools) are **interned** via
+  `econ::GoodRegistry` (ids after the lab catalog, `grain = 7 … oven = 11`), and
+  the two chain recipes are built as data. A TOML content-file loader is deferred
+  (game-spec G3-later); the `ContentSet` API is the shape that loader will fill.
+- **seeded producer vocations** in `sim` (`Miller`, `Baker`): hand-placed, holding
+  their durable tool. In the econ tick's new **production phase** — after the
+  market, so a producer has its bought input on hand — each applies its recipe
+  through `Society::execute_direct_recipe_for_agent_checked`, an additive wrapper
+  around econ's existing `execute_direct_recipe_for_agent` path. It consumes input
+  + produces output, **gated by the held tool**, preflights output headroom, and
+  returns the accounted conversion for the conservation report. Roles are seeded,
+  not emergent (G3b).
+- **conservation generalized across transformations.** A recipe is a *conserved
+  conversion* — it consumes an accounted input and produces an accounted output.
+  The whole-system invariant becomes, per good X:
+
+  ```text
+  Δ(total X) = +regen +recipe_output −recipe_input −consumed
+  ```
+
+  The report gains `produced_of` / `consumed_as_input_of` alongside G2b's
+  regen/consumed. **Tools are durable**: `required_tool` is checked but never
+  consumed, so it never moves the ledger.
+
+It proves, the DoD:
+
+1. **The chain operates end-to-end.** Over a seeded run grain flows
+   node→gather→mill→flour→bake→bread→consumed; every stage sees nonzero activity
+   and the market prices all three goods from realized trades.
+2. **Conservation holds across the transformations, exactly, every econ tick** —
+   no unit is unaccounted across a recipe; tools never wear (the tripwire).
+
+`econ` market behaviour is **unchanged**: the six econ goldens stay byte-identical
+and every G1/G2a/G2b/G2c/G2d test is green — every `econ` edit is an additive
+accessor (the `Society::intern_good` naming seam, the checked direct-recipe
+execution seam, and two `RecipeId` variants), `ContentSet` lives in `sim`, and the
+`chain` config field is opt-in. Determinism is inherited: integer state, the `Rng`
+consumed only at generation, nothing drawn in the loops or the production phase,
+`BTreeMap`/`Vec` only.
+
+```bash
+cargo test -p sim                          # incl. sim/tests/g3a_production.rs
+cargo run -p viewer -- run chain --ticks 30  # the three goods' prices + conservation
+```
+
+G3a:
+
+- [x] a code-level `ContentSet` (`sim/src/content.rs`): interns the chain goods +
+      tools and builds the grain→flour→bread recipes (single-input, tool-gated)
+- [x] seeded `Miller` / `Baker` vocations + a production phase that applies the
+      recipes through econ's checked direct-recipe accessor (reusing
+      `econ::Recipe` and `execute_direct_recipe_for_agent`, durable tools, exact
+      input); tool-gated; producer roster in the config
+- [x] additive `econ` edits only — `RecipeId::Mill`/`Bake`, `Society::intern_good`,
+      `Society::execute_direct_recipe_for_agent_checked`, a `PartialEq`/`Eq`
+      derive on `Recipe`; market behavior and goldens unchanged
+- [x] conservation generalized (produced / consumed-as-input per good; tools
+      durable) in the `EconTickReport`
+- [x] a read-only `chain` scenario in the `oikos` viewer (the three goods'
+      prices/volumes + conservation OK)
+- [x] acceptance suite (`sim/tests/g3a_production.rs`: the seven acceptance tests)
+      and per-module unit tests; README + divergence-log updates
+
+Deferred to later G3 slices: role **emergence** (G3b — who produces what arises
+from the spread), the **TOML content loader** (content stays a code `ContentSet`),
+multi-input buildings-as-`Project`s (G3a uses single-input `Recipe`s), and tool
+production/wear (tools are durable, pre-placed). See `sim/tests/g3a_production.rs`
+and `docs/engine-divergence.md` (the G3a entry: production via the reused
+`Recipe`, content as a code-level `ContentSet`, conservation under transformation).
+
 ## Build and test
 
 ```bash
@@ -378,6 +466,7 @@ The `oikos` binary (G2d) is the workspace's first runnable artifact:
 cargo run -p viewer -- help          # usage
 cargo run -p viewer -- scenarios     # list the scenarios
 cargo run -p viewer -- run viable --ticks 20
+cargo run -p viewer -- run chain --ticks 30           # G3a: grain→flour→bread chain
 cargo run -p viewer -- run region --ticks 30          # G2c: two settlements + a caravan
 cargo run -p viewer -- run region-control --ticks 30  # the no-caravan twin
 ```

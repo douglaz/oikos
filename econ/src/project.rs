@@ -7,9 +7,14 @@ pub enum RecipeId {
     GatherFood,
     CutWood,
     FishWithNet,
+    /// G3a production-chain: mill grain into flour (a content recipe, applied by
+    /// the `sim` producer phase, never by the lab planner).
+    Mill,
+    /// G3a production-chain: bake flour into bread (a content recipe).
+    Bake,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Recipe {
     pub id: RecipeId,
     pub name: &'static str,

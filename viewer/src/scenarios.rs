@@ -54,6 +54,11 @@ const SCENARIOS: &[Scenario] = &[
         description: "a single gatherer on a haul too long to survive (escrow-on-death)",
         build: SettlementConfig::starved_hauler,
     },
+    Scenario {
+        name: "chain",
+        description: "the G3a grain→flour→bread production chain (seeded millers + bakers)",
+        build: SettlementConfig::grain_flour_bread_chain,
+    },
 ];
 
 fn build_near() -> SettlementConfig {

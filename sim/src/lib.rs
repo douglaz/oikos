@@ -57,12 +57,14 @@
 //! that trade converges prices (the gap narrows versus a no-caravan control — sign
 //! only). See [`mod@region`].
 
+pub mod content;
 pub mod region;
 pub mod settlement;
 
+pub use content::ContentSet;
 pub use region::{Region, RegionConfig, RegionTickReport, Route};
 pub use settlement::{
-    EconTickReport, NodeSpec, Settlement, SettlementConfig, TraderEndowment, Vocation,
+    ChainConfig, EconTickReport, NodeSpec, Settlement, SettlementConfig, TraderEndowment, Vocation,
     ECON_TICKS_PER_YEAR, FAST_TICKS_PER_ECON_TICK,
 };
 

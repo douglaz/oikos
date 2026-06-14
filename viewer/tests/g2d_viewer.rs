@@ -46,6 +46,16 @@ fn table_rows(output: &str) -> Vec<Vec<String>> {
         .collect()
 }
 
+fn table_headers(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .find(|line| line.starts_with("tick"))
+        .expect("dashboard prints a table header")
+        .split('|')
+        .map(|c| c.trim().to_string())
+        .collect()
+}
+
 fn is_separator(line: &&str) -> bool {
     !line.is_empty() && line.chars().all(|c| matches!(c, '-' | '+' | ' '))
 }
@@ -138,6 +148,41 @@ fn run_dashboard_has_expected_shape() {
     assert!(
         saw_price,
         "the dashboard must show at least one realized price"
+    );
+}
+
+#[test]
+fn chain_dashboard_shows_production_receipts() {
+    let output = viewer::run_dashboard("chain", 12, 1).expect("chain dashboard");
+    let headers = table_headers(&output);
+    let flour_made = headers
+        .iter()
+        .position(|header| header == "flour.made")
+        .expect("chain dashboard includes produced flour");
+    let grain_input = headers
+        .iter()
+        .position(|header| header == "grain.input")
+        .expect("chain dashboard includes milled grain input");
+    let bread_made = headers
+        .iter()
+        .position(|header| header == "bread.made")
+        .expect("chain dashboard includes produced bread");
+    let rows = table_rows(&output);
+
+    assert!(
+        rows.iter()
+            .any(|row| row[flour_made].parse::<u64>().unwrap_or(0) > 0),
+        "milling is hidden in the chain dashboard"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row[grain_input].parse::<u64>().unwrap_or(0) > 0),
+        "recipe input consumption is hidden in the chain dashboard"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row[bread_made].parse::<u64>().unwrap_or(0) > 0),
+        "baking is hidden in the chain dashboard"
     );
 }
 
