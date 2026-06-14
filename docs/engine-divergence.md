@@ -494,3 +494,90 @@ changes:
 - No pre-optimization against imagined scale — the G2a-deferred per-tick BFS and
   stockpile-sum costs did not bite under the two-rate load (8–16 agents, a
   corridor grid), so they stay deferred, not re-litigated here.
+
+---
+
+## G2d — debug viewer + inspectors (the `oikos` binary, `docs/impl-g2d.md`)
+
+G2d adds the `viewer` crate — the workspace's **first binary** (`oikos`) — a
+headless, deterministic, text-only debug viewer with the two inspectors the G2
+roadmap mandates (price→trades, colonist→scale/why). It is recorded here not
+because it changes any engine behavior — it does not — but because it is the
+first runnable artifact and because it touches `sim`'s public surface (additively),
+so the standing rule's proof is worth stating explicitly: the six conformance
+goldens (the four series M0/M1/M2/M3, the M18/M20 emergence goldens, and the
+M5/M6 anchors) and the entire G1 (`life`) / G2a (`world`) / G2b (`sim`) suites
+stay green and byte-identical — the unchanged workspace `cargo test` is the
+proof.
+
+### 1. The viewer is **read-only** — it renders, it never mutates
+
+Every renderer (the `run` dashboard and both inspectors) draws **only** from
+`sim`'s existing read-only accessors over a `Settlement` that was advanced by a
+*seeded* run (`Settlement::generate` + `econ_tick`/`run`):
+
+- the dashboard reads `living_count` / `realized_price` / `tracked_goods` and the
+  per-tick `EconTickReport` (`transferred_of` / `consumed_of` / `conserves` and
+  the whole-system before/after totals for the loud `VIOLATED:<good>` cell), plus
+  `need_of` / `is_alive` / `population` for the needs summary;
+- the **price→trades** inspector reads `society().trades` (the trade tape) filtered
+  to the good/tick, with `society().good_name` labels, and `realized_price(good)`.
+  Because `realized_price` is the engine's *most recent* clearing price (carried
+  forward across quiet ticks), the inspector shows it plainly when a trade cleared
+  at the inspected tick, but on a tick that cleared none it labels the price as
+  carried over and names the source tick (`carried from tick S; no <good> trade
+  cleared at tick T`) — so the price is never read as "the price behind these
+  (zero) trades", and the price→trades pairing stays honest on quiet ticks (e.g.
+  the `far` distance scenario, whose long haul leaves many ticks uncleared);
+- the **colonist→scale/why** inspector reads `society().agents.get(id)` for the
+  ranked value `scale` and `gold`, and `vocation_of` / `is_alive` / `need_of` /
+  `carry_of` for the rest of the "why" (a tombstoned colonist surfaces as dead
+  with the emptied scale `sim` already maintains).
+
+The viewer draws **no** RNG and runs no new economic mechanic. Determinism is
+inherited: same `(scenario, ticks, seed)` → byte-identical output (the acceptance
+suite's tripwire). No `sim`/`econ`/`world`/`life` *behavior* is touched.
+
+### 2. The only engine-surface change: additive read-only re-exports on `sim`
+
+The renderers read through the accessors above, whose return and element types
+are `econ`/`life` types — the `Society` behind `society()` and its trade tape's
+`Trade`, the `Agent` behind `society().agents` and its value scale's `Want` /
+`WantKind` / `Horizon`, the realized-price `Gold`, the `NeedState` behind
+`need_of`, and the good ids (`GoodId`, `FOOD`, `WOOD`) plus `AgentId`. So `sim`
+**re-exports** that read surface (`pub use` of `econ::{agent, good, market,
+society}` items and `life::NeedState`). This is the
+entire diff to a non-`viewer` crate, and it is purely additive: it adds public
+surface but defines no new behavior and touches no existing path, so it cannot
+move a golden (the unchanged suite is the proof). Keeping the re-exports on `sim`
+lets the viewer depend on **`sim` alone** — a thin binary over one crate —
+instead of reaching into `econ`/`life` directly.
+
+**No new `sim` accessor was required.** The spec budgeted for an additive
+read-only `sim` accessor if a renderer needed one; in the event, the G2b accessor
+surface (`society()`, `realized_price`, `tracked_goods`, `need_of`, `vocation_of`,
+`is_alive`, `carry_of`, `colonist_id`, `population`, `living_count`, the
+`EconTickReport`) already exposed everything, so none was added — the smallest
+possible change.
+
+### 3. The binary, and the `check`-artifact lesson
+
+`viewer` is both a library (so `viewer/tests/` can drive the renderers and assert
+on their `String` output — renderers return strings, never write stdout) and the
+`oikos` binary (`src/main.rs`, which only parses args, calls `viewer::run`, and
+prints). Errors are **loud**: an unknown scenario / flag / missing required
+argument yields a message plus the usage block and a non-zero exit, never a
+silent default or a panic. The build artifact is the `target/` tree (already
+gitignored, along with the stray root `check` binary); no new artifact is
+committed.
+
+### Excluded from G2d (deferred)
+
+- No Bevy / TUI / color / graphics and no interactivity or input-driven commands
+  (**G9**); text-only, std formatting only.
+- No multi-settlement (**G2c**) — the viewer renders one `Settlement`.
+- No new lib behavior, no new economic mechanics, no balance tuning — the viewer
+  only READS; distance→price is surfaced **sign only**.
+- No `HashMap` in logic; no new external dependencies (pure std over the `sim`
+  path dep; `econ` is a *test-only* dev-dependency for the read-only
+  non-perturbation check).

@@ -47,3 +47,21 @@ pub use settlement::{
     EconTickReport, NodeSpec, Settlement, SettlementConfig, Vocation, ECON_TICKS_PER_YEAR,
     FAST_TICKS_PER_ECON_TICK,
 };
+
+/// Read-only re-exports of the `econ`/`life` types that make up the settlement's
+/// read surface — the return and element types of the accessors above, plus the
+/// good ids a downstream reader names. The G2d `oikos` debug viewer renders
+/// settlement state through these: the [`Society`] behind [`Settlement::society`]
+/// and its trade tape's [`Trade`], the [`Agent`] behind `society().agents` and
+/// its value scale's [`Want`] / [`WantKind`] / [`Horizon`], the realized-price
+/// [`Gold`], the [`NeedState`] behind [`Settlement::need_of`], and [`GoodId`] /
+/// [`FOOD`] / [`WOOD`]. These are pure re-exports: they add public surface but
+/// change no behavior, so the econ conformance goldens and the G1/G2a/G2b suites
+/// stay byte-identical (the unchanged workspace `cargo test` is the proof).
+/// Keeping them on `sim` lets the viewer depend on `sim` alone — a thin binary
+/// over one crate — instead of reaching into `econ`/`life` directly.
+pub use econ::agent::{Agent, AgentId, Want, WantKind};
+pub use econ::good::{Gold, GoodId, Horizon, FOOD, WOOD};
+pub use econ::market::Trade;
+pub use econ::society::Society;
+pub use life::NeedState;

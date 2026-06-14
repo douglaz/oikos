@@ -19,6 +19,7 @@ econ/    the economy engine — fork of praxsim-core (pure std, deterministic)
 life/    needs → wants: colonist value scales generated from need state (G1)
 world/   the spatial substrate — grid, terrain, nodes, stockpiles, movement (G2a)
 sim/     the two-rate orchestrator — world delivery under the econ tick (G2b)
+viewer/  the oikos binary — read-only debug viewer + price/colonist inspectors (G2d)
 docs/    the game spec and design documents
 ```
 
@@ -238,10 +239,83 @@ See `sim/tests/g2b_two_rate.rs` and `docs/engine-divergence.md` (the G2b entry:
 the `sim` crate, the transfer seam, escrow-as-carry, and `sim` superseding
 `Camp`).
 
+## Status: G2d (debug viewer + inspectors, the `oikos` binary) — complete
+
+Per game-spec §11 (the G2 decomposition above) and pillar 3 / §8 (legibility).
+G2d delivers the workspace's **first runnable artifact** — the `oikos` binary, a
+headless, deterministic, text-only debug viewer — and the two inspectors the G2
+roadmap mandates: **price → the trades behind it** and **colonist → its value
+scale and why**. This is what turns "passing tests" into "something you can
+watch."
+
+The new `viewer` crate is a thin binary over `sim`: it renders settlement state
+entirely from `sim`'s existing read-only accessors (and `sim`'s read-only
+re-exports of the `econ`/`life` types), and **changes no `econ`/`world`/`life`/
+`sim` behavior** — the six econ conformance goldens and the G1/G2a/G2b suites
+stay green and byte-identical. Commands:
+
+```bash
+cargo run -p viewer -- run viable --ticks 20
+cargo run -p viewer -- inspect price price-probe --good food --at-tick 14
+cargo run -p viewer -- inspect colonist viable --id 1 --at-tick 10
+cargo run -p viewer -- scenarios
+cargo run -p viewer -- help
+```
+
+- **`oikos run <scenario>`** prints a per-econ-tick dashboard: living colonists
+  by vocation, realized price per tracked good (or `—` if none cleared),
+  conservation `OK`/`VIOLATED:<good>`, a needs summary (max/mean living hunger),
+  and transferred/consumed totals.
+- **`oikos inspect price <scenario> --good NAME`** prints the realized price for
+  a good at a tick and **exactly** the `society().trades` behind it (buyer,
+  seller, price, qty) — the answer to "why is the price N?".
+- **`oikos inspect colonist <scenario> --id N`** prints the colonist's ranked
+  value scale (each want's kind/horizon/satisfied), needs, vocation, alive/dead,
+  carried escrow, and gold — the answer to "why did this colonist do that?". A
+  tombstoned colonist shows as dead with an emptied scale.
+
+Three contracts hold it together. **Determinism:** the run is seeded and the
+viewer draws no RNG, so the same `(scenario, ticks, seed)` prints byte-identical
+output (the acceptance suite's tripwire). **Loud errors:** an unknown scenario,
+unknown flag, or missing required argument prints a message plus the usage block
+— never a silent default or a panic. **Text-only and dependency-free:** no TUI,
+color, or graphics crates (that is G9), std formatting only, no `HashMap` in
+logic. Renderers return a `String` (never write stdout directly) so the output
+is unit-testable; `main` just prints it.
+
+G2d:
+
+- [x] `viewer` workspace crate producing the `oikos` binary (`sim` path dep,
+      pure std; also a library so the renderers are unit-testable)
+- [x] hand-rolled arg dispatch mirroring the lab `prax` CLI; `run` / `inspect
+      price` / `inspect colonist` / `scenarios` / `help` subcommands
+- [x] the price→trades and colonist→scale/why inspectors, rendered from
+      read-only `sim` accessors; additive read-only re-exports on `sim` (the
+      `econ`/`life` types the viewer names), goldens byte-identical
+- [x] a scenario registry (`viable`, `price-probe`, `near`/`far` for the
+      distance contrast, `starved-hauler`) with `near-node`/`far-node` aliases
+- [x] acceptance suite (`viewer/tests/g2d_viewer.rs`: the seven acceptance tests
+      + extras) and per-module unit tests; README + divergence-log updates
+
+This completes the revised G2 except for the multi-settlement extraction (G2c),
+which follows. See `viewer/tests/g2d_viewer.rs` and `docs/engine-divergence.md`
+(the G2d entry: the first binary, the read-only viewer, and the additive `sim`
+re-exports).
+
 ## Build and test
 
 ```bash
 cargo test          # full conformance suite incl. goldens
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check
+```
+
+## Run
+
+The `oikos` binary (G2d) is the workspace's first runnable artifact:
+
+```bash
+cargo run -p viewer -- help          # usage
+cargo run -p viewer -- scenarios     # list the scenarios
+cargo run -p viewer -- run viable --ticks 20
 ```

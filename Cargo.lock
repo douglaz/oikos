@@ -23,6 +23,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "viewer"
+version = "0.1.0"
+dependencies = [
+ "econ",
+ "sim",
+]
+
+[[package]]
 name = "world"
 version = "0.1.0"
 dependencies = [

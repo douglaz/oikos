@@ -4,5 +4,6 @@ members = [
     "life",
     "world",
     "sim",
+    "viewer",
 ]
 resolver = "2"

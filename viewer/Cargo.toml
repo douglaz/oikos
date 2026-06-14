@@ -1,0 +1,23 @@
+[package]
+name = "viewer"
+version = "0.1.0"
+edition = "2021"
+
+# The `oikos` binary — the G2d read-only debug viewer. The crate is also a
+# library so `viewer/tests/` can drive the renderers and assert on their output
+# (they render to a `String`, never straight to stdout).
+[[bin]]
+name = "oikos"
+path = "src/main.rs"
+
+[dependencies]
+# Pure std otherwise — no TUI, color, or graphics crates (that is G9). The
+# viewer reads everything through `sim`'s accessors and its read-only
+# re-exports of the `econ`/`life` types.
+sim = { path = "../sim" }
+
+[dev-dependencies]
+# Test-only: the read-only acceptance test re-runs `econ` conformance scenarios
+# to assert the engine still replays deterministically and conserves gold from
+# the viewer's workspace (mirroring the G2b suite). Not linked into the binary.
+econ = { path = "../econ" }
