@@ -260,6 +260,35 @@ impl MoneySystem {
             .map(|index| &self.balances[index])
     }
 
+    /// Drop the ledger balance entry for a removed agent (G4a real death), so the
+    /// money invariant's "every balance has a live agent" check holds after the
+    /// arena frees the slot. Returns the removed balance, or `None` if the agent
+    /// had no entry.
+    ///
+    /// G4a only frees agents whose ledger balance is empty: the closed-GOLD M1
+    /// `sim`/`life` drivers keep no `MoneySystem` at all, and the lab never frees.
+    /// Routing a non-empty ledger estate (M3) is G4b, so this refuses a funded
+    /// balance before mutating — a nonzero drop would silently break money
+    /// conservation (its specie/fiat/claims would vanish from the snapshot).
+    pub fn forget_agent(&mut self, agent: AgentId) -> Option<AgentMoneyBalance> {
+        let index = self
+            .balances
+            .binary_search_by_key(&agent, |balance| balance.agent)
+            .ok()?;
+        assert_eq!(
+            self.balances[index].spendable_total(),
+            Gold::ZERO,
+            "G4a frees only empty-ledger agents; non-empty M3 estate routing is G4b"
+        );
+        let balance = self.balances.remove(index);
+        debug_assert_eq!(
+            balance.spendable_total(),
+            Gold::ZERO,
+            "G4a frees only empty-ledger agents; non-empty M3 estate routing is G4b"
+        );
+        Some(balance)
+    }
+
     pub fn balance_snapshot(&self, agent: AgentId) -> Option<AgentMoneyBalance> {
         self.balance(agent).cloned()
     }

@@ -626,6 +626,20 @@ impl LoanReservations {
             self.future_due.remove(index);
         }
     }
+
+    /// Drop every agent-keyed reserved-amount entry for `agent` (G4a real death):
+    /// its present-gold lend reservations and future-due borrow reservations. The
+    /// bank/issuer/policy maps are keyed by institution or order seq, not agent, so
+    /// they hold no per-colonist entry to drop. A removed agent's resting orders are
+    /// cancelled first (releasing these), so this is the explicit reconciliation
+    /// hook [`crate::society::Society::remove_agent`] calls after the arena free so
+    /// no loan reservation cache dangles a reference to a freed agent. Called only
+    /// on death; the no-free hot path never invokes it, so the goldens are
+    /// byte-identical.
+    pub fn forget_agent(&mut self, agent: AgentId) {
+        self.present_gold.retain(|(entry, _)| *entry != agent);
+        self.future_due.retain(|(entry, _, _)| *entry != agent);
+    }
 }
 
 fn add_gold_map_entry<K: Copy + Ord>(entries: &mut BTreeMap<K, Gold>, key: K, amount: Gold) {
@@ -809,10 +823,10 @@ impl LoanOrderBook {
     /// analogue of cancelling an agent's resting spot quotes: it removes the
     /// agent's own orders and un-earmarks the gold it had reserved against them
     /// — the gold stays with the agent, nothing settles to a counterparty. The
-    /// G1 death tombstone calls it so a dead agent's resting credit orders can
-    /// never match a later counterparty (G1 itself runs M1, where the loan book
-    /// is empty; this keeps the public death hook's "posts no orders, holdings
-    /// frozen" contract complete for any society kind). Returns the count
+    /// Real death (G4a `Society::remove_agent`) calls it so a dead agent's resting
+    /// credit orders can never match a later counterparty (the sim runs M1, where the
+    /// loan book is empty; this keeps the death seam's "posts no orders" contract
+    /// complete for any society kind). Returns the count
     /// cancelled.
     pub fn cancel_agent(&mut self, agent: AgentId, reservations: &mut LoanReservations) -> u32 {
         let mut canceled = 0;
@@ -2214,6 +2228,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn forget_agent_drops_only_its_loan_reservation() {
+        // G4a real-death reconciliation: forgetting a removed agent clears its
+        // present-gold lend and future-due borrow reservations, leaving others'
+        // reservations intact.
+        let agents = [agent(1, Gold(10)), agent(2, Gold(10))];
+        let mut reservations = LoanReservations::new();
+        assert!(
+            reservations.reserve_order(agents.as_slice(), &order(1, LoanSide::Lend, Gold(2), 1))
+        );
+        assert!(
+            reservations.reserve_order(agents.as_slice(), &order(2, LoanSide::Borrow, Gold(2), 2))
+        );
+        assert_eq!(reservations.reserved_gold(AgentId(1)), Gold(1));
+        assert_eq!(reservations.reserved_future_due(AgentId(2), 4), Gold(2));
+
+        reservations.forget_agent(AgentId(1));
+        assert_eq!(reservations.reserved_gold(AgentId(1)), Gold::ZERO);
+        assert_eq!(reservations.reserved_future_due(AgentId(2), 4), Gold(2));
+
+        reservations.forget_agent(AgentId(2));
+        assert_eq!(reservations.reserved_future_due(AgentId(2), 4), Gold::ZERO);
+    }
+
     fn bank() -> Bank {
         Bank {
             id: BankId(1),
@@ -2523,8 +2561,8 @@ mod tests {
     fn cancel_agent_clears_resting_orders_and_releases_only_its_reserves() {
         // Two agents each rest one non-crossing order: agent 1 lends (demanding
         // a high future limit) and agent 2 borrows (offering a low one), so they
-        // never match and both sit in the book. This mirrors the death
-        // tombstone's need to clear a dead agent's resting credit orders.
+        // never match and both sit in the book. This mirrors real death's need
+        // (G4a `remove_agent`) to clear a dead agent's resting credit orders.
         let agents = vec![agent(1, Gold(5)), agent(2, Gold(5))];
         let mut reservations = LoanReservations::new();
         let mut book = LoanOrderBook::new();

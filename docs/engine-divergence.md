@@ -224,8 +224,15 @@ unless the flag is set. The conformance suite is the proof.
 
 ### 2. Death by starvation is a **tombstone**, not an arena free (the seam)
 
+> **Superseded by G4a.** The freeze-in-place tombstone described in this section
+> was the G1 stopgap. G4a retired it: `Society::tombstone` is replaced by
+> `Society::remove_agent`, which settles the estate, frees the arena slot, and
+> reconciles the external caches. The G1/`Camp` tests were migrated to the
+> real-removal semantics. The contract below is kept for the historical record;
+> see the **G4a** section at the end of this document for what is now done.
+
 When a colonist's hunger holds at its critical ceiling for the death window,
-`Society::tombstone(AgentId)` marks it dead:
+`Society::tombstone(AgentId)` marked it dead (G1, now `remove_agent`):
 
 - its value scale is **emptied** (so the order/quote machinery posts nothing
   for it) and its labor capacity zeroed;
@@ -418,9 +425,11 @@ the world*, atomically and conservingly. A unit that cannot be credited stays
 world-owned in the exchange stockpile, never destroyed and never double-counted in
 econ — two cases: a **live** depositor whose stock is momentarily at the `u32`
 ceiling is transient (the attribution is retried each econ tick and transfers once
-consumption opens headroom), while a **tombstoned** depositor is rejected
-permanently, so its pending units freeze in the exchange for good (still conserved
-and world-owned, just never crossing the seam). The transfer is **net-zero**
+consumption opens headroom), while a **removed** (dead) depositor is rejected
+permanently at the transfer — its freed id no longer resolves — so its pending units
+stay world-owned in the exchange (still conserved, never crossing the seam) until G4a's
+estate settlement drains such stranded escrow to the commons on death (see the G4a
+section). The transfer is **net-zero**
 (`world` −n, `econ` +n); harvest
 and deposit are net-zero relocations; node regen (source) and consumption (sink)
 are the only non-zero deltas, each independently accounted. This is the
@@ -954,3 +963,108 @@ or production phases (`emergent_chain_run_is_deterministic` is the tripwire).
   and the `Unassigned` vocation, the emergent configs, and the opt-in chain field
   live in `sim`.
 - No `HashMap` in logic; nothing drawn in the loops; no asserted price magnitudes.
+
+---
+
+## G4a — real death: arena free, estate, cache reconciliation (`docs/impl-g4a.md`)
+
+Every milestone since G0b deferred one piece: actually **removing** an agent from a
+running `Society`. G0b built `AgentArena::free` but parked its Society-cache
+reconciliation; G1 tombstoned the dead (froze them in place); G2c's caravans used a
+permanent trader pair to avoid roster changes. G4a lands that deferred core — the
+engine-integration half of demography — isolated from the demographic *mechanics*
+(births, aging, households, inheritance), which are G4b.
+
+### 1. `Society::tombstone` → `Society::remove_agent` (the tombstone seam retired)
+
+`Society::tombstone(AgentId) -> bool` (freeze-in-place) is **replaced** by
+`Society::remove_agent(AgentId) -> Option<Estate>` (real removal). It runs the
+spec's order of operations, which is load-bearing:
+
+1. **SETTLE** the estate — extract the agent's gold and econ stock into the returned
+   `Estate { gold, stock }` (a conserved hand-off the caller routes to a commons in
+   G4a, or to heirs in G4b), emptying its scale and zeroing labor capacity so the
+   teardown posts nothing.
+2. **CANCEL** its market presence — cancel every resting spot quote, barter offer,
+   labor order, and loan order, releasing each reservation (the same per-book
+   cancellation the G1 tombstone used, now **before** the free; freeing first would
+   strand a reservation against a slot the arena no longer resolves).
+3. **FREE** the arena slot — `AgentArena::free` bumps the slot generation, so the dead
+   id resolves to `None` and the slot is reusable.
+4. **RECONCILE** the external position/id caches — see §2.
+
+A dead id is still recorded (in the renamed `dead_agents` list) so any capital project
+or open debt it owns stays **frozen** — heirs/capital inheritance are G4b, matching
+G1's freeze for that holdings class. The G1 architectural note (N per-phase guards)
+still applies and is satisfied by the same list plus the arena resolving a freed id to
+`None`.
+
+### 2. Reconciling **every** external cache (the load-bearing work)
+
+`AgentArena::free` reconciles its **own** maps; what it does not touch is state
+*outside* the arena. G4a reconciles every `Society` cache that holds a position or an
+agent id, on death only:
+
+- **`agent_order: Vec<usize>`** (physical positions) — the free is order-preserving
+  (every later live agent slides down one slot), so dropping the freed position and
+  decrementing every entry past it rebuilds the activation order at the relocated
+  positions, in unchanged priority order. Deterministic (`reconcile_agent_order_after_free`).
+- **`reservations` / `labor_reservations` / `loan_reservations`** — a new
+  `forget_agent` on each drops the dead id's entry (the orders were already cancelled,
+  so the entries are zero; the spot table also held an empty id-keyed slot). The
+  ledger-money (M3) `MoneySystem` likewise drops the freed agent's (empty) balance via
+  `MoneySystem::forget_agent`, so the money invariant's "every balance has a live
+  agent" check holds. A non-empty M3 balance is refused before any removal mutation;
+  estate routing for such balances is G4b.
+- **`barter_book`** — live barter offers and reservations for the dead id are
+  explicitly forgotten in the removal path, not left for the next clearing pass.
+- **`project_funding_plans`** — plans owned by the dead id are frozen for G4b:
+  reserved gold is released, unstarted plans expire, and debt/project links remain
+  recorded without requiring the owner to resolve as a live arena agent.
+- **`labor_book` / loan book / spot books** — orders are cancelled in step 2, so they
+  carry no order for the dead agent.
+
+A missed cache would be a dangling reference / stale order; the reconciliation is
+deterministic (id-ordered, integer, draws nothing), so a run with deaths is
+byte-identical across invocations.
+
+### 3. Estate → the settlement **commons** (a conserved sink; heirs are G4b)
+
+The `sim` `Settlement` (and the `life` `Camp`) own a **commons** — `commons_gold` plus
+a per-good `commons_stock`. On a starvation death the driver routes `remove_agent`'s
+returned `Estate` (gold + econ stock) into the commons, and **drains the dead
+colonist's world-carried delivery escrow** out of the world into the commons via the
+new `World::withdraw_agent_carry` (where G1 left it frozen in place). It likewise
+drains any **stranded exchange-deposit escrow** — units the colonist delivered to the
+exchange stockpile whose econ credit was still pending at death — out of the exchange
+into the commons, dropping the pending attribution so no entry keyed by the freed id
+lingers (a conserved world → commons transfer that preserves the pending↔exchange
+invariant; empty in the starvation-only model, where the transfer credits a still-live
+depositor before it can die, so this is a defensive settle). The commons joins
+`total_gold` and `whole_system_total`, so whole-system conservation holds **across** a
+death: nothing is created or destroyed, only relocated society/world → commons. G4b
+will route the same estate to heirs/households instead of pooling it.
+
+### 4. Goldens safe **by construction** (the no-free path is byte-identical)
+
+The lab never frees an agent — every golden scenario runs a fixed roster — so the
+free + reconcile path is **game-only**. The no-death code path is structurally
+unchanged: the commons starts empty and an empty commons is omitted from the canonical
+digest (it joins the digest only once a death settles an estate into it, so two
+distinct post-death states cannot collide), the new `forget_agent`/`remove_agent` are
+invoked only on death, and the `dead_agents`
+list stays empty in the lab (every freeze guard's binary-search is a no-op). The six
+econ conformance goldens and the existing G1/G2*/G3* digest tests are byte-identical;
+the G4a acceptance suite's `no_death_path_is_byte_identical` pins a no-death digest as
+the forward tripwire.
+
+### Excluded from G4a (deferred)
+
+- **No births, aging, households, or culture inheritance (G4b)** — death only.
+- **No estate-to-heirs** — the estate settles to the commons; G4b routes it to
+  households.
+- **No non-empty M3 ledger estate routing** — G4a frees only empty-ledger agents (the
+  closed-GOLD M1 drivers keep no `MoneySystem`; the lab never frees). A non-empty M3
+  estate is G4b.
+- **No population-stability study** (G4b/later).
+- No `HashMap` in logic; deterministic reconciliation; nothing drawn in the loops.

@@ -690,6 +690,22 @@ impl World {
             .unwrap_or(0)
     }
 
+    /// Remove up to `qty` units of `good` from an agent's carry, returning the
+    /// amount removed (0 for an unknown agent). The carry analogue of
+    /// [`World::stockpile_withdraw`]: the units are *relocated out of the world* to
+    /// the caller. It exists for the G4a real-death estate seam — a dead colonist's
+    /// carried delivery escrow settles to the settlement commons rather than
+    /// freezing in the world (`docs/engine-divergence.md`). Like the stockpile
+    /// withdraw it is **out-of-tick**: [`World::tick`] never calls it, so the
+    /// per-tick [`TickReport`] and the G2a conservation/tick tests are unaffected.
+    /// After a withdraw, [`World::total_goods`] drops by exactly the amount removed.
+    pub fn withdraw_agent_carry(&mut self, id: AgentId, good: GoodId, qty: u32) -> u32 {
+        self.agents
+            .get_mut(&id)
+            .map(|agent| agent.take_carry(good, qty))
+            .unwrap_or(0)
+    }
+
     /// The shortest-path step distance between two tiles around impassable
     /// terrain, or `None` if `to` is unreachable from `from`. On an open grid
     /// this equals their Manhattan distance and is monotone in separation.
@@ -812,6 +828,7 @@ mod tests {
     use crate::grid::{Grid, Pos};
     use crate::node::ResourceNode;
     use crate::stockpile::{Stockpile, StockpileId};
+    use econ::agent::AgentId;
     use econ::good::{FOOD, WOOD};
 
     fn open_world(w: u16, h: u16) -> World {
@@ -998,6 +1015,34 @@ mod tests {
         assert_eq!(world.stockpile_get(sp, FOOD), 5);
         assert_eq!(world.agent_carry(agent, FOOD), 0);
         assert_eq!(world.total_goods(), total_before);
+    }
+
+    #[test]
+    fn withdraw_agent_carry_relocates_units_out_of_the_world() {
+        // The G4a estate seam: a dead colonist's carried escrow is drained out of
+        // the world (to the settlement commons). The withdraw removes up to the
+        // requested amount and the world's total drops by exactly that — never more,
+        // never destroyed in place.
+        let mut world = open_world(3, 1);
+        let agent = world.add_agent(Pos::new(0, 0), 10, 5).unwrap();
+        let node = world
+            .add_node(ResourceNode::new(Pos::new(1, 0), FOOD, 6, 0, 6))
+            .unwrap();
+        world.assign_task(agent, Task::GoHarvest(node, 6));
+        world.tick();
+        assert_eq!(world.agent_carry(agent, FOOD), 6);
+        let total_before = world.total_goods();
+
+        // A partial drain removes exactly the requested amount.
+        assert_eq!(world.withdraw_agent_carry(agent, FOOD, 4), 4);
+        assert_eq!(world.agent_carry(agent, FOOD), 2);
+        assert_eq!(world.total_goods(), total_before - 4);
+
+        // Over-asking drains only what remains; an unknown agent removes nothing.
+        assert_eq!(world.withdraw_agent_carry(agent, FOOD, 99), 2);
+        assert_eq!(world.agent_carry(agent, FOOD), 0);
+        assert_eq!(world.withdraw_agent_carry(AgentId(999), FOOD, 1), 0);
+        assert_eq!(world.total_goods(), total_before - 6);
     }
 
     #[test]

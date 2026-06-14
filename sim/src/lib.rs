@@ -5,7 +5,7 @@
 //! [`world::World`], per-colonist [`life`] need state, and an [`econ::Society`],
 //! and runs the **two-rate loop** the game-spec (§4.1, §4.3) calls for: a fast
 //! loop of `FAST_TICKS_PER_ECON_TICK` `world` ticks (movement, harvest, haul)
-//! under one economic tick (transfer → needs/tombstone → scale regeneration →
+//! under one economic tick (transfer → needs/death → scale regeneration →
 //! market clearing → consumption read-back → task reassignment).
 //!
 //! The milestone proves two things:
@@ -31,7 +31,7 @@
 //! exchange stockpile and is retried later. See `docs/engine-divergence.md`.
 //!
 //! `sim` reuses `life`'s `regenerate_scale` / `NeedState` / `CultureParams` /
-//! tombstone mechanism and `world` / `econ` as-is, adding only the two additive,
+//! death mechanism and `world` / `econ` as-is, adding only the two additive,
 //! conserving accessors that realize the seam ([`world::World::stockpile_withdraw`]
 //! and [`econ::society::Society::credit_stock`]). It **supersedes** `life::Camp`
 //! as the driver (Camp stays as the G1 non-spatial reference harness).

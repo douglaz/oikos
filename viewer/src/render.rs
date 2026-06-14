@@ -541,7 +541,11 @@ pub fn format_colonist(
         if alive {
             out.push_str("value scale: (empty)\n");
         } else {
-            out.push_str("value scale: (empty — colonist is tombstoned)\n");
+            // G4a real death: the colonist's arena slot is freed (its agent no
+            // longer resolves), and its estate has settled to the commons.
+            out.push_str(
+                "value scale: (none — colonist has died; estate settled to the commons)\n",
+            );
         }
         return out;
     }

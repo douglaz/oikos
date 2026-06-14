@@ -5,7 +5,7 @@
 //! pins a specific price or count is out of scope (G2+ tuning).
 
 use econ::agent::{AgentId, WantKind};
-use econ::good::{Horizon, FOOD, WOOD};
+use econ::good::{Gold, Horizon, FOOD, WOOD};
 use life::{
     regenerate_scale, Camp, CampEnv, CultureParams, KnownGoods, NeedDynamics, NeedState,
     TICKS_PER_YEAR,
@@ -285,12 +285,12 @@ fn camp_of_50_does_not_collapse() {
     assert_eq!(camp.digest(), twin.digest(), "camp is not deterministic");
 }
 
-/// 9. A colonist cut off from FOOD crosses the death threshold, is tombstoned
-///    (marked dead, posts no orders, excluded from living count); the arena slot
-///    is NOT freed and total conservation still balances (frozen holdings
-///    included).
+/// 9. A colonist cut off from FOOD crosses the death threshold and is removed for
+///    real (G4a): its arena slot is freed (the live population shrinks), its
+///    settled estate moves to the commons, and total conservation still balances
+///    (the freed colonist's gold is counted in the commons, not in the arena).
 #[test]
-fn starvation_kills_via_tombstone() {
+fn starvation_kills_via_real_removal() {
     let env = CampEnv::starved();
     let mut camp = Camp::generate(3, 6, &env);
     let population = camp.population();
@@ -300,32 +300,29 @@ fn starvation_kills_via_tombstone() {
     for _ in 0..80 {
         camp.step();
 
-        // Gold is conserved every tick — including any tombstoned colonist's
-        // frozen balance, since its slot is never freed.
+        // Gold is conserved every tick — the freed colonist's settled gold moved to
+        // the commons, so the whole-system total (society + commons) is unchanged.
         assert_eq!(
             camp.total_gold(),
             initial_gold,
-            "conservation broke (frozen holdings must stay counted)"
+            "conservation broke (estate must settle to the commons)"
         );
-        // The arena is never shrunk: a tombstone is not an arena free.
+        // Real removal shrinks the arena: the live count equals the survivors.
         assert_eq!(
             camp.society().agents.len(),
-            population,
-            "tombstone must not free the arena slot"
+            camp.living_count(),
+            "real removal frees the dead colonist's arena slot"
         );
 
         if camp.living_count() < population {
             observed_death = true;
-            // Every dead colonist has an empty scale (so it posts no orders) and
-            // is excluded from the living count.
+            // Every dead colonist's id is freed — it no longer resolves in the arena.
             for index in 0..population {
                 if !camp.is_alive(index) {
-                    let dead = camp
-                        .society()
-                        .agents
-                        .get(AgentId(index as u64))
-                        .expect("tombstoned colonist still resolves in the arena");
-                    assert!(dead.scale.is_empty(), "a dead colonist must post no orders");
+                    assert!(
+                        camp.society().agents.get(AgentId(index as u64)).is_none(),
+                        "a removed colonist's id resolves to None"
+                    );
                 }
             }
         }
@@ -335,6 +332,12 @@ fn starvation_kills_via_tombstone() {
     assert!(
         camp.living_count() < population,
         "living count must exclude the dead"
+    );
+    // The commons holds the dead colonists' settled gold (a non-empty pool once a
+    // death has occurred, with the closed total unchanged).
+    assert!(
+        camp.commons_gold() > Gold::ZERO,
+        "a death settles gold to the commons"
     );
 }
 

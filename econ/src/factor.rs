@@ -170,6 +170,18 @@ impl LaborReservations {
         }
         self.labor.retain(|(_, labor)| *labor > 0);
     }
+
+    /// Drop every reserved-amount entry for `agent` (G4a real death). The release
+    /// paths already retain only nonzero entries, so a fully-released agent leaves
+    /// nothing behind; this is the explicit reconciliation hook
+    /// [`crate::society::Society::remove_agent`] calls after the arena free so no
+    /// labor reservation cache dangles a reference to a freed agent. Called only on
+    /// death; the no-free hot path never invokes it, so the goldens are
+    /// byte-identical.
+    pub fn forget_agent(&mut self, agent: AgentId) {
+        self.gold.retain(|(entry, _)| *entry != agent);
+        self.labor.retain(|(entry, _)| *entry != agent);
+    }
 }
 
 pub struct LaborBook {
@@ -817,6 +829,69 @@ mod tests {
             qty: 1,
             satisfied: false,
         }
+    }
+
+    #[test]
+    fn forget_agent_drops_only_its_labor_reservation() {
+        // G4a real-death reconciliation: forgetting a removed agent clears its
+        // wage and labor reservations while leaving every other agent's intact.
+        let worker_a = agent(
+            1,
+            Gold::ZERO,
+            5,
+            vec![want(WantKind::Leisure, Horizon::Now)],
+        );
+        let employer = agent(2, Gold(10), 0, vec![want(WantKind::Leisure, Horizon::Now)]);
+        let worker_b = agent(
+            3,
+            Gold::ZERO,
+            5,
+            vec![want(WantKind::Leisure, Horizon::Now)],
+        );
+        let agents = [worker_a, employer, worker_b];
+        let mut reservations = LaborReservations::new();
+        assert!(reservations.reserve_order(
+            agents.as_slice(),
+            &LaborOrder {
+                agent: AgentId(1),
+                side: FactorSide::Work,
+                wage_limit: Gold(1),
+                qty: 2,
+                seq: 1,
+                expires_tick: 3,
+            },
+        ));
+        assert!(reservations.reserve_order(
+            agents.as_slice(),
+            &LaborOrder {
+                agent: AgentId(2),
+                side: FactorSide::Hire,
+                wage_limit: Gold(2),
+                qty: 1,
+                seq: 2,
+                expires_tick: 3,
+            },
+        ));
+        assert!(reservations.reserve_order(
+            agents.as_slice(),
+            &LaborOrder {
+                agent: AgentId(3),
+                side: FactorSide::Work,
+                wage_limit: Gold(1),
+                qty: 4,
+                seq: 3,
+                expires_tick: 3,
+            },
+        ));
+        assert_eq!(reservations.reserved_labor(AgentId(1)), 2);
+        assert_eq!(reservations.reserved_gold(AgentId(2)), Gold(2));
+        assert_eq!(reservations.reserved_labor(AgentId(3)), 4);
+
+        reservations.forget_agent(AgentId(1));
+
+        assert_eq!(reservations.reserved_labor(AgentId(1)), 0);
+        assert_eq!(reservations.reserved_gold(AgentId(2)), Gold(2));
+        assert_eq!(reservations.reserved_labor(AgentId(3)), 4);
     }
 
     fn agent(id: u32, gold: Gold, labor_capacity: u32, scale: Vec<Want>) -> Agent {

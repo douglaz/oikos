@@ -5,8 +5,9 @@
 //! the tripwire), the dashboard has the documented shape and never falsely cries
 //! conservation (test 2), the price inspector prints **exactly** the trade tape
 //! for the good/tick and the matching realized price (test 3), the colonist
-//! inspector matches the colonist's `sim` state including a tombstoned colonist's
-//! emptied scale (test 4), the distance→price result is now **visible** in the
+//! inspector matches the colonist's `sim` state including a **dead** colonist
+//! removed from the arena with its estate settled to the commons (test 4, G4a
+//! real removal), the distance→price result is now **visible** in the
 //! viewer (test 5, sign only), errors are **loud** (test 6), and the viewer is
 //! **read-only** — the engine still replays deterministically and conserves from
 //! the viewer's workspace (test 7; the full byte-identical-golden / clippy / fmt
@@ -386,10 +387,10 @@ fn colonist_inspector_matches_state() {
 }
 
 #[test]
-fn colonist_inspector_shows_a_dead_colonist_with_an_emptied_scale() {
+fn colonist_inspector_shows_a_dead_colonist_removed_from_the_arena() {
     let (seed, ticks, at_tick, id) = (1u64, 20u64, 19u64, 0usize);
 
-    // The starved hauler dies mid-haul and its scale is emptied (tombstoned).
+    // The starved hauler dies mid-haul; G4a frees its arena slot (real removal).
     let settlement = build("starved-hauler", seed, ticks);
     assert!(
         !settlement.is_alive(id),
@@ -397,22 +398,24 @@ fn colonist_inspector_shows_a_dead_colonist_with_an_emptied_scale() {
     );
     let agent_id = settlement.colonist_id(id).unwrap();
     assert!(
-        settlement
-            .society()
-            .agents
-            .get(agent_id)
-            .unwrap()
-            .scale
-            .is_empty(),
-        "a tombstoned colonist's scale is emptied"
+        settlement.society().agents.get(agent_id).is_none(),
+        "a dead colonist's arena slot is freed; its id resolves to None"
+    );
+    // Its carried delivery escrow drained out of the world to the commons.
+    assert_eq!(
+        settlement.carry_of(id, FOOD),
+        0,
+        "a dead hauler's carry settled to the commons"
+    );
+    assert!(
+        settlement.commons_stock_of(FOOD) > 0,
+        "the dead hauler's escrow settled to the commons"
     );
 
     let output = viewer::run_colonist("starved-hauler", id, Some(at_tick), Some(ticks), seed)
         .expect("colonist inspector runs");
     assert!(output.contains("gatherer, DEAD"));
-    assert!(output.contains("(empty — colonist is tombstoned)"));
-    // Its frozen carry (delivery escrow) is still shown — conserved, not lost.
-    assert!(output.contains(&format!("food {}", settlement.carry_of(id, FOOD))));
+    assert!(output.contains("(none — colonist has died; estate settled to the commons)"));
 }
 
 // ---- 5. the distance→price result, now visible ---------------------------

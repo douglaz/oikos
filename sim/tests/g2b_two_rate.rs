@@ -150,8 +150,9 @@ fn whole_system_conserves_every_econ_tick() {
 
 /// 3. Goods in transit are escrow, never lost. A hauler that does not reach the
 ///    exchange within the interval keeps its load in carry (escrow) and delivers
-///    it on a later arrival; a hauler that dies mid-haul retains its carried
-///    goods frozen — conserved, not destroyed, not transferred.
+///    it on a later arrival; a hauler that dies mid-haul **settles** its carried
+///    goods to the commons (G4a real death) — conserved, not delivered, not
+///    destroyed, not frozen in the world.
 #[test]
 fn in_transit_goods_are_escrow_not_lost() {
     // Part 1 — escrow carried across an econ tick, delivered later.
@@ -191,48 +192,61 @@ fn in_transit_goods_are_escrow_not_lost() {
         "escrowed goods must eventually transfer"
     );
 
-    // Part 2 — a hauler that starves mid-haul freezes its carried goods.
+    // Part 2 — a hauler that starves mid-haul settles its carried goods to the
+    // commons (G4a real death), conserved across the death.
     let mut s = Settlement::generate(1, &SettlementConfig::starved_hauler());
     let hauler = s.colonist_id(0).unwrap();
-    let mut carry_at_death = None;
+    let mut died = false;
+    let mut prev_total = s.whole_system_total(FOOD);
     for _ in 0..20 {
         let report = s.econ_tick();
+        // Conservation holds every tick, including the death tick: the carry that
+        // leaves the world reappears in the commons, so the whole-system total
+        // (world + econ + commons) changes only by regen − consumed.
+        let after = s.whole_system_total(FOOD);
+        assert_eq!(
+            after as i128,
+            prev_total as i128 + report.regen_of(FOOD) as i128 - report.consumed_of(FOOD) as i128,
+            "conservation broke across the death"
+        );
+        prev_total = after;
         if !s.is_alive(0) {
-            // It died holding undelivered goods, and that death delivered nothing.
-            let carry = s.world().agent_carry(hauler, FOOD);
-            assert!(carry > 0, "the hauler must die mid-haul, still carrying");
+            died = true;
+            // The dead hauler's carried escrow is drained out of the world (not
+            // frozen there), and the commons gained the settled goods.
             assert_eq!(
-                report.transferred_of(FOOD),
+                s.world().agent_carry(hauler, FOOD),
                 0,
-                "the dead must deliver nothing"
+                "a dead hauler's carry drains out of the world"
             );
-            carry_at_death = Some(carry);
             break;
         }
     }
-    let frozen = carry_at_death.expect("the starved hauler must die");
+    assert!(died, "the starved hauler must die mid-haul");
+    let frozen_commons = s.commons_stock_of(FOOD);
+    assert!(
+        frozen_commons > 0,
+        "the dead hauler's escrow settled to the commons"
+    );
 
-    // The frozen carry stays put and stays counted: no later tick transfers it,
-    // and whole-system conservation continues to hold with the dead colonist's
-    // goods included.
-    let mut prev_total = s.whole_system_total(FOOD);
+    // After death: the dead hauler carries nothing and delivers nothing, the
+    // commons never loses its settled escrow, and conservation keeps holding.
     for _ in 0..8 {
         let report = s.econ_tick();
         assert_eq!(
             s.world().agent_carry(hauler, FOOD),
-            frozen,
-            "a dead hauler's carry must stay frozen"
-        );
-        assert_eq!(
-            report.transferred_of(FOOD),
             0,
-            "frozen escrow must not transfer"
+            "a dead hauler carries nothing"
+        );
+        assert!(
+            s.commons_stock_of(FOOD) >= frozen_commons,
+            "the commons never loses its settled goods"
         );
         let after = s.whole_system_total(FOOD);
         assert_eq!(
             after as i128,
             prev_total as i128 + report.regen_of(FOOD) as i128 - report.consumed_of(FOOD) as i128,
-            "frozen-escrow conservation broke"
+            "post-death conservation broke"
         );
         prev_total = after;
     }

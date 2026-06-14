@@ -7,9 +7,9 @@
 //!
 //! 1. update each living colonist's `NeedState` from last tick's realized
 //!    consumption + whether it worked or rested;
-//! 2. apply death-by-starvation tombstones (mark dead, empty scale, drop from
-//!    activation, freeze holdings — **not** an arena free, see
-//!    [`Society::tombstone`] and `docs/engine-divergence.md`);
+//! 2. apply death-by-starvation as **real removal** (G4a): mark dead, settle the
+//!    estate (gold + stock) to the camp commons, and free the arena slot — see
+//!    [`Society::remove_agent`] and `docs/engine-divergence.md`;
 //! 3. [`regenerate_scale`] for every living colonist, overwriting `Agent.scale`;
 //! 4. add the per-tick resource endowment flow, then `Society::step()` — the
 //!    unchanged econ market/labor clearing;
@@ -22,7 +22,7 @@
 
 use econ::agent::{Agent, AgentId, Role};
 use econ::expect::PriceBelief;
-use econ::good::{Gold, Stock, FOOD, GOLD, NET, WOOD};
+use econ::good::{Gold, GoodId, Stock, FOOD, GOLD, NET, WOOD};
 use econ::money::{DesignatedMoney, MarketMoneyConfig};
 use econ::project::{Recipe, RecipeId};
 use econ::rng::Rng;
@@ -128,14 +128,14 @@ impl CampEnv {
 
     /// A camp cut off from food: no FOOD harvest and no labor, so nothing can
     /// produce or replenish food and every colonist eventually starves. Used to
-    /// exercise the tombstone death path.
+    /// exercise the real-death path (G4a).
     pub const fn starved() -> Self {
         Self {
             food_flow: 0,
             wood_flow: 3,
             labor_capacity: 0,
-            // No income: gold is closed and conserved here, so a death freezes
-            // holdings without disturbing the conservation total.
+            // No income: gold is closed and conserved here, so a death settles
+            // holdings to the commons without disturbing the conservation total.
             gold_income: 0,
             starting_gold: 8,
             starting_food: 2,
@@ -158,11 +158,11 @@ struct Colonist {
     need: NeedState,
     culture: CultureParams,
     critical_streak: u16,
-    /// Mirrors the engine tombstone (see [`Society::tombstone`]'s caller
-    /// contract): set `false` the tick a colonist is tombstoned and checked in
-    /// every `step` phase so a dead colonist is never re-scaled, re-endowed, or
-    /// read back. This driver-owned bookkeeping is the G1 death seam; G4 makes it
-    /// a first-class arena operation.
+    /// Mirrors real removal (see [`Society::remove_agent`]'s caller contract): set
+    /// `false` the tick a colonist starves and checked in every `step` phase so a
+    /// dead colonist is never re-scaled, re-endowed, or read back. After removal its
+    /// id resolves to `None` in the arena; this driver-owned flag keeps the dead out
+    /// of the per-tick phases that iterate the generated roster.
     alive: bool,
 }
 
@@ -173,6 +173,17 @@ pub struct Camp {
     known: KnownGoods,
     env: CampEnv,
     colonists: Vec<Colonist>,
+    /// The camp **commons** (G4a real death): the conserved sink that holds a dead
+    /// colonist's settled estate. When a colonist starves, [`Society::remove_agent`]
+    /// frees its arena slot and hands back its gold + stock, which accrue here —
+    /// nothing created or destroyed. The commons joins [`Camp::total_gold`] so gold
+    /// conservation holds across a death even though the freed colonist's gold has
+    /// left the society. Empty until the first death. G4b routes estates to heirs.
+    commons_gold: Gold,
+    /// The commons' physical-good holdings — a dead colonist's settled stock, kept
+    /// so the estate transfer conserves every good (G4a). Read via
+    /// [`Camp::commons_stock_of`].
+    commons_stock: Stock,
 }
 
 impl Camp {
@@ -230,6 +241,8 @@ impl Camp {
             known,
             env: *env,
             colonists,
+            commons_gold: Gold::ZERO,
+            commons_stock: Stock::new(NET.0),
         }
     }
 
@@ -266,7 +279,10 @@ impl Camp {
             colonist.need.advance(&self.dynamics, intakes[index]);
         }
 
-        // 2. tombstone colonists past the death window.
+        // 2. apply death-by-starvation as real removal (G4a): mark dead, then settle
+        // the estate to the commons and free the arena slot. Deaths are collected
+        // first (a mutable streak pass) and settled after, in generation order.
+        let mut dying = Vec::new();
         for colonist in &mut self.colonists {
             if !colonist.alive {
                 continue;
@@ -277,9 +293,12 @@ impl Camp {
                 colonist.critical_streak = 0;
             }
             if colonist.critical_streak >= self.dynamics.death_window {
-                self.society.tombstone(colonist.id);
                 colonist.alive = false;
+                dying.push(colonist.id);
             }
+        }
+        for id in dying {
+            self.settle_estate_to_commons(id);
         }
 
         // 3. regenerate the value scale from need state for every living colonist.
@@ -328,6 +347,23 @@ impl Camp {
         self.society.step();
     }
 
+    /// Settle a starved colonist's estate to the commons and remove it (G4a real
+    /// death). [`Society::remove_agent`] settles the estate (gold + stock), cancels
+    /// the colonist's market presence, frees its arena slot, and reconciles the
+    /// society's caches — handing back the [`econ::society::Estate`], which accrues
+    /// to the commons. A conserved transfer: the gold and goods leave the society
+    /// for the commons, nothing created or destroyed (heirs are G4b). The camp has
+    /// no spatial layer, so there is no world-carried escrow to drain.
+    fn settle_estate_to_commons(&mut self, id: AgentId) {
+        let Some(estate) = self.society.remove_agent(id) else {
+            return;
+        };
+        self.commons_gold = self.commons_gold.saturating_add(estate.gold);
+        for good in estate.stock.positive_goods() {
+            self.commons_stock.add(good, estate.stock.get(good));
+        }
+    }
+
     /// Run `ticks` economic ticks.
     pub fn run(&mut self, ticks: u64) {
         for _ in 0..ticks {
@@ -342,7 +378,7 @@ impl Camp {
         self.env.food_flow = flow;
     }
 
-    /// Living (non-tombstoned) colonist count.
+    /// Living colonist count (the dead are removed from the arena).
     pub fn living_count(&self) -> usize {
         self.colonists.iter().filter(|c| c.alive).count()
     }
@@ -368,11 +404,24 @@ impl Camp {
         self.society.realized_price(self.known.hunger)
     }
 
-    /// Total money balance across the camp — including the frozen holdings of
-    /// tombstoned colonists (their slots are never freed). Conserved by the M1
-    /// market, so a constant across a death proves frozen-holdings conservation.
+    /// Total money balance across the camp — live econ gold plus the **commons**
+    /// (a dead colonist's settled gold; G4a). The commons term is zero until the
+    /// first death; including it keeps the total constant across a death (the dead
+    /// colonist's gold leaves the society for the commons), so a constant across a
+    /// death proves the estate transfer is conserved.
     pub fn total_gold(&self) -> Gold {
-        self.society.total_gold()
+        self.society.total_gold().saturating_add(self.commons_gold)
+    }
+
+    /// The gold pooled in the camp commons — dead colonists' settled gold (G4a).
+    pub fn commons_gold(&self) -> Gold {
+        self.commons_gold
+    }
+
+    /// Units of `good` held in the camp commons — dead colonists' settled stock
+    /// (G4a). Zero until the first death.
+    pub fn commons_stock_of(&self, good: GoodId) -> u32 {
+        self.commons_stock.get(good)
     }
 
     /// Read-only access to the underlying society (for conservation/holdings

@@ -157,6 +157,15 @@ impl BarterBook {
         self.cancel_invalid_offers(agents, provisional_leader);
     }
 
+    /// Drop every live offer and reservation for a removed agent (G4a real death).
+    /// `Society::remove_agent` calls this before/alongside arena reconciliation so
+    /// a dead agent has no visible barter order even before the next clearing pass.
+    pub fn forget_agent(&mut self, agent: AgentId) {
+        self.offers.retain(|offer| offer.agent != agent);
+        self.reservations
+            .retain(|reservation| reservation.agent != agent);
+    }
+
     pub fn clear_matches(&mut self, agents: &mut [Agent], tick: u64) -> Vec<BarterTrade> {
         self.clear_matches_with_provisional_leader(agents, tick, None)
     }
@@ -600,6 +609,30 @@ mod tests {
         assert!(book.post_offer(&agents, offer(1, FOOD, WOOD, 1), 0));
         assert!(!book.post_offer(&agents, offer(1, FOOD, CLOTH, 2), 0));
         assert_eq!(book.reserved_qty(AgentId(1), FOOD), 1);
+    }
+
+    #[test]
+    fn forget_agent_cancels_live_offers_and_reservations() {
+        let agents = vec![
+            agent(1, &[(FOOD, 1)], &[(WOOD, Horizon::Now, 1)]),
+            agent(2, &[(WOOD, 1)], &[(FOOD, Horizon::Now, 1)]),
+        ];
+        let mut book = BarterBook::new();
+
+        assert!(book.post_offer(&agents, offer(1, FOOD, WOOD, 1), 0));
+        assert!(book.post_offer(&agents, offer(2, WOOD, FOOD, 2), 0));
+        assert_eq!(book.reserved_qty(AgentId(1), FOOD), 1);
+        assert_eq!(book.reserved_qty(AgentId(2), WOOD), 1);
+
+        book.forget_agent(AgentId(1));
+
+        assert!(book
+            .live_offers()
+            .iter()
+            .all(|offer| offer.agent != AgentId(1)));
+        assert_eq!(book.reserved_qty(AgentId(1), FOOD), 0);
+        assert_eq!(book.reserved_qty(AgentId(2), WOOD), 1);
+        assert_eq!(book.live_offers().len(), 1);
     }
 
     #[test]

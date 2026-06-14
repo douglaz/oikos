@@ -15,10 +15,10 @@
 //!
 //! G1 is deliberately **mechanism-only and pre-spatial** (game-spec §11): it
 //! asserts scale-generation *properties* and non-collapse, never balance
-//! numbers. It is not space (G2), demography/birth/aging/households (G4 — G1 has
-//! death-by-starvation only, via tombstone, not arena free), content/tech (G3),
-//! the `sim` orchestrator (G2), or any change to the econ engine's economic
-//! behavior (the goldens stay byte-identical).
+//! numbers. It is not space (G2), births/aging/households/inheritance (G4b — G1
+//! has death-by-starvation only, now via real removal + estate-to-commons as of
+//! G4a), content/tech (G3), the `sim` orchestrator (G2), or any change to the
+//! econ engine's economic behavior (the goldens stay byte-identical).
 //!
 //! Pure std, integer math in the sim path, no `HashMap` in logic, deterministic
 //! generation (one seed → one `Rng`, consumed at world-generation only; the

@@ -218,6 +218,19 @@ pub enum V2PromotionFailureReason {
     BalanceOverflow,
 }
 
+/// The settled estate of a removed colonist (G4a real death): the econ gold and
+/// stock extracted from its arena slot at death, returned by
+/// [`Society::remove_agent`] for the caller to route to the settlement commons —
+/// a conserved transfer, nothing created or destroyed. G4b will route the same
+/// estate to heirs/households instead.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Estate {
+    /// The dead colonist's gold balance at death (the closed-GOLD M1 money).
+    pub gold: Gold,
+    /// The dead colonist's econ stock at death, every physical good it held.
+    pub stock: Stock,
+}
+
 pub struct Society {
     pub tick: Tick,
     pub agents: AgentArena,
@@ -294,7 +307,13 @@ pub struct Society {
     max_good_id: u16,
     live_quotes: Vec<LiveQuote>,
     agent_order: Vec<usize>,
-    tombstoned_agents: Vec<AgentId>,
+    /// Ids removed by [`Society::remove_agent`] (G4a real death), ascending. The
+    /// id is freed from the arena, but it is recorded here so any capital project
+    /// or open debt the dead colonist still owns stays frozen — heirs/capital
+    /// inheritance are G4b. Empty in every lab scenario (the lab never frees an
+    /// agent), so the project/debt freeze guards that binary-search it are no-ops
+    /// and the conformance goldens are byte-identical.
+    dead_agents: Vec<AgentId>,
     m2_enabled: bool,
     m3_enabled: bool,
     regime: Regime,
@@ -432,7 +451,7 @@ impl Society {
             max_good_id,
             live_quotes: Vec::new(),
             agent_order,
-            tombstoned_agents: Vec::new(),
+            dead_agents: Vec::new(),
             m2_enabled,
             m3_enabled,
             regime,
@@ -785,7 +804,7 @@ impl Society {
                     issuer_repayment_audit: &mut self.issuer_repayment_audit,
                     tax_audit: &mut self.tax_audit,
                 },
-                &self.tombstoned_agents,
+                &self.dead_agents,
             )
         };
         if let Some(snapshot) = &project_debt_payment_snapshot {
@@ -891,7 +910,7 @@ impl Society {
             self.agents.as_mut_slice(),
             &mut self.debts,
             self.tick,
-            &self.tombstoned_agents,
+            &self.dead_agents,
         );
         if let Some(snapshot) = &project_debt_payment_snapshot {
             self.release_project_funding_reserves_for_debt_payments(snapshot);
@@ -2731,17 +2750,17 @@ impl Society {
     fn mature_waiting_projects(&mut self) {
         let money_good = self.money.current_money_good();
         let mut lots = Vec::new();
-        // A tombstoned owner's project stays frozen: G1 death does not settle
-        // estates, so the project never matures and its output is neither minted
-        // nor credited (without this guard `agent_index_for` still resolves the
-        // dead owner's arena slot and would credit it, violating the tombstone's
-        // "holdings frozen" contract). Committed inputs, advanced gold, and the
-        // arena slot stay in place until G4 estate settlement (see `tombstone`
-        // and docs/engine-divergence.md). The guard reads the tombstone list —
-        // empty in every conformance scenario — so the goldens are byte-identical.
-        let tombstoned = &self.tombstoned_agents;
+        // A dead owner's project stays frozen: G4a settles a dead colonist's gold
+        // and stock to the commons but NOT its capital — heirs/capital inheritance
+        // are G4b — so a project it still owns never matures and its output is
+        // neither minted nor credited. The owner's arena slot is freed, so without
+        // this guard `mature_project` would still produce a lot whose owner no
+        // longer resolves. The guard reads the dead-agent list (see
+        // [`Society::remove_agent`] and docs/engine-divergence.md) — empty in every
+        // conformance scenario — so the goldens are byte-identical.
+        let dead = &self.dead_agents;
         for project in self.m2_projects.iter_mut() {
-            if tombstoned.binary_search(&project.owner).is_ok() {
+            if dead.binary_search(&project.owner).is_ok() {
                 continue;
             }
             if let Some(lot) = mature_project(project, self.tick) {
@@ -2945,7 +2964,7 @@ impl Society {
         ) {
             return false;
         }
-        if self.tombstoned_agents.binary_search(&project.owner).is_ok() {
+        if self.dead_agents.binary_search(&project.owner).is_ok() {
             return false;
         }
         let Some(line) = find_line(&self.project_lines, project.line) else {
@@ -3672,7 +3691,7 @@ impl Society {
     }
 
     /// Credit `qty` units of `good` to a live agent's stock, returning `false`
-    /// for an unknown, stale, or tombstoned `agent` (then nothing is credited).
+    /// for an unknown, stale, or removed `agent` (then nothing is credited).
     ///
     /// The G2b world→econ transfer seam (`docs/impl-g2b.md`). The `sim` crate's
     /// two-rate loop hauls a physical good through `world` (node → carry →
@@ -3682,9 +3701,9 @@ impl Society {
     /// is net-zero (world −n, econ +n). It is **purely additive**: it touches no
     /// scale, quote, money balance, or market state and is called by no engine
     /// path, so the conformance goldens are byte-identical (the proof is the
-    /// unchanged suite). Liveness is the tombstone test (an O(log n) lookup in
-    /// the sorted tombstone list), not an O(n) activation-order scan, so a large
-    /// population's per-econ-tick transfer stays cheap.
+    /// unchanged suite). A removed colonist (G4a real death) frees its arena slot,
+    /// so its stale id resolves to `None` and is rejected by the `position_of`
+    /// guard; the `dead_agents` lookup is a cheap defensive backstop.
     ///
     /// A driver must only ever credit goods it has just removed from the world,
     /// and only up to the agent's remaining headroom — the stock add saturates at
@@ -3695,10 +3714,10 @@ impl Society {
         let Some(position) = self.agents.position_of(agent) else {
             return false;
         };
-        // A resolved id is live iff it has not been tombstoned: no lab path frees
-        // an agent, so "present in the activation order" and "not tombstoned"
-        // coincide, and the tombstone list is already sorted for binary search.
-        if self.tombstoned_agents.binary_search(&agent).is_ok() {
+        // A resolved id is live by construction (a removed agent's slot is freed, so
+        // its id resolves to None above); the dead-agents lookup is a defensive
+        // backstop, and the list is sorted for binary search.
+        if self.dead_agents.binary_search(&agent).is_ok() {
             return false;
         }
         self.agents[position].stock.add(good, qty);
@@ -3706,7 +3725,7 @@ impl Society {
     }
 
     /// Debit `qty` units of `good` from a live agent's stock, returning `false`
-    /// for an unknown, stale, or tombstoned `agent`, **or** when the agent holds
+    /// for an unknown, stale, or removed `agent`, **or** when the agent holds
     /// fewer than `qty` (then nothing is debited — the stock never goes
     /// negative). The withdrawing mirror of [`Society::credit_stock`].
     ///
@@ -3720,7 +3739,7 @@ impl Society {
     /// [`Stock::remove`] is the never-negative guarantee.
     ///
     /// Caller contract (the seam): a driver must debit only an agent it has first
-    /// quieted — a tombstoned id is rejected here, and a live trader must have its
+    /// quieted — a removed id is rejected here, and a live trader must have its
     /// resting quotes cancelled (its reservations released) before its stock or
     /// gold is debited, or a stale order could reference goods the agent no longer
     /// holds. `Region` clears a departing trader's scale and cancels its quotes
@@ -3729,7 +3748,7 @@ impl Society {
         let Some(position) = self.agents.position_of(agent) else {
             return false;
         };
-        if self.tombstoned_agents.binary_search(&agent).is_ok() {
+        if self.dead_agents.binary_search(&agent).is_ok() {
             return false;
         }
         self.agents[position].stock.remove(good, qty)
@@ -3756,7 +3775,7 @@ impl Society {
     }
 
     /// Credit `amount` gold to a live agent's balance, returning `false` for an
-    /// unknown, stale, or tombstoned `agent` or on overflow (then nothing is
+    /// unknown, stale, or removed `agent` or on overflow (then nothing is
     /// credited). The gold analog of [`Society::credit_stock`] and the depositing
     /// half of the G2c caravan seam (see [`Society::debit_stock`]).
     ///
@@ -3774,7 +3793,7 @@ impl Society {
         let Some(position) = self.agents.position_of(agent) else {
             return false;
         };
-        if self.tombstoned_agents.binary_search(&agent).is_ok() {
+        if self.dead_agents.binary_search(&agent).is_ok() {
             return false;
         }
         let Some(updated) = self.agents[position].gold.checked_add(amount) else {
@@ -3785,7 +3804,7 @@ impl Society {
     }
 
     /// Debit `amount` gold from a live agent's balance, returning `false` for an
-    /// unknown, stale, or tombstoned `agent`, **or** when the agent holds less
+    /// unknown, stale, or removed `agent`, **or** when the agent holds less
     /// than `amount` (then nothing is debited — the balance never goes negative).
     /// The withdrawing mirror of [`Society::credit_gold`]: legacy closed-GOLD M1
     /// societies only (see [`Society::uses_closed_gold_money`]), rejecting both
@@ -3798,7 +3817,7 @@ impl Society {
         let Some(position) = self.agents.position_of(agent) else {
             return false;
         };
-        if self.tombstoned_agents.binary_search(&agent).is_ok() {
+        if self.dead_agents.binary_search(&agent).is_ok() {
             return false;
         }
         let Some(updated) = self.agents[position].gold.checked_sub(amount) else {
@@ -3834,51 +3853,73 @@ impl Society {
         }
     }
 
-    /// Tombstone an agent (G1 death-by-starvation, game-spec §5.6).
+    /// Real death (G4a, game-spec §5.6): remove `agent` from the running society,
+    /// returning its settled [`Estate`] (gold + econ stock) for the caller to route
+    /// to the settlement commons — a conserved hand-off, nothing created or
+    /// destroyed. Returns `None` for an unknown, stale, already-removed, or funded
+    /// M3-ledger id (then nothing changes).
     ///
-    /// This is the declared G1 death seam: the agent is marked dead by emptying
-    /// its value scale (so it posts no orders) and zeroing its labor capacity (so
-    /// it produces nothing), its resting quotes are cancelled and their
-    /// reservations released, future debt settlement skips contracts involving
-    /// the tombstone, any capital project it still owns is frozen in place (no
-    /// output mint/credit and no abandonment salvage/loss),
-    /// and it is dropped from the activation order. The arena slot is **NOT
-    /// freed** and the holdings (gold + stock) are **NOT settled** — they stay
-    /// frozen in place and remain in the conservation totals
-    /// ([`Society::total_gold`] / [`Society::total_stock`]). Full estate
-    /// settlement and the `AgentArena::free` + cache-reconciliation work are G4
-    /// (see `docs/engine-divergence.md`). Returns `false` if the id is unknown or
-    /// already tombstoned/freed.
+    /// This is the G4a successor to G1's freeze-in-place tombstone, now retired
+    /// (`docs/engine-divergence.md`). The order of operations is load-bearing:
     ///
-    /// Caller contract (the declared seam): the engine tombstone is one-way and
-    /// idempotent, but the *driver* owns the dead/alive bookkeeping. A driver MUST
-    /// stop regenerating a tombstoned agent's scale (a non-empty scale would make
-    /// it post orders again) and exclude it from any per-agent endowment or
-    /// readback. G1's `Camp` driver (in the `life` crate) does this by mirroring
-    /// the tombstone in a per-colonist `alive` flag it checks in every step phase;
-    /// a later driver must keep the same invariant until G4 makes death a
-    /// first-class arena operation.
-    pub fn tombstone(&mut self, agent: AgentId) -> bool {
-        let Some(position) = self.agents.position_of(agent) else {
-            return false;
-        };
-        if !self.agent_order.contains(&position) {
-            return false;
+    /// 1. **SETTLE** the estate — extract the agent's gold and econ stock into the
+    ///    returned [`Estate`], emptying its value scale and zeroing labor capacity
+    ///    in the same step so the teardown posts nothing.
+    /// 2. **CANCEL** its market presence — cancel every resting spot quote, barter
+    ///    offer, labor order, and loan order, releasing each one's reservation. This
+    ///    MUST run before the free, or freeing would strand a reservation against a
+    ///    slot the arena no longer resolves.
+    /// 3. **FREE** the arena slot — [`AgentArena::free`] bumps the slot generation,
+    ///    so the dead id resolves to `None` and the slot becomes reusable.
+    /// 4. **RECONCILE** the external position/id caches — rebuild `agent_order` so
+    ///    no entry points at the freed or a relocated arena position, and forget the
+    ///    dead id from every reservation/cache so none dangles.
+    ///
+    /// The dead id is recorded in `dead_agents` so any capital project or open debt
+    /// it still owns stays frozen (heirs/capital inheritance are G4b), matching G1's
+    /// freeze for that holdings class. The reconciliation is deterministic
+    /// (id-ordered, integer, draws nothing). No lab scenario frees an agent, so this
+    /// whole path is game-only and the six econ goldens are byte-identical by
+    /// construction.
+    ///
+    /// Caller contract: a driver owns the dead/alive bookkeeping. After this returns
+    /// the id resolves to `None`, so a driver MUST stop scaling, endowing, or reading
+    /// it back (every `sim`/`life` driver mirrors removal in a per-colonist `alive`
+    /// flag checked in each phase). It settles the **raw agent holdings** (the gold
+    /// field + stock), the closed-GOLD M1 estate the `sim`/`life` drivers use;
+    /// ledger-money (M3) estate routing is deferred (no lab path frees an M3 agent).
+    pub fn remove_agent(&mut self, agent: AgentId) -> Option<Estate> {
+        let position = self.agents.position_of(agent)?;
+        if self.dead_agents.binary_search(&agent).is_ok() {
+            return None;
         }
-        // Empty the scale and freeze production: an empty scale yields no
-        // reservations, so the order/quote machinery posts nothing for it.
+        if let Some(balance) = self
+            .money_system
+            .as_ref()
+            .and_then(|money_system| money_system.balance_snapshot(agent))
         {
+            if balance.spendable_total() != Gold::ZERO {
+                return None;
+            }
+        }
+
+        // 1. SETTLE the estate: extract gold + stock and quiet the agent. An empty
+        // scale yields no reservations, so the order/quote machinery posts nothing.
+        let max_good_id = self.max_good_id;
+        let estate = {
             let dead = &mut self.agents[position];
+            let gold = std::mem::replace(&mut dead.gold, Gold::ZERO);
+            let stock = std::mem::replace(&mut dead.stock, Stock::new(max_good_id));
             dead.scale.clear();
             dead.labor_capacity = 0;
-        }
-        // Cancel any resting quotes the agent still holds and release their
-        // reservations; with an empty scale `live_quote_changed` reports every
-        // one as stale.
+            Estate { gold, stock }
+        };
+
+        // 2. CANCEL market presence + release reservations, BEFORE the free. With
+        // an empty scale (and now-zero holdings) every resting quote reports stale,
+        // so the spot/labor/loan/barter cancellations clear all of the agent's
+        // orders and un-earmark its reservations.
         self.cancel_changed_live_quotes_for_agents(&[agent]);
-        // Non-M1 societies may also have resting labor orders. Cancel them and
-        // release wage/labor reserves so a tombstoned agent cannot be matched by
-        // a later factor-market order.
         while self
             .labor_book
             .cancel(agent, FactorSide::Work, &mut self.labor_reservations)
@@ -3887,30 +3928,67 @@ impl Society {
             .labor_book
             .cancel(agent, FactorSide::Hire, &mut self.labor_reservations)
         {}
-        // Non-M1 societies may also have resting time-market (loan) orders.
-        // Cancel them and release their reservations so a tombstoned agent
-        // cannot be matched by a later credit-market order — the same
-        // "posts-no-orders, holdings-frozen" guarantee the spot and labor
-        // cancellations above give. Releasing a reservation only un-earmarks the
-        // dead agent's own gold (it stays with the agent); nothing settles to a
-        // counterparty, so this does not touch the G4-parked estate/free path.
         self.loan_book
             .cancel_agent(agent, &mut self.loan_reservations);
-        // Existing debts are not estates; G1 freezes them. Due-debt settlement
-        // will skip any open contract whose borrower or agent-lender is listed
-        // here, preserving tombstoned holdings until G4 implements estate
-        // settlement. Insert in sorted position (the early `agent_order` guard
-        // already rejects a repeat tombstone, so the agent is never present yet)
-        // so the list stays ordered without a re-sort per death —
-        // project lifecycle checks binary-search it to freeze a dead owner's
-        // output and abandonment/salvage paths.
-        if let Err(slot) = self.tombstoned_agents.binary_search(&agent) {
-            self.tombstoned_agents.insert(slot, agent);
+        self.barter_book.forget_agent(agent);
+        self.freeze_project_funding_plans_for_dead_owner(agent);
+
+        // Record the dead id so a project/debt it still owns stays frozen (heirs and
+        // capital are G4b). Insert in sorted position (the `position_of` guard above
+        // already rejects a repeat removal, so the id is never present yet). Inert in
+        // M1/lab, which has no projects/debts and never frees, so the list stays
+        // empty and every guard's binary-search is a no-op — the goldens are
+        // byte-identical.
+        if let Err(slot) = self.dead_agents.binary_search(&agent) {
+            self.dead_agents.insert(slot, agent);
         }
-        // Drop it from the activation order so no later tick processes it.
+
+        // 3. FREE the arena slot (order-preserving: later live agents slide down one
+        // slot, the freed id resolves to `None`).
+        self.agents.free(agent);
+
+        // 4. RECONCILE the external caches against the freed/relocated positions.
+        self.reconcile_agent_order_after_free(position);
+        self.reservations.forget_agent(agent);
+        self.labor_reservations.forget_agent(agent);
+        self.loan_reservations.forget_agent(agent);
+        // A ledger-money (M3) society also keys a balance by agent id; drop the
+        // freed agent's (empty) entry so the money invariant's "every balance has a
+        // live agent" check holds. The closed-GOLD M1 estate the sim settles lives
+        // in `Estate.gold`, not here. Non-empty M3 estate routing is G4b.
+        if let Some(money_system) = self.money_system.as_mut() {
+            money_system.forget_agent(agent);
+        }
+
+        Some(estate)
+    }
+
+    fn freeze_project_funding_plans_for_dead_owner(&mut self, owner: AgentId) {
+        for plan in &mut self.project_funding_plans {
+            if plan.owner != owner {
+                continue;
+            }
+            plan.reserved_gold = Gold::ZERO;
+            if plan.started_project.is_none() {
+                plan.expires_tick = self.tick;
+            }
+        }
+    }
+
+    /// Rebuild `agent_order` after [`AgentArena::free`] removed the agent at
+    /// `freed_position` (G4a real death). The free is order-preserving — every later
+    /// live agent slid down exactly one slot — so dropping the freed position and
+    /// decrementing every entry past it reproduces the surviving agents in their
+    /// unchanged priority order, with no entry pointing at a freed or relocated slot.
+    /// Deterministic: integer, order-stable, draws nothing.
+    fn reconcile_agent_order_after_free(&mut self, freed_position: usize) {
         self.agent_order
-            .retain(|&order_index| order_index != position);
-        true
+            .retain(|&position| position != freed_position);
+        for position in &mut self.agent_order {
+            if *position > freed_position {
+                *position -= 1;
+            }
+        }
     }
 
     fn capture_metric_observation(&mut self, tick_trades: &[Trade]) {
@@ -5048,7 +5126,7 @@ impl Society {
     ///
     /// This is an additive seam for external drivers such as `sim`'s seeded G3a
     /// producers. It preflights output headroom so the underlying stock add
-    /// cannot saturate after inputs are removed, rejects unknown/tombstoned
+    /// cannot saturate after inputs are removed, rejects unknown/removed
     /// agents, records recipe labor in the tick-local labor log, and otherwise
     /// delegates the mutation to `execute_direct_recipe_for_agent`.
     pub fn execute_direct_recipe_for_agent_checked(
@@ -5057,7 +5135,7 @@ impl Society {
         recipe_id: RecipeId,
     ) -> Option<DirectRecipeExecution> {
         let position = self.agent_index_for(agent)?;
-        if self.tombstoned_agents.binary_search(&agent).is_ok() {
+        if self.dead_agents.binary_search(&agent).is_ok() {
             return None;
         }
 
@@ -5571,11 +5649,17 @@ impl Society {
         project_links.sort();
 
         for plan in &self.project_funding_plans {
-            let Some(owner_index) = self.agent_index_for(plan.owner) else {
-                return false;
-            };
-            if plan.reserved_gold > self.agents[owner_index].gold {
-                return false;
+            if self.dead_agents.binary_search(&plan.owner).is_ok() {
+                if plan.reserved_gold > Gold::ZERO {
+                    return false;
+                }
+            } else {
+                let Some(owner_index) = self.agent_index_for(plan.owner) else {
+                    return false;
+                };
+                if plan.reserved_gold > self.agents[owner_index].gold {
+                    return false;
+                }
             }
             if let Some(project_id) = plan.started_project {
                 if project_links
@@ -5594,6 +5678,12 @@ impl Society {
         owners.sort();
         owners.dedup();
         for owner in owners {
+            if self.dead_agents.binary_search(&owner).is_ok() {
+                if self.reserved_project_gold(owner) > Gold::ZERO {
+                    return false;
+                }
+                continue;
+            }
             let Some(owner_index) = self.agent_index_for(owner) else {
                 return false;
             };
@@ -6206,15 +6296,18 @@ mod tests {
     }
 
     #[test]
-    fn credit_stock_rejects_tombstoned_agent() {
-        // Tombstoning freezes holdings in the arena slot; the additive seam must
-        // not thaw that frozen stock by resolving the still-present id.
+    fn credit_stock_rejects_removed_agent() {
+        // G4a real removal: a dead colonist's slot is freed, so the additive seam
+        // must reject its now-stale id — there is no slot to thaw.
         let mut society = test_society(test_capitalist(Stock::new(WOOD.0)));
         let id = AgentId(1);
 
-        assert!(society.tombstone(id));
+        assert!(society.remove_agent(id).is_some());
+        assert!(
+            society.agents.get(id).is_none(),
+            "removed id resolves to None"
+        );
         assert!(!society.credit_stock(id, FOOD, 5));
-        assert_eq!(society.agents.get(id).unwrap().stock.get(FOOD), 0);
         assert_eq!(society.total_stock(FOOD), 0);
     }
 
@@ -6256,10 +6349,77 @@ mod tests {
     }
 
     #[test]
-    fn additive_accessors_reject_unknown_and_tombstoned_ids() {
+    fn remove_agent_reconciles_agent_order_for_a_middle_agent() {
+        // A multi-agent M1 society: removing a middle agent must rebuild agent_order
+        // so every entry resolves to a live survivor at its (relocated) arena
+        // position, in unchanged priority order, with the freed id absent and the
+        // survivors untouched. The reconciliation is the load-bearing G4a work.
+        let mut society =
+            Society::from_scenario(builtin_market_scenario(ScenarioName::MarketPriceDiscovery));
+        society.step();
+
+        // Live ids in activation order before the death.
+        let order_ids_before: Vec<AgentId> = society
+            .agent_order
+            .iter()
+            .map(|&pos| society.agents[pos].id)
+            .collect();
+        assert!(order_ids_before.len() >= 3, "need a middle agent to remove");
+        let victim = order_ids_before[order_ids_before.len() / 2];
+        let len_before = society.agents.len();
+
+        assert!(
+            society.remove_agent(victim).is_some(),
+            "a live agent removes"
+        );
+
+        // The arena freed exactly one slot and the victim no longer resolves.
+        assert_eq!(society.agents.len(), len_before - 1);
+        assert!(
+            society.agents.get(victim).is_none(),
+            "freed id resolves to None"
+        );
+
+        // agent_order lists every survivor in the same relative order, each entry a
+        // valid position whose agent is a live survivor — no dangling/relocated slot.
+        let order_ids_after: Vec<AgentId> = society
+            .agent_order
+            .iter()
+            .map(|&pos| {
+                assert!(
+                    pos < society.agents.len(),
+                    "agent_order points past the live slice"
+                );
+                society.agents[pos].id
+            })
+            .collect();
+        let expected: Vec<AgentId> = order_ids_before
+            .iter()
+            .copied()
+            .filter(|&id| id != victim)
+            .collect();
+        assert_eq!(
+            order_ids_after, expected,
+            "survivors keep their order at the new positions"
+        );
+
+        // The victim's reservations are forgotten; a further tick runs without panic
+        // (no stale order matching) and the survivors' closed gold stays conserved.
+        assert_eq!(society.reservations.reserved_gold(victim), Gold::ZERO);
+        let gold_after_removal = society.total_gold();
+        society.step();
+        assert_eq!(
+            society.total_gold(),
+            gold_after_removal,
+            "survivors conserve gold across the next tick"
+        );
+    }
+
+    #[test]
+    fn additive_accessors_reject_unknown_and_removed_ids() {
         let mut society = test_society(test_capitalist(Stock::new(WOOD.0)));
         let id = AgentId(1);
-        // Seed some holdings to debit later.
+        // Seed some holdings to settle/reject later.
         assert!(society.credit_stock(id, FOOD, 5));
         assert!(society.credit_gold(id, Gold(5)));
 
@@ -6270,17 +6430,33 @@ mod tests {
         assert!(!society.debit_gold(unknown, Gold(1)));
         assert_eq!(society.total_stock(FOOD), 5);
 
-        // Tombstoning freezes holdings; the additive seam must not thaw them.
-        let frozen_gold = society.total_gold();
-        assert!(society.tombstone(id));
+        // G4a real removal settles the estate out of the society (a conserved
+        // hand-off) and frees the slot; the additive seam then rejects the stale id.
+        let agent_gold = society.agents.get(id).unwrap().gold;
+        let total_before = society.total_gold();
+        let estate = society.remove_agent(id).expect("live id removes");
+        assert_eq!(estate.gold, agent_gold, "estate carries the agent's gold");
+        assert_eq!(
+            estate.stock.get(FOOD),
+            5,
+            "estate carries the agent's stock"
+        );
+        assert!(
+            society.agents.get(id).is_none(),
+            "removed id resolves to None"
+        );
         assert!(!society.debit_stock(id, FOOD, 1));
         assert!(!society.credit_gold(id, Gold(1)));
         assert!(!society.debit_gold(id, Gold(1)));
-        assert_eq!(society.total_stock(FOOD), 5, "frozen stock is untouched");
+        assert_eq!(
+            society.total_stock(FOOD),
+            0,
+            "settled stock left the society"
+        );
         assert_eq!(
             society.total_gold(),
-            frozen_gold,
-            "frozen gold is untouched"
+            total_before.saturating_sub(agent_gold),
+            "settled gold left the society into the estate"
         );
     }
 
@@ -7230,16 +7406,15 @@ mod tests {
     }
 
     #[test]
-    fn tombstone_freezes_owner_waiting_project_output() {
+    fn removal_freezes_owner_waiting_project_output() {
         // The same Waiting project that `money_good_project_output_moves_to_money_balance`
-        // matures into a Gold credit must instead stay frozen once its owner is
-        // tombstoned: G1 death does not settle estates, so the project never
-        // matures or abandons, and the dead owner's holdings are untouched.
-        // Without the lifecycle tombstone guards, a normal step would first skip
-        // maturation but then abandon the project because the owner has no active
-        // schedule, returning salvage into the tombstoned arena slot.
+        // matures into a Gold credit must instead stay frozen once its owner dies:
+        // G4a settles a dead colonist's gold/stock to the commons but NOT its
+        // capital (heirs/capital are G4b), so the project never matures or abandons.
+        // Without the lifecycle dead-owner guards, a normal step would first skip
+        // maturation but then abandon the project because the freed owner has no
+        // active schedule, returning salvage into a slot that no longer resolves.
         let mut society = test_society(test_capitalist(Stock::new(3)));
-        let owner_gold_before = society.agents[0].gold;
         society.m2_projects.push(M2Project {
             id: M2ProjectId(99),
             owner: AgentId(1),
@@ -7257,20 +7432,22 @@ mod tests {
             salvage_bps: 5000,
         });
 
-        assert!(society.tombstone(AgentId(1)));
+        assert!(society.remove_agent(AgentId(1)).is_some());
         society.step();
 
         // Frozen: the project is still Waiting (not Mature/Sold), no output lot
-        // was minted, no abandonment loss was recorded, and the dead owner's
-        // gold/stock are exactly as before.
+        // was minted, and no abandonment loss was recorded — the dead owner's
+        // capital stays in place (heirs are G4b) and its slot stays removed.
         assert_eq!(society.m2_projects[0].state, M2ProjectState::Waiting);
         assert!(society.project_output_lots.is_empty());
         assert_eq!(society.project_revenue, Gold::ZERO);
         assert_eq!(society.capital_goods_consumed, 0);
         assert_eq!(society.capital_labor_consumed, 0);
         assert_eq!(society.capital_gold_loss, Gold::ZERO);
-        assert_eq!(society.agents[0].gold, owner_gold_before);
-        assert_eq!(society.agents[0].stock.get(GOLD), 0);
+        assert!(
+            society.agents.get(AgentId(1)).is_none(),
+            "the dead owner's slot stays freed"
+        );
     }
 
     #[test]
@@ -8897,18 +9074,59 @@ mod tests {
     }
 
     #[test]
-    fn tombstone_returns_false_for_repeated_call() {
-        let society_agent = redemption_agent(1, Gold(1));
+    fn removal_returns_none_for_repeated_call() {
+        // An empty-ledger agent: G4a frees the closed-GOLD M1 estate (here zero),
+        // and routing a non-empty M3 ledger estate is G4b.
+        let society_agent = redemption_agent(1, Gold::ZERO);
         let mut society = test_m3_society(society_agent, GOLD, Vec::new());
 
-        assert!(society.tombstone(AgentId(1)));
-        assert!(!society.tombstone(AgentId(1)));
+        assert!(society.remove_agent(AgentId(1)).is_some());
+        // A second removal of the now-freed id is a no-op (real removal: the slot
+        // is freed and the stale id resolves to None, not present-but-frozen).
+        assert!(society.remove_agent(AgentId(1)).is_none());
         assert!(society.agent_order.is_empty());
-        assert!(society.agents.get(AgentId(1)).is_some());
+        assert!(society.agents.get(AgentId(1)).is_none());
     }
 
     #[test]
-    fn tombstone_cancels_resting_labor_order() {
+    fn removal_refuses_non_empty_m3_ledger_before_mutating() {
+        let society_agent = redemption_agent(1, Gold(2));
+        let mut society = test_m3_society(society_agent, GOLD, Vec::new());
+        let len_before = society.agents.len();
+        let agent_gold_before = society.agents.get(AgentId(1)).unwrap().gold;
+        let ledger_before = society
+            .money_system
+            .as_ref()
+            .and_then(|money_system| money_system.balance_snapshot(AgentId(1)))
+            .expect("M3 balance exists");
+
+        let result = society.remove_agent(AgentId(1));
+
+        assert!(result.is_none(), "funded M3 removal must be refused");
+        assert_eq!(
+            society.agents.len(),
+            len_before,
+            "the arena was mutated before the ledger preflight"
+        );
+        assert_eq!(
+            society.agents.get(AgentId(1)).unwrap().gold,
+            agent_gold_before,
+            "raw agent gold changed despite refused removal"
+        );
+        assert_eq!(
+            society
+                .money_system
+                .as_ref()
+                .and_then(|money_system| money_system.balance_snapshot(AgentId(1)))
+                .expect("M3 balance still exists"),
+            ledger_before,
+            "ledger balance changed despite refused removal"
+        );
+        assert!(society.money_ledgers_reconcile());
+    }
+
+    #[test]
+    fn removal_cancels_resting_labor_order() {
         let mut worker = redemption_agent(1, Gold::ZERO);
         worker.labor_capacity = 1;
         let mut society = test_m3_society(worker, GOLD, Vec::new());
@@ -8941,20 +9159,112 @@ mod tests {
         assert!(society.labor_book.has_live(AgentId(1), FactorSide::Work));
         assert_eq!(society.labor_reservations.reserved_labor(AgentId(1)), 1);
 
-        assert!(society.tombstone(AgentId(1)));
+        assert!(society.remove_agent(AgentId(1)).is_some());
 
         assert!(!society.labor_book.has_live(AgentId(1), FactorSide::Work));
         assert_eq!(society.labor_reservations.reserved_labor(AgentId(1)), 0);
-        assert!(society.agents[0].scale.is_empty());
-        assert_eq!(society.agents[0].labor_capacity, 0);
+        // Real removal frees the slot, so the worker id no longer resolves and the
+        // labor reservation cache holds no entry for it (forget_agent).
+        assert!(society.agents.get(AgentId(1)).is_none());
     }
 
     #[test]
-    fn tombstone_skips_m2_due_debt_settlement_for_borrower() {
+    fn removal_cancels_resting_barter_offer() {
+        let mut trader = redemption_agent(1, Gold::ZERO);
+        trader.stock.add(FOOD, 1);
+        trader.scale = vec![Want {
+            kind: WantKind::Good(WOOD),
+            horizon: Horizon::Now,
+            qty: 1,
+            satisfied: false,
+        }];
+        let mut counterparty = redemption_agent(2, Gold::ZERO);
+        counterparty.stock.add(WOOD, 1);
+        counterparty.scale = vec![Want {
+            kind: WantKind::Good(FOOD),
+            horizon: Horizon::Now,
+            qty: 1,
+            satisfied: false,
+        }];
+        let mut society = Society::from_scenario(MarketScenario {
+            name: "g4a-barter-removal",
+            scenario: ScenarioName::MarketPriceDiscovery,
+            seed: 1,
+            periods: 1,
+            agents: vec![trader, counterparty],
+            recipes: Vec::new(),
+            events: Vec::new(),
+            money: MarketMoneyConfig::Designated(DesignatedMoney { good: GOLD }),
+        });
+        assert!(society.barter_book.post_offer(
+            society.agents.as_slice(),
+            BarterOffer {
+                agent: AgentId(1),
+                give_good: FOOD,
+                receive_good: WOOD,
+                qty: 1,
+                reason: BarterReason::DirectWant,
+                seq: 1,
+                expires_tick: 3,
+            },
+            0,
+        ));
+        assert_eq!(society.barter_book.reserved_qty(AgentId(1), FOOD), 1);
+
+        assert!(society.remove_agent(AgentId(1)).is_some());
+
+        assert!(society
+            .barter_book
+            .live_offers()
+            .iter()
+            .all(|offer| offer.agent != AgentId(1)));
+        assert_eq!(society.barter_book.reserved_qty(AgentId(1), FOOD), 0);
+        assert!(society.agents.get(AgentId(1)).is_none());
+    }
+
+    #[test]
+    fn removal_freezes_dead_owner_project_funding_plans() {
+        let mut owner = test_capitalist(Stock::new(3));
+        owner.gold = Gold(3);
+        let mut society = test_society(owner);
+        society
+            .project_funding_plans
+            .push(funding_plan(1, AgentId(1), ProjectLineId(1), Gold(2)));
+        assert_eq!(society.reserved_project_gold(AgentId(1)), Gold(2));
+
+        // Conservation: `reserved_gold` is an earmark on the owner's own `gold`, not
+        // a separate store. The estate sweeps the FULL balance (the reserved 2 of the
+        // 3 included), so freezing the plan — zeroing its reserve below — destroys no
+        // money. Whole-system gold balances exactly across the removal.
+        let gold_before = society.total_gold();
+
+        let estate = society.remove_agent(AgentId(1)).expect("owner removes");
+
+        assert_eq!(estate.gold, Gold(3));
+        assert_eq!(
+            society.total_gold().saturating_add(estate.gold),
+            gold_before,
+            "freezing a dead owner's reserved project gold must not destroy money"
+        );
+        assert_eq!(society.project_funding_plans.len(), 1);
+        assert_eq!(society.project_funding_plans[0].owner, AgentId(1));
+        assert_eq!(society.project_funding_plans[0].reserved_gold, Gold::ZERO);
+        assert_eq!(society.project_funding_plans[0].expires_tick, society.tick);
+        assert_eq!(society.reserved_project_gold(AgentId(1)), Gold::ZERO);
+        assert!(
+            society.project_funding_invariants_hold(),
+            "a frozen dead-owned plan must not dangle as a live-owner invariant"
+        );
+        society.step();
+        assert!(society.project_funding_invariants_hold());
+    }
+
+    #[test]
+    fn removal_skips_m2_due_debt_settlement_for_borrower() {
         let borrower = redemption_agent(1, Gold(5));
         let lender = redemption_agent(2, Gold::ZERO);
         let mut society = Society::from_scenario(MarketScenario {
-            name: "m2-tombstone-debt-freeze",
+            name: "m2-removal-debt-freeze",
             scenario: ScenarioName::TimeMarketBasic,
             seed: 1,
             periods: 1,
@@ -8977,21 +9287,24 @@ mod tests {
             funding: CreditSource::Commodity,
         });
 
-        assert!(society.tombstone(AgentId(1)));
+        let estate = society.remove_agent(AgentId(1)).expect("borrower removes");
+        assert_eq!(estate.gold, Gold(5), "the dead borrower's gold settles out");
         society.step();
 
-        assert_eq!(society.agents.get(AgentId(1)).unwrap().gold, Gold(5));
+        // The dead borrower's debt is frozen, not settled: the borrower is removed,
+        // the lender receives nothing, and the contract stays Open and unpaid.
+        assert!(society.agents.get(AgentId(1)).is_none(), "borrower removed");
         assert_eq!(society.agents.get(AgentId(2)).unwrap().gold, Gold::ZERO);
         assert_eq!(society.debts[0].paid, Gold::ZERO);
         assert_eq!(society.debts[0].state, DebtState::Open);
     }
 
     #[test]
-    fn tombstone_skips_m3_due_debt_settlement_for_agent_lender() {
+    fn removal_skips_m3_due_debt_settlement_for_agent_lender() {
         let lender = redemption_agent(1, Gold::ZERO);
         let borrower = redemption_agent(2, Gold(5));
         let mut society = Society::from_scenario(MarketScenario {
-            name: "m3-tombstone-debt-freeze",
+            name: "m3-removal-debt-freeze",
             scenario: ScenarioName::CommodityCreditNeutral,
             seed: 1,
             periods: 1,
@@ -9014,10 +9327,14 @@ mod tests {
             funding: CreditSource::Commodity,
         });
 
-        assert!(society.tombstone(AgentId(1)));
+        // The agent-lender holds an empty ledger balance, so removal frees its slot
+        // and forgets its (zero) ledger entry — the M3 money invariants still hold.
+        assert!(society.remove_agent(AgentId(1)).is_some());
         society.step();
 
-        assert_eq!(society.agents.get(AgentId(1)).unwrap().gold, Gold::ZERO);
+        // The dead lender's receivable is frozen, not settled: the lender is
+        // removed, the borrower keeps its gold, and the contract stays Open/unpaid.
+        assert!(society.agents.get(AgentId(1)).is_none(), "lender removed");
         assert_eq!(society.agents.get(AgentId(2)).unwrap().gold, Gold(5));
         assert_eq!(society.debts[0].paid, Gold::ZERO);
         assert_eq!(society.debts[0].state, DebtState::Open);

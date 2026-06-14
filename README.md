@@ -100,20 +100,21 @@ onto existing lab goods — hunger↔FOOD, warmth↔fuel (WOOD), rest↔Leisure.
 
 A lean `Camp` driver (the pre-`sim` stand-in, to be absorbed by `sim` at G2)
 feeds that output to the **real, unchanged** econ market: a camp that feeds,
-fuels, and rests itself through trade and labor. Death by starvation is a
-**tombstone** — the colonist is marked dead, its scale emptied, and it is
-dropped from activation with its holdings frozen in place; open debts involving
-the tombstone are not settled. The arena slot is **not** freed and estates are
-**not** settled (that, and demography, is G4).
+fuels, and rests itself through trade and labor. Death by starvation was a
+**tombstone** in G1 — the colonist marked dead, its scale emptied, dropped from
+activation with its holdings frozen in place. **G4a retired the tombstone for
+real removal**: a starved colonist's estate now settles to a commons, its arena
+slot is freed, and the `Society` caches reconcile (see the G4a section below); the
+G1/`Camp` tests were migrated to that semantics.
 
 G1 is deliberately mechanism-only and pre-spatial: the acceptance suite asserts
 scale-generation *properties* and non-collapse, never balance numbers. `life`
 adds no econ economic-behavior change — the `econ` edits are additive public
 hooks/accessors for reading consumption, invalidating stale quotes after a scale
-rewrite, and tombstoning starvation deaths, proven harmless by the unchanged
+rewrite, and removing starvation deaths, proven harmless by the unchanged
 conformance suite. See `life/tests/g1_needs_to_wants.rs` for the eleven
-acceptance tests and `docs/engine-divergence.md` for the tombstone-death seam
-and deferred estate/free work.
+acceptance tests and `docs/engine-divergence.md` for the death seam (real
+removal as of G4a).
 
 G1:
 
@@ -121,10 +122,11 @@ G1:
 - [x] `NeedState` (hunger/warmth/rest) + integer per-tick dynamics
 - [x] `CultureParams` (time-preference / leisure-weight, integer bps)
 - [x] `regenerate_scale` — the pure, deterministic milestone function
-- [x] `Camp` driver: generate colonists, update needs, tombstone deaths,
-      regenerate scales, step the econ market, read consumption/labor back
+- [x] `Camp` driver: generate colonists, update needs, remove starvation deaths
+      (real removal as of G4a), regenerate scales, step the econ market, read
+      consumption/labor back
 - [x] additive-only `econ` hooks/accessors (read price/labor/consumption,
-      invalidate stale quotes after scale rewrites, tombstone);
+      invalidate stale quotes after scale rewrites, death seam);
       goldens byte-identical
 - [x] acceptance suite + divergence-log and README updates
 
@@ -273,7 +275,8 @@ cargo run -p viewer -- help
 - **`oikos inspect colonist <scenario> --id N`** prints the colonist's ranked
   value scale (each want's kind/horizon/satisfied), needs, vocation, alive/dead,
   carried escrow, and gold — the answer to "why did this colonist do that?". A
-  tombstoned colonist shows as dead with an emptied scale.
+  dead colonist (G4a real removal) shows as dead with its estate settled to the
+  commons (its arena slot freed).
 
 Three contracts hold it together. **Determinism:** the run is seeded and the
 viewer draws no RNG, so the same `(scenario, ticks, seed)` prints byte-identical
@@ -315,13 +318,13 @@ behaviour changes, so the six econ goldens and the whole G1/G2a/G2b/G2d suites
 stay byte-identical *by construction*.
 
 The caravan is the load-bearing design. Runtime agent-roster mutation (the
-`AgentArena` free/cache reconciliation) is G4-deferred, so a caravan is a **pair
-of permanent resident trader agents** — one per linked settlement, created at
-generation — and the `Region` shuttles their **wealth** between them as route
-escrow, never the agents. So each settlement's agent count is constant for the
-whole run. A trader takes the lowest id in its settlement (it leads the
-id-ordered market) and is otherwise inert (an empty value scale posts no orders)
-until the `Region` activates it for a buy or a sell.
+`AgentArena` free/cache reconciliation) was G4-deferred at G2c (it lands in G4a),
+so a caravan is a **pair of permanent resident trader agents** — one per linked
+settlement, created at generation — and the `Region` shuttles their **wealth**
+between them as route escrow, never the agents. So each settlement's agent count
+is constant for the whole run. A trader takes the lowest id in its settlement (it
+leads the id-ordered market) and is otherwise inert (an empty value scale posts no
+orders) until the `Region` activates it for a buy or a sell.
 
 It proves two things, the DoD:
 
@@ -543,6 +546,59 @@ Deferred (noted in `docs/engine-divergence.md`): the **multi-seed robustness stu
 number. See `sim/tests/g3b_emergence.rs` and `docs/engine-divergence.md` (the G3b
 entry: ordinal entrepreneurship for occupation; robustness study deferred).
 
+## Status: G4a (real death — arena free, estate, cache reconciliation) — complete
+
+Every milestone since G0b deferred one piece: actually **removing** a colonist from a
+running `Society`. G0b built `AgentArena::free` but parked its Society-cache
+reconciliation; G1 tombstoned the dead (froze them in place); G2c's caravans dodged
+roster changes with a permanent trader pair. **G4a lands that deferred core** — the
+engine-integration half of demography — isolated from the demographic *mechanics*
+(births, aging, households, inheritance), which are G4b.
+
+When a colonist starves it is removed for real. `Society::tombstone` is replaced by
+`Society::remove_agent`, which runs the load-bearing order of operations: **settle**
+the estate (gold + econ stock) into a returned `Estate`, **cancel** its resting orders
+and release their reservations, **free** the arena slot (`AgentArena::free`, bumping
+the slot generation so the id resolves to `None` and the slot is reusable), then
+**reconcile** every external cache that held a position or an id — `agent_order`
+(rebuilt at the relocated positions), `reservations` / `loan_reservations` /
+`labor_reservations` (the dead id forgotten), the labor/loan/spot books (orders
+cancelled), `barter_book` (offers/reservations forgotten), dead-owned
+`project_funding_plans` (reserved gold released and unstarted plans expired), and an
+empty M3 `MoneySystem` balance. A non-empty M3 ledger balance is refused before
+removal because routing that estate is G4b. The `sim` `Settlement` and the `life`
+`Camp` route the returned estate, plus the dead colonist's world-carried delivery
+escrow and any stranded exchange-deposit escrow (both drained out of the world), into
+a **commons** — a conserved, sim-owned sink that joins `total_gold` and
+`whole_system_total`, so whole-system conservation holds **across** the death: nothing
+is created or destroyed, only relocated. Estate-to-heirs is G4b; G4a settles to the
+commons.
+
+The goldens are safe **by construction**: the lab never frees an agent, so the
+free + reconcile path is game-only, an empty commons is omitted from the canonical
+digest (it joins only once a death settles an estate into it), and the no-death hot
+path is byte-identical. The six econ goldens and the existing G1/G2*/G3* digest suites
+stay byte-identical.
+
+G4a:
+
+- [x] `Society::remove_agent(AgentId) -> Option<Estate>` (settle → cancel → free →
+      reconcile), replacing the G1 `tombstone`; `Estate { gold, stock }`
+- [x] external-cache reconciliation: `agent_order` rebuild + `forget_agent` on the
+      spot/labor/loan/barter reservations, dead-owned project-funding plans frozen,
+      and empty M3 `MoneySystem` entries dropped
+- [x] `World::withdraw_agent_carry` — drain a dead colonist's world escrow to the commons
+- [x] `sim`/`life` estate-to-commons (a conserved sink in `Settlement` and `Camp`),
+      folded into `total_gold` / `whole_system_total`
+- [x] G1 tombstone tests migrated to real-removal semantics (slot freed and reusable)
+- [x] acceptance suite (`sim/tests/g4a_death.rs`: the eight acceptance tests) + econ
+      arena/reconcile unit tests; README + divergence-log updates
+
+Deferred (noted in `docs/engine-divergence.md`): births/aging/households/inheritance
+and estate-to-heirs (G4b), non-empty M3 ledger estate routing (G4b), and the
+population-stability study (G4b/later). See `sim/tests/g4a_death.rs` and
+`docs/engine-divergence.md` (the G4a entry).
+
 ## Build and test
 
 ```bash
@@ -564,4 +620,5 @@ cargo run -p viewer -- run emergent-chain --ticks 40          # G3b: roles emerg
 cargo run -p viewer -- run emergent-chain-control --ticks 40  # G3b: no spread → no roles
 cargo run -p viewer -- run region --ticks 30          # G2c: two settlements + a caravan
 cargo run -p viewer -- run region-control --ticks 30  # the no-caravan twin
+cargo run -p viewer -- run starved-hauler --ticks 20  # G4a: a colonist dies, the run continues
 ```

@@ -6,7 +6,7 @@
 //! deterministic: depletion is a fixed per-tick step, replenishment comes from
 //! realized consumption (FOOD → hunger, WOOD → warmth) and from taking leisure
 //! (idleness → rest), and hunger held at its critical ceiling for the death
-//! window is what kills (a tombstone, applied by the [`crate::camp::Camp`]).
+//! window is what kills (real removal, applied by the [`crate::camp::Camp`]).
 
 /// A colonist's depletion levels. `0` = fully satisfied; higher = more depleted.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

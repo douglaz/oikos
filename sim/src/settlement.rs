@@ -14,11 +14,12 @@
 //!    the depositing colonist's econ stock* and then *withdraw it from the world*
 //!    (net-zero, conserved, recorded). A unit that cannot be credited stays
 //!    world-owned in the exchange stockpile, never destroyed: a live depositor at
-//!    its stock ceiling is retried on later ticks, while a tombstoned depositor is
-//!    rejected for good and its units freeze there permanently (still conserved).
+//!    its stock ceiling is retried on later ticks, while a **removed** (dead)
+//!    depositor is rejected for good (G4a frees it; any such pending unit it left
+//!    stays conserved in the stockpile).
 //! 3. **NEEDS** — advance each living colonist's [`NeedState`] from the last econ
-//!    tick's realized consumption + labor; tombstone starvation deaths (the G1
-//!    mechanism), idling the dead in the world so their carry freezes.
+//!    tick's realized consumption + labor; apply starvation deaths as real removal
+//!    (G4a), settling each estate to the commons and idling the dead in the world.
 //! 4. **SCALES** — [`regenerate_scale`] for every living colonist, then cancel
 //!    now-stale resting quotes (as G1 does).
 //! 5. **MARKET** — [`Society::step`], the unchanged econ clearing. Money moves
@@ -160,7 +161,7 @@ impl Vocation {
 /// A resident trader is one half of a caravan's permanent trader *pair* (the
 /// other lives in the linked settlement): it is an `econ::Society` agent the
 /// settlement does **not** itself manage — it has no [`Vocation`], no
-/// [`NeedState`], is never tombstoned, and the settlement's per-econ-tick phases
+/// [`NeedState`], is never removed, and the settlement's per-econ-tick phases
 /// (needs, scales, tasks) skip it entirely. The `Region` owns its value scale and
 /// shuttles its wealth as caravan route escrow. Created at generation so no agent
 /// is ever added to or removed from a `Society` at runtime (the G4-deferred
@@ -586,8 +587,8 @@ impl SettlementConfig {
     /// the round trip spans many econ ticks, so the gatherer's harvested FOOD
     /// stays locked in **carry** (the world, undeposited) while its small econ
     /// FOOD buffer runs out and it **starves mid-haul**. The escrow-on-death
-    /// scenario for test 3: its carried goods must freeze (conserved, not
-    /// destroyed, not transferred) when it is tombstoned.
+    /// scenario: when it dies (G4a real removal), its carried goods settle to the
+    /// commons (conserved, not destroyed, not transferred to econ).
     pub fn starved_hauler() -> Self {
         let mut config = Self::viable();
         config.width = 320;
@@ -731,10 +732,11 @@ struct Colonist {
     need: NeedState,
     culture: CultureParams,
     critical_streak: u16,
-    /// Mirrors the engine tombstone (see [`Society::tombstone`]'s caller
-    /// contract): set `false` the tick a colonist is tombstoned, checked in every
-    /// phase so a dead colonist is never re-scaled, re-credited, re-tasked, or
-    /// read back. A dead gatherer is idled in the world so its carry freezes.
+    /// Mirrors real removal (see [`Society::remove_agent`]'s caller contract): set
+    /// `false` the tick a colonist dies, checked in every phase so a dead colonist
+    /// is never re-scaled, re-credited, re-tasked, or read back. After removal its
+    /// id resolves to `None` in the arena; a dead gatherer is idled in the world and
+    /// its carry settled to the commons.
     alive: bool,
     /// G3b: the recipe this colonist *could* run with its latent tool, if any.
     /// `Some(Mill)` for a latent miller (holds a mill), `Some(Bake)` for a latent
@@ -780,6 +782,18 @@ pub struct Settlement {
     chain: Option<ChainRuntime>,
     econ_tick: u64,
     last_report: EconTickReport,
+    /// The settlement **commons** (G4a real death): the conserved sink that holds a
+    /// dead colonist's settled estate. When a colonist starves, [`Society::remove_agent`]
+    /// frees its arena slot and hands back its econ gold + stock, and its world-carried
+    /// delivery escrow is drained out of the world — all of it accrues here, nothing
+    /// created or destroyed. The commons joins [`Settlement::total_gold`] and
+    /// [`Settlement::whole_system_total`] so whole-system conservation holds across the
+    /// death. Empty until the first death, so a no-death run is byte-identical to G2b/G3.
+    /// G4b will route the estate to heirs/households instead of pooling it here.
+    commons_gold: Gold,
+    /// The commons' physical-good holdings, `GoodId`-keyed (a subset of
+    /// [`Settlement::goods`]). Joins [`Settlement::whole_system_total`].
+    commons_stock: BTreeMap<GoodId, u64>,
 }
 
 /// The per-settlement production-chain runtime (G3a): the interned content and
@@ -1076,6 +1090,8 @@ impl Settlement {
             chain,
             econ_tick: 0,
             last_report: EconTickReport::default(),
+            commons_gold: Gold::ZERO,
+            commons_stock: BTreeMap::new(),
         }
     }
 
@@ -1102,11 +1118,11 @@ impl Settlement {
                 .whole_system_before
                 .insert(good, self.whole_system_total(good));
         }
-        report.total_gold_before_fast = self.society.total_gold().0;
+        report.total_gold_before_fast = self.total_gold().0;
 
         // ---- 1. FAST: world ticks; track per-colonist deposits via carry deltas.
         let deposited = self.run_fast_loop();
-        report.total_gold_after_fast = self.society.total_gold().0;
+        report.total_gold_after_fast = self.total_gold().0;
         debug_assert_eq!(
             report.total_gold_before_fast, report.total_gold_after_fast,
             "the fast loop must not move money"
@@ -1119,22 +1135,19 @@ impl Settlement {
 
         // ---- 2. TRANSFER: move delivered exchange units into econ stock, net-zero.
         // A unit that cannot be credited remains in the exchange stockpile, still
-        // world-owned and counted there — never destroyed. Two cases, both
-        // conserving: (a) a live depositor whose stock is momentarily at the `u32`
-        // ceiling is *transient* — the attribution is retried each econ tick and
-        // the units transfer once consumption opens headroom; (b) a tombstoned or
-        // stale depositor is *permanent* — `credit_stock` rejects it forever, so
-        // its pending units freeze in the exchange (still conserved, world-owned),
-        // never crossing into econ. The map keeps the attribution without inventing
-        // a second goods ledger. (Case (b) is unreachable today: clipping needs the
-        // depositor's stock at `u32::MAX`, which starvation — the only death — can
-        // never coexist with; it becomes live only with non-starvation death or
-        // estate settlement, a later milestone.)
+        // world-owned and counted there — never destroyed. The live case is the only
+        // reachable one: a depositor whose stock is momentarily at the `u32` ceiling
+        // is *transient* — the attribution is retried each econ tick and the units
+        // transfer once consumption opens headroom. A dead depositor never lingers
+        // here: G4a's estate settlement drains its stranded pending units to the
+        // commons at death and drops the attribution, so `credit_stock`'s rejection
+        // of a freed id is a defensive backstop, not a live path.
         self.record_pending_deposits(deposited);
         report.transferred = self.transfer_pending_deposits();
 
-        // ---- 3. NEEDS + tombstone (the G1 mechanism).
-        report.deaths = self.update_needs_and_tombstone();
+        // ---- 3. NEEDS + real death (G4a): settle each starvation death's estate to
+        // the commons, free its arena slot, reconcile the society's caches.
+        report.deaths = self.update_needs_and_remove_dead();
 
         // ---- 4. SCALES.
         self.regenerate_scales();
@@ -1159,7 +1172,7 @@ impl Settlement {
         // between colonists here. Producers have bought their inputs (a miller a
         // unit of grain, a baker a unit of flour) and sold last tick's output.
         self.society.step();
-        report.total_gold_after_step = self.society.total_gold().0;
+        report.total_gold_after_step = self.total_gold().0;
 
         // ---- 6. PRODUCTION (G3a): each living producer applies its recipe to the
         // input it now holds, transforming it into output. A conserved conversion:
@@ -1300,15 +1313,17 @@ impl Settlement {
 
     /// Move pending exchange-stockpile units into econ stock when the depositing
     /// colonist can receive them. Credit is attempted before the world withdraw,
-    /// so a rejected stale/tombstoned id cannot destroy a unit; the bounded
-    /// withdraw then removes exactly the credited units from the exchange.
+    /// so a rejected stale/freed id cannot destroy a unit; the bounded withdraw
+    /// then removes exactly the credited units from the exchange.
     ///
     /// A still-live depositor whose stock is momentarily full retries here every
-    /// econ tick and transfers once headroom opens. A **tombstoned** depositor is
-    /// rejected permanently by [`Society::credit_stock`], so its pending units
-    /// freeze in the exchange stockpile for good — world-owned and conserved, but
-    /// never transferred (an orphaned attribution entry, harmless to conservation
-    /// and unreachable in the current starvation-only death model).
+    /// econ tick and transfers once headroom opens. A dead depositor never reaches
+    /// this branch: [`Settlement::settle_estate_to_commons`] drains its stranded
+    /// pending units to the commons at death and drops the attribution, so no entry
+    /// keyed by a freed id lingers to be retried. The [`Society::credit_stock`]
+    /// rejection of a freed id (it resolves to `None`) is therefore a pure defensive
+    /// backstop — were a pending entry ever to outlive its depositor, the unit would
+    /// stay world-owned in the exchange (conserved), never silently destroyed.
     fn transfer_pending_deposits(&mut self) -> BTreeMap<GoodId, u64> {
         let mut transferred = BTreeMap::new();
         let mut remaining = BTreeMap::new();
@@ -1391,10 +1406,12 @@ impl Settlement {
     // ---- the econ-tick phases ------------------------------------------
 
     /// NEEDS phase: advance living colonists' needs from the last econ tick's
-    /// realized consumption + labor, then tombstone starvation deaths (the G1
-    /// mechanism), idling the dead in the world so their carry freezes. Returns
-    /// the number of deaths.
-    fn update_needs_and_tombstone(&mut self) -> u32 {
+    /// realized consumption + labor, then apply starvation deaths as **real
+    /// removal** (G4a) — settling each dead colonist's estate to the commons,
+    /// freeing its arena slot, and idling it in the world. Returns the number of
+    /// deaths. Deterministic: deaths are collected in generation order and settled
+    /// in that order; nothing is drawn.
+    fn update_needs_and_remove_dead(&mut self) -> u32 {
         let mut intakes = vec![NeedIntake::default(); self.colonists.len()];
         for &(agent, good, qty) in self.society.consumption_log_last_tick() {
             let Some(index) = self.slot_for_id(agent) else {
@@ -1443,12 +1460,74 @@ impl Settlement {
             }
         }
         for id in dying {
-            self.society.tombstone(id);
-            // Freeze the dead colonist in the world so it hauls/deposits nothing
-            // more — its carried goods stay escrowed (conserved, not destroyed).
-            self.world.assign_task(id, Task::Idle);
+            self.settle_estate_to_commons(id);
         }
         deaths
+    }
+
+    /// Settle a starved colonist's estate to the commons and remove it (G4a real
+    /// death). The order of operations is the spec's: [`Society::remove_agent`]
+    /// settles the estate (gold + econ stock), cancels the colonist's market
+    /// presence, frees its arena slot, and reconciles its caches — handing back the
+    /// [`econ::society::Estate`]. We route that to the commons, drain the colonist's
+    /// world-carried delivery escrow to the commons too, and idle it in the world so
+    /// it hauls or deposits nothing more. A conserved transfer end to end: the gold
+    /// and goods leave the society and the world for the commons, nothing created or
+    /// destroyed (heirs/households are G4b). Deterministic: id-ordered, no RNG.
+    fn settle_estate_to_commons(&mut self, id: AgentId) {
+        if let Some(estate) = self.society.remove_agent(id) {
+            // Econ estate: the dead colonist's gold plus every physical good it held
+            // (its stock is a subset of `self.goods`; GOLD is money, not stock).
+            self.commons_gold = self.commons_gold.saturating_add(estate.gold);
+            for &good in &self.goods {
+                let qty = estate.stock.get(good);
+                if qty > 0 {
+                    *self.commons_stock.entry(good).or_insert(0) += u64::from(qty);
+                }
+            }
+        }
+        // World-carried escrow: drain it out of the world into the commons (rather
+        // than freezing it in place as the G1 tombstone did).
+        for &good in &self.goods {
+            let carried = self.world.agent_carry(id, good);
+            if carried > 0 {
+                let drained = self.world.withdraw_agent_carry(id, good, carried);
+                *self.commons_stock.entry(good).or_insert(0) += u64::from(drained);
+            }
+        }
+        // Pending exchange-deposit escrow: units this colonist delivered to the
+        // exchange stockpile but never had credited (its attribution still sitting in
+        // `pending_deposits`) are part of its estate. Drain them out of the world's
+        // exchange into the commons and drop the attribution — a conserved transfer
+        // (world exchange → commons) that leaves no entry keyed by the freed id for
+        // `transfer_pending_deposits` to retry against forever. The withdraw mirrors
+        // the removed attribution unit-for-unit, preserving the pending↔exchange
+        // invariant. Empty in the starvation-only death model (the transfer phase
+        // credits a still-live depositor before it can die), so this is a defensive
+        // settle for any future death that strands a pending deposit.
+        let stranded: Vec<(AgentId, GoodId)> = self
+            .pending_deposits
+            .keys()
+            .copied()
+            .filter(|(agent, _)| *agent == id)
+            .collect();
+        for key in stranded {
+            let qty = self.pending_deposits.remove(&key).unwrap_or(0);
+            if qty == 0 {
+                continue;
+            }
+            let (_, good) = key;
+            let drained = self.world.stockpile_withdraw(self.exchange, good, qty);
+            debug_assert_eq!(
+                drained, qty,
+                "the exchange must hold every pending unit attributed to a dead depositor"
+            );
+            if drained > 0 {
+                *self.commons_stock.entry(good).or_insert(0) += u64::from(drained);
+            }
+        }
+        // Idle it in the world so it hauls/deposits nothing more.
+        self.world.assign_task(id, Task::Idle);
     }
 
     /// SCALES phase: regenerate every living colonist's value scale from its need
@@ -1644,19 +1723,34 @@ impl Settlement {
 
     /// The whole-system total of `good`: every node, carry, and stockpile
     /// (`world`) plus every agent's econ stock — colonists **and** any resident
-    /// traders. The conserved quantity.
+    /// traders — plus the settlement **commons** (G4a dead-estate sink). The
+    /// conserved quantity. The commons term is zero until the first death, so a
+    /// no-death run's totals are byte-identical to G2b/G3.
     pub fn whole_system_total(&self, good: GoodId) -> u64 {
-        self.world.total_goods_of(good) + self.econ_stock_total(good)
+        self.world.total_goods_of(good) + self.econ_stock_total(good) + self.commons_stock_of(good)
     }
 
-    /// Total of `good` held in econ agent stock across all (living and frozen)
-    /// agents, including resident traders.
+    /// Total of `good` held in econ agent stock across all live agents (a freed
+    /// dead colonist's stock has settled to the commons), including resident
+    /// traders.
     pub fn econ_stock_total(&self, good: GoodId) -> u64 {
         self.society
             .agents
             .iter()
             .map(|a| u64::from(a.stock.get(good)))
             .sum()
+    }
+
+    /// Units of `good` held in the settlement commons — the conserved sink for
+    /// dead colonists' settled estates (G4a). Zero until the first death.
+    pub fn commons_stock_of(&self, good: GoodId) -> u64 {
+        self.commons_stock.get(&good).copied().unwrap_or(0)
+    }
+
+    /// The gold pooled in the settlement commons — dead colonists' settled gold
+    /// (G4a). Zero until the first death.
+    pub fn commons_gold(&self) -> Gold {
+        self.commons_gold
     }
 
     /// The goods tracked for whole-system conservation (`GoodId`-ordered).
@@ -1682,9 +1776,13 @@ impl Settlement {
         self.realized_price(self.known.hunger)
     }
 
-    /// Total money across the settlement (a closed, conserved balance).
+    /// Total money across the settlement (a closed, conserved balance): live econ
+    /// gold plus the settlement **commons** (a dead colonist's settled gold). The
+    /// commons term is zero until the first death, so a no-death run's total is
+    /// byte-identical to G2b/G3 — and including it keeps gold conserved across a
+    /// death, when the dead colonist's gold leaves the society for the commons.
     pub fn total_gold(&self) -> Gold {
-        self.society.total_gold()
+        self.society.total_gold().saturating_add(self.commons_gold)
     }
 
     /// Read-only access to the underlying world (carry/stockpile/node inspection).
@@ -1866,9 +1964,29 @@ impl Settlement {
             out.extend_from_slice(&qty.to_le_bytes());
         }
 
-        // Econ agent state in id order. This includes every mutable public field
-        // that can affect later stepping: holdings, labor, full value scales,
-        // roles, and adaptive price beliefs (0 scale entries for a tombstone).
+        // The settlement commons (G4a dead-estate sink). It never feeds back into
+        // stepping, so it is omitted entirely while empty — a no-death run's bytes
+        // stay identical to the pre-G4a layout (the test-7 tripwire). Once a death
+        // settles an estate here it becomes material public state two otherwise-equal
+        // runs can differ in (e.g. a different starting gold leaves a different
+        // settled balance), so it joins the digest, distinguishing post-death states
+        // the live-agent block alone — which drops the freed colonist — would miss.
+        // BTreeMap iteration is key-ordered, so the bytes are deterministic.
+        let commons_nonempty =
+            self.commons_gold > Gold::ZERO || self.commons_stock.values().any(|&qty| qty > 0);
+        if commons_nonempty {
+            out.extend_from_slice(&self.commons_gold.0.to_le_bytes());
+            out.extend_from_slice(&(self.commons_stock.len() as u32).to_le_bytes());
+            for (&good, &qty) in &self.commons_stock {
+                out.extend_from_slice(&good.0.to_le_bytes());
+                out.extend_from_slice(&qty.to_le_bytes());
+            }
+        }
+
+        // Econ agent state in id order, over the LIVE arena agents (a dead colonist
+        // is freed by G4a real removal, so it drops out here). This includes every
+        // mutable public field that can affect later stepping: holdings, labor, full
+        // value scales, roles, and adaptive price beliefs.
         out.extend_from_slice(&(self.society.agents.len() as u32).to_le_bytes());
         for agent in self.society.agents.iter() {
             out.extend_from_slice(&agent.id.0.to_le_bytes());
@@ -2514,6 +2632,120 @@ mod tests {
             &SettlementConfig::viable().with_resident_traders(Vec::new()),
         );
         assert_eq!(plain.digest(), explicit_empty.digest());
+    }
+
+    #[test]
+    fn settle_estate_drains_a_stranded_pending_deposit_to_the_commons() {
+        // A gatherer can deliver units to the exchange whose econ credit is still
+        // pending when it dies. Estate settlement must drain that stranded escrow to
+        // the commons (a conserved world-exchange → commons transfer) and drop the
+        // attribution — never orphan the units in the exchange or leak the entry.
+        // Drive the deposit phase WITHOUT the transfer to strand a pending entry,
+        // then settle the depositor directly and check the drain.
+        let mut s = Settlement::generate(1, &SettlementConfig::viable());
+
+        // Accumulate a real pending deposit (deposit phase only — no transfer, so it
+        // is never credited and stays attributed in `pending_deposits`).
+        for _ in 0..8 {
+            let deposited = s.run_fast_loop();
+            s.record_pending_deposits(deposited);
+            if !s.pending_deposits.is_empty() {
+                break;
+            }
+        }
+        let &(depositor, good) = s
+            .pending_deposits
+            .keys()
+            .next()
+            .expect("a gatherer must have a stranded pending deposit");
+        let pending_qty = s.pending_deposits[&(depositor, good)];
+        assert!(pending_qty > 0, "the stranded pending deposit is non-empty");
+
+        // Mark the depositor dead (mirroring the real caller) and snapshot the
+        // conserved totals + the exchange contents before settling.
+        let index = s
+            .colonists
+            .iter()
+            .position(|c| c.id == depositor)
+            .expect("the depositor is a colonist");
+        s.colonists[index].alive = false;
+        let goods = s.goods.clone();
+        let before: Vec<u64> = goods.iter().map(|&g| s.whole_system_total(g)).collect();
+        let exchange_before = s.world.stockpile_get(s.exchange, good);
+        let commons_before = s.commons_stock_of(good);
+
+        s.settle_estate_to_commons(depositor);
+
+        // The attribution is gone, exactly the stranded units left the exchange for
+        // the commons, and every good's whole-system total is unchanged.
+        assert!(
+            s.pending_deposits.keys().all(|(a, _)| *a != depositor),
+            "the dead depositor's pending attribution must be drained"
+        );
+        assert_eq!(
+            s.world.stockpile_get(s.exchange, good),
+            exchange_before - pending_qty,
+            "exactly the stranded pending units leave the exchange"
+        );
+        assert!(
+            s.commons_stock_of(good) >= commons_before + u64::from(pending_qty),
+            "the stranded pending units settle to the commons"
+        );
+        for (i, &g) in goods.iter().enumerate() {
+            assert_eq!(
+                s.whole_system_total(g),
+                before[i],
+                "estate settlement broke whole-system conservation"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_bytes_capture_a_nonempty_commons() {
+        // The commons is omitted from the canonical bytes while empty — so a no-death
+        // run matches the pre-G4a layout (the test-7 tripwire) — but joins the digest
+        // once a death settles an estate, so two states that differ only in their
+        // settled commons no longer collide.
+        let config = SettlementConfig::viable();
+        let baseline = Settlement::generate(1, &config);
+        let empty_len = baseline.canonical_bytes().len();
+
+        // An empty commons adds nothing: a clone with an untouched commons is byte-
+        // identical (the inertness the no-death goldens depend on).
+        let mut settled_gold = Settlement::generate(1, &config);
+        assert_eq!(
+            settled_gold.canonical_bytes(),
+            baseline.canonical_bytes(),
+            "an empty commons must not perturb the canonical bytes"
+        );
+
+        // Settling gold to the commons changes the bytes and lengthens them.
+        settled_gold.commons_gold = Gold(7);
+        let with_gold = settled_gold.canonical_bytes();
+        assert!(
+            with_gold.len() > empty_len,
+            "a non-empty commons extends the digest"
+        );
+        assert_ne!(with_gold, baseline.canonical_bytes());
+
+        // Two commons that differ only in their settled balance digest differently —
+        // the post-death collision the digest would otherwise miss is closed.
+        let mut more_gold = Settlement::generate(1, &config);
+        more_gold.commons_gold = Gold(8);
+        assert_ne!(
+            settled_gold.digest(),
+            more_gold.digest(),
+            "distinct settled commons balances must not digest equal"
+        );
+
+        // Commons stock alone (a settled estate of goods, no gold) registers too.
+        let mut settled_stock = Settlement::generate(1, &config);
+        settled_stock.commons_stock.insert(FOOD, 3);
+        assert_ne!(
+            settled_stock.canonical_bytes(),
+            baseline.canonical_bytes(),
+            "settled commons stock must enter the canonical bytes"
+        );
     }
 
     #[test]

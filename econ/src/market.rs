@@ -182,6 +182,21 @@ impl Reservations {
     fn index_of(&self, agent: AgentId) -> Option<usize> {
         self.agent_ids.binary_search(&agent).ok()
     }
+
+    /// Drop every reserved-amount slot for `agent` (G4a real death). A removed
+    /// agent's resting orders are cancelled first, so its reserved gold/stock are
+    /// already released to zero — but this id-keyed table still carries the empty
+    /// slot in `agent_ids`. [`crate::society::Society::remove_agent`] calls this
+    /// after freeing the arena slot so no reservation cache dangles a reference to
+    /// a freed agent. Called only on death; no lab/no-free path invokes it, so the
+    /// conformance goldens are byte-identical.
+    pub fn forget_agent(&mut self, agent: AgentId) {
+        if let Ok(index) = self.agent_ids.binary_search(&agent) {
+            self.agent_ids.remove(index);
+            self.gold.remove(index);
+            self.goods.remove(index);
+        }
+    }
 }
 
 impl OrderBook {
@@ -595,6 +610,41 @@ mod tests {
             seq,
             expires_tick: 3,
         }
+    }
+
+    #[test]
+    fn forget_agent_drops_only_its_reservation_slot() {
+        // G4a real-death reconciliation: forgetting a removed agent drops exactly
+        // its id-keyed slot from the three parallel reservation tables, leaving
+        // every other agent's reserved amounts intact (the slot indices shift, but
+        // the id-keyed lookups must still resolve).
+        let agents = vec![
+            agent(1, Gold(10), 5),
+            agent(2, Gold(10), 5),
+            agent(3, Gold(10), 5),
+        ];
+        let mut reservations = Reservations::new(&agents, 3);
+        // Agent 1 and 3 reserve FOOD stock (asks); agent 2 reserves gold (a bid).
+        assert!(reservations.reserve_order(&agents, &order(1, OrderSide::Ask, Gold(1), 2, 1)));
+        assert!(reservations.reserve_order(&agents, &order(2, OrderSide::Bid, Gold(3), 1, 2)));
+        assert!(reservations.reserve_order(&agents, &order(3, OrderSide::Ask, Gold(1), 4, 3)));
+        assert_eq!(reservations.reserved_gold(AgentId(2)), Gold(3));
+        assert_eq!(reservations.reserved_stock(AgentId(1), FOOD), 2);
+        assert_eq!(reservations.reserved_stock(AgentId(3), FOOD), 4);
+
+        reservations.forget_agent(AgentId(2));
+
+        // The removed agent has no reservation; its neighbours are untouched.
+        assert_eq!(reservations.reserved_gold(AgentId(2)), Gold::ZERO);
+        assert_eq!(reservations.reserved_stock(AgentId(2), FOOD), 0);
+        assert_eq!(reservations.reserved_stock(AgentId(1), FOOD), 2);
+        assert_eq!(reservations.reserved_stock(AgentId(3), FOOD), 4);
+
+        // Forgetting an unknown/already-removed id is a no-op.
+        reservations.forget_agent(AgentId(2));
+        reservations.forget_agent(AgentId(99));
+        assert_eq!(reservations.reserved_stock(AgentId(1), FOOD), 2);
+        assert_eq!(reservations.reserved_stock(AgentId(3), FOOD), 4);
     }
 
     #[test]

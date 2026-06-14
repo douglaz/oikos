@@ -379,8 +379,9 @@ fn unit_agent(id: AgentId, gold: u64, food: u32) -> Agent {
     }
 }
 
-/// 7. `debit_stock` / `credit_gold` / `debit_gold` reject unknown and tombstoned
-///    ids, never go negative, and MOVE (never create or destroy) value.
+/// 7. `debit_stock` / `credit_gold` / `debit_gold` reject unknown and freed
+///    (G4a real-removal) ids, never go negative, and MOVE (never create or
+///    destroy) value.
 #[test]
 fn additive_accessors_are_conservative() {
     let id = AgentId(0);
@@ -432,19 +433,35 @@ fn additive_accessors_are_conservative() {
     );
     assert_eq!(society.total_gold(), gold_now, "unknown id moved no gold");
 
-    // --- reject tombstoned ids (frozen holdings stay frozen) ---
-    assert!(society.tombstone(id));
-    let frozen_gold = society.total_gold();
-    let frozen_food = society.total_stock(FOOD);
+    // --- real removal (G4a) settles the estate out and rejects the freed id ---
+    let gold_before_removal = society.total_gold();
+    let food_before_removal = society.total_stock(FOOD);
+    let estate = society.remove_agent(id).expect("live id removes");
+    // The estate carries exactly the holdings that left the society.
+    assert_eq!(estate.gold, gold_before_removal, "estate carries the gold");
+    assert_eq!(
+        estate.stock.get(FOOD),
+        food_before_removal,
+        "estate carries the stock"
+    );
+    // The freed id resolves to None and every accessor rejects it.
+    assert!(
+        society.agents.get(id).is_none(),
+        "removed id resolves to None"
+    );
     assert!(!society.debit_stock(id, FOOD, 1));
     assert!(!society.credit_gold(id, Gold(1)));
     assert!(!society.debit_gold(id, Gold(1)));
     assert_eq!(
         society.total_stock(FOOD),
-        frozen_food,
-        "tombstone stock thawed"
+        0,
+        "settled stock left the society"
     );
-    assert_eq!(society.total_gold(), frozen_gold, "tombstone gold thawed");
+    assert_eq!(
+        society.total_gold(),
+        Gold::ZERO,
+        "settled gold left the society"
+    );
 }
 
 // ---- 8. econ + settlement behavior unchanged -----------------------------
