@@ -138,6 +138,22 @@ pub fn run_dashboard(scenario: &str, ticks: u64, seed: u64) -> Result<String, St
         let lineage_stats = settlement.lineage_stats();
         let lineage_living = lineage_stats.iter().map(|stats| stats.living).collect();
         let lineage_gold = lineage_stats.iter().map(|stats| stats.gold).collect();
+        // G5a emergence surfacing: the barter/money phase, the saleability leader,
+        // and the emerged money good (with the promotion tick flagged). The columns
+        // are hidden for non-emergent settlements.
+        let good_name = |g: GoodId| settlement.society().good_name(g).to_string();
+        let money_good = settlement.current_money_good();
+        let phase = if money_good.is_some() {
+            "money"
+        } else {
+            "barter"
+        }
+        .to_string();
+        let saleability_leader = settlement
+            .saleability_leader()
+            .map_or("—".to_string(), good_name);
+        let money_label = money_good.map_or("—".to_string(), good_name);
+        let promoted_this_tick = settlement.promoted_at_tick() == Some(report.econ_tick);
         rows.push(render::DashboardRow {
             econ_tick: report.econ_tick,
             living_gatherers: settlement.living_count(Vocation::Gatherer),
@@ -159,6 +175,10 @@ pub fn run_dashboard(scenario: &str, ticks: u64, seed: u64) -> Result<String, St
             old_age_deaths_total: settlement.old_age_deaths_total(),
             lineage_living,
             lineage_gold,
+            phase,
+            saleability_leader,
+            money_good: money_label,
+            promoted_this_tick,
         });
     }
 
@@ -370,9 +390,12 @@ fn resolve_good(settlement: &Settlement, name: &str) -> Result<GoodId, String> {
 
 /// The first tracked good whose whole-system ledger failed to balance this tick,
 /// for the dashboard's loud `VIOLATED:<good>` cell. `None` when all balance.
-/// Uses the G3a generalized invariant (production accounted), so it agrees with
-/// [`EconTickReport::conserves`]; for a plain settlement the extra terms are zero
-/// and it reduces to G2b's `before + regen − consumed`.
+/// Uses the G3a generalized invariant (production accounted) plus the G5a
+/// promotion sink, so it agrees with [`EconTickReport::conserves`] term-for-term
+/// — without the `promoted` term it would misattribute the promotion tick (where
+/// the winning good's stock leaves the physical ledger 1-for-1 into money) as a
+/// violation of that good. For a plain settlement the extra terms are zero and it
+/// reduces to G2b's `before + regen − consumed`.
 fn first_offending_good(report: &EconTickReport, goods: &[GoodId]) -> Option<GoodId> {
     goods.iter().copied().find(|&good| {
         let before = i128::from(report.whole_system_before_of(good));
@@ -382,7 +405,8 @@ fn first_offending_good(report: &EconTickReport, goods: &[GoodId]) -> Option<Goo
         let produced = i128::from(report.produced_of(good));
         let consumed_as_input = i128::from(report.consumed_as_input_of(good));
         let consumed = i128::from(report.consumed_of(good));
-        after != before + regen + endowment + produced - consumed_as_input - consumed
+        let promoted = i128::from(report.promoted_of(good));
+        after != before + regen + endowment + produced - consumed_as_input - consumed - promoted
     })
 }
 

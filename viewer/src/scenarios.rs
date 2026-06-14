@@ -75,6 +75,18 @@ const SCENARIOS: &[Scenario] = &[
             "G4b demography: two households age, reproduce, inherit — the patient lineage out-saves",
         build: SettlementConfig::lineages,
     },
+    Scenario {
+        name: "barter-camp",
+        description:
+            "G5a: money emerges — a barter camp where SALT is promoted from spatial barter, then trade is money-priced",
+        build: SettlementConfig::barter_camp,
+    },
+    Scenario {
+        name: "barter-camp-control",
+        description:
+            "G5a no-surplus control: no saleability differential, so the camp stays in barter (nothing monetizes)",
+        build: SettlementConfig::barter_camp_control,
+    },
 ];
 
 fn build_near() -> SettlementConfig {

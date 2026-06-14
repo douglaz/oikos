@@ -42,7 +42,7 @@ use crate::good::{Gold, GoodId, Stock, FOOD, GOLD, NET, WOOD};
 use crate::issuer::{Issuer, IssuerPolicy};
 use crate::ledger::{BankId, MoneySystem};
 use crate::market::{ExecutedTrade, Order, OrderBook, OrderSide, Reservations, Trade};
-use crate::menger::SaleabilitySnapshot;
+use crate::menger::{MengerianEmergence, SaleabilitySnapshot};
 use crate::metrics::{
     cumulative_project_profit, proxy_trades_from_schedules, structure_length_ticks_x100,
     weighted_loan_bps, MetricObservationAccumulator, MetricObservationInput,
@@ -216,6 +216,7 @@ pub struct V2PromotionFailure {
 pub enum V2PromotionFailureReason {
     NonZeroMoneyBalance,
     BalanceOverflow,
+    UnsupportedMoneyGood,
 }
 
 /// The settled estate of a removed colonist (G4a real death): the econ gold and
@@ -580,7 +581,7 @@ impl Society {
 
     pub fn try_step(&mut self) -> Result<(), SocietyStepError> {
         if self.v2_enabled {
-            self.step_v2();
+            self.step_v2(&[]);
             return Ok(());
         }
         if !self.legacy_runner_enabled {
@@ -606,6 +607,21 @@ impl Society {
         match self.try_step() {
             Ok(()) | Err(SocietyStepError::EmergentMoneyDeferred) => {}
         }
+    }
+
+    /// Advance one tick while rejecting specific V2 commodity-money promotion
+    /// goods. With an empty rejection list this is identical to [`Self::step`].
+    ///
+    /// This is an opt-in caller boundary for spatial simulations: econ's Mengerian
+    /// `winner` rule still chooses the candidate, but a caller can decline to
+    /// commit a money good that its own substrate cannot support (for example, a
+    /// world-regenerated node good). Existing econ scenarios keep using `step()`.
+    pub fn step_rejecting_v2_money_goods(&mut self, rejected_money_goods: &[GoodId]) {
+        if self.v2_enabled {
+            self.step_v2(rejected_money_goods);
+            return;
+        }
+        self.step();
     }
 
     fn legacy_money_good(&self) -> GoodId {
@@ -661,8 +677,17 @@ impl Society {
         self.tick.0 += 1;
     }
 
-    fn step_v2(&mut self) {
+    fn step_v2(&mut self, rejected_money_goods: &[GoodId]) {
         self.tick_labor_used.clear();
+        // Mirror `step_m1`: when consumption logging is enabled, this tick's log
+        // starts empty so `consumption_log_last_tick` reflects only what the V2
+        // direct passes (barter or money phase) eat this tick. Inert (no clear)
+        // for the lab's emergence goldens, which never enable the log — so M18/
+        // M19/M20 stay byte-identical; the sim (G5a) enables it to read the
+        // eaten sink for its whole-system conservation receipt.
+        if self.consumption_log_enabled {
+            self.consumption_log.clear();
+        }
         self.apply_events();
 
         let trade_start = self.trades.len();
@@ -711,24 +736,44 @@ impl Society {
 
             let promotion_candidate = self.v2_promotion_candidate_after_tick();
             if let Some(money_good) = promotion_candidate {
-                match self.promote_v2_money_good(money_good) {
-                    Ok(()) => {
-                        let committed = self.v2_end_saleability_tick();
-                        assert_eq!(
-                            committed,
-                            Some(money_good),
-                            "V2 promotion state must match the saleability tracker"
-                        );
-                        promoted_this_tick = true;
-                    }
-                    Err(reason) => {
-                        self.v2_promotion_failures.push(V2PromotionFailure {
-                            tick: self.tick.0,
-                            money_good,
-                            reason,
-                        });
-                        let aborted_candidate = self.v2_end_saleability_tick_without_promotion();
-                        debug_assert_eq!(aborted_candidate, Some(money_good));
+                if rejected_money_goods.contains(&money_good) {
+                    // One failure record per tick the rejected good keeps winning —
+                    // the same every-tick-push shape as the `NonZeroMoneyBalance` /
+                    // `BalanceOverflow` arms below, bounded by the run length. Not
+                    // reachable in the shipped G5a configs (the curated `barter-camp`
+                    // promotes SALT, a non-node good; the symmetric control never
+                    // promotes), so the list stays empty there; a hypothetical run
+                    // whose only viable candidate is a rejected (regenerated) good
+                    // would accumulate one record per tick. Records are kept (not
+                    // deduped) so the failure history is a faithful per-tick log.
+                    self.v2_promotion_failures.push(V2PromotionFailure {
+                        tick: self.tick.0,
+                        money_good,
+                        reason: V2PromotionFailureReason::UnsupportedMoneyGood,
+                    });
+                    let aborted_candidate = self.v2_end_saleability_tick_without_promotion();
+                    debug_assert_eq!(aborted_candidate, Some(money_good));
+                } else {
+                    match self.promote_v2_money_good(money_good) {
+                        Ok(()) => {
+                            let committed = self.v2_end_saleability_tick();
+                            assert_eq!(
+                                committed,
+                                Some(money_good),
+                                "V2 promotion state must match the saleability tracker"
+                            );
+                            promoted_this_tick = true;
+                        }
+                        Err(reason) => {
+                            self.v2_promotion_failures.push(V2PromotionFailure {
+                                tick: self.tick.0,
+                                money_good,
+                                reason,
+                            });
+                            let aborted_candidate =
+                                self.v2_end_saleability_tick_without_promotion();
+                            debug_assert_eq!(aborted_candidate, Some(money_good));
+                        }
                     }
                 }
             } else {
@@ -1013,6 +1058,30 @@ impl Society {
 
     pub fn current_money_good(&self) -> Option<GoodId> {
         self.money.current_money_good()
+    }
+
+    /// The runtime Mengerian emergence state, or `None` for a designated-money
+    /// society. Read-only — G5a's spatial wiring reads the saleability leader,
+    /// promotion tick, and the adopted config through this. The promotion
+    /// DECISION still routes through the lab's `MengerianEmergence::winner`
+    /// inside `step_v2`; this accessor adds no rule, only a read surface.
+    pub fn emergence(&self) -> Option<&MengerianEmergence> {
+        match &self.money {
+            MarketMoneyState::Emergent(emergence) => Some(emergence),
+            MarketMoneyState::Designated(_) => None,
+        }
+    }
+
+    /// The econ tick at which a money good was promoted from realized barter, or
+    /// `None` if no promotion has fired (or this is a designated-money society).
+    pub fn money_promoted_at_tick(&self) -> Option<u64> {
+        self.emergence().and_then(|e| e.promoted_at_tick())
+    }
+
+    /// The current provisional saleability leader the barter book routes indirect
+    /// offers through, or `None` (no clear leader yet, or designated money).
+    pub fn saleability_provisional_leader(&self) -> Option<GoodId> {
+        self.emergence().and_then(|e| e.provisional_leader())
     }
 
     pub fn regime(&self) -> Regime {
@@ -1858,6 +1927,9 @@ impl Society {
             self.agents[index].recompute_satisfaction_for_money(money_good);
             let (_, mut provisions) =
                 self.agents[index].consume_now_wants_with_provisions_for_money(money_good);
+            if self.consumption_log_enabled {
+                self.record_consumption_log(index, &provisions);
+            }
             self.allocate_direct_labor(index, &mut provisions, Some(money_good), Some(money_good));
             self.agents[index]
                 .recompute_satisfaction_with_provisions_for_money(&provisions, money_good);
@@ -1873,6 +1945,9 @@ impl Society {
             self.agents[index].recompute_satisfaction_without_money();
             let (_, mut provisions) =
                 self.agents[index].consume_now_wants_with_provisions_without_money();
+            if self.consumption_log_enabled {
+                self.record_consumption_log(index, &provisions);
+            }
             self.allocate_direct_labor(index, &mut provisions, None, None);
             self.agents[index].recompute_satisfaction_with_provisions_without_money(&provisions);
             self.restore_reserved_assets(index, reserved_assets);
@@ -3636,21 +3711,22 @@ impl Society {
     /// back via [`Society::consumption_log_last_tick`]. Goldens never enable it,
     /// so the conformance suite stays byte-identical.
     ///
-    /// Regime contract: the log is captured **only** by the M1 consume path
-    /// (`step_m1`); the M2/M3/V2 step paths never touch it. Enabling
-    /// it on a non-M1 society is therefore not *incorrect* but *inert* — the log
-    /// simply stays empty, so a caller that reads it back would see no
-    /// consumption and (in the camp's case) replenish no needs. The
-    /// `debug_assert!` below turns that silent no-op into a loud failure in
-    /// debug/test builds; in release builds the assert is compiled out and the
-    /// inert-empty-log behavior is the documented fallback. G1 only ever runs
-    /// M1, so the assert never fires in practice. A future milestone that wants
+    /// Regime contract: the log is captured by the M1 consume path (`step_m1`)
+    /// and the V2 direct passes (`step_v2`, both barter and money phases — the
+    /// G5a addition); the M2/M3 step paths never touch it. Enabling it on an
+    /// M2/M3 society is therefore not *incorrect* but *inert* — the log simply
+    /// stays empty, so a caller that reads it back would see no consumption and
+    /// (in the camp's case) replenish no needs. The `debug_assert!` below turns
+    /// that silent no-op into a loud failure in debug/test builds; in release
+    /// builds the assert is compiled out and the inert-empty-log behavior is the
+    /// documented fallback. G1 runs M1 and G5a runs V2 — both capture the log —
+    /// so the assert never fires in practice. A future milestone that wants
     /// consumption logging under another regime must extend the capture in that
-    /// regime's step path rather than rely on this hook alone.
+    /// regime's step path (as G5a did for V2) rather than rely on this hook alone.
     pub fn enable_consumption_log(&mut self) {
         debug_assert!(
-            !self.m2_enabled && !self.m3_enabled && !self.v2_enabled,
-            "consumption logging currently records only the M1 consume path"
+            !self.m2_enabled && !self.m3_enabled,
+            "consumption logging records the M1 and V2 consume paths only"
         );
         self.consumption_log_enabled = true;
         self.consumption_log.clear();

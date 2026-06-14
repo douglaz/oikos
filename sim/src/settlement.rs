@@ -65,8 +65,9 @@ use econ::bundle::{
 };
 use econ::capital::ProjectLineId;
 use econ::expect::PriceBelief;
-use econ::good::{Gold, GoodId, Horizon, Stock, FOOD, GOLD, NET, WOOD};
-use econ::money::{DesignatedMoney, MarketMoneyConfig};
+use econ::good::{Gold, GoodId, Horizon, Stock, FOOD, GOLD, NET, SALT, WOOD};
+use econ::menger::MengerianEmergence;
+use econ::money::{DesignatedMoney, MarketMoneyConfig, MengerianConfig};
 use econ::project::{Recipe, RecipeId, Tick};
 use econ::purpose::ProjectPlanId;
 use econ::rng::Rng;
@@ -302,6 +303,57 @@ impl ChainConfig {
     }
 }
 
+/// The G5a **barter-start** overlay: instead of a designated-GOLD market the
+/// settlement runs econ's V2 emergence machinery (`MarketMoneyConfig::Emergent`),
+/// so a money good must **emerge** from realized spatial barter rather than being
+/// assumed. `None` keeps a settlement on the designated-GOLD M1 market — every
+/// pre-G5a config and the six econ goldens stay byte-identical (every emergent
+/// code path is skipped). `Some` makes colonists barter goods-for-goods at the
+/// exchange (driven by econ's reused `BarterBook`/`SaleabilityTracker`) until the
+/// Mengerian `winner` rule promotes a money good, after which the existing G2b
+/// money market clears trade.
+///
+/// G5a adds NO emergence rule: [`BarterConfig::menger`] is the lab's adopted M20
+/// envelope reused unchanged, and the promotion decision runs inside econ's
+/// `step_v2`/`MengerianEmergence::winner`. The only spatial wiring is that the
+/// bartered stock is sourced from gather/haul and the durable **medium** the
+/// colonists demand ([`BarterConfig::medium_good`]) is the candidate the
+/// most-saleable good emerges from.
+///
+/// The medium is demanded via a config-specific value-scale extension (a
+/// `Horizon::Next` "hold the medium" want added on top of the need-driven scale,
+/// the same way the G3a/G3b chain adds producer tool/input wants) — not via the
+/// need model, which is unchanged. The savings good (`known.savings`) is the
+/// emergent medium too, so the post-promotion money market clears those
+/// store-of-value wants through GOLD exactly like G2b.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BarterConfig {
+    /// The Mengerian emergence envelope — the candidate goods and the adopted M20
+    /// promotion thresholds. Reused from econ unchanged (no sim-local rule); the
+    /// thresholds equal [`MengerianConfig::default`], only `candidate_goods` is
+    /// the camp's tradeable set.
+    pub menger: MengerianConfig,
+    /// The durable medium colonists demand (a `Horizon::Next` "hold the medium"
+    /// want on every scale). Its universal, persistent demand — traded against
+    /// both the FOOD a gatherer sells and the WOOD a consumer sells — makes it the
+    /// good accepted against the most counterparts, the most saleable, so it is
+    /// the good that emerges. Never a gathered node good (the world would
+    /// regenerate the money good, breaking the conserved promotion).
+    pub medium_good: GoodId,
+    /// How many `Horizon::Next` units of the medium each colonist wants to hold —
+    /// the demand intensity that drives the barter for it.
+    pub medium_want_qty: u32,
+    /// Units of the medium each gatherer is endowed with at generation. The
+    /// curated G5a camp leaves this at zero; gatherers earn the medium by selling
+    /// their hauled FOOD/WOOD.
+    pub gatherer_medium_endowment: u32,
+    /// Units of the medium each consumer is endowed with at generation — the
+    /// circulating medium's bulk supply. It changes hands as colonists barter
+    /// surplus FOOD/WOOD for it, accumulating the acceptances the saleability rule
+    /// reads. Zero in the control: no medium to monetize.
+    pub consumer_medium_endowment: u32,
+}
+
 /// The settlement recipe: geometry (grid, exchange, FOOD nodes), the
 /// gatherer/consumer rosters, and the economic knobs. Mechanism knobs, not
 /// balance targets.
@@ -361,6 +413,15 @@ pub struct SettlementConfig {
     /// [`CultureParams`]. See [`DemographyConfig`] and
     /// [`SettlementConfig::lineages`].
     pub demography: Option<DemographyConfig>,
+    /// The G5a **barter-start** overlay (emergent money), or `None` for a
+    /// designated-GOLD settlement. `None` keeps every existing config and the six
+    /// econ goldens byte-identical (every emergent code path is skipped); `Some`
+    /// runs the V2 barter/saleability/promotion machinery until a money good
+    /// emerges, then the existing G2b money market. Mutually exclusive with
+    /// `chain`/`demography` (the G5a slice is a plain gatherer/consumer camp; the
+    /// composition with production/demography is G5b). See [`BarterConfig`] and
+    /// [`SettlementConfig::barter_camp`].
+    pub barter: Option<BarterConfig>,
 }
 
 impl SettlementConfig {
@@ -417,6 +478,10 @@ impl SettlementConfig {
             // No demography by default (G4b is opt-in via `lineages`), so every
             // existing config and golden is byte-identical.
             demography: None,
+            // No barter overlay by default — a designated-GOLD G2b settlement.
+            // Emergent money is opt-in via `barter_camp`, so every golden stays
+            // byte-identical.
+            barter: None,
         }
     }
 
@@ -467,6 +532,7 @@ impl SettlementConfig {
             resident_traders: Vec::new(),
             chain: Some(chain),
             demography: None,
+            barter: None,
         }
     }
 
@@ -576,6 +642,139 @@ impl SettlementConfig {
             resident_traders: Vec::new(),
             chain: Some(chain),
             demography: None,
+            barter: None,
+        }
+    }
+
+    /// The G5a **barter camp** (emergent money): a plain gatherer/consumer camp
+    /// that starts in **barter** — no designated money — and lets a money good
+    /// *emerge* from realized spatial trade. Gatherers haul FOOD from a node;
+    /// consumers hold WOOD and a stock of the durable **SALT** medium. Everyone
+    /// is patient, so the store-of-value (savings) want each colonist carries is
+    /// strong — and because `known.savings` is SALT, that demand is what makes
+    /// SALT the most-saleable good. As they barter surplus FOOD/WOOD for SALT to
+    /// provision the future, SALT accumulates acceptances across many agents and
+    /// counterpart goods until econ's reused Mengerian `winner` rule promotes it;
+    /// from the next tick trade is SALT-money-priced (the existing G2b market).
+    ///
+    /// Paired with [`Self::barter_camp_control`] (the same camp with the SALT
+    /// medium's supply removed) this is the milestone's mechanism + falsification
+    /// twin: SALT emerges here, nothing emerges there. G5a adds no emergence rule
+    /// — the envelope and the decision are econ's, reused unchanged.
+    pub fn barter_camp() -> Self {
+        Self::barter_camp_with_medium(true)
+    }
+
+    /// The G5a **no-surplus/symmetric control**: the same barter camp with the
+    /// circulating SALT medium's **supply removed** (no colonist is endowed with
+    /// SALT). The store-of-value want still names SALT, so the *same* emergence
+    /// machinery runs over the *same* FOOD/WOOD barter every tick — but with no
+    /// SALT in the economy the only swaps that clear are FOOD-for-WOOD, which are
+    /// perfectly reciprocal (each trade counts one FOOD acceptance and one WOOD
+    /// acceptance), so no good ever leads by the promotion margin and **nothing
+    /// monetizes**. The settlement stays in barter. Paired with
+    /// [`Self::barter_camp`] this isolates the cause: identical machinery and FOOD
+    /// supply, the saleable medium's presence the only difference. If both
+    /// monetized, the wiring would be reading something other than realized
+    /// spatial barter.
+    pub fn barter_camp_control() -> Self {
+        Self::barter_camp_with_medium(false)
+    }
+
+    /// Shared builder for the barter camp and its control. `has_medium` toggles
+    /// the SALT endowment: present (the camp, SALT circulates and emerges) or
+    /// absent (the control, no medium, nothing leads). Everything else — the FOOD
+    /// node, the rosters, the patient cultures, the reused M20 emergence envelope
+    /// — is identical, so the pair is a clean falsification twin. Starting gold is
+    /// zero on both sides (econ's V2 path requires zero initial money balances;
+    /// the money good has not emerged yet).
+    fn barter_camp_with_medium(has_medium: bool) -> Self {
+        let exchange = Pos::new(0, 0);
+        // The circulating medium's initial supply. Consumers hold the bulk; they
+        // spend it down buying FOOD/WOOD from gatherers, so it changes hands and
+        // earns the acceptances the saleability tracker reads. Zero on both sides
+        // in the control.
+        let (gatherer_salt, consumer_salt) = if has_medium { (0, 80) } else { (0, 0) };
+        Self {
+            width: 64,
+            height: 1,
+            exchange,
+            exchange_cap: 1_000_000,
+            // TWO close, rich gathered goods: a FOOD node and a WOOD node. The
+            // gatherers split round-robin (half haul FOOD, half WOOD), so FOOD and
+            // WOOD each have specialist sellers — and the durable SALT medium,
+            // held by the consumers, is the good both kinds of haul trade against,
+            // the common counterpart that makes it the most saleable. SALT is NOT
+            // gathered (it is the endowed medium), so the world never regenerates
+            // the money good and the promotion conversion is clean.
+            nodes: vec![
+                NodeSpec {
+                    good: FOOD,
+                    pos: Pos::new(2, 0),
+                    stock: 8_000,
+                    regen: 64,
+                    cap: 8_000,
+                },
+                NodeSpec {
+                    good: WOOD,
+                    pos: Pos::new(3, 0),
+                    stock: 8_000,
+                    regen: 64,
+                    cap: 8_000,
+                },
+            ],
+            // Eight gatherers split round-robin over the two nodes (four haul
+            // FOOD, four haul WOOD) and four medium-holding consumers — the roster
+            // that makes the medium the common counterpart both kinds of haul trade
+            // against.
+            gatherers: 8,
+            consumers: 4,
+            carry_cap: 6,
+            move_speed: 1,
+            // Barter start: no money is designated, so colonists hold no gold (the
+            // econ V2 path requires zero initial money balances).
+            starting_gold_gatherer: 0,
+            starting_gold_consumer: 0,
+            // Tight survival buffers so a specialist gatherer (hauling only one of
+            // FOOD/WOOD) must TRADE for the good it does not produce — the strong
+            // gains-from-trade that drive a thick barter book. The consumers carry
+            // almost no WOOD, so they buy WOOD (as well as FOOD) with the medium:
+            // it is the consumers demanding BOTH gathered goods through the medium
+            // that makes the medium the most-saleable hub, not merely the FOOD
+            // side. Each buffer bridges only the haul warmup.
+            gatherer_food_buffer: 6,
+            gatherer_wood_buffer: 6,
+            consumer_food_buffer: 4,
+            consumer_wood_endowment: 1,
+            // Patient on both sides (a low time preference) so colonists keep
+            // offering their surplus rather than hoarding it — the sustained supply
+            // the medium circulates against.
+            gatherer_time_preference_base_bps: 400,
+            consumer_time_preference_base_bps: 400,
+            leisure_weight_base_bps: 3_000,
+            // Hunger-resilient (like `price_probe`): hunger never reaches the
+            // critical ceiling, so the camp does not die off mid-emergence. The
+            // milestone is the MONEY-EMERGENCE mechanism, not a survival race —
+            // decoupling the two keeps the proof about the saleability dynamics
+            // (the same discipline the distance→price probe uses).
+            dynamics: {
+                let mut d = NeedDynamics::lab_default();
+                d.hunger_critical = d.need_max + 1;
+                d
+            },
+            resident_traders: Vec::new(),
+            chain: None,
+            demography: None,
+            barter: Some(BarterConfig {
+                menger: MengerianConfig {
+                    candidate_goods: vec![FOOD, WOOD, SALT],
+                    ..MengerianConfig::default()
+                },
+                medium_good: SALT,
+                medium_want_qty: 6,
+                gatherer_medium_endowment: gatherer_salt,
+                consumer_medium_endowment: consumer_salt,
+            }),
         }
     }
 
@@ -697,6 +896,14 @@ pub struct EconTickReport {
     /// baked). Distinct from `consumed` (eaten): an input is *transformed*, not a
     /// final sink. Tools (`required_tool`) are durable and never appear here.
     pub consumed_as_input: BTreeMap<GoodId, u64>,
+    /// Units of a good **converted to money** by a G5a emergence **promotion**
+    /// this tick — the econ-stock of the winning good that the lab's conserved
+    /// promotion turned into `Gold` units 1-for-1. The good→money side of the
+    /// phase transition: it leaves the physical ledger (a sink for that good) and
+    /// reappears as gold (the gold checkpoints account it). Empty on every tick
+    /// but the single promotion tick, and on every non-emergent settlement, so the
+    /// conservation identity is unchanged elsewhere.
+    pub promoted: BTreeMap<GoodId, u64>,
     /// Whole-system total per good at the start of the econ tick.
     pub whole_system_before: BTreeMap<GoodId, u64>,
     /// Whole-system total per good at the end of the econ tick.
@@ -736,6 +943,11 @@ impl EconTickReport {
     pub fn consumed_as_input_of(&self, good: GoodId) -> u64 {
         self.consumed_as_input.get(&good).copied().unwrap_or(0)
     }
+    /// Units of `good` converted to money by a G5a promotion this tick (a sink
+    /// for the physical good, matched 1-for-1 by the gold the promotion mints).
+    pub fn promoted_of(&self, good: GoodId) -> u64 {
+        self.promoted.get(&good).copied().unwrap_or(0)
+    }
     pub fn whole_system_before_of(&self, good: GoodId) -> u64 {
         self.whole_system_before.get(&good).copied().unwrap_or(0)
     }
@@ -753,16 +965,18 @@ impl EconTickReport {
     ///
     /// ```text
     /// after(X) == before(X) + regen(X) + endowment(X) + produced(X)
-    ///                       − consumed_as_input(X) − consumed(X)
+    ///                       − consumed_as_input(X) − consumed(X) − promoted(X)
     /// ```
     ///
-    /// For a plain settlement `endowment`/`produced`/`consumed_as_input` are empty,
-    /// so this reduces exactly to the G2b form (every existing test stays green).
-    /// `endowment` is the G4b household provision (a source); births and deaths move
-    /// goods *within* the whole system (parent→child, dead→heir/commons) so they
-    /// cancel in `before`/`after` and need no term here. Tools are durable — they
-    /// appear in neither production term, so a recipe that needs a tool never moves
-    /// the tool's ledger.
+    /// For a plain settlement `endowment`/`produced`/`consumed_as_input`/`promoted`
+    /// are empty, so this reduces exactly to the G2b form (every existing test stays
+    /// green). `endowment` is the G4b household provision (a source); `promoted` is
+    /// the G5a good→money conversion (a sink for the promoted good, matched 1-for-1
+    /// by the gold the promotion mints — accounted in the gold checkpoints). Births
+    /// and deaths move goods *within* the whole system (parent→child,
+    /// dead→heir/commons) so they cancel in `before`/`after` and need no term here.
+    /// Tools are durable — they appear in neither production term, so a recipe that
+    /// needs a tool never moves the tool's ledger.
     pub fn conserves(&self) -> bool {
         self.whole_system_before.keys().all(|good| {
             let before = self.whole_system_before_of(*good) as i128;
@@ -772,7 +986,8 @@ impl EconTickReport {
             let consumed = self.consumed_of(*good) as i128;
             let produced = self.produced_of(*good) as i128;
             let consumed_as_input = self.consumed_as_input_of(*good) as i128;
-            after == before + regen + endowment + produced - consumed_as_input - consumed
+            let promoted = self.promoted_of(*good) as i128;
+            after == before + regen + endowment + produced - consumed_as_input - consumed - promoted
         })
     }
 }
@@ -855,6 +1070,21 @@ pub struct Settlement {
     /// Physical goods tracked for whole-system conservation (node goods ∪ goods
     /// any colonist starts with), `GoodId`-ordered. GOLD (money) is excluded.
     goods: Vec<GoodId>,
+    /// The commodity-money **promotion rejection list**: goods a settlement's own
+    /// substrate keeps regenerating, so econ's `winner` rule must not be allowed to
+    /// commit one as money. `GoodId`-ordered. A promotion to one of these is
+    /// unsupported because future regeneration would mint physical units of the
+    /// money good *after* econ has removed it from the money-priced market, breaking
+    /// the conserved promotion. In the G5a slice the only renewable source is the
+    /// spatial resource node, so this is exactly the (non-GOLD) node goods.
+    ///
+    /// The G4b **demography** provision (the renewable household hearth) is the other
+    /// non-conserved source, but it is deliberately absent here: barter (emergent V2)
+    /// composed with demography is rejected at generation (the G5b composition is
+    /// deferred), and a demography settlement runs designated GOLD money — it never
+    /// promotes, so this list is never consulted for it. A future G5b that lifts that
+    /// generation guard MUST extend this list to cover demography-provisioned goods.
+    node_goods: Vec<GoodId>,
     /// Attribution for exchange-stockpile units that were delivered by a
     /// gatherer but have not yet crossed into econ stock. This is not a goods
     /// ledger: the units are counted only in the world stockpile until transfer
@@ -900,6 +1130,17 @@ pub struct Settlement {
     births_total: u64,
     /// Lifetime old-age death count (distinct from starvation deaths).
     old_age_deaths_total: u64,
+    /// The G5a barter-start overlay config, retained because its knobs steer future
+    /// ticks even before they leave a runtime trace. Non-emergent settlements keep
+    /// this `None`, so their canonical state layout is unchanged.
+    barter: Option<BarterConfig>,
+    /// The G5a emergent **medium** demand `(good, want_qty)`, or `None` for a
+    /// non-emergent settlement. While the settlement is still in barter, each
+    /// colonist's freshly regenerated value scale is extended with `want_qty`
+    /// `Horizon::Next` wants for `good` (the demand that drives barter for the
+    /// medium). Dropped once a money good has emerged — the post-promotion scale
+    /// is pure need-driven (the money market clears in GOLD like G2b).
+    barter_medium: Option<(GoodId, u32)>,
 }
 
 /// Per-household birth-cadence runtime (G4b), index-parallel to a
@@ -941,6 +1182,45 @@ impl Settlement {
             "a resource node cannot harvest the money good (GOLD); money is not a \
              physical good and never crosses the world→econ transfer seam"
         );
+        // The G5a barter overlay is the MECHANISM slice: a plain gatherer/consumer
+        // camp. Composition with production (a chain) or demography is G5b, and the
+        // emergent medium must not be a gathered node good (the world would
+        // regenerate the money good, fouling the conserved promotion). Reject the
+        // unsupported combinations loudly at generation rather than ship a config
+        // that silently breaks emergence or conservation.
+        if let Some(barter) = &config.barter {
+            assert!(
+                config.chain.is_none() && config.demography.is_none(),
+                "G5a barter emergence is a plain gatherer/consumer camp; composition \
+                 with production or demography is G5b"
+            );
+            assert!(
+                config
+                    .nodes
+                    .iter()
+                    .all(|spec| spec.good != barter.medium_good),
+                "the emergent medium must not be a gathered node good (the world would \
+                 regenerate the money good, breaking the conserved promotion)"
+            );
+            // The emergent medium is a PHYSICAL good that circulates as barter stock
+            // before promotion, so it must not be GOLD: GOLD is the money ledger, not
+            // a physical good — it never enters `self.goods`, the deposit attribution,
+            // the transfer, or the conservation report. A GOLD medium endowment would
+            // mint stock the digest and whole-system ledger never track (a silent
+            // money leak), and the promotion's good→money conversion is meaningless
+            // when the "good" is already money. Reject it at the seam.
+            assert!(
+                barter.medium_good != GOLD,
+                "the emergent medium cannot be GOLD; GOLD is the money ledger, not a \
+                 physical good, so an endowed GOLD medium would create untracked stock \
+                 the conservation report and digest never see"
+            );
+            assert!(
+                config.starting_gold_gatherer == 0 && config.starting_gold_consumer == 0,
+                "a barter-start camp holds no money before promotion (econ's V2 path \
+                 requires zero initial money balances)"
+            );
+        }
         if let Some(chain) = &config.chain {
             assert!(
                 chain.operating_cost >= 1,
@@ -962,15 +1242,30 @@ impl Settlement {
         // eat to live, and that demand prices bread. The G3b no-spread control sets
         // `bread_is_staple = false`, keeping hunger ↔ FOOD so bread is never demanded
         // (and so never prices, and so no role forms). Warmth stays WOOD, savings GOLD.
-        let known = match &config.chain {
-            Some(chain) if chain.bread_is_staple => KnownGoods {
+        let known = match (&config.chain, &config.barter) {
+            (Some(chain), _) if chain.bread_is_staple => KnownGoods {
                 hunger: chain.content.bread(),
                 warmth: WOOD,
                 savings: GOLD,
             },
+            // The G5a barter camp (no chain) eats gathered FOOD, warms with WOOD,
+            // and **saves the emergent medium** (e.g. SALT). Saving the good that
+            // becomes money is what the lab's emergence scenarios do, and it is
+            // load-bearing for the money phase: the promotion converts the medium
+            // stock to gold while leaving the medium's place on every scale, so the
+            // money market provisions those store-of-value wants with gold and
+            // colonists trade FOOD/WOOD for money exactly like a designated-money
+            // settlement. (Pre-promotion the medium is also demanded as a NEAR want
+            // via a separate scale extension; that is what drives the barter for
+            // it — a `Later` savings want alone never barters.)
+            (None, Some(barter)) => KnownGoods {
+                hunger: FOOD,
+                warmth: WOOD,
+                savings: barter.medium_good,
+            },
             // The control (chain present, bread not the staple) eats seeded FOOD;
-            // every plain settlement eats gathered FOOD.
-            Some(_) | None => KnownGoods::lab_default(),
+            // every plain settlement eats gathered FOOD, warms with WOOD, saves GOLD.
+            (Some(_), _) | (None, None) => KnownGoods::lab_default(),
         };
         // The G4b demography overlay provisions FOOD as the household hunger staple
         // (`deliver_demography_provisions`, the birth FOOD gate, and the newborn
@@ -1188,6 +1483,18 @@ impl Settlement {
             }
         }
 
+        // The promotion rejection list (see the `node_goods` field doc). The G5a
+        // slice's only renewable money-good source is the spatial node, so the list
+        // is exactly the distinct non-GOLD node goods; demography provisions are
+        // out of scope (barter + demography is rejected at generation).
+        let mut node_goods: Vec<GoodId> = Vec::new();
+        for spec in &config.nodes {
+            if spec.good != GOLD && !node_goods.contains(&spec.good) {
+                node_goods.push(spec.good);
+            }
+        }
+        node_goods.sort();
+
         // The goods tracked for conservation: node goods plus anything a colonist
         // or resident trader starts holding (FOOD via nodes/buffers, WOOD via
         // endowments). Money is not a physical good, so it is excluded.
@@ -1228,18 +1535,34 @@ impl Settlement {
             .as_ref()
             .map(|chain| chain.content.recipes().to_vec())
             .unwrap_or_default();
+        // The market regime. A plain/chain/demography settlement runs the
+        // designated-GOLD M1 spot market (`Camp`'s natural seam: the
+        // consumption-log readback and the realized-price accessor live on this
+        // path). The G5a barter camp instead runs econ's V2 emergence machinery
+        // (`MengerSaltMoney` → `ScenarioKind::MarketV2` + `Emergent`): `step_v2`
+        // clears barter and feeds the SaleabilityTracker until the reused
+        // Mengerian `winner` rule promotes a money good, after which the same
+        // V2 money phase clears the money-priced market. Both log consumption
+        // (the additive V2 logging G5a wired into econ) and realize prices.
+        let (scenario_name, money) = match &config.barter {
+            Some(barter) => (
+                ScenarioName::MengerSaltMoney,
+                MarketMoneyConfig::Emergent(barter.menger.clone()),
+            ),
+            None => (
+                ScenarioName::MarketBarterishGold,
+                MarketMoneyConfig::Designated(DesignatedMoney { good: GOLD }),
+            ),
+        };
         let scenario = MarketScenario {
             name: "settlement",
-            // A SoundGold M1 (designated-gold spot) scenario, exactly as `Camp`
-            // uses (the natural seam): the consumption-log readback and the
-            // realized-price accessor live on this path.
-            scenario: ScenarioName::MarketBarterishGold,
+            scenario: scenario_name,
             seed,
             periods: 0,
             agents,
             recipes,
             events: Vec::new(),
-            money: MarketMoneyConfig::Designated(DesignatedMoney { good: GOLD }),
+            money,
         };
         let mut society = Society::from_scenario(scenario);
         society.enable_consumption_log();
@@ -1297,6 +1620,7 @@ impl Settlement {
             exchange,
             carry_cap: config.carry_cap,
             goods,
+            node_goods,
             pending_deposits: BTreeMap::new(),
             trader_ids,
             chain,
@@ -1309,6 +1633,18 @@ impl Settlement {
             birth_seq: 0,
             births_total: 0,
             old_age_deaths_total: 0,
+            barter: config.barter.clone(),
+            // The medium-demand scale extension runs only when a medium is
+            // actually supplied (the camp). The control endows none, so its
+            // colonists carry no medium want — they barter FOOD-for-WOOD only, the
+            // symmetric trade structure that cannot monetize. This is what makes
+            // the pair a clean falsification twin: the medium (its demand AND its
+            // supply) is the only difference.
+            barter_medium: config.barter.as_ref().and_then(|barter| {
+                let supplied =
+                    barter.gatherer_medium_endowment > 0 || barter.consumer_medium_endowment > 0;
+                supplied.then_some((barter.medium_good, barter.medium_want_qty))
+            }),
         }
     }
 
@@ -1401,11 +1737,36 @@ impl Settlement {
         // overlay.
         self.deliver_demography_provisions(&mut report);
 
-        // ---- 5. MARKET: the unchanged econ clearing; money is redistributed
-        // between colonists here. Producers have bought their inputs (a miller a
-        // unit of grain, a baker a unit of flour) and sold last tick's output.
-        self.society.step();
+        // ---- 5. MARKET: the econ clearing; money is redistributed between
+        // colonists here. Producers have bought their inputs (a miller a unit of
+        // grain, a baker a unit of flour) and sold last tick's output. For a G5a
+        // barter camp this runs econ's `step_v2`: pre-promotion it clears barter
+        // (goods-for-goods relocations, conserved) and feeds the SaleabilityTracker
+        // from the realized spatial barter; on the tick the reused Mengerian
+        // `winner` rule promotes, the winning good's econ stock is converted to
+        // gold 1-for-1 (the lab's conserved promotion); thereafter it is the G2b
+        // money-priced market. The promotion is a good→money conversion, so the
+        // gold society mints equals the physical units it removed — recorded in
+        // `report.promoted` so the whole-system ledger balances across the phase
+        // transition (and the gold checkpoints account the minted gold).
+        let money_good_before = self.society.current_money_good();
+        let society_gold_before = self.society.total_gold();
+        if self.barter.is_some() {
+            self.society.step_rejecting_v2_money_goods(&self.node_goods);
+        } else {
+            self.society.step();
+        }
         report.total_gold_after_step = self.total_gold().0;
+        if money_good_before.is_none() {
+            if let Some(emerged) = self.society.current_money_good() {
+                let minted = self
+                    .society
+                    .total_gold()
+                    .0
+                    .saturating_sub(society_gold_before.0);
+                report.promoted.insert(emerged, minted);
+            }
+        }
 
         // ---- 6. PRODUCTION (G3a): each living producer applies its recipe to the
         // input it now holds, transforming it into output. A conserved conversion:
@@ -2195,6 +2556,19 @@ impl Settlement {
                     producer_scale_extension(&mut scale, tool, input, input_wants);
                 }
             }
+            // G5a: while still in barter (no money good has emerged), extend the
+            // need scale with a near "hold the medium" want so every colonist
+            // barters surplus FOOD/WOOD for the durable medium. Its universal
+            // demand, traded against both FOOD and WOOD, is what makes the medium
+            // the most-saleable good — the saleability differential the camp
+            // monetizes on. Dropped once a money good has emerged: the
+            // post-promotion scale is pure need-driven and the money market clears
+            // in GOLD exactly like G2b. Pure/deterministic; draws no randomness.
+            if let Some((medium, qty)) = self.barter_medium {
+                if self.society.current_money_good().is_none() {
+                    medium_scale_extension(&mut scale, medium, qty);
+                }
+            }
             self.society
                 .agents
                 .get_mut(colonist.id)
@@ -2399,6 +2773,64 @@ impl Settlement {
     /// The most recent realized FOOD price — the distance→price observable.
     pub fn realized_food_price(&self) -> Option<Gold> {
         self.realized_price(self.known.hunger)
+    }
+
+    // ---- G5a emergent-money surface --------------------------------------
+
+    /// Whether this settlement runs the G5a barter-start emergence overlay (vs the
+    /// designated-GOLD market). `true` even after promotion — it describes the
+    /// regime, not the current phase.
+    pub fn is_emergent(&self) -> bool {
+        self.society.emergence().is_some()
+    }
+
+    /// The current money good. For a designated-GOLD settlement this is always
+    /// GOLD; for a G5a barter camp it is `None` while the settlement is still in
+    /// barter and `Some(good)` once a money good has emerged.
+    pub fn current_money_good(&self) -> Option<GoodId> {
+        self.society.current_money_good()
+    }
+
+    /// Whether a G5a barter camp is still in the **barter phase** (no money good
+    /// has emerged yet). Always `false` for a designated-money settlement (its
+    /// money is assumed from tick 0).
+    pub fn in_barter_phase(&self) -> bool {
+        self.is_emergent() && self.current_money_good().is_none()
+    }
+
+    /// The econ tick at which a money good was promoted from realized spatial
+    /// barter, or `None` if none has (still in barter, or not an emergent camp).
+    pub fn promoted_at_tick(&self) -> Option<u64> {
+        self.society.money_promoted_at_tick()
+    }
+
+    /// The current provisional saleability leader — the good the barter book is
+    /// routing indirect offers through as it converges on a money good. `None`
+    /// before any good leads, or for a non-emergent settlement.
+    pub fn saleability_leader(&self) -> Option<GoodId> {
+        self.society.saleability_provisional_leader()
+    }
+
+    /// The realized acceptance share (basis points) of `good` in the running
+    /// saleability tally, or `None` for a non-emergent settlement. Read-only
+    /// surfacing of the lab's tracker for the viewer.
+    pub fn saleability_bps(&self, good: GoodId) -> Option<u16> {
+        self.society
+            .emergence()
+            .and_then(|e| e.saleability_bps(good))
+    }
+
+    /// Total realized barter trades over the run so far (the emergent camp's
+    /// goods-for-goods volume). Zero for a designated-money settlement.
+    pub fn barter_trade_count(&self) -> usize {
+        self.society.barter_trades.len()
+    }
+
+    /// The adopted Mengerian envelope this camp drives, or `None` for a
+    /// designated-money settlement. G5a's test 6 asserts the spatial camp routes
+    /// through this reused econ config, not a sim-local reimplementation.
+    pub fn mengerian_config(&self) -> Option<&MengerianConfig> {
+        self.society.emergence().map(|e| e.config())
     }
 
     /// Total money across the settlement (a closed, conserved balance): live econ
@@ -2680,6 +3112,39 @@ impl Settlement {
             for recipe in chain.content.recipes() {
                 push_recipe_bytes(&mut out, recipe);
             }
+        }
+
+        // The G5a emergent-money config + runtime. The config fields steer future
+        // barter ticks even before they show up in holdings or tracker outputs
+        // (`medium_want_qty`, endowments, and the Mengerian thresholds/candidates),
+        // while the runtime fields capture the phase switch (the promoted good +
+        // tick) and the FULL Mengerian emergence state — the saleability tracker's
+        // accumulated per-candidate acceptances/acceptor-sets/counterpart-sets and
+        // the promotion-timing latch. All of that steers the future promotion
+        // decision, so it belongs in the "byte-identical iff future behaviour
+        // identical" identity (the provisional leader the old layout captured is a
+        // derived projection of it). Omitted entirely for non-emergent settlements,
+        // so every G2b/G3/G4 canonical layout stays byte-identical.
+        if let Some(barter) = &self.barter {
+            push_barter_config_bytes(&mut out, barter);
+            out.extend_from_slice(&self.known.savings.0.to_le_bytes());
+            push_option_good_bytes(&mut out, self.current_money_good());
+            match self.promoted_at_tick() {
+                Some(tick) => {
+                    out.push(1);
+                    out.extend_from_slice(&tick.to_le_bytes());
+                }
+                None => out.push(0),
+            }
+            // A barter overlay always runs econ's Emergent money state (the two are
+            // wired together in `generate`), so the emergence object is present
+            // through every phase — `expect` documents that invariant rather than
+            // silently dropping the runtime bytes if it were ever violated.
+            let emergence = self
+                .society
+                .emergence()
+                .expect("a barter-overlay settlement runs econ's Emergent money state");
+            push_emergence_runtime_bytes(&mut out, emergence);
         }
 
         // Delivered exchange-stockpile units that are still awaiting econ credit
@@ -2985,6 +3450,18 @@ fn build_agent(
             };
             stock.add(FOOD, food);
             stock.add(WOOD, wood);
+            // G5a: endow the emergent medium so it has an initial supply to
+            // circulate (the camp). Gatherers earn most of it by selling their
+            // haul, so they hold a small seed; consumers hold the bulk and spend
+            // it down. Zero on both sides in the control (no medium to monetize).
+            if let Some(barter) = &config.barter {
+                let medium = match vocation {
+                    Vocation::Gatherer => barter.gatherer_medium_endowment,
+                    Vocation::Consumer => barter.consumer_medium_endowment,
+                    _ => 0,
+                };
+                stock.add(barter.medium_good, medium);
+            }
             gold
         }
     };
@@ -3239,17 +3716,17 @@ fn production_specialty(
 /// That is load-bearing for the no-spread control — without it, latent producers
 /// would price the intermediate good among themselves and roles would form with no
 /// downstream demand, defeating the falsification.
-fn producer_scale_extension(
-    scale: &mut Vec<Want>,
-    tool: GoodId,
-    input_good: GoodId,
-    input_wants: u32,
-) {
-    // Input wants sit after every present good want (bread/wood in the chain).
-    // Savings can legitimately interleave above low-urgency present wants for a
-    // patient colonist; using the first `Later` slot would put recipe inputs
-    // ahead of those survival goods.
-    let insert_at = scale
+/// The scale slot where a `Horizon::Next` "input" want block belongs: just after
+/// the last present (`Horizon::Now`) good want and before the first future
+/// (`Horizon::Later`) savings want. Both the chain's producer-input wants
+/// ([`producer_scale_extension`]) and the G5a medium wants
+/// ([`medium_scale_extension`]) sit here — survival goods first, then the input
+/// block, then the pure-savings ladder. Savings can legitimately interleave above
+/// low-urgency present wants for a patient colonist, so the first `Later` slot
+/// alone would put the block ahead of those survival goods; anchoring after the
+/// last `Now` good keeps it below them.
+fn scale_input_insert_position(scale: &[Want]) -> usize {
+    scale
         .iter()
         .rposition(|want| {
             matches!(want.kind, WantKind::Good(_)) && matches!(want.horizon, Horizon::Now)
@@ -3260,7 +3737,18 @@ fn producer_scale_extension(
                 .iter()
                 .position(|want| matches!(want.horizon, Horizon::Later(_)))
         })
-        .unwrap_or(scale.len());
+        .unwrap_or(scale.len())
+}
+
+fn producer_scale_extension(
+    scale: &mut Vec<Want>,
+    tool: GoodId,
+    input_good: GoodId,
+    input_wants: u32,
+) {
+    // Input wants sit after every present good want (bread/wood in the chain); the
+    // tool anchor, added below, sits separately at the very top.
+    let insert_at = scale_input_insert_position(scale);
     let input_wants = input_wants as usize;
     let mut base = std::mem::take(scale);
     scale.reserve(base.len() + input_wants + 1);
@@ -3282,6 +3770,34 @@ fn producer_scale_extension(
         });
     }
     scale.extend(base);
+}
+
+/// G5a: extend a colonist's need scale with `qty` `Horizon::Next` "hold the
+/// medium" wants for `medium`, the demand that drives barter for the emergent
+/// medium. The wants are inserted **just below** the present consumption block —
+/// the same slot the chain places its producer **input** wants (the durable tool
+/// anchor a chain adds separately at the very top has no analogue here): a
+/// colonist provisions its Now hunger/warmth first (survival), then barters its
+/// surplus for the medium. That sustained, universal demand — traded against both
+/// the FOOD a FOOD-gatherer sells and the WOOD a WOOD-gatherer sells — is what
+/// makes the medium the good accepted against the most counterparts, the most
+/// saleable. Pure and deterministic; no RNG.
+fn medium_scale_extension(scale: &mut Vec<Want>, medium: GoodId, qty: u32) {
+    if qty == 0 {
+        return;
+    }
+    // Insert after the last present (Now) good want, before the future (Later)
+    // savings ladder — survival first, then the medium, then pure savings.
+    let insert_at = scale_input_insert_position(scale);
+    let medium_wants = (0..qty).map(|_| Want {
+        kind: WantKind::Good(medium),
+        horizon: Horizon::Next,
+        qty: 1,
+        satisfied: false,
+    });
+    let tail = scale.split_off(insert_at);
+    scale.extend(medium_wants);
+    scale.extend(tail);
 }
 
 /// Build a resident-trader agent (G2c caravans) from its endowment: working gold,
@@ -3320,6 +3836,76 @@ fn push_dynamics_bytes(out: &mut Vec<u8>, d: &NeedDynamics) {
     out.extend_from_slice(&d.rest_recover.to_le_bytes());
     out.extend_from_slice(&d.hunger_critical.to_le_bytes());
     out.extend_from_slice(&d.death_window.to_le_bytes());
+}
+
+fn push_barter_config_bytes(out: &mut Vec<u8>, barter: &BarterConfig) {
+    push_mengerian_config_bytes(out, &barter.menger);
+    out.extend_from_slice(&barter.medium_good.0.to_le_bytes());
+    out.extend_from_slice(&barter.medium_want_qty.to_le_bytes());
+    out.extend_from_slice(&barter.gatherer_medium_endowment.to_le_bytes());
+    out.extend_from_slice(&barter.consumer_medium_endowment.to_le_bytes());
+}
+
+/// Serialize an `Option<GoodId>` into the canonical digest: a present/absent tag
+/// byte followed by the good id when present. Keeps the optional-good encoding
+/// uniform across the emergent-money blocks.
+fn push_option_good_bytes(out: &mut Vec<u8>, good: Option<GoodId>) {
+    match good {
+        Some(good) => {
+            out.push(1);
+            out.extend_from_slice(&good.0.to_le_bytes());
+        }
+        None => out.push(0),
+    }
+}
+
+/// Serialize the FULL Mengerian emergence runtime into the canonical digest: the
+/// promotion-timing latch (the stable winner and how many consecutive ticks it
+/// has led) and the saleability tracker's accumulated per-candidate state (the
+/// running acceptance count plus the DISTINCT acceptor agents and counterpart
+/// goods each candidate has been traded against). All of it steers the future
+/// promotion decision — two barter states agreeing on holdings and the current
+/// leader but differing in a stability counter or an acceptor set promote on
+/// different future ticks — so it is part of the "byte-identical iff future
+/// behaviour identical" identity. The member lists (not just their counts) are
+/// serialized because a later acceptance only advances the eligibility counts
+/// when its acceptor/counterpart is new. The tracker freezes once a good has
+/// promoted (it stops observing), but is still serialized so the post-promotion
+/// bytes stay a faithful function of the run. Candidate order is the tracker's
+/// stored sorted order, so the bytes are deterministic.
+fn push_emergence_runtime_bytes(out: &mut Vec<u8>, emergence: &MengerianEmergence) {
+    push_option_good_bytes(out, emergence.stable_winner());
+    out.extend_from_slice(&emergence.stable_winner_ticks().to_le_bytes());
+    let tracker = emergence.tracker();
+    out.extend_from_slice(&tracker.total_acceptances().to_le_bytes());
+    let candidates = tracker.candidate_saleability();
+    out.extend_from_slice(&(candidates.len() as u32).to_le_bytes());
+    for candidate in candidates {
+        out.extend_from_slice(&candidate.good.0.to_le_bytes());
+        out.extend_from_slice(&candidate.acceptances.to_le_bytes());
+        out.extend_from_slice(&(candidate.acceptor_agents.len() as u32).to_le_bytes());
+        for agent in candidate.acceptor_agents {
+            out.extend_from_slice(&agent.0.to_le_bytes());
+        }
+        out.extend_from_slice(&(candidate.counterpart_goods.len() as u32).to_le_bytes());
+        for good in candidate.counterpart_goods {
+            out.extend_from_slice(&good.0.to_le_bytes());
+        }
+    }
+}
+
+fn push_mengerian_config_bytes(out: &mut Vec<u8>, menger: &MengerianConfig) {
+    out.extend_from_slice(&(menger.candidate_goods.len() as u32).to_le_bytes());
+    for good in &menger.candidate_goods {
+        out.extend_from_slice(&good.0.to_le_bytes());
+    }
+    out.extend_from_slice(&menger.min_total_acceptances.to_le_bytes());
+    out.extend_from_slice(&menger.promotion_threshold_bps.to_le_bytes());
+    out.extend_from_slice(&menger.lead_margin_bps.to_le_bytes());
+    out.extend_from_slice(&menger.min_acceptor_agents.to_le_bytes());
+    out.extend_from_slice(&menger.min_counterpart_goods.to_le_bytes());
+    out.extend_from_slice(&menger.stability_ticks.to_le_bytes());
+    out.extend_from_slice(&menger.indirect_min_acceptance_share_bps.to_le_bytes());
 }
 
 fn push_demography_config_bytes(out: &mut Vec<u8>, demo: &DemographyConfig) {
@@ -3419,6 +4005,65 @@ fn belief_vec() -> Vec<PriceBelief> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn medium_scale_extension_inserts_near_wants_below_survival() {
+        // A scale with a present (Now) survival want and a future (Later) savings
+        // want; the medium wants must land between them (survival first, then the
+        // medium, then savings) and be `Horizon::Next` good wants for the medium.
+        let mut scale = vec![
+            Want {
+                kind: WantKind::Good(FOOD),
+                horizon: Horizon::Now,
+                qty: 1,
+                satisfied: false,
+            },
+            Want {
+                kind: WantKind::Good(SALT),
+                horizon: Horizon::Later(4),
+                qty: 1,
+                satisfied: false,
+            },
+        ];
+        medium_scale_extension(&mut scale, WOOD, 2);
+        assert_eq!(scale.len(), 4, "two medium wants were added");
+        // Survival (the Now want) stays first.
+        assert!(matches!(scale[0].horizon, Horizon::Now));
+        // The two medium wants follow, before the Later savings want.
+        assert_eq!(scale[1].kind, WantKind::Good(WOOD));
+        assert_eq!(scale[1].horizon, Horizon::Next);
+        assert_eq!(scale[2].kind, WantKind::Good(WOOD));
+        assert_eq!(scale[2].horizon, Horizon::Next);
+        assert!(matches!(scale[3].horizon, Horizon::Later(_)));
+
+        // Zero qty is a no-op.
+        let mut empty = scale.clone();
+        let before = empty.clone();
+        medium_scale_extension(&mut empty, WOOD, 0);
+        assert_eq!(empty, before);
+    }
+
+    #[test]
+    fn report_conserves_accounts_the_promotion_sink() {
+        // A tick that converts 5 units of SALT to money (a promotion): the physical
+        // ledger drops by exactly the promoted units, and `conserves` accepts it
+        // only when the `promoted` term balances the drop.
+        let mut report = EconTickReport::default();
+        report.whole_system_before.insert(SALT, 5);
+        report.whole_system_after.insert(SALT, 0);
+        report.promoted.insert(SALT, 5);
+        assert!(
+            report.conserves(),
+            "the promotion sink must balance the drop"
+        );
+
+        // Without the promoted term the same drop is a conservation violation.
+        report.promoted.clear();
+        assert!(
+            !report.conserves(),
+            "an unaccounted physical drop must fail conservation"
+        );
+    }
 
     #[test]
     fn generate_places_one_world_agent_per_colonist_at_the_exchange() {
@@ -3777,6 +4422,21 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "emergent medium cannot be GOLD")]
+    fn generate_rejects_gold_emergent_medium() {
+        // GOLD is the money ledger, not a physical good: it never enters
+        // `self.goods`, the deposit attribution, the transfer, or the conservation
+        // report. A GOLD medium with a positive endowment would mint stock the
+        // digest and whole-system ledger never track — `generate` rejects it at the
+        // seam rather than ship a silent money leak.
+        let mut config = SettlementConfig::barter_camp();
+        let barter = config.barter.as_mut().expect("barter overlay");
+        barter.medium_good = GOLD;
+        barter.menger.candidate_goods = vec![FOOD, WOOD, GOLD];
+        let _ = Settlement::generate(1, &config);
+    }
+
+    #[test]
     #[should_panic(expected = "must define at least one resource node")]
     fn generate_rejects_gatherers_without_nodes() {
         let mut config = SettlementConfig::viable();
@@ -3933,6 +4593,82 @@ mod tests {
             a.canonical_bytes(),
             b.canonical_bytes(),
             "the staple mapping must be part of the chain config identity"
+        );
+    }
+
+    #[test]
+    fn canonical_bytes_include_barter_config() {
+        // Same generated physical state, different barter overlay: future scale
+        // regeneration / promotion checks will diverge, so emergent configs must not
+        // collide in the determinism digest before the first tick.
+        let base = SettlementConfig::barter_camp();
+
+        let mut stronger_medium_want = SettlementConfig::barter_camp();
+        stronger_medium_want
+            .barter
+            .as_mut()
+            .expect("barter overlay")
+            .medium_want_qty += 1;
+
+        let mut stricter_promotion = SettlementConfig::barter_camp();
+        stricter_promotion
+            .barter
+            .as_mut()
+            .expect("barter overlay")
+            .menger
+            .min_total_acceptances += 1;
+
+        let base = Settlement::generate(7, &base);
+        let stronger_medium_want = Settlement::generate(7, &stronger_medium_want);
+        let stricter_promotion = Settlement::generate(7, &stricter_promotion);
+
+        assert_ne!(
+            base.canonical_bytes(),
+            stronger_medium_want.canonical_bytes(),
+            "medium_want_qty must be part of the barter config identity"
+        );
+        assert_ne!(
+            base.canonical_bytes(),
+            stricter_promotion.canonical_bytes(),
+            "Mengerian thresholds must be part of the barter config identity"
+        );
+    }
+
+    #[test]
+    fn canonical_bytes_include_emergence_runtime() {
+        // A barter camp run into the barter phase accumulates saleability state (the
+        // per-candidate acceptance counts plus the DISTINCT acceptor/counterpart
+        // members and the stability latch) that steers the FUTURE promotion tick.
+        // That state must ride in the canonical digest — otherwise two barter states
+        // with equal holdings but different tracker progress would collide and then
+        // promote on different ticks. Reconstruct the runtime bytes from econ's
+        // accessors and assert they appear verbatim in the digest input.
+        let mut s = Settlement::generate(2_026, &SettlementConfig::barter_camp());
+        // Advance into barter but stop before promotion so the tracker is live.
+        for _ in 0..3 {
+            s.econ_tick();
+        }
+        assert!(
+            s.in_barter_phase(),
+            "the run must still be bartering so the tracker is live"
+        );
+        let emergence = s
+            .society
+            .emergence()
+            .expect("a barter camp runs econ's emergence");
+        assert!(
+            emergence.tracker().total_acceptances() > 0,
+            "the test is vacuous — no barter was observed"
+        );
+
+        let mut expected = Vec::new();
+        push_emergence_runtime_bytes(&mut expected, emergence);
+        let bytes = s.canonical_bytes();
+        assert!(
+            bytes
+                .windows(expected.len())
+                .any(|window| window == expected.as_slice()),
+            "the accumulated emergence runtime is missing from the canonical bytes"
         );
     }
 

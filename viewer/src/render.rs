@@ -160,6 +160,15 @@ pub struct DashboardRow {
     pub old_age_deaths_total: u64,
     pub lineage_living: Vec<usize>,
     pub lineage_gold: Vec<u64>,
+    /// G5a emergence surfacing (rendered behind `show_emergence`): the phase
+    /// (`barter` until a money good emerges, then `money`), the current saleability
+    /// leader the barter routes through (good name, or `—`), and the emerged money
+    /// good once promoted (or `—` while still in barter). `*` marks the promotion
+    /// tick. Empty for a non-emergent (designated-money) settlement.
+    pub phase: String,
+    pub saleability_leader: String,
+    pub money_good: String,
+    pub promoted_this_tick: bool,
 }
 
 /// Format a fixed-point mean (one decimal) from an integer sum and count using
@@ -215,6 +224,18 @@ pub fn format_dashboard(
         aligns.push(Align::Right);
         aligns.push(Align::Right);
         aligns.push(Align::Right);
+    }
+    // G5a emergence columns: the barter/money phase, the saleability leader the
+    // barter routes through, and the emerged money good (with the promotion tick
+    // marked `*`). Shown only for a barter-start (emergent-money) settlement.
+    let show_emergence = settlement.is_emergent();
+    if show_emergence {
+        headers.push("phase".to_string());
+        headers.push("leader".to_string());
+        headers.push("money".to_string());
+        aligns.push(Align::Left);
+        aligns.push(Align::Left);
+        aligns.push(Align::Left);
     }
     headers.push("consv".to_string());
     headers.push("hung.max".to_string());
@@ -281,6 +302,16 @@ pub fn format_dashboard(
             cells.push(row.living_millers.to_string());
             cells.push(row.living_bakers.to_string());
             cells.push(row.living_unassigned.to_string());
+        }
+        if show_emergence {
+            cells.push(row.phase.clone());
+            cells.push(row.saleability_leader.clone());
+            let money = if row.promoted_this_tick {
+                format!("{}*", row.money_good)
+            } else {
+                row.money_good.clone()
+            };
+            cells.push(money);
         }
         cells.push(consv);
         cells.push(hunger_max);

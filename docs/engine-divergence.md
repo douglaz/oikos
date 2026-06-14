@@ -1208,3 +1208,153 @@ deaths, and per-lineage wealth tick over tick.
   ledger estate routing** (the closed-GOLD M1 drivers keep no `MoneySystem`).
 - No `HashMap` in logic; nothing drawn in the loops (deterministic mutation); no asserted
   magnitudes beyond the sign claims.
+
+## G5a — money emerges from spatial barter (`docs/impl-g5a.md`)
+
+Every settlement before G5a ran on econ's **designated GOLD** market (`step_v2`'s
+designated branch, `MarketMoneyConfig::Designated(GOLD)`) — money was assumed. G5a makes
+money **emerge**: a curated **barter camp** starts with no designated money, colonists
+barter goods-for-goods at the exchange, and a money good is **promoted** by the Mengerian
+saleability rule the lab proved (M5/M6) and studied (M18/M19/M20) — driven by **spatial**
+trade. It is the spatial counterpart of the lab's money-emergence result, sliced to the
+**mechanism + a falsification control**. G5a is **spatial wiring + a curated config + a
+control**; it adds **no emergence rule to econ**.
+
+### 1. Reuse, not reimplement — the emergent path is the lab's V2 machinery
+
+The barter camp drives econ's existing V2 emergence machinery unchanged: `BarterBook`
+(barter.rs), `SaleabilityTracker` + `MengerianEmergence::winner` (menger.rs), the
+`MengerianConfig` envelope, and `MarketMoneyConfig::Emergent`. The `sim` `Settlement`
+selects the regime by config: a `barter` overlay maps to `ScenarioName::MengerSaltMoney`
++ `MarketMoneyConfig::Emergent` (the V2 path), absence maps to the pre-G5a
+designated-GOLD M1 path. `step_v2` clears the barter book, feeds the tracker from realized
+spatial barter, and fires `winner` to promote — exactly as the lab's non-spatial Society
+does. The promotion **decision** never leaves econ; the sim only wires spatial barter into
+the tracker and reads the result. Acceptance test `emergence_reuses_the_lab_rule` replays
+`tracker().winner(config)` on the pre-promotion tally and reproduces the promoted good,
+proving the choice is the lab rule's, not a sim re-implementation.
+
+### 2. The only econ edits are additive (goldens byte-identical)
+
+Three econ surfaces are added, all safe for the six conformance goldens (M0/M1/M2/M3, the
+M18/M20 emergence goldens, the M5/M6 anchors):
+
+- **Read-only accessors.** `MengerianEmergence::config()`, `stable_winner()`,
+  `stable_winner_ticks()`; `SaleabilityTracker::candidate_saleability()`;
+  `Society::emergence()`, `money_promoted_at_tick()`, `saleability_provisional_leader()`.
+  They add no rule, only a read surface the spatial wiring, the digest, and the viewer
+  consume.
+- **A consumption-log capture in `step_v2`.** The V2 direct passes (both the money phase
+  and the barter phase) now record the per-tick consumption log, and `step_v2` clears it at
+  tick start — but **only when `consumption_log_enabled`**, which is opt-in and which the
+  lab goldens never set. The `enable_consumption_log` debug-assert was widened from "M1
+  only" to "M1 and V2"; M2/M3 stay inert. With the log disabled the path is byte-for-byte
+  the old `step_v2`, so M18/M19/M20 and every V2 record stay identical. The sim enables the
+  log (as the G1 `Camp` does for M1) to read the eaten sink for its conservation receipt.
+- **An opt-in V2 promotion rejection boundary.** `Society::step()` still runs the lab's V2
+  path with no rejection list. The spatial sim calls the additive boundary with its
+  gathered node goods so econ's `winner` can identify the candidate, but a world-regenerated
+  good is recorded as `V2PromotionFailureReason::UnsupportedMoneyGood` and the emergence
+  latch stays in barter. This is not a new emergence rule: it is the spatial substrate
+  declining a promotion it cannot conserve.
+
+`econ_unchanged` (and the dedicated M0–M21 golden files) pin byte-identity; a plain G2b
+settlement is digest-identical with or without an explicitly-`None` barter overlay.
+
+### 3. The spatial→saleability wiring and the medium demand
+
+Pre-promotion, the camp must generate a **saleability differential** from spatial barter
+or nothing emerges. The wiring:
+
+- **Two gathered goods, specialist sellers.** Gatherers split round-robin over a FOOD node
+  and a WOOD node (four each); tight survival buffers force each specialist to **trade** for
+  the good it does not haul — the gains-from-trade that thicken the barter book.
+- **A durable medium demanded on every scale.** Colonists demand a non-gathered **SALT**
+  medium via a `Horizon::Next` "hold the medium" want inserted just below the present
+  survival block (`medium_scale_extension`) — the **same value-scale slot** the G3a/G3b
+  chain uses for producer inputs, **not** a need-model change. SALT's universal demand,
+  traded against both FOOD and WOOD, makes it the good accepted against the most
+  counterparts — the most saleable — so it is the good that emerges. The savings good
+  (`known.savings`) is SALT too, so post-promotion the money market provisions those
+  store-of-value wants in the emerged money exactly like a designated-money camp.
+- **The medium is never a gathered node good.** A money good the world re-mints each tick
+  would break the conserved promotion, so `generate` asserts no node harvests the medium.
+  The tracker may still observe gathered FOOD/WOOD as candidates for the control proof; if
+  a custom envelope or seed makes one of those gathered goods the winner, the sim rejects
+  that unsupported promotion through econ's V2 failure path and remains in barter. The
+  scale extension runs only while still in barter (`current_money_good().is_none()`); once a
+  money good emerges the scale is pure need-driven and the G2b money market clears.
+
+### 4. The conserved promotion across the phase transition
+
+A barter swap is a conserved **relocation** (goods change hands, nothing minted). The
+**promotion** is the only phase event that crosses the good↔money seam: econ converts the
+winning good's stock to gold 1-for-1 (the lab's conserved promotion). The sim detects the
+`None → Some(good)` transition around `society.step()`, computes the minted gold as the
+society's gold delta, and records it in a new `EconTickReport.promoted` term. Whole-system
+conservation generalizes to
+`after = before + regen + endowment + produced − consumed_as_input − consumed − promoted`;
+`promoted` is empty on every non-promotion tick and every non-emergent settlement, so the
+identity reduces to the G4b form and every existing conservation test is unchanged. The
+good→money side is a sink for the physical good, matched 1-for-1 by the gold the promotion
+mints (the gold checkpoints account the minted gold). `barter_and_promotion_conserve` is
+the tripwire: per-good ledgers balance every tick, total gold is constant except at the
+single promotion tick where it rises by exactly the converted stock, and the promoted
+good's stock is then zero.
+
+### 5. Determinism across barter → promotion → money, and the digest
+
+The whole run is integer; the `Rng` is consumed only at generation (cultures), nothing is
+drawn in the loops; state is `BTreeMap`/`Vec`, no `HashMap`. When the barter overlay is
+present the canonical bytes include the savings good, the current money good (option), the
+promotion tick (option), and the **full Mengerian emergence runtime**: the saleability
+tracker's accumulated per-candidate acceptances and **distinct** acceptor-agent and
+counterpart-good sets, plus the promotion-timing latch (the stable winner and its
+consecutive-tick count). Every one of those steers the **future** promotion decision — two
+barter states agreeing on holdings and the current leader but differing in a stability
+counter or an acceptor set promote on different future ticks — so they belong in the
+"byte-identical iff future behaviour identical" identity (the provisional leader the
+earlier draft captured is merely a derived projection of this state, and the member lists,
+not just their counts, are serialized because a later acceptance only advances the
+eligibility counts when its acceptor/counterpart is new). The no-overlay path omits all of
+it and stays byte-identical to pre-G5a runs (`barter_camp_run_is_deterministic` and
+`canonical_bytes_include_emergence_runtime` are the tripwires; the no-overlay identity is in
+`econ_unchanged`).
+
+### 6. The `barter-camp` mechanism + the `barter-camp-control` falsification twin
+
+`SettlementConfig::barter_camp` monetizes: SALT leads the saleability tally and is
+promoted from realized spatial barter, after which trade is SALT-money-priced. The control
+`barter_camp_control` is the **same** camp — same nodes, roster, cultures, and reused M20
+envelope — with the SALT medium's **supply removed** (no colonist endowed with SALT, and
+so no "hold the medium" demand it could support). The same emergence machinery runs over
+the same FOOD/WOOD barter every tick, but the only swaps that clear are perfectly
+reciprocal FOOD-for-WOOD (each counts one FOOD and one WOOD acceptance), so no good ever
+leads by the promotion margin and **nothing monetizes** — the settlement stays in barter
+the whole horizon. The pair isolates the cause: identical machinery and raw-input supply,
+the saleable medium's presence the only difference. The control is non-vacuous — its
+tracker observes real FOOD and WOOD barter (nonzero acceptance shares) — it simply never
+produces a winner. If both monetized, the wiring would be reading something other than
+realized spatial barter.
+
+### Excluded from G5a (deferred)
+
+- **No emergence composed with production or demography (G5b).** The G5a config is a plain
+  gatherer/consumer barter camp; `generate` asserts a barter overlay is mutually exclusive
+  with a production `chain` and a `demography` overlay. Composing emergence with the full
+  stack (production, demography, multi-settlement) is **G5b**.
+- **No multi-seed spatial robustness STUDY.** G5a proves the mechanism + falsification
+  control on a curated config; the spatial robustness gate (emergence rate under
+  encounter/transport frictions, analogous to **M18/M19** for the lab's non-spatial money
+  emergence) is a deferred **G5-study**. The acceptance suite asserts only
+  promotion-happens / control-doesn't (sign) and exact conservation — no emergence rate,
+  no tuned tick, no asserted magnitude beyond the conservation identity.
+- **No multi-settlement emergence** (later) — emergence runs in a single `Settlement`, not
+  across a `Region`.
+- **No change to econ's emergence RULE or `MengerianConfig` defaults** — the envelope is
+  the adopted M20 default reused unchanged (only `candidate_goods` names the camp's
+  tradeable set), and the decision routes through `MengerianEmergence::winner`.
+- **No change to econ MARKET/emergence behaviour** — the six goldens are byte-identical,
+  every econ edit is additive (read accessors + the opt-in, default-off consumption log +
+  the opt-in spatial promotion rejection boundary).
+- No `HashMap` in logic; nothing drawn in the loops; no money moves in the fast loop.

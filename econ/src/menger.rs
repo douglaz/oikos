@@ -46,6 +46,21 @@ pub struct SaleabilityLeader {
     pub tied_best: bool,
 }
 
+/// A read-only view of one candidate good's accumulated saleability state: its
+/// running acceptance count plus the **distinct** acceptor agents and counterpart
+/// goods it has been traded against. Exposed (with the member lists, not just
+/// their counts) so a caller serializing the tracker for a determinism digest can
+/// capture the full future-behaviour identity — a later acceptance only advances
+/// the eligibility counts when its acceptor/counterpart is new, so two trackers
+/// with equal counts but different members can still diverge on a future tick.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CandidateSaleability<'a> {
+    pub good: GoodId,
+    pub acceptances: u64,
+    pub acceptor_agents: &'a [AgentId],
+    pub counterpart_goods: &'a [GoodId],
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CandidateStats {
     good: GoodId,
@@ -92,6 +107,18 @@ impl SaleabilityTracker {
 
     pub fn total_acceptances(&self) -> u64 {
         self.total_acceptances
+    }
+
+    /// The accumulated per-candidate saleability state, in the tracker's stored
+    /// (sorted, deduped) candidate order. See [`CandidateSaleability`] for why the
+    /// distinct-member lists — not just their counts — are exposed.
+    pub fn candidate_saleability(&self) -> impl ExactSizeIterator<Item = CandidateSaleability<'_>> {
+        self.candidates.iter().map(|stats| CandidateSaleability {
+            good: stats.good,
+            acceptances: stats.acceptances,
+            acceptor_agents: &stats.acceptor_agents,
+            counterpart_goods: &stats.counterpart_goods,
+        })
     }
 
     pub fn observe_trade(&mut self, trade: &BarterTrade) {
@@ -251,6 +278,13 @@ impl MengerianEmergence {
         &self.tracker
     }
 
+    /// The Mengerian config this emergence runs under — the adopted M20 envelope
+    /// (candidate goods + promotion thresholds). Read-only; G5a asserts the
+    /// spatial barter camp drives the lab's reused config, not a sim-local one.
+    pub fn config(&self) -> &MengerianConfig {
+        &self.config
+    }
+
     pub fn leader_shares(&self) -> Option<SaleabilityLeader> {
         self.tracker.leader_shares()
     }
@@ -269,6 +303,23 @@ impl MengerianEmergence {
 
     pub fn provisional_leader(&self) -> Option<GoodId> {
         self.tracker.provisional_leader(&self.config)
+    }
+
+    /// The good currently latched as the stable saleability winner (the lab's
+    /// pre-promotion stability gate), or `None` if none leads stably. Promotion
+    /// fires once this same good has held the lead for `config.stability_ticks`.
+    /// Exposed so a caller can capture the promotion-timing state in a determinism
+    /// digest: two barter states with identical holdings but a different latch
+    /// promote on different future ticks.
+    pub fn stable_winner(&self) -> Option<GoodId> {
+        self.stable_winner
+    }
+
+    /// How many consecutive ticks the current [`Self::stable_winner`] has held the
+    /// lead — the counter promotion fires on once it reaches
+    /// `config.stability_ticks`. Part of the future-behaviour identity.
+    pub fn stable_winner_ticks(&self) -> u32 {
+        self.stable_winner_ticks
     }
 
     pub fn promotion_candidate_after_tick(&self) -> Option<GoodId> {
@@ -465,6 +516,63 @@ mod tests {
         assert_eq!(emergence.current_money_good(), None);
         assert_eq!(emergence.end_tick(3), Some(SALT));
         assert_eq!(emergence.promoted_at_tick(), Some(3));
+    }
+
+    #[test]
+    fn candidate_saleability_exposes_accumulated_members() {
+        let config = config(&[SALT, FOOD]);
+        let mut tracker = SaleabilityTracker::new(config.candidate_goods.clone());
+
+        // Two distinct acceptors take SALT, each against a different counterpart.
+        tracker.observe_trade(&trade(1, 2, ORE, SALT));
+        tracker.observe_trade(&trade(3, 4, CLOTH, SALT));
+
+        let salt = tracker
+            .candidate_saleability()
+            .find(|c| c.good == SALT)
+            .expect("SALT is a candidate");
+        assert_eq!(salt.acceptances, 2);
+        // SALT is the `b_gives` side of each trade, so its acceptor is the `a` agent
+        // (agents 1 and 3); the DISTINCT acceptors are recorded sorted.
+        assert_eq!(salt.acceptor_agents, &[AgentId(1), AgentId(3)]);
+        // The DISTINCT counterpart goods SALT was traded against (CLOTH=5, ORE=6),
+        // recorded sorted by id.
+        assert_eq!(salt.counterpart_goods, &[CLOTH, ORE]);
+        // The candidate view is in the tracker's stored (sorted) order.
+        let goods: Vec<GoodId> = tracker.candidate_saleability().map(|c| c.good).collect();
+        let mut sorted = goods.clone();
+        sorted.sort();
+        assert_eq!(goods, sorted);
+    }
+
+    #[test]
+    fn stable_winner_latch_advances_then_promotes() {
+        let mut emergence = MengerianEmergence::new(MengerianConfig {
+            candidate_goods: vec![SALT, FOOD],
+            min_total_acceptances: 2,
+            promotion_threshold_bps: 1_000,
+            lead_margin_bps: 1,
+            min_acceptor_agents: 1,
+            min_counterpart_goods: 1,
+            stability_ticks: 2,
+            indirect_min_acceptance_share_bps: 1_000,
+        });
+
+        // No barter yet: nothing latched.
+        assert_eq!(emergence.stable_winner(), None);
+        assert_eq!(emergence.stable_winner_ticks(), 0);
+
+        emergence.observe_trade(&trade(1, 2, ORE, SALT));
+
+        // Tick 1 latches SALT but the stability count is short of `stability_ticks`.
+        assert_eq!(emergence.end_tick(1), None);
+        assert_eq!(emergence.stable_winner(), Some(SALT));
+        assert_eq!(emergence.stable_winner_ticks(), 1);
+
+        // Tick 2 reaches the stability count and promotes; the latch is frozen.
+        assert_eq!(emergence.end_tick(2), Some(SALT));
+        assert_eq!(emergence.stable_winner(), Some(SALT));
+        assert_eq!(emergence.stable_winner_ticks(), 2);
     }
 
     #[test]

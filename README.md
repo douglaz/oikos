@@ -677,6 +677,80 @@ analogous to M18/M19 for money emergence), inter-settlement migration, and non-e
 ledger estate routing. See `sim/tests/g4b_demography.rs` and `docs/engine-divergence.md`
 (the G4b entry).
 
+## Status: G5a (money emerges from spatial barter) — complete
+
+Every settlement before G5a ran on econ's **designated GOLD** market — money was
+assumed. **G5a makes money emerge.** A curated **barter camp** starts with no
+designated money: gatherers haul FOOD and WOOD from two nodes, colonists barter
+goods-for-goods at the exchange, and a money good is **promoted** by the
+Mengerian saleability rule the lab proved (M5/M6) and studied (M18/M19/M20) — but now
+driven by **spatial** trade. It is the spatial counterpart of the lab's
+money-emergence result, sliced down to the **mechanism + a falsification control**.
+
+G5a is **spatial wiring + a curated config + a control** — it adds **no** emergence
+rule to econ. The barter camp runs `MarketMoneyConfig::Emergent` (econ's V2 path):
+`step_v2` clears the `BarterBook`, the realized spatial barter feeds econ's reused
+`SaleabilityTracker`, and when `MengerianEmergence::winner` fires the winning good's
+stock converts to money units (the lab's **conserved promotion**) — after which the
+settlement runs the existing G2b money-priced market unchanged. No money moves in the
+fast loop; barter swaps relocate goods and the promotion converts good→money exactly,
+so whole-system conservation holds across the barter → promotion → money phase
+transition.
+
+The `sim` `Settlement` gains an opt-in `barter` overlay (`None` for every pre-G5a
+config, so they stay byte-identical; `Some` runs the emergent path):
+
+- **barter phase** — colonists demand a durable **SALT** medium via a `Horizon::Next`
+  "hold the medium" want layered on the value scale (the same slot a chain uses for
+  producer inputs, not a need-model change). Its universal demand — traded against both
+  the FOOD and the WOOD that specialist gatherers sell — makes SALT the good accepted
+  against the most counterparts, the most saleable, so it is the good that emerges.
+- **promotion** — on the tick the reused `winner` rule fires, SALT's econ stock is
+  converted to gold 1-for-1 (the lab's conserved promotion), recorded in the tick
+  report's `promoted` ledger so the whole-system identity balances across the phase
+  transition. From the next tick trade is money-priced (the G2b market).
+- **the control** — `barter-camp-control` is the same camp with the SALT medium's
+  **supply removed**. The same emergence machinery runs over the same FOOD/WOOD barter,
+  but the only swaps that clear are perfectly reciprocal FOOD-for-WOOD, so no good ever
+  leads by the promotion margin and **nothing monetizes** — the settlement stays in
+  barter. This is the milestone's proof: the saleable medium, not luck, is what
+  monetizes. (If both monetized, the wiring would be reading something other than
+  realized spatial barter.)
+- digest-honest: when the overlay is present, canonical bytes include the savings good,
+  the current money good, the promotion tick, and the **full Mengerian emergence runtime**
+  (the saleability tracker's accumulated per-candidate acceptances and distinct
+  acceptor/counterpart sets, plus the promotion-timing latch) — all of which steer the
+  future promotion decision, so the determinism tripwire spans the phase transition. The
+  no-overlay path omits all of it and stays byte-identical to pre-G5a runs.
+
+The only econ edits are **additive**: read-only accessors on `Society`/`MengerianEmergence`
+(emergence state, promotion tick, saleability leader, the adopted config), a
+consumption-log capture in `step_v2` that is **inert unless the log is enabled**, and an
+opt-in V2 step boundary that lets the spatial sim reject world-regenerated node goods as
+unsupported money goods. The normal econ `step()` path uses no rejection list, so the
+**six econ goldens stay byte-identical**.
+
+G5a:
+
+- [x] a barter-start `Settlement` mode (`MarketMoneyConfig::Emergent` driving the V2
+      barter/saleability/promotion machinery inside the spatial two-rate loop)
+- [x] the spatial→saleability wiring (realized spatial barter feeds the reused
+      `SaleabilityTracker`; the Mengerian `winner` rule promotes) + the conserved
+      promotion transition to the G2b money market
+- [x] the curated `barter-camp` config (monetizes) and the `barter-camp-control`
+      falsification twin (does not), plus the `barter` overlay on `SettlementConfig`
+- [x] viewer: the `barter-camp`/`barter-camp-control` scenarios + barter/money phase,
+      saleability leader, and promotion-tick surfacing
+- [x] acceptance suite (`sim/tests/g5a_emergence.rs`: the seven acceptance tests plus
+      unit tests) + README + divergence-log updates
+
+Deferred (noted in `docs/engine-divergence.md`): **G5b** — emergence composed with the
+full stack (production, demography, multi-settlement); and the **multi-seed spatial
+robustness STUDY** (emergence rate under encounter/transport frictions, analogous to
+M18/M19 for the lab's non-spatial money emergence). G5a is the mechanism slice — a plain
+gatherer/consumer barter camp. See `sim/tests/g5a_emergence.rs` and
+`docs/engine-divergence.md` (the G5a entry).
+
 ## Build and test
 
 ```bash
@@ -700,4 +774,6 @@ cargo run -p viewer -- run region --ticks 30          # G2c: two settlements + a
 cargo run -p viewer -- run region-control --ticks 30  # the no-caravan twin
 cargo run -p viewer -- run starved-hauler --ticks 20  # G4a: a colonist dies, the run continues
 cargo run -p viewer -- run lineages --ticks 200        # G4b: two households age, reproduce, inherit
+cargo run -p viewer -- run barter-camp --ticks 40             # G5a: money emerges (barter → promotion → money-priced)
+cargo run -p viewer -- run barter-camp-control --ticks 40     # G5a: no saleability differential → stays in barter
 ```
