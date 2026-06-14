@@ -59,10 +59,15 @@
 use std::collections::BTreeMap;
 
 use econ::agent::{Agent, AgentId, Role, Want, WantKind};
+use econ::bundle::{
+    appraise_project_bundle_for_money, ProjectBundleCandidate, ProjectBundleEndowment,
+};
+use econ::capital::ProjectLineId;
 use econ::expect::PriceBelief;
 use econ::good::{Gold, GoodId, Horizon, Stock, FOOD, GOLD, NET, WOOD};
 use econ::money::{DesignatedMoney, MarketMoneyConfig};
-use econ::project::{Recipe, RecipeId};
+use econ::project::{Recipe, RecipeId, Tick};
+use econ::purpose::ProjectPlanId;
 use econ::rng::Rng;
 use econ::scenario::{MarketScenario, ScenarioName};
 use econ::society::Society;
@@ -84,14 +89,29 @@ pub const FAST_TICKS_PER_ECON_TICK: u64 = 24;
 /// A placeholder cadence, not a balance figure.
 pub const ECON_TICKS_PER_YEAR: u64 = 12;
 
+/// Upper bound on [`ChainConfig::throughput`], checked at generation. A producer's
+/// `throughput` becomes that many unit input wants appended to its value scale every
+/// scale regeneration (see [`producer_scale_extension`]), so an unbounded throughput
+/// would let a config drive the per-producer scale — and thus the market it iterates
+/// — to an arbitrary size (an out-of-memory vector at the extreme). Real mechanism
+/// configs use `1`/`2` (the CDA market clears one unit per seller per good per tick),
+/// so this generous ceiling rejects only absurd values; it is a sanity bound, not a
+/// balance figure.
+pub const MAX_CHAIN_THROUGHPUT: u32 = 1_024;
+
 /// A colonist's role in the settlement's minimal division of labor.
 ///
 /// G2b has only [`Gatherer`](Vocation::Gatherer)/[`Consumer`](Vocation::Consumer).
-/// G3a adds the two **seeded producer** vocations
+/// G3a adds the two **producer** vocations
 /// ([`Miller`](Vocation::Miller)/[`Baker`](Vocation::Baker)) that run the
-/// grain→flour→bread chain — they are hand-placed (the spec defers *who chooses*
-/// to produce to G3b). A plain settlement has neither, so its config and digest
-/// stay byte-identical to G2b.
+/// grain→flour→bread chain. In G3a they are *seeded* (hand-placed); G3b adds the
+/// [`Unassigned`](Vocation::Unassigned) vocation — a colonist holding latent
+/// production capital (a mill or an oven) that has **not** chosen to produce. Each
+/// econ tick an unassigned colonist appraises the recipe it could run against the
+/// realized price spread and its own value scale, and *adopts* the producer
+/// vocation (or reverts to `Unassigned`) accordingly — entrepreneurship from
+/// prices, not seeding. A plain settlement has none of the chain vocations, so its
+/// config and digest stay byte-identical to G2b.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Vocation {
     /// Harvests its node's good (FOOD in G2b, grain in the G3a chain) and hauls
@@ -100,25 +120,36 @@ pub enum Vocation {
     /// Sits at the exchange; sells its provisioning endowment, buys and eats the
     /// staple (FOOD in G2b, bread in the G3a chain).
     Consumer,
-    /// G3a producer: holds a **mill** (durable tool) and, in the production
-    /// phase, mills grain it holds into flour, then sells the flour.
+    /// Producer: holds a **mill** (durable tool) and, in the production phase,
+    /// mills grain it holds into flour, then sells the flour. Seeded in G3a,
+    /// **adopted from the spread** in G3b (see [`Vocation::Unassigned`]).
     Miller,
-    /// G3a producer: holds an **oven** (durable tool) and, in the production
-    /// phase, bakes flour it holds into bread, eats some, and sells the rest.
+    /// Producer: holds an **oven** (durable tool) and, in the production phase,
+    /// bakes flour it holds into bread, eats some, and sells the rest. Seeded in
+    /// G3a, **adopted from the spread** in G3b.
     Baker,
+    /// G3b: a colonist with **latent** production capital (a mill or an oven) that
+    /// has not (yet) chosen to produce. It sits at the exchange and trades like a
+    /// consumer, but each tick re-appraises the recipe its tool could run; when
+    /// the realized spread pays on its own value scale it adopts
+    /// [`Miller`](Vocation::Miller)/[`Baker`](Vocation::Baker), and it reverts here
+    /// when the spread collapses. The latent specialty (which recipe) is the
+    /// colonist's [`latent`](Colonist::latent) recipe.
+    Unassigned,
 }
 
 impl Vocation {
     /// A stable serialization tag for [`Settlement::canonical_bytes`]. Consumer
     /// and Gatherer keep the values G2b's `u8::from(== Gatherer)` produced
     /// (`0`/`1`), so every pre-G3a digest is byte-identical; the producers extend
-    /// the space with `2`/`3`.
+    /// the space with `2`/`3` and the G3b `Unassigned` vocation with `4`.
     fn tag(self) -> u8 {
         match self {
             Vocation::Consumer => 0,
             Vocation::Gatherer => 1,
             Vocation::Miller => 2,
             Vocation::Baker => 3,
+            Vocation::Unassigned => 4,
         }
     }
 }
@@ -173,10 +204,30 @@ pub struct NodeSpec {
 pub struct ChainConfig {
     /// The interned chain goods and recipes (built once at generation).
     pub content: ContentSet,
-    /// Seeded millers (hold a mill, mill grain → flour).
+    /// Seeded millers (hold a mill, mill grain → flour). G3a (seeded roles);
+    /// `0` for the G3b emergent configs (millers *adopt* from the spread instead).
     pub millers: u16,
-    /// Seeded bakers (hold an oven, bake flour → bread).
+    /// Seeded bakers (hold an oven, bake flour → bread). `0` for G3b emergent.
     pub bakers: u16,
+    /// G3b: colonists seeded with a **latent mill** that start
+    /// [`Unassigned`](Vocation::Unassigned) and adopt [`Miller`](Vocation::Miller)
+    /// only when the realized flour−grain spread pays on their own value scale.
+    /// `0` for G3a (seeded roles, no emergence).
+    pub latent_millers: u16,
+    /// G3b: colonists seeded with a **latent oven** that adopt
+    /// [`Baker`](Vocation::Baker) from the realized bread−flour spread. `0` for G3a.
+    pub latent_bakers: u16,
+    /// G3b: the per-operation cost (labor leisure + tool) a recipe's realized
+    /// output spread must clear before an unassigned colonist adopts it, so a
+    /// yield-3 recipe is not unconditionally worth running. A mechanism knob
+    /// (must be ≥ 1), not a magnitude.
+    pub operating_cost: u64,
+    /// G3b: whether **bread** is the staple (`hunger ↔ bread`, the demand that pulls
+    /// the chain) or hunger maps to the gathered node good (`hunger ↔ FOOD`). The
+    /// falsification control sets this `false`: with no bread demand the chain's
+    /// goods never price, so the same role-choice appraisal forms no roles. G3a and
+    /// the emergent config set it `true`.
+    pub bread_is_staple: bool,
     /// Per-producer, per-econ-tick cap on recipe applications — a deterministic
     /// throughput bound (nothing is drawn). A producer applies its recipe up to
     /// this many times, limited by the input it holds.
@@ -186,9 +237,23 @@ pub struct ChainConfig {
     pub miller_grain_buffer: u32,
     /// Flour a baker is seeded holding (a buffer so baking fires from tick 1).
     pub baker_flour_buffer: u32,
+    /// G3b: flour a **latent miller** is seeded holding as bootstrap output stock.
+    /// A latent miller does not reserve flour (flour is its output, not its input),
+    /// so it offers this stock for sale; that is the flour supply the first adopted
+    /// baker buys, which gives flour a realized price — the signal a latent miller
+    /// then adopts milling on. `0` for G3a (no latent millers).
+    pub latent_flour_seed: u32,
     /// Bread every colonist is seeded holding — the staple buffer that bridges
-    /// the pipeline fill and keeps hunger bounded over the smoke horizon.
+    /// the pipeline fill and keeps hunger bounded over the smoke horizon. In G3b's
+    /// emergent config this is the *surplus* a non-consumer carries (so it offers
+    /// bread, bootstrapping the bread price the chain forms from).
     pub bread_buffer: u32,
+    /// Staple (bread) a **consumer** is seeded holding — kept small in the G3b
+    /// emergent config so consumers run short and *buy* bread early, which is what
+    /// gives bread a realized price (the demand that pulls the chain into being). In
+    /// G3a it equals `bread_buffer` (consumers are not the demand bootstrap there),
+    /// so the seeded config is unchanged.
+    pub consumer_staple_buffer: u32,
     /// WOOD every colonist is seeded holding — a warmth battery. Warmth never
     /// kills (only hunger does), so this just keeps the warmth need low/bounded.
     pub wood_buffer: u32,
@@ -209,14 +274,26 @@ impl ChainConfig {
             // flowing to the mouths. Seeded (hand-placed) — no role emergence.
             millers: 3,
             bakers: 5,
+            // G3a seeds the producer roles; there is no emergence here, so the
+            // latent pool is empty and the role-choice phase is a no-op.
+            latent_millers: 0,
+            latent_bakers: 0,
+            operating_cost: 1,
+            bread_is_staple: true,
             throughput: 2,
             miller_grain_buffer: 16,
             baker_flour_buffer: 16,
+            // No latent millers in G3a, so no bootstrap flour stock.
+            latent_flour_seed: 0,
             // A modest staple buffer: large enough to bridge the pipeline fill,
             // small enough that consumers re-enter the bread market once it
             // drains (so bread realizes a price too), and the chain's surplus
             // keeps hunger bounded over the smoke horizon.
             bread_buffer: 24,
+            // G3a consumers carry the same staple buffer as everyone else (the
+            // seeded roster does not bootstrap demand from the consumers), so the
+            // G3a config and its goldens are unchanged.
+            consumer_staple_buffer: 24,
             wood_buffer: 48,
             producer_gold: 24,
         }
@@ -369,6 +446,114 @@ impl SettlementConfig {
             consumer_wood_endowment: 0,
             // Patient on both sides so surplus keeps being offered and the chain's
             // intermediate goods keep clearing (the same discipline as viable()).
+            gatherer_time_preference_base_bps: 500,
+            consumer_time_preference_base_bps: 500,
+            leisure_weight_base_bps: 3_000,
+            dynamics: NeedDynamics::lab_default(),
+            resident_traders: Vec::new(),
+            chain: Some(chain),
+        }
+    }
+
+    /// The G3b **emergent production-chain** settlement: the grain→flour→bread chain
+    /// with **no seeded producer roles**. Instead a pool of latent millers (each
+    /// holding a mill) and latent bakers (each holding an oven) start
+    /// [`Unassigned`](Vocation::Unassigned) and *choose* to produce when the realized
+    /// price spread pays on their own value scale (the role-choice appraisal). Bread
+    /// is the staple, so consumer demand prices bread; that pulls the chain into
+    /// existence bottom-up — a baker adopts on the bread−flour spread and starts
+    /// buying flour, which prices flour, which makes a miller adopt on the
+    /// flour−grain spread, which prices grain. Generous buffers bridge the pipeline
+    /// fill; mechanism, not balance.
+    pub fn emergent_chain() -> Self {
+        Self::emergent_chain_with_demand(true)
+    }
+
+    /// The G3b **no-spread falsification control**: the same emergent world with the
+    /// chain's demand removed. Hunger maps to FOOD from seeded buffers instead of
+    /// bread (`bread_is_staple = false`), so **no one ever demands bread**; bread and
+    /// flour never trade, so they never realize a price, so the *same* role-choice
+    /// appraisal — run over the *same* latent pool and grain node every tick — never
+    /// sees a spread and **forms no producer roles**, and no flour or bread is ever
+    /// produced. Paired with [`Self::emergent_chain`] this isolates the spread as
+    /// the cause of the roles: identical machinery and raw input supply, demand the
+    /// only causal difference.
+    pub fn emergent_chain_control() -> Self {
+        Self::emergent_chain_with_demand(false)
+    }
+
+    /// Shared builder for the emergent chain and its no-spread control. `bread_demand`
+    /// selects the staple (bread, the chain's product → demand pulls the chain; or
+    /// FOOD from seeded buffers → bread is never demanded). Both twins keep the same
+    /// grain node, so the control removes only the bread demand/spread rather than
+    /// the chain's raw input supply.
+    fn emergent_chain_with_demand(bread_demand: bool) -> Self {
+        let mut chain = ChainConfig::grain_flour_bread();
+        // No seeded roles — the producer mix must *emerge* from the spread.
+        chain.millers = 0;
+        chain.bakers = 0;
+        // A latent pool for each stage, so when both spreads exist the chain forms
+        // both roles (and when neither does — the control — it forms none).
+        chain.latent_millers = 3;
+        chain.latent_bakers = 3;
+        chain.operating_cost = 1;
+        chain.bread_is_staple = bread_demand;
+        // One operation per producer per tick, matching the CDA market's one-unit-
+        // per-seller-per-tick granularity: an adopted producer buys one input and
+        // mills/bakes it each tick, so it keeps spending gold on inputs (its savings
+        // want stays unprovisioned, so it does not "retire" the moment it earns) and
+        // its input good keeps clearing a price. Producers start with no input buffer
+        // — they buy it from the market each tick — except the latent millers, which
+        // carry a flour bootstrap stock so the first baker's flour bid finds a seller.
+        chain.throughput = 1;
+        chain.miller_grain_buffer = 0;
+        chain.baker_flour_buffer = 0;
+        chain.latent_flour_seed = 12;
+        // In the emergent run this is the bread surplus that bootstraps early bread
+        // trades. In the no-spread control the same field seeds FOOD instead; keep
+        // it ample so the control removes bread demand without turning starvation
+        // into a second causal difference.
+        chain.bread_buffer = if bread_demand { 24 } else { 80 };
+        // Consumers start nearly bread-empty so they buy bread within the first few
+        // ticks — that demand is what gives bread a realized price, the spread the
+        // first baker adopts on. In the control this seeds FOOD instead, and is
+        // intentionally ample: no one needs bread, but the latent pool stays alive
+        // while repeatedly declining the absent bread/flour spread.
+        chain.consumer_staple_buffer = if bread_demand { 2 } else { 80 };
+        chain.wood_buffer = 48;
+        // Modest working gold: well below a patient colonist's savings target, so an
+        // unprovisioned future-gold want always remains for the appraisal to target
+        // (a producer that has already sated its savings would decline new work).
+        chain.producer_gold = 12;
+
+        let exchange = Pos::new(0, 0);
+        Self {
+            width: 64,
+            height: 1,
+            exchange,
+            exchange_cap: 1_000_000,
+            nodes: vec![NodeSpec {
+                good: chain.content.grain(),
+                pos: Pos::new(4, 0),
+                stock: 8_000,
+                regen: 24,
+                cap: 8_000,
+            }],
+            gatherers: 3,
+            // Bread mouths with ample gold: their demand prices bread, the spread
+            // that bootstraps the chain in the emergent config. (In the control they
+            // eat FOOD, so bread stays unpriced.)
+            consumers: 2,
+            carry_cap: 2,
+            move_speed: 1,
+            starting_gold_gatherer: 12,
+            starting_gold_consumer: 48,
+            gatherer_food_buffer: 0,
+            gatherer_wood_buffer: 0,
+            consumer_food_buffer: 0,
+            consumer_wood_endowment: 0,
+            // Patient on both sides so colonists carry a savings want (the
+            // entrepreneurial appraisal's target) and keep offering surplus.
             gatherer_time_preference_base_bps: 500,
             consumer_time_preference_base_bps: 500,
             leisure_weight_base_bps: 3_000,
@@ -551,6 +736,14 @@ struct Colonist {
     /// phase so a dead colonist is never re-scaled, re-credited, re-tasked, or
     /// read back. A dead gatherer is idled in the world so its carry freezes.
     alive: bool,
+    /// G3b: the recipe this colonist *could* run with its latent tool, if any.
+    /// `Some(Mill)` for a latent miller (holds a mill), `Some(Bake)` for a latent
+    /// baker (holds an oven); `None` for a gatherer, consumer, or a **seeded** G3a
+    /// producer. The role-choice phase re-appraises this recipe each tick and
+    /// toggles [`Vocation::Unassigned`] ↔ the producer vocation from the realized
+    /// spread; a `None` colonist is never re-appraised, so the seeded G3a config is
+    /// byte-identical (its producers are permanent).
+    latent: Option<RecipeId>,
 }
 
 /// A settlement of generated colonists driven over a real `world` + `econ`.
@@ -594,6 +787,9 @@ pub struct Settlement {
 struct ChainRuntime {
     content: ContentSet,
     throughput: u32,
+    /// The per-operation cost (labor + tool) the G3b role-choice appraisal charges
+    /// against a recipe's realized output spread (see [`ChainConfig::operating_cost`]).
+    operating_cost: u64,
 }
 
 impl Settlement {
@@ -616,22 +812,40 @@ impl Settlement {
             "a resource node cannot harvest the money good (GOLD); money is not a \
              physical good and never crosses the world→econ transfer seam"
         );
+        if let Some(chain) = &config.chain {
+            assert!(
+                chain.operating_cost >= 1,
+                "chain operating_cost must be at least 1"
+            );
+            // A producer's throughput becomes that many input wants on its value scale
+            // each regeneration; bound it so a config cannot drive the scale (and the
+            // market that iterates it) to an unbounded size. See [`MAX_CHAIN_THROUGHPUT`].
+            assert!(
+                chain.throughput <= MAX_CHAIN_THROUGHPUT,
+                "chain throughput {} exceeds the sanity bound {MAX_CHAIN_THROUGHPUT}",
+                chain.throughput
+            );
+        }
         let dynamics = config.dynamics;
         // The need→good mapping. A plain settlement uses the lab default
-        // (hunger ↔ FOOD). The G3a chain makes **bread the staple**
-        // (hunger ↔ bread) so the chain's final good is what colonists eat to
-        // live; warmth stays WOOD and savings stays GOLD.
+        // (hunger ↔ FOOD). The G3a chain and the G3b emergent config make **bread
+        // the staple** (hunger ↔ bread) so the chain's final good is what colonists
+        // eat to live, and that demand prices bread. The G3b no-spread control sets
+        // `bread_is_staple = false`, keeping hunger ↔ FOOD so bread is never demanded
+        // (and so never prices, and so no role forms). Warmth stays WOOD, savings GOLD.
         let known = match &config.chain {
-            Some(chain) => KnownGoods {
+            Some(chain) if chain.bread_is_staple => KnownGoods {
                 hunger: chain.content.bread(),
                 warmth: WOOD,
                 savings: GOLD,
             },
-            None => KnownGoods::lab_default(),
+            // The control (chain present, bread not the staple) eats seeded FOOD;
+            // every plain settlement eats gathered FOOD.
+            Some(_) | None => KnownGoods::lab_default(),
         };
         let mut rng = Rng::new(seed);
 
-        // ---- world: grid, exchange stockpile, FOOD nodes ----
+        // ---- world: grid, exchange stockpile, resource nodes ----
         let grid = Grid::new(config.width, config.height);
         let mut world = World::new(grid);
         let exchange = world
@@ -649,13 +863,21 @@ impl Settlement {
 
         let consumers = usize::from(config.consumers);
         let gatherers = usize::from(config.gatherers);
-        // The seeded producer counts (G3a): zero without a chain, so a plain
-        // settlement's population, ids, and digest are byte-identical to G2b.
-        let (millers, bakers) = match &config.chain {
-            Some(chain) => (usize::from(chain.millers), usize::from(chain.bakers)),
-            None => (0, 0),
+        // The seeded producer counts (G3a) and the G3b *latent* producer counts:
+        // all zero without a chain, so a plain settlement's population, ids, and
+        // digest are byte-identical to G2b. Seeded millers/bakers (G3a) take a fixed
+        // producer vocation; the latent pool (G3b) starts `Unassigned` and adopts
+        // from the spread. Both bands follow the gatherers in id order.
+        let (millers, bakers, latent_millers, latent_bakers) = match &config.chain {
+            Some(chain) => (
+                usize::from(chain.millers),
+                usize::from(chain.bakers),
+                usize::from(chain.latent_millers),
+                usize::from(chain.latent_bakers),
+            ),
+            None => (0, 0, 0, 0),
         };
-        let population = consumers + gatherers + millers + bakers;
+        let population = consumers + gatherers + millers + bakers + latent_millers + latent_bakers;
 
         // Resident traders (G2c caravans) take the LOWEST ids, *before* the
         // colonists, so they are processed first in the id-ordered market and their
@@ -701,14 +923,19 @@ impl Settlement {
             debug_assert_eq!(placed, id, "world and econ agent ids must coincide");
 
             // Vocation by id band: consumers (lowest ids, so their bids lead the
-            // book), then gatherers, then the seeded producers — millers, then
-            // bakers. Producers do not gather (no node) and use the patient
-            // consumer time-preference base so they keep offering their output.
-            let (vocation, node, tp_base) = if index < consumers {
+            // book), then gatherers, then the seeded producers (G3a) — millers,
+            // then bakers — then the latent pool (G3b) — latent millers, then
+            // latent bakers — that start `Unassigned` and adopt from the spread.
+            // Producers do not gather (no node) and use the patient consumer
+            // time-preference base so they keep offering their output and carry a
+            // savings want the entrepreneurial appraisal can target.
+            let seeded_end = consumers + gatherers + millers + bakers;
+            let (vocation, node, tp_base, latent) = if index < consumers {
                 (
                     Vocation::Consumer,
                     None,
                     config.consumer_time_preference_base_bps,
+                    None,
                 )
             } else if index < consumers + gatherers {
                 let node = node_ids[(index - consumers) % node_ids.len()];
@@ -716,23 +943,42 @@ impl Settlement {
                     Vocation::Gatherer,
                     Some(node),
                     config.gatherer_time_preference_base_bps,
+                    None,
                 )
             } else if index < consumers + gatherers + millers {
                 (
                     Vocation::Miller,
                     None,
                     config.consumer_time_preference_base_bps,
+                    None,
                 )
-            } else {
+            } else if index < seeded_end {
                 (
                     Vocation::Baker,
                     None,
                     config.consumer_time_preference_base_bps,
+                    None,
+                )
+            } else if index < seeded_end + latent_millers {
+                (
+                    Vocation::Unassigned,
+                    None,
+                    config.consumer_time_preference_base_bps,
+                    Some(RecipeId::Mill),
+                )
+            } else {
+                (
+                    Vocation::Unassigned,
+                    None,
+                    config.consumer_time_preference_base_bps,
+                    Some(RecipeId::Bake),
                 )
             };
             let culture = draw_culture(&mut rng, tp_base, config.leisure_weight_base_bps);
             let need = NeedState::rested();
-            agents.push(build_agent(id, &need, &culture, &known, vocation, config));
+            agents.push(build_agent(
+                id, &need, &culture, &known, vocation, latent, config,
+            ));
             colonists.push(Colonist {
                 id,
                 vocation,
@@ -741,6 +987,7 @@ impl Settlement {
                 culture,
                 critical_streak: 0,
                 alive: true,
+                latent,
             });
         }
 
@@ -810,6 +1057,7 @@ impl Settlement {
             ChainRuntime {
                 content: chain.content.clone(),
                 throughput: chain.throughput,
+                operating_cost: chain.operating_cost,
             }
         });
 
@@ -890,6 +1138,22 @@ impl Settlement {
 
         // ---- 4. SCALES.
         self.regenerate_scales();
+
+        // ---- 4b. ROLE-CHOICE (G3b): each living colonist holding latent
+        // production capital re-appraises the recipe it could run against the
+        // realized price spread it can observe (last tick's prices) and its freshly
+        // regenerated value scale, adopting or reverting its producer vocation. If
+        // any role changes, regenerate again so this tick's market sees the matching
+        // active/latent production wants. The second pass regenerates the whole
+        // (small) living roster, not just the changed colonists: a re-regeneration is
+        // idempotent for an unchanged colonist (its need state and vocation are
+        // identical between the two calls, so it yields the same scale and cancels no
+        // quote), so the full pass is byte-identical to a targeted one while keeping
+        // the path simple. A no-op for a plain settlement, the seeded G3a config (no
+        // latent colonists), and tick 0 (no prices realized yet). Draws no randomness.
+        if self.run_role_choice() {
+            self.regenerate_scales();
+        }
 
         // ---- 5. MARKET: the unchanged econ clearing; money is redistributed
         // between colonists here. Producers have bought their inputs (a miller a
@@ -1203,12 +1467,21 @@ impl Settlement {
             }
             let mut scale = regenerate_scale(&colonist.need, &colonist.culture, &self.known);
             if let Some(chain) = &self.chain {
-                producer_scale_extension(
-                    &mut scale,
-                    colonist.vocation,
-                    &chain.content,
-                    chain.throughput,
-                );
+                // A producer's tool/input wants follow its production specialty —
+                // its adopted vocation (Miller/Baker, seeded or chosen) or, for a
+                // latent G3b colonist, the recipe it could run. A latent producer
+                // anchors only its tool (it never sells its capital but posts no
+                // input bid), while an **active** producer — seeded G3a or adopted
+                // G3b — also bids `throughput` units of its input each tick. The
+                // latent/active split keeps a latent producer from autonomously
+                // pricing the intermediate good (load-bearing for the control).
+                if let Some((tool, input)) =
+                    production_specialty(colonist.vocation, colonist.latent, &chain.content)
+                {
+                    let active = matches!(colonist.vocation, Vocation::Miller | Vocation::Baker);
+                    let input_wants = if active { chain.throughput.max(1) } else { 0 };
+                    producer_scale_extension(&mut scale, tool, input, input_wants);
+                }
             }
             self.society
                 .agents
@@ -1244,7 +1517,10 @@ impl Settlement {
             let recipe_id = match colonist.vocation {
                 Vocation::Miller => mill_recipe,
                 Vocation::Baker => bake_recipe,
-                Vocation::Gatherer | Vocation::Consumer => continue,
+                // A latent (Unassigned) colonist holds a tool but has not adopted
+                // production, so it mills/bakes nothing until the spread makes it a
+                // Miller/Baker (the role-choice phase sets that before production).
+                Vocation::Gatherer | Vocation::Consumer | Vocation::Unassigned => continue,
             };
             for _ in 0..throughput {
                 let Some(applied) = self
@@ -1261,6 +1537,91 @@ impl Settlement {
                 }
             }
         }
+    }
+
+    /// ROLE-CHOICE phase (G3b): each living colonist holding latent production
+    /// capital (its [`Colonist::latent`] recipe) re-appraises that recipe against
+    /// the realized prices it can observe and its own value scale, adopting the
+    /// producer vocation when the spread pays and reverting to
+    /// [`Vocation::Unassigned`] when it does not. A no-op without a chain and for
+    /// every colonist whose `latent` is `None` (gatherers, consumers, and the
+    /// **seeded** G3a producers — so the G3a config and digest are unchanged).
+    ///
+    /// The decision is **ordinal**: it routes entirely through
+    /// [`recipe_adoption_pays`] (econ's M2.5 [`appraise_project_bundle_for_money`]),
+    /// which asks whether running the recipe — selling its output at the realized
+    /// output price for a future receivable, costing the realized input price plus
+    /// the operating cost — newly provisions a future-gold want on the colonist's
+    /// *own* scale without breaking a higher want. There is no scalar profit number
+    /// and no argmax across colonists: each decides for itself, in id order (the
+    /// §pillar-1 "colonists act" rule applied to occupation). Re-running it every
+    /// tick is what makes a role sticky while the spread holds and revert when it
+    /// collapses. Deterministic: integer state, no RNG, id-ordered.
+    fn run_role_choice(&mut self) -> bool {
+        let Some(chain) = &self.chain else {
+            return false;
+        };
+        // Pull the content data into owned locals so the `&self.chain` borrow is
+        // released before the loop mutates `self.colonists` (disjoint fields, but
+        // the borrow checker needs the chain borrow gone first).
+        let mill_recipe = chain.content.mill_recipe().clone();
+        let bake_recipe = chain.content.bake_recipe().clone();
+        let grain = chain.content.grain();
+        let flour = chain.content.flour();
+        let bread = chain.content.bread();
+        let operating_cost = chain.operating_cost;
+        let tick = self.society.tick.0;
+        let mut changed = false;
+
+        for slot in 0..self.colonists.len() {
+            let colonist = &self.colonists[slot];
+            if !colonist.alive {
+                continue;
+            }
+            // Only latent colonists re-appraise; a `None` latent (gatherer,
+            // consumer, or seeded G3a producer) keeps its vocation untouched.
+            let Some(latent) = colonist.latent else {
+                continue;
+            };
+            let (recipe, output_price, input_price, adopted) = match latent {
+                RecipeId::Mill => (
+                    &mill_recipe,
+                    self.society.realized_price(flour),
+                    self.society.realized_price(grain),
+                    Vocation::Miller,
+                ),
+                RecipeId::Bake => (
+                    &bake_recipe,
+                    self.society.realized_price(bread),
+                    self.society.realized_price(flour),
+                    Vocation::Baker,
+                ),
+                // No other recipe is a latent specialty (set only at generation).
+                _ => continue,
+            };
+            let id = colonist.id;
+            let pays = {
+                let agent = self
+                    .society
+                    .agents
+                    .get(id)
+                    .expect("living colonist resolves in the arena");
+                recipe_adoption_pays(
+                    agent,
+                    recipe,
+                    output_price,
+                    input_price,
+                    tick,
+                    operating_cost,
+                )
+            };
+            let next = if pays { adopted } else { Vocation::Unassigned };
+            if self.colonists[slot].vocation != next {
+                self.colonists[slot].vocation = next;
+                changed = true;
+            }
+        }
+        changed
     }
 
     fn slot_for_id(&self, id: AgentId) -> Option<usize> {
@@ -1456,8 +1817,33 @@ impl Settlement {
         out.extend_from_slice(&self.carry_cap.to_le_bytes());
         out.extend_from_slice(&self.exchange.0.to_le_bytes());
         push_dynamics_bytes(&mut out, &self.dynamics);
+        // The role-choice phase (G3b) acts only on a latent pool; a settlement with
+        // none (a plain config or a seeded G3a chain) runs it as a no-op. So the
+        // role-choice-only knobs below extend the digest only when a latent pool is
+        // present — without one they cannot steer a future tick, and including them
+        // would make behaviour-identical states digest differently.
+        let has_latent_pool = self
+            .colonists
+            .iter()
+            .any(|colonist| colonist.latent.is_some());
         if let Some(chain) = &self.chain {
             out.extend_from_slice(&chain.throughput.to_le_bytes());
+            // The G3b operating cost steers nothing but the role-choice appraisal, so
+            // it is part of the future-behaviour identity only when a latent pool can
+            // run that appraisal. Without one (a seeded G3a chain) two settlements
+            // differing only in it behave identically, so it is omitted — keeping the
+            // tripwire's "byte-identical iff future behaviour identical" contract
+            // honest rather than splitting equivalent seeded chains apart.
+            if has_latent_pool {
+                out.extend_from_slice(&chain.operating_cost.to_le_bytes());
+            }
+            // The staple mapping steers the next needs/scale phase for *any* chain,
+            // role-choice or not, so it is included whenever a chain is active. The
+            // G3b no-spread control shares the emergent config's physical state but
+            // maps hunger to FOOD instead of bread, and that divergence must show.
+            out.extend_from_slice(&self.known.hunger.0.to_le_bytes());
+            out.extend_from_slice(&self.known.warmth.0.to_le_bytes());
+            out.extend_from_slice(&self.known.savings.0.to_le_bytes());
             let entries = chain.content.good_entries();
             out.extend_from_slice(&(entries.len() as u32).to_le_bytes());
             for (name, id) in entries {
@@ -1535,9 +1921,9 @@ impl Settlement {
             out.extend_from_slice(&colonist.id.0.to_le_bytes());
             out.push(u8::from(colonist.alive));
             // The vocation tag (Consumer=0, Gatherer=1 — exactly G2b's
-            // `u8::from(== Gatherer)` — plus Miller=2, Baker=3). Pre-G3a
-            // settlements only ever emit 0/1, so every G2b/G2c digest is
-            // byte-identical; the producers extend the space.
+            // `u8::from(== Gatherer)` — plus Miller=2, Baker=3, and the G3b
+            // Unassigned=4). Pre-G3a settlements only ever emit 0/1, so every
+            // G2b/G2c digest is byte-identical; the producers extend the space.
             out.push(colonist.vocation.tag());
             out.extend_from_slice(&colonist.need.hunger.to_le_bytes());
             out.extend_from_slice(&colonist.need.warmth.to_le_bytes());
@@ -1553,6 +1939,19 @@ impl Settlement {
                     out.extend_from_slice(&node.0.to_le_bytes());
                 }
                 None => out.push(0),
+            }
+            if has_latent_pool {
+                // The latent specialty (G3b) steers each tick's role-choice
+                // re-appraisal, so it is part of the future-behavior identity. This
+                // block is omitted entirely when no latent pool exists, preserving
+                // the pre-G3b canonical layout for plain and seeded-only configs.
+                match colonist.latent {
+                    Some(recipe) => {
+                        out.push(1);
+                        push_recipe_id_bytes(&mut out, recipe);
+                    }
+                    None => out.push(0),
+                }
             }
         }
 
@@ -1600,15 +1999,31 @@ fn build_agent(
     culture: &CultureParams,
     known: &KnownGoods,
     vocation: Vocation,
+    latent: Option<RecipeId>,
     config: &SettlementConfig,
 ) -> Agent {
     let mut stock = Stock::new(NET.0);
     let gold = match &config.chain {
-        // ---- G3a chain endowments: bread is the staple everyone eats, WOOD the
-        // warmth battery. Producers also hold their durable tool and an input
-        // buffer so production fires before the market routes the first input.
+        // ---- Chain endowments. The staple everyone eats is bread (G3a / the G3b
+        // emergent config) or seeded FOOD (the no-spread control, where bread
+        // demand is absent); WOOD is the warmth battery. Producers — seeded (G3a) or
+        // latent (G3b, starting `Unassigned`) — also hold their durable tool and an
+        // input buffer so production can fire before the market routes the first
+        // input, plus a flour bootstrap stock for a latent miller so the first
+        // adopted baker has flour to buy (the chain prices itself bottom-up).
         Some(chain) => {
-            stock.add(chain.content.bread(), chain.bread_buffer);
+            let staple = if chain.bread_is_staple {
+                chain.content.bread()
+            } else {
+                FOOD
+            };
+            // Consumers carry a smaller staple buffer (so they buy early, pricing
+            // the staple); everyone else carries the surplus buffer.
+            let staple_buffer = match vocation {
+                Vocation::Consumer => chain.consumer_staple_buffer,
+                _ => chain.bread_buffer,
+            };
+            stock.add(staple, staple_buffer);
             stock.add(WOOD, chain.wood_buffer);
             match vocation {
                 Vocation::Consumer => config.starting_gold_consumer,
@@ -1623,9 +2038,29 @@ fn build_agent(
                     stock.add(chain.content.flour(), chain.baker_flour_buffer);
                     chain.producer_gold
                 }
+                // A latent producer (G3b) holds the tool + input it would run with,
+                // ready to mill/bake the moment its appraisal adopts the vocation. A
+                // latent miller also holds a flour stock to sell, so the first
+                // adopted baker's flour bid finds a seller and flour realizes a price
+                // (which is what then lets a latent miller see the milling spread).
+                Vocation::Unassigned => {
+                    match latent {
+                        Some(RecipeId::Mill) => {
+                            stock.add(chain.content.mill(), 1);
+                            stock.add(chain.content.grain(), chain.miller_grain_buffer);
+                            stock.add(chain.content.flour(), chain.latent_flour_seed);
+                        }
+                        Some(RecipeId::Bake) => {
+                            stock.add(chain.content.oven(), 1);
+                            stock.add(chain.content.flour(), chain.baker_flour_buffer);
+                        }
+                        _ => {}
+                    }
+                    chain.producer_gold
+                }
             }
         }
-        // ---- G2b endowments (unchanged; producers never occur without a chain).
+        // ---- G2b endowments (unchanged; chain vocations never occur without a chain).
         None => {
             let (gold, food, wood) = match vocation {
                 Vocation::Gatherer => (
@@ -1638,8 +2073,8 @@ fn build_agent(
                     config.consumer_food_buffer,
                     config.consumer_wood_endowment,
                 ),
-                Vocation::Miller | Vocation::Baker => {
-                    unreachable!("producer vocations require a production chain config")
+                Vocation::Miller | Vocation::Baker | Vocation::Unassigned => {
+                    unreachable!("chain vocations require a production chain config")
                 }
             };
             stock.add(FOOD, food);
@@ -1659,35 +2094,195 @@ fn build_agent(
     }
 }
 
-/// Extend a producer's regenerated need scale with its two production wants
-/// (G3a). Pure and deterministic; a no-op for a non-producer vocation.
+/// The G3b **ordinal role-choice appraisal**: would `agent` adopt the vocation that
+/// runs `recipe`, given the realized prices it can observe?
 ///
-/// - a **tool anchor**: a top-ranked `Next` want for the durable tool the
+/// This is entrepreneurship the praxeology-honest way — it reuses econ's M2.5
+/// [`appraise_project_bundle_for_money`] (the same machinery the lab's planner uses
+/// to appraise a borrow-build-sell project) rather than computing a scalar profit.
+/// It frames running the recipe once as a project bundle:
+///
+/// - **expected revenue** = the realized `output_price` × the recipe's output yield
+///   — the gold the produced good would sell for. If the output has *no* realized
+///   price (`output_price` is `None`), the colonist cannot observe a sale and
+///   declines: a good with no market has no spread. This is the gate the no-spread
+///   control trips — remove the demand that prices the output and no role forms.
+/// - **present advance** (the cost) = the realized `input_price` × the input qty
+///   (the grain/flour it would *acquire*, valued at `0` until that good prices) plus
+///   `operating_cost` (the labor-leisure + tool cost a yield-multiplying recipe must
+///   still clear, so a 3× yield is not free).
+///
+/// The input is *acquired* (bought via the market), not required on hand — the
+/// decision is whether the spread pays, so a producer adopts and then buys its
+/// input each tick, and reverts when the spread (output price minus input+operating
+/// cost) no longer clears, not merely when it momentarily runs dry. Roles track the
+/// spread.
+///
+/// `appraise_project_bundle_for_money` then returns `Some` iff that revenue−cost
+/// spread newly provisions a future-gold (savings) want on the agent's own value
+/// scale without breaking a higher-ranked want — a strictly ordinal test, decided
+/// on the agent's scale, never by a profit threshold. `true` here means *adopt*.
+///
+/// Pure and deterministic (no RNG, integer state); the role-choice phase calls it
+/// once per latent colonist per tick, and the acceptance suite calls it directly to
+/// pin the adopt/decline boundary (test 4) and the spread-collapse reversion (test 5).
+pub fn recipe_adoption_pays(
+    agent: &Agent,
+    recipe: &Recipe,
+    output_price: Option<Gold>,
+    input_price: Option<Gold>,
+    tick: u64,
+    operating_cost: u64,
+) -> bool {
+    assert!(operating_cost >= 1, "operating_cost must be at least 1");
+    // No observable sale price for the output → no spread to appraise → decline.
+    let Some(output_price) = output_price else {
+        return false;
+    };
+    // The input is what the producer must acquire to run the recipe. The reused G3a
+    // `Recipe` carries at most one input (`input_good: Option<(GoodId, u32)>`), so the
+    // appraisal weighs a single input cost basis — the chain recipes (Mill, Bake) each
+    // have exactly one. An input-less recipe (`None`) is NOT special-cased away: its
+    // input qty is simply zero, so the appraisal reduces to the output spread against
+    // the operating cost alone. Mill/Bake always carry an input, so their appraisal is
+    // byte-identical; this only generalizes an input-less recipe rather than declining
+    // it outright.
+    let input_qty = recipe.input_good.map_or(0, |(_input_good, qty)| qty);
+
+    let expected_revenue = output_price.0.saturating_mul(u64::from(recipe.output_qty));
+    let input_cost = input_price
+        .map_or(0, |price| price.0)
+        .saturating_mul(u64::from(input_qty));
+    // The operating cost is required to be ≥ 1 by config, so the present advance
+    // is never zero and a flat output price cannot clear it on yield alone.
+    let present_advance = input_cost.saturating_add(operating_cost);
+
+    // The future-gold want the project must provision sits at the agent's own
+    // savings horizon; target the soonest such horizon so the want qualifies
+    // (`later >= loan_horizon`). No savings want → nothing to provision → decline.
+    let Some(loan_horizon) = soonest_savings_horizon(&agent.scale) else {
+        return false;
+    };
+    // `econ` rejects `candidate.owner == AgentId(0)` as an invalid project-candidate
+    // sentinel (bundle.rs), so the first colonist (id 0) needs a non-zero label to
+    // appraise the same ordinal bundle as everyone else. Using `AgentId(1)` is safe
+    // even when a real `AgentId(1)` exists: the owner id is stamped ONLY onto the two
+    // hypothetical contracts the appraisal builds in-memory for this one call (the
+    // imagined receivable/payable in `bundle_accepts_due`), and the provisioning math
+    // those feed reads only their `(due_tick, remaining_due)` amounts, never the
+    // borrower id and never a global claim registry (agio.rs). This wrapper passes the
+    // real agent's own `receivables`/`payables` as empty (`&[]`), so no other agent's
+    // claims are in scope to collide with. The owner is a per-call label, not a key.
+    let appraisal_owner = if agent.id == AgentId(0) {
+        AgentId(1)
+    } else {
+        agent.id
+    };
+    let candidate = ProjectBundleCandidate {
+        owner: appraisal_owner,
+        line: ProjectLineId(0),
+        present_advance: Gold(present_advance),
+        expected_revenue: Gold(expected_revenue),
+        input_cost_basis: Gold(input_cost),
+        required_labor: recipe.labor,
+        // Production + sale resolve in the near term; the loan (the imagined
+        // working-capital advance) is repaid by the savings horizon.
+        project_period: 1,
+        loan_horizon,
+        // The input is *acquired* (its cost is in `present_advance`), not required on
+        // hand — an empty bundle so the decision is the spread, not current stock.
+        input_goods: Vec::new(),
+    };
+    let endowment = ProjectBundleEndowment {
+        scale: &agent.scale,
+        stock: &agent.stock,
+        gold: agent.gold,
+        receivables: &[],
+        payables: &[],
+        tick: Tick(tick),
+    };
+    appraise_project_bundle_for_money(&endowment, &candidate, ProjectPlanId(0), GOLD).is_some()
+}
+
+/// The soonest `Later` horizon at which `scale` holds a savings (GOLD) want — the
+/// loan horizon the role-choice appraisal targets so that want qualifies as the
+/// future-gold want the project bundle must newly provision. `None` if the colonist
+/// has no savings want (a present-biased colonist that never appraises a vocation).
+///
+/// Only `Horizon::Later` wants are considered, and that is the appraisal's own
+/// requirement, not an incidental coupling to how scales are generated:
+/// `appraise_project_bundle_for_money` can ONLY ever provision a future-money want at
+/// `Horizon::Later(later)` with `later >= loan_horizon` (bundle.rs). A `Now`/`Next`
+/// GOLD want is immediate liquidity, never the future provisioning a project bundle
+/// targets — so even if a scale ever carried one, this appraisal could not satisfy it,
+/// and targeting it would only produce a guaranteed decline. Filtering to `Later` is
+/// therefore correct by construction.
+fn soonest_savings_horizon(scale: &[Want]) -> Option<u32> {
+    scale
+        .iter()
+        .filter_map(|want| match (want.kind, want.horizon) {
+            (WantKind::Good(GOLD), Horizon::Later(later)) => Some(u32::from(later)),
+            _ => None,
+        })
+        .min()
+}
+
+/// The `(tool, input_good)` a chain vocation produces with, if any: a Miller (or a
+/// latent miller) runs the mill (grain → flour); a Baker (or latent baker) the oven
+/// (flour → bread). `None` for a gatherer/consumer. This keys
+/// [`producer_scale_extension`] so a latent G3b producer reserves its capital just
+/// like a seeded/adopted one — the only difference between latent and active is
+/// whether [`Settlement::run_production`] runs its recipe.
+fn production_specialty(
+    vocation: Vocation,
+    latent: Option<RecipeId>,
+    content: &ContentSet,
+) -> Option<(GoodId, GoodId)> {
+    let recipe = match vocation {
+        Vocation::Miller => Some(RecipeId::Mill),
+        Vocation::Baker => Some(RecipeId::Bake),
+        Vocation::Unassigned => latent,
+        Vocation::Gatherer | Vocation::Consumer => None,
+    }?;
+    match recipe {
+        RecipeId::Mill => Some((content.mill(), content.grain())),
+        RecipeId::Bake => Some((content.oven(), content.flour())),
+        _ => None,
+    }
+}
+
+/// Extend a producer's regenerated need scale with its production wants. Pure and
+/// deterministic; applied to a seeded producer (G3a), an adopted G3b producer, and
+/// a latent G3b producer alike (keyed by [`production_specialty`]) — but the input
+/// wants are gated by `input_wants`, which distinguishes the two G3b states.
+///
+/// - a **tool anchor** (always): a top-ranked `Next` want for the durable tool the
 ///   producer holds (a mill / an oven). Because the producer holds the tool, the
 ///   want is always provisioned (it posts no bid), and a sale would un-provision
 ///   a want ranked above any gold it could gain — so the producer never sells its
-///   capital. Tools stay durable.
-/// - **input wants**: `throughput` unit `Next` wants for the good the producer
-///   transforms (grain for a miller, flour for a baker), placed *below* every
-///   current survival-good want (eat and warm first), then before the lower
-///   remainder of the regenerated scale. If a patient, low-need colonist ranks a
-///   savings want above a current bread/wood unit, that generated priority is
-///   preserved rather than letting recipe inputs jump ahead of survival goods.
-///   Unit wants so each is providable by one market buy; their count is the
-///   input buffer the producer aims to keep on hand. `Next` (not `Now`) so the
-///   input is reserved for the recipe, never eaten.
+///   capital, whether it is actively producing or merely latent. Tools stay durable.
+/// - **input wants** (`input_wants` of them, `0` for a latent producer): unit `Next`
+///   wants for the good the producer transforms (grain for a miller, flour for a
+///   baker), placed *below* every current survival-good want (eat and warm first),
+///   then before the lower remainder of the regenerated scale. If a patient,
+///   low-need colonist ranks a savings want above a current bread/wood unit, that
+///   generated priority is preserved rather than letting recipe inputs jump ahead of
+///   survival goods. Unit wants so each is providable by one market buy. `Next` (not
+///   `Now`) so the input is reserved for the recipe, never eaten.
+///
+/// Only an **active** producer (one that has adopted the vocation and will run the
+/// recipe this tick) bids for input, so it gets `input_wants = throughput`. A
+/// **latent** producer (`Unassigned`) gets `input_wants = 0`: it holds its tool but
+/// posts no input bid, so it creates no autonomous demand for the intermediate good.
+/// That is load-bearing for the no-spread control — without it, latent producers
+/// would price the intermediate good among themselves and roles would form with no
+/// downstream demand, defeating the falsification.
 fn producer_scale_extension(
     scale: &mut Vec<Want>,
-    vocation: Vocation,
-    content: &ContentSet,
-    throughput: u32,
+    tool: GoodId,
+    input_good: GoodId,
+    input_wants: u32,
 ) {
-    let (tool, input_good) = match vocation {
-        Vocation::Miller => (content.mill(), content.grain()),
-        Vocation::Baker => (content.oven(), content.flour()),
-        Vocation::Gatherer | Vocation::Consumer => return,
-    };
-
     // Input wants sit after every present good want (bread/wood in the chain).
     // Savings can legitimately interleave above low-urgency present wants for a
     // patient colonist; using the first `Later` slot would put recipe inputs
@@ -1704,7 +2299,7 @@ fn producer_scale_extension(
                 .position(|want| matches!(want.horizon, Horizon::Later(_)))
         })
         .unwrap_or(scale.len());
-    let input_wants = throughput.max(1) as usize;
+    let input_wants = input_wants as usize;
     let mut base = std::mem::take(scale);
     scale.reserve(base.len() + input_wants + 1);
 
@@ -1985,5 +2580,264 @@ mod tests {
         assert_eq!(report.transferred_of(WOOD), 0);
         assert_eq!(s.world().total_goods_of(WOOD), 0);
         assert!(report.conserves(), "first tick broke conservation");
+    }
+
+    #[test]
+    fn emergent_config_seeds_a_latent_pool_not_seeded_roles() {
+        // G3b: the emergent config hand-places NO producer; instead it seeds a pool
+        // of `Unassigned` colonists carrying a latent recipe (and the tool for it),
+        // following the gatherers/consumers in id order.
+        let config = SettlementConfig::emergent_chain();
+        let s = Settlement::generate(1, &config);
+        let content = s.content().expect("emergent config has chain content");
+
+        let (mut latent_millers, mut latent_bakers) = (0, 0);
+        for colonist in &s.colonists {
+            match colonist.latent {
+                Some(RecipeId::Mill) => {
+                    assert_eq!(colonist.vocation, Vocation::Unassigned);
+                    // A latent miller holds its mill (latent capital) — never seeded
+                    // as an active producer.
+                    let stock = &s.society.agents.get(colonist.id).unwrap().stock;
+                    assert_eq!(stock.get(content.mill()), 1, "latent miller holds a mill");
+                    latent_millers += 1;
+                }
+                Some(RecipeId::Bake) => {
+                    assert_eq!(colonist.vocation, Vocation::Unassigned);
+                    let stock = &s.society.agents.get(colonist.id).unwrap().stock;
+                    assert_eq!(stock.get(content.oven()), 1, "latent baker holds an oven");
+                    latent_bakers += 1;
+                }
+                Some(_) => panic!("only the chain recipes are latent specialties"),
+                None => assert_ne!(
+                    colonist.vocation,
+                    Vocation::Unassigned,
+                    "a non-latent colonist is never Unassigned"
+                ),
+            }
+        }
+        assert!(
+            latent_millers > 0 && latent_bakers > 0,
+            "both latent stages seeded"
+        );
+        // No producer role is hand-placed at generation.
+        assert_eq!(s.vocation_count(Vocation::Miller), 0);
+        assert_eq!(s.vocation_count(Vocation::Baker), 0);
+    }
+
+    #[test]
+    fn canonical_bytes_include_operating_cost_and_latent() {
+        // Two emergent configs differing only in the operating cost must digest
+        // differently — it steers the role-choice appraisal, so it is part of the
+        // settlement's future-behaviour identity (the determinism tripwire stays
+        // honest for non-equivalent chain configs).
+        let base = SettlementConfig::emergent_chain();
+        let mut dearer = SettlementConfig::emergent_chain();
+        dearer.chain.as_mut().expect("chain").operating_cost += 1;
+        let base = Settlement::generate(7, &base);
+        let dearer = Settlement::generate(7, &dearer);
+        assert_ne!(
+            base.canonical_bytes(),
+            dearer.canonical_bytes(),
+            "operating cost must be part of the chain config identity"
+        );
+    }
+
+    #[test]
+    fn seeded_chain_digest_ignores_unused_operating_cost() {
+        // A seeded G3a chain has no latent pool, so role-choice is a no-op and the
+        // operating cost can never steer a future tick. Two such chains differing
+        // only in it behave identically, so they must digest identically — the
+        // determinism tripwire's "byte-identical iff future behaviour identical"
+        // contract. (Contrast `canonical_bytes_include_operating_cost_and_latent`,
+        // where a latent pool makes the same knob load-bearing.)
+        let base = SettlementConfig::grain_flour_bread_chain();
+        assert_eq!(
+            base.chain.as_ref().expect("chain").latent_millers,
+            0,
+            "the seeded G3a chain must have no latent pool for this contract"
+        );
+        let mut dearer = SettlementConfig::grain_flour_bread_chain();
+        dearer.chain.as_mut().expect("chain").operating_cost += 1;
+        let base = Settlement::generate(7, &base);
+        let dearer = Settlement::generate(7, &dearer);
+        assert_eq!(
+            base.canonical_bytes(),
+            dearer.canonical_bytes(),
+            "an operating cost no latent pool can read must not split the digest"
+        );
+    }
+
+    #[test]
+    fn canonical_bytes_include_staple_mapping() {
+        // Same physical generated state, different need→good mapping: future scale
+        // regeneration will diverge, so the canonical bytes must diverge too.
+        let config = SettlementConfig::emergent_chain();
+        let a = Settlement::generate(7, &config);
+        let mut b = Settlement::generate(7, &config);
+        b.known.hunger = FOOD;
+
+        assert_ne!(
+            a.canonical_bytes(),
+            b.canonical_bytes(),
+            "the staple mapping must be part of the chain config identity"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "operating_cost must be at least 1")]
+    fn generate_rejects_zero_chain_operating_cost() {
+        let mut config = SettlementConfig::emergent_chain();
+        config.chain.as_mut().expect("chain").operating_cost = 0;
+        let _ = Settlement::generate(7, &config);
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds the sanity bound")]
+    fn generate_rejects_absurd_chain_throughput() {
+        // An unbounded throughput would let a config append arbitrarily many input
+        // wants to every producer's value scale (an OOM at the extreme); generation
+        // rejects it at the seam, like a zero operating cost.
+        let mut config = SettlementConfig::emergent_chain();
+        config.chain.as_mut().expect("chain").throughput = MAX_CHAIN_THROUGHPUT + 1;
+        let _ = Settlement::generate(7, &config);
+    }
+
+    #[test]
+    fn role_choice_uses_fresh_scales_and_refreshes_changed_roles() {
+        let mut s = Settlement::generate(2_026, &SettlementConfig::emergent_chain());
+
+        let mut miller_slot = None;
+        for _ in 0..12 {
+            s.econ_tick();
+            miller_slot =
+                (0..s.population()).find(|&index| s.vocation_of(index) == Some(Vocation::Miller));
+            if miller_slot.is_some() {
+                break;
+            }
+        }
+        let miller_slot = miller_slot.expect("milling emerged");
+        let miller_id = s.colonist_id(miller_slot).expect("miller id");
+        let content = s.content().expect("chain").clone();
+
+        // Poison the live econ scale. If role-choice reads the stale scale before
+        // SCALES, the miller sees no future savings want and incorrectly reverts.
+        s.society
+            .agents
+            .get_mut(miller_id)
+            .expect("miller resolves")
+            .scale
+            .clear();
+
+        s.econ_tick();
+
+        assert_eq!(
+            s.vocation_of(miller_slot),
+            Some(Vocation::Miller),
+            "role-choice used the stale pre-regeneration scale"
+        );
+        let scale = &s
+            .society
+            .agents
+            .get(miller_id)
+            .expect("miller resolves")
+            .scale;
+        assert!(
+            scale
+                .iter()
+                .any(|want| want.kind == WantKind::Good(content.grain())),
+            "the post-adoption scale must be refreshed with active input wants"
+        );
+    }
+
+    #[test]
+    fn latent_producer_anchors_its_tool_but_posts_no_input_bid() {
+        // A latent (Unassigned) producer reserves only its tool — it never bids for
+        // its recipe input, so it creates no autonomous demand for the intermediate
+        // good (the property the no-spread control relies on). An adopted producer
+        // does bid for input.
+        let content = ContentSet::grain_flour_bread();
+        let mut latent = vec![Want {
+            kind: WantKind::Good(content.bread()),
+            horizon: Horizon::Now,
+            qty: 1,
+            satisfied: false,
+        }];
+        producer_scale_extension(&mut latent, content.mill(), content.grain(), 0);
+        assert!(
+            !latent
+                .iter()
+                .any(|w| w.kind == WantKind::Good(content.grain())),
+            "a latent producer must not post an input want"
+        );
+        assert!(
+            latent
+                .iter()
+                .any(|w| w.kind == WantKind::Good(content.mill())),
+            "a latent producer still anchors its tool (never sells its capital)"
+        );
+
+        let mut active = vec![Want {
+            kind: WantKind::Good(content.bread()),
+            horizon: Horizon::Now,
+            qty: 1,
+            satisfied: false,
+        }];
+        producer_scale_extension(&mut active, content.mill(), content.grain(), 2);
+        assert_eq!(
+            active
+                .iter()
+                .filter(|w| w.kind == WantKind::Good(content.grain()))
+                .count(),
+            2,
+            "an active producer bids throughput units of its input"
+        );
+    }
+
+    #[test]
+    fn recipe_adoption_pays_appraises_an_input_less_recipe() {
+        // The reused G3a `Recipe` carries at most one input; an input-less recipe
+        // (`input_good: None`) is NOT special-cased away — its input cost is zero, so
+        // the appraisal reduces to the output spread against the operating cost alone.
+        // The chain recipes (Mill, Bake) always carry an input, so this only
+        // generalizes the input-less case rather than declining it outright.
+        let content = ContentSet::grain_flour_bread();
+        let free_recipe = Recipe {
+            id: RecipeId::GatherFood,
+            name: "Forage",
+            labor: 1,
+            input_good: None,
+            required_tool: None,
+            output_good: content.bread(),
+            output_qty: 2,
+            enabled: true,
+        };
+        let mut patient = Agent {
+            id: AgentId(1),
+            scale: vec![Want {
+                kind: WantKind::Good(GOLD),
+                horizon: Horizon::Later(4),
+                qty: 1,
+                satisfied: false,
+            }],
+            stock: Stock::new(NET.0),
+            gold: Gold(0),
+            labor_capacity: 0,
+            hunger_deficit: 0,
+            roles: vec![Role::Household],
+            expect: Vec::new(),
+        };
+        // An observable output price with an unprovisioned savings want and no input
+        // cost still appraises (the input-less recipe is weighed, not auto-declined).
+        assert!(
+            recipe_adoption_pays(&patient, &free_recipe, Some(Gold(5)), None, 0, 1),
+            "an input-less recipe with an output spread must still be appraised"
+        );
+        // Still ordinal: a gold-sated colonist declines the same spread.
+        patient.gold = Gold(100);
+        assert!(
+            !recipe_adoption_pays(&patient, &free_recipe, Some(Gold(5)), None, 0, 1),
+            "a sated colonist declines even an input-less spread (ordinal, not scalar)"
+        );
     }
 }

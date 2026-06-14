@@ -59,6 +59,16 @@ const SCENARIOS: &[Scenario] = &[
         description: "the G3a grain→flour→bread production chain (seeded millers + bakers)",
         build: SettlementConfig::grain_flour_bread_chain,
     },
+    Scenario {
+        name: "emergent-chain",
+        description: "G3b: roles emerge — latent millers/bakers adopt from the price spread",
+        build: SettlementConfig::emergent_chain,
+    },
+    Scenario {
+        name: "emergent-chain-control",
+        description: "G3b no-spread control: bread demand removed, so no roles form",
+        build: SettlementConfig::emergent_chain_control,
+    },
 ];
 
 fn build_near() -> SettlementConfig {

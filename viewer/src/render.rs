@@ -127,6 +127,14 @@ pub struct DashboardRow {
     pub econ_tick: u64,
     pub living_gatherers: usize,
     pub living_consumers: usize,
+    /// Living colonists currently of each producer role — for a chain settlement
+    /// only (rendered behind `show_production`). In the G3b emergent scenario these
+    /// rise from zero as latent colonists *adopt* milling/baking from the spread (and
+    /// `living_unassigned` is the latent pool not yet producing); in G3a they are the
+    /// constant seeded roster.
+    pub living_millers: usize,
+    pub living_bakers: usize,
+    pub living_unassigned: usize,
     /// Realized price per tracked good (good order), `None` if none cleared yet.
     pub prices: Vec<Option<Gold>>,
     /// Units transferred world→econ this tick, per tracked good.
@@ -189,22 +197,24 @@ pub fn format_dashboard(
     // good. Chain settlements include the production receipt columns too; plain
     // G2 dashboards keep their original shape.
     let show_production = settlement.content().is_some();
-    let mut headers: Vec<String> = vec![
-        "tick".to_string(),
-        "gath".to_string(),
-        "cons".to_string(),
-        "consv".to_string(),
-        "hung.max".to_string(),
-        "hung.mean".to_string(),
-    ];
-    let mut aligns: Vec<Align> = vec![
-        Align::Right,
-        Align::Right,
-        Align::Right,
-        Align::Left,
-        Align::Right,
-        Align::Right,
-    ];
+    let mut headers: Vec<String> = vec!["tick".to_string(), "gath".to_string(), "cons".to_string()];
+    let mut aligns: Vec<Align> = vec![Align::Right, Align::Right, Align::Right];
+    // Chain settlements show the producer roles (G3b: the count that has *adopted*
+    // milling/baking from the spread, plus the latent pool still idle).
+    if show_production {
+        headers.push("mill".to_string());
+        headers.push("bake".to_string());
+        headers.push("idle".to_string());
+        aligns.push(Align::Right);
+        aligns.push(Align::Right);
+        aligns.push(Align::Right);
+    }
+    headers.push("consv".to_string());
+    headers.push("hung.max".to_string());
+    headers.push("hung.mean".to_string());
+    aligns.push(Align::Left);
+    aligns.push(Align::Right);
+    aligns.push(Align::Right);
     for name in &good_names {
         headers.push(format!("{name}.px"));
         headers.push(format!("{name}.xfer"));
@@ -240,10 +250,15 @@ pub fn format_dashboard(
             row.econ_tick.to_string(),
             row.living_gatherers.to_string(),
             row.living_consumers.to_string(),
-            consv,
-            hunger_max,
-            mean_one_decimal(row.hunger_sum, row.living),
         ];
+        if show_production {
+            cells.push(row.living_millers.to_string());
+            cells.push(row.living_bakers.to_string());
+            cells.push(row.living_unassigned.to_string());
+        }
+        cells.push(consv);
+        cells.push(hunger_max);
+        cells.push(mean_one_decimal(row.hunger_sum, row.living));
         for good_index in 0..goods.len() {
             cells.push(price_cell(row.prices[good_index]));
             cells.push(row.transferred[good_index].to_string());
@@ -486,6 +501,8 @@ pub fn format_colonist(
         Some(sim::Vocation::Consumer) => "consumer",
         Some(sim::Vocation::Miller) => "miller",
         Some(sim::Vocation::Baker) => "baker",
+        // G3b: a latent producer that has not (yet) adopted from the spread.
+        Some(sim::Vocation::Unassigned) => "unassigned",
         None => "unknown",
     };
     let alive = settlement.is_alive(index);

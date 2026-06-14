@@ -848,3 +848,109 @@ is what makes the producer mix arise rather than be hand-set.
 - No balance tuning or asserted magnitudes beyond the chain operating and
   conserving; no `HashMap` in logic; nothing drawn in the loops. Determinism is
   inherited (`chain_run_is_deterministic` is the tripwire).
+
+## G3b — production roles emerge from price spreads (`docs/impl-g3b.md`)
+
+G3a operated the grain→flour→bread chain with **seeded** producer roles. G3b removes
+the seeding: a colonist **chooses** to mill or bake because the realized price spread
+pays. This is the emergence half of G3, and — like the lab's money-emergence work —
+it proves the **mechanism on a curated config with a falsification control**, not a
+multi-seed robustness gate (that study is deferred, below).
+
+### 1. Occupation is **ordinal entrepreneurship**, reusing M2.5 — no `econ` edit
+
+The single load-bearing divergence from G3a is *how a vocation is acquired*. A pool
+of colonists hold latent production capital (a `mill` or an `oven`) in a new
+`sim::Vocation::Unassigned`, and a new **role-choice phase** in the settlement tick
+(after needs and fresh scale regeneration; changed roles trigger a second pure
+scale refresh so this tick's market sees active/latent production wants) re-appraises
+each of them. The appraisal is **ordinal and reused**:
+
+- `sim::recipe_adoption_pays` frames *running the recipe once* as a project bundle —
+  sell the output at its realized price for a near-term receivable, costing the
+  realized input price plus a per-operation operating cost — and delegates to
+  `econ::bundle::appraise_project_bundle_for_money`, the **M2.5 entrepreneurial
+  appraisal the lab planner already uses**. It returns `Some` iff that revenue−cost
+  spread newly provisions a **future-gold (savings) want on the colonist's own value
+  scale** without breaking a higher-ranked want.
+- So there is **no scalar profit-maximizer** and **no argmax across colonists**: the
+  decision is decided on the agent's own scale, and each unassigned colonist decides
+  for itself in `AgentId` order — the §pillar-1 "colonists act" rule applied to
+  occupation. A gold-sated colonist (every savings want already provisioned) declines
+  even a fat spread, the ordinal tell a scalar maximizer would fail
+  (`role_choice_is_ordinal_not_scalar`).
+- **`econ` is reused with no edit.** `appraise_project_bundle_for_money` and the
+  direct-recipe executor already existed (M2.5 / G3a); G3b only calls them from
+  `sim`. The praxeology source-gate still holds — the decision reads only per-good
+  **realized prices** (not an aggregate) and the agent's own scale.
+
+A role is **sticky while the spread holds and reverts when it collapses**, because
+the same appraisal runs every tick: drop the output price (or raise the input cost)
+below the operating floor and the next re-appraisal returns `false`, so the colonist
+reverts to `Unassigned` and stops producing (`role_reverts_when_spread_collapses`).
+
+### 2. Latent vs active: a latent producer prices nothing on its own
+
+A latent (`Unassigned`) producer anchors **only its tool** (a top-ranked want, so it
+never sells its capital) and posts **no input bid**; only an *active* producer —
+adopted G3b or seeded G3a — bids `throughput` units of its input each tick. This
+latent/active split is load-bearing for the control: without it, latent producers
+would bid for the intermediate good among themselves and price it with no downstream
+demand, so roles would form even with the spread removed — defeating the
+falsification. With it, an intermediate good prices **only** once a downstream
+producer (pulled in by end demand) bids for it.
+
+### 3. The chain prices itself bottom-up; the control removes the demand
+
+Bread is the staple in the `emergent-chain` config, so consumer demand prices bread;
+a latent baker adopts on the bread−flour spread and starts buying flour, which prices
+flour, which lets a latent miller adopt on the flour−grain spread, which prices grain.
+No producer is hand-placed — the producer mix *arises* from the spread
+(`roles_emerge_from_the_spread`).
+
+The one bootstrap stock is explicit: latent millers start with a small flour holding
+that they do not reserve as an input, so the first baker can buy flour and create the
+middle-good price signal. That is not role seeding — the holder remains
+`Unassigned` until its own ordinal appraisal sees the flour−grain spread.
+
+The **no-spread control** (`emergent-chain-control`) is the same world with the
+spread removed: the grain node and latent pool stay fixed, but hunger maps to seeded
+FOOD buffers instead of bread (`bread_is_staple = false`), so **bread is never
+demanded**, never prices, and the *same* role-choice appraisal — over the *same*
+latent pool — forms **no** roles and produces no flour or bread
+(`no_spread_no_roles`). Demand is the causal difference between the twins; it is the
+spread that makes the roles.
+
+Conservation is unchanged from G3a (a recipe is still a conserved conversion); role
+adoption/reversion mutates only vocations, never the physical ledger, so
+`emergent_chain_conserves` holds exactly under emergent roles. The six econ goldens
+stay byte-identical and every G1/G2*/G3a test is green (`econ_unchanged`). The
+canonical digest grows only where future behaviour can: the `Unassigned` vocation tag
+(`4`) appears only for a colonist that is actually unassigned, so every pre-chain
+(G2b/G2c) digest is byte-identical; the latent-recipe bytes and the operating cost —
+the role-choice-only knobs — extend the digest only for a settlement that *has* a
+latent pool, so a seeded G3a chain (which has none, and runs role-choice as a no-op)
+is unmoved by them, and two seeded chains differing only in operating cost still
+digest equal (`seeded_chain_digest_ignores_unused_operating_cost`). The staple-mapping
+triple is the one exception: because the staple steers the needs/scale phase for *any*
+chain, role-choice or not, it is appended for every chain settlement, which does shift
+a seeded G3a chain's absolute bytes — but no G3a test pins absolute `sim` bytes (only
+same-seed determinism and conservation are compared), so all G3a tests stay green and
+the tripwire is exact. Determinism is inherited: nothing is drawn in the role-choice
+or production phases (`emergent_chain_run_is_deterministic` is the tripwire).
+
+### Excluded from G3b (deferred)
+
+- **No multi-seed robustness study.** G3b proves the mechanism + falsification
+  control on a curated config; the "≥X% of N random worlds" gate (analogous to
+  M18/M19 for money emergence) is deferred to a possible **G3-study** milestone. The
+  acceptance suite deliberately asserts no price magnitudes and chases no robustness
+  percentage — role formation is a presence/sign claim.
+- **No scalar profit-maximization** (ordinal appraisal only) and **no new
+  `econ` recipe/market/appraisal logic** (reused) — G3b changes only *how* a vocation
+  is acquired, not the recipe execution or conservation (G3a, unchanged).
+- **No demography (G4)**; **no change to `econ` market behaviour** — the role-choice
+  reuses `econ`'s existing `appraise_project_bundle_for_money` with no `econ` edit,
+  and the `Unassigned` vocation, the emergent configs, and the opt-in chain field
+  live in `sim`.
+- No `HashMap` in logic; nothing drawn in the loops; no asserted price magnitudes.

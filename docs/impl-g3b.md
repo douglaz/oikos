@@ -43,6 +43,11 @@ goldens.
    nothing in the loops, ordinal choice (no scalar maximize), `BTreeMap`/`Vec`,
    no `HashMap`. The praxeology gate (decisions never read an aggregate; choice
    is ordinal) is load-bearing.
+6. **Bootstrap stock is not role seeding.** The emergent config may seed a small
+   flour stock on latent millers so the first baker has flour to buy and the
+   middle good can realize a price; the holder remains `Unassigned` until its
+   own ordinal appraisal sees the flour−grain spread. This is a mechanism
+   bridge for price discovery, not a hand-placed production vocation.
 
 ## The role-choice mechanism (the milestone)
 

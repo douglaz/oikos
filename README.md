@@ -18,7 +18,7 @@ policy by causal necessity.
 econ/    the economy engine — fork of praxsim-core (pure std, deterministic)
 life/    needs → wants: colonist value scales generated from need state (G1)
 world/   the spatial substrate — grid, terrain, nodes, stockpiles, movement (G2a)
-sim/     the two-rate orchestrator (G2b) + region (G2c) + content & production chain (G3a)
+sim/     the two-rate orchestrator (G2b) + region (G2c) + content & production chain (G3a) + role emergence (G3b)
 viewer/  the oikos binary — read-only debug viewer + price/colonist inspectors (G2d)
 docs/    the game spec and design documents
 ```
@@ -450,6 +450,99 @@ production/wear (tools are durable, pre-placed). See `sim/tests/g3a_production.r
 and `docs/engine-divergence.md` (the G3a entry: production via the reused
 `Recipe`, content as a code-level `ContentSet`, conservation under transformation).
 
+## Status: G3b (production roles emerge from price spreads) — complete
+
+G3a proved the grain→flour→bread chain *operates* with **seeded** producer roles.
+G3b removes the seeding: a colonist **chooses** to mill or bake because the realized
+price spread pays — entrepreneurship the praxeology-honest way. This is the
+emergence half of G3. It proves the **mechanism on a curated config with a
+falsification control** (mirroring how the lab proved money emergence): the chain
+forms from prices when a profitable spread exists, and does **not** form when the
+spread is removed. The multi-seed robustness *study* (the "≥X% of N random worlds"
+gate, analogous to M18/M19 for money) is **deferred** to a possible G3-study
+milestone; G3b is the mechanism + control, not the robustness number.
+
+The choice is **ordinal and reused, not rebuilt**. A pool of colonists hold latent
+production capital — a `mill` or an `oven` — and start in a new `Unassigned`
+vocation. Each econ tick, after needs advance and scales regenerate, every such colonist
+**re-appraises** the recipe it could run:
+
+- **`recipe_adoption_pays`** (in `sim`) frames running the recipe once as a project
+  bundle — sell its output at the realized output price for a future receivable,
+  costing the realized input price plus a per-operation operating cost — and hands
+  it to `econ`'s M2.5 **`appraise_project_bundle_for_money`** (the same machinery the
+  lab planner uses). That returns `Some` iff the revenue−cost spread newly provisions
+  a **future-gold (savings) want on the colonist's own value scale** without breaking
+  a higher want. There is **no scalar profit number** and **no argmax across
+  colonists**: each decides for itself, in id order — the §pillar-1 "colonists act"
+  rule applied to occupation. `econ` is reused unchanged; G3b adds no `econ` edit.
+- **Adopt / revert from the spread.** A positive spread (and an unprovisioned savings
+  want) makes the colonist adopt `Miller`/`Baker`; re-running the appraisal every tick
+  makes the role *sticky while the spread holds* and *revert when it collapses*.
+- **The chain prices itself bottom-up.** Bread is the staple, so consumer demand
+  prices bread; that lets a latent baker adopt on the bread−flour spread and start
+  buying flour, which prices flour, which lets a latent miller adopt on the
+  flour−grain spread, which prices grain. No role is hand-placed — the producer mix
+  *arises*.
+- **The bootstrap is mechanical, not a seeded role.** Latent millers start with a
+  small flour stock they do not reserve, so the first baker has flour to buy and the
+  middle good can realize a price. They still start `Unassigned`; the stock is only
+  the price-discovery bridge that lets the ordinal spread appraisal fire.
+
+It proves, the DoD:
+
+1. **Roles emerge from the spread.** In `emergent-chain` (no seeded roles), over a
+   run at least one colonist adopts milling and at least one adopts baking, and bread
+   is produced and consumed — the chain forms from prices alone.
+2. **No spread, no roles (the falsification control).** In `emergent-chain-control`
+   the spread is removed (the grain node and latent pool stay fixed, but bread is
+   not the staple, so bread demand is absent and bread/flour never realize a price).
+   The **same** role-choice appraisal, run over the **same** latent pool every tick,
+   adopts no production vocation and produces no flour or bread. Paired with (1)
+   this shows the spread is what creates the roles.
+
+`econ` market behaviour is **unchanged**: the six econ goldens stay byte-identical
+and every G1/G2*/G3a test is green — the role-choice reuses `econ`'s existing
+`appraise_project_bundle_for_money` (no `econ` edit), the `Unassigned` vocation and
+the emergent configs live in `sim`, and the chain field stays opt-in. The praxeology
+source-gate (no decision module reads an aggregate; the choice is ordinal) still
+holds — the decision reads only per-good realized prices and the colonist's own
+scale. Determinism is inherited: integer state, the `Rng` consumed only at
+generation, **nothing drawn in the role-choice or production phases**, id-ordered,
+`BTreeMap`/`Vec` only.
+
+```bash
+cargo test -p sim                                   # incl. sim/tests/g3b_emergence.rs
+cargo run -p viewer -- run emergent-chain --ticks 40          # roles adopt + the three prices
+cargo run -p viewer -- run emergent-chain-control --ticks 40  # no spread → no roles
+```
+
+The emergence window is the **first ~20 ticks**: roles adopt and the chain prices
+itself bottom-up there. Long-run colony *viability* (keeping every mouth fed over a
+full horizon) is **G4 demography work**, not G3b — a 40-tick `emergent-chain` run
+shows the roles form and operate, then the curated buffers drain and some colonists
+starve, which is why the milestone asserts role formation and conservation, never
+survival. Use a shorter `--ticks` to watch just the emergence if the late-run
+drain distracts.
+
+G3b:
+
+- [x] ordinal role-choice in `sim`: unassigned colonists appraise and adopt
+      miller/baker vocations from realized spreads (reusing `econ`'s
+      `appraise_project_bundle_for_money` — no scalar optimizer, no `econ` edit), with
+      a per-tick re-appraisal so a role reverts when its spread collapses
+- [x] an `emergent-chain` config (no seeded producer roles) and a `flat-prices`/
+      no-bread-demand control config (the falsification twin)
+- [x] a read-only `emergent-chain` viewer scenario showing roles adopted + the three
+      prices (and `emergent-chain-control`)
+- [x] acceptance suite (`sim/tests/g3b_emergence.rs`: the seven acceptance tests) +
+      per-module unit tests; README + divergence-log updates
+
+Deferred (noted in `docs/engine-divergence.md`): the **multi-seed robustness study**
+(the "≥X% of N worlds" gate) — G3b is the mechanism + control, not the robustness
+number. See `sim/tests/g3b_emergence.rs` and `docs/engine-divergence.md` (the G3b
+entry: ordinal entrepreneurship for occupation; robustness study deferred).
+
 ## Build and test
 
 ```bash
@@ -467,6 +560,8 @@ cargo run -p viewer -- help          # usage
 cargo run -p viewer -- scenarios     # list the scenarios
 cargo run -p viewer -- run viable --ticks 20
 cargo run -p viewer -- run chain --ticks 30           # G3a: grain→flour→bread chain
+cargo run -p viewer -- run emergent-chain --ticks 40          # G3b: roles emerge from the spread
+cargo run -p viewer -- run emergent-chain-control --ticks 40  # G3b: no spread → no roles
 cargo run -p viewer -- run region --ticks 30          # G2c: two settlements + a caravan
 cargo run -p viewer -- run region-control --ticks 30  # the no-caravan twin
 ```

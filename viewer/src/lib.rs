@@ -139,6 +139,9 @@ pub fn run_dashboard(scenario: &str, ticks: u64, seed: u64) -> Result<String, St
             econ_tick: report.econ_tick,
             living_gatherers: settlement.living_count(Vocation::Gatherer),
             living_consumers: settlement.living_count(Vocation::Consumer),
+            living_millers: settlement.living_count(Vocation::Miller),
+            living_bakers: settlement.living_count(Vocation::Baker),
+            living_unassigned: settlement.living_count(Vocation::Unassigned),
             prices,
             transferred,
             produced,
@@ -162,29 +165,33 @@ pub fn run_dashboard(scenario: &str, ticks: u64, seed: u64) -> Result<String, St
     ))
 }
 
-/// The dashboard's population line: the total plus the per-vocation roster. A
-/// plain settlement reads `"12 (8 gatherers, 4 consumers)"` exactly as G2b; a
-/// chain settlement appends its seeded producers (`", 3 millers, 5 bakers"`).
+/// The dashboard's population line: the **living** total plus the living
+/// per-vocation roster. A plain settlement with no deaths reads
+/// `"12 (8 gatherers, 4 consumers)"` exactly as G2b; a chain settlement appends its
+/// active producer roles and unassigned latent pool. The leading number is
+/// [`Settlement::living_total`] (not the total-ever [`Settlement::population`]) so it
+/// always equals the sum of the per-vocation counts below — once a colonist starves
+/// (e.g. `starved-hauler`, or a long `emergent-chain` run) a total-ever prefix would
+/// no longer add up to the living sub-counts.
 fn population_label(settlement: &Settlement) -> String {
     let mut parts = vec![
-        format!(
-            "{} gatherers",
-            settlement.vocation_count(Vocation::Gatherer)
-        ),
-        format!(
-            "{} consumers",
-            settlement.vocation_count(Vocation::Consumer)
-        ),
+        format!("{} gatherers", settlement.living_count(Vocation::Gatherer)),
+        format!("{} consumers", settlement.living_count(Vocation::Consumer)),
     ];
-    let millers = settlement.vocation_count(Vocation::Miller);
+    let millers = settlement.living_count(Vocation::Miller);
     if millers > 0 {
         parts.push(format!("{millers} millers"));
     }
-    let bakers = settlement.vocation_count(Vocation::Baker);
+    let bakers = settlement.living_count(Vocation::Baker);
     if bakers > 0 {
         parts.push(format!("{bakers} bakers"));
     }
-    format!("{} ({})", settlement.population(), parts.join(", "))
+    // G3b: the latent pool not (currently) producing.
+    let unassigned = settlement.living_count(Vocation::Unassigned);
+    if unassigned > 0 {
+        parts.push(format!("{unassigned} unassigned"));
+    }
+    format!("{} ({})", settlement.living_total(), parts.join(", "))
 }
 
 /// Advance a two-settlement [`Region`] for `ticks` econ ticks from `seed`,

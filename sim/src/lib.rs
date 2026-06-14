@@ -64,8 +64,8 @@ pub mod settlement;
 pub use content::ContentSet;
 pub use region::{Region, RegionConfig, RegionTickReport, Route};
 pub use settlement::{
-    ChainConfig, EconTickReport, NodeSpec, Settlement, SettlementConfig, TraderEndowment, Vocation,
-    ECON_TICKS_PER_YEAR, FAST_TICKS_PER_ECON_TICK,
+    recipe_adoption_pays, ChainConfig, EconTickReport, NodeSpec, Settlement, SettlementConfig,
+    TraderEndowment, Vocation, ECON_TICKS_PER_YEAR, FAST_TICKS_PER_ECON_TICK,
 };
 
 /// Read-only re-exports of the `econ`/`life` types that make up the settlement's
