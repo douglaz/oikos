@@ -587,7 +587,8 @@ G4a:
 - [x] external-cache reconciliation: `agent_order` rebuild + `forget_agent` on the
       spot/labor/loan/barter reservations, dead-owned project-funding plans frozen,
       and empty M3 `MoneySystem` entries dropped
-- [x] `World::withdraw_agent_carry` — drain a dead colonist's world escrow to the commons
+- [x] `World::withdraw_agent_carry` + `World::remove_agent` — drain a dead colonist's
+      world escrow to the commons, then remove the spatial agent from future world ticks
 - [x] `sim`/`life` estate-to-commons (a conserved sink in `Settlement` and `Camp`),
       folded into `total_gold` / `whole_system_total`
 - [x] G1 tombstone tests migrated to real-removal semantics (slot freed and reusable)
@@ -598,6 +599,83 @@ Deferred (noted in `docs/engine-divergence.md`): births/aging/households/inherit
 and estate-to-heirs (G4b), non-empty M3 ledger estate routing (G4b), and the
 population-stability study (G4b/later). See `sim/tests/g4a_death.rs` and
 `docs/engine-divergence.md` (the G4a entry).
+
+## Status: G4b (births, aging, households, culture inheritance) — complete
+
+G4a gave the engine real death (runtime removal + estate + cache reconciliation).
+**G4b completes demography**: colonists **age**, **die of old age** (via G4a's removal
+path), are **born** into **households** when the household can support them, and
+children **inherit** their parents' `CultureParams` with bounded mutation — so time
+preference drifts under selection across generations. This is the first milestone where
+the population is not a fixed cast.
+
+The insert-side mirror of G4a lands first: `Society::add_agent(Agent) -> AgentId` inserts
+into the arena (a fresh or reused slot with a fresh generation) and **reconciles every
+external cache** — it appends the new agent's position to `agent_order` and materializes
+its spot-reservation slot — so the newborn participates from the next econ tick. It is
+the exact mirror of `remove_agent`: a missed cache would be a birth that can't trade.
+Like removal, no lab scenario adds an agent at runtime, so the path is game-only and the
+**six econ goldens stay byte-identical by construction**.
+
+The `sim` `Settlement` gains an opt-in `demography` overlay (`None` for every pre-G4b
+config, so they are byte-identical; `Some` activates the mechanism), seeded as
+**households** of non-spatial householders:
+
+- **aging + old-age death** — each colonist tracks an age (econ ticks) and a
+  deterministic lifespan derived from a stable per-colonist seed (`onset + hash(seed) %
+  span`); when `age ≥ lifespan` it dies through `remove_agent`. No `Rng` in the loop.
+- **births** — a household that clears a need-security margin (its members fed) under a
+  size cap and past a birth interval bears one child: a new colonist with an
+  inherited+**mutated** culture (a hash of the parent's culture and the colony's
+  monotonic birth sequence — no `Rng`), endowed by a **conserved transfer** debited from
+  a parent's unreserved balances (a FOOD buffer plus a best-effort gold gift), added via
+  `add_agent`.
+- **estate → heirs** — a death's estate routes to a living household member (the heir);
+  if the lineage is extinct it falls back to the **commons** (G4a's sink). Conserved
+  either way — nothing is created or destroyed, only relocated within the whole system.
+- Demography state is digest-honest: when the overlay is present, canonical bytes include
+  both future-steering config knobs (provisions, birth cadence, endowments, mutation/lifespan
+  parameters) and runtime counters. The no-overlay path omits all of it and remains
+  byte-identical to pre-G4b runs.
+- Long-run cleanup is live-roster based: dead colonists remain inspectable by generation
+  index, but hot phases iterate a compact live-slot roster and id lookup is by stable
+  generational `AgentId`; spatial dead agents are removed from `World` after estate drain.
+- **culture inheritance** is the selection substrate: `CultureParams::inherit` nudges
+  each field by a bounded, deterministic delta, and the heritable ordinal patience bias
+  does its work through `regenerate_scale` (G1) — there is no scalar fitness function.
+
+The curated `lineages` config seeds a **patient** household and a **present-biased** one,
+identical but for time preference and a wood provision. Both are food-secure (so deaths
+are old age, not starvation) and both reproduce; the patient lineage sells its wood
+surplus and **out-accumulates** the present-biased one, which spends its gold down buying
+warmth (sign only — the multi-seed selection study is deferred). The `oikos run lineages`
+dashboard surfaces population, cumulative births/old-age deaths, and per-lineage wealth
+tick over tick. Scope is the **mechanism + curated demonstrations**: population sustains
+in a band (births ≈ deaths, no extinction or blowup), inheritance mutates
+deterministically, estates route to heirs, and a patient lineage out-saves an impatient
+one — not a tuned population number or a statistical selection gate.
+
+G4b:
+
+- [x] `Society::add_agent(Agent) -> AgentId` (insert + agent_order/reservation
+      reconciliation), the insert-side mirror of `remove_agent`; goldens byte-identical
+- [x] `CultureParams::inherit` — bounded, deterministic culture mutation (hash of parent
+      params + birth sequence, no `Rng`)
+- [x] `sim` demography overlay: aging + old-age death (via `remove_agent`), households,
+      births (via `add_agent`, debiting unreserved parent balances), estate-to-heirs
+      (commons fallback), a headroom-clamped renewable provision as a conserved source; the
+      `lineages` curated config
+- [x] viewer: the `lineages` scenario + population/births/deaths/per-lineage-wealth
+      surfacing
+- [x] acceptance suite (`sim/tests/g4b_demography.rs`: the eight acceptance tests plus
+      digest-regression coverage) + econ `add_agent` and `life` `inherit` unit tests;
+      README + divergence-log updates
+
+Deferred (noted in `docs/engine-divergence.md`): the **multi-seed stability/selection
+studies** (the game-spec's 100-seed stability band and a multi-seed selection study,
+analogous to M18/M19 for money emergence), inter-settlement migration, and non-empty M3
+ledger estate routing. See `sim/tests/g4b_demography.rs` and `docs/engine-divergence.md`
+(the G4b entry).
 
 ## Build and test
 
@@ -621,4 +699,5 @@ cargo run -p viewer -- run emergent-chain-control --ticks 40  # G3b: no spread �
 cargo run -p viewer -- run region --ticks 30          # G2c: two settlements + a caravan
 cargo run -p viewer -- run region-control --ticks 30  # the no-caravan twin
 cargo run -p viewer -- run starved-hauler --ticks 20  # G4a: a colonist dies, the run continues
+cargo run -p viewer -- run lineages --ticks 200        # G4b: two households age, reproduce, inherit
 ```

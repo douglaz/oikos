@@ -30,6 +30,6 @@ pub mod need;
 pub mod scale;
 
 pub use camp::{Camp, CampEnv, Vocation, TICKS_PER_YEAR};
-pub use culture::CultureParams;
+pub use culture::{deterministic_mix64, CultureParams};
 pub use need::{NeedDynamics, NeedIntake, NeedState};
 pub use scale::{regenerate_scale, KnownGoods};

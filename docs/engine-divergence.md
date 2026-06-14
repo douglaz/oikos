@@ -1068,3 +1068,143 @@ the forward tripwire.
   estate is G4b.
 - **No population-stability study** (G4b/later).
 - No `HashMap` in logic; deterministic reconciliation; nothing drawn in the loops.
+
+---
+
+## G4b — births, aging, households, culture inheritance (`docs/impl-g4b.md`)
+
+G4a gave the engine real death (runtime removal + estate + cache reconciliation). G4b
+completes demography: colonists **age**, **die of old age** (reusing G4a's removal),
+are **born** into **households** when the household can support them, and children
+**inherit** their parents' `CultureParams` with bounded mutation — so time preference
+drifts under selection across generations. This is the first milestone where the
+population is not a fixed cast.
+
+### 1. `Society::add_agent` — the insert-side mirror of `remove_agent`
+
+The G0b divergence log parked one half of demography's engine integration: a
+`Society`-level **insert** that reconciles the external caches. G4a did the removal half;
+G4b adds the insert half. `Society::add_agent(Agent) -> AgentId`:
+
+1. **INSERT** into the arena (`AgentArena::insert`) — appends the agent at the end of the
+   dense live slice and assigns its id (a reused numeric index carries the bumped
+   generation the free recorded, so a stale ancestor id stays `None`). No existing agent
+   relocates, so no other cache's positions shift.
+2. **RECONCILE `agent_order`** — append the newborn's (last) position, so the per-tick
+   activation loop iterates it (`reconcile_agent_order_after_insert`). Without this the
+   newborn is never activated and posts no orders.
+3. **EXTEND the reservation caches** — materialize the new id's empty spot-reservation
+   slot (`Reservations::ensure_agent_slot`, the mirror of removal's `forget_agent`). The
+   id-keyed labor/loan reservation tables hold only nonzero entries by invariant, and a
+   newborn reserves nothing, so they need no eager slot — the lazy `reserve_order` adds
+   one on the first order.
+
+It is the exact mirror of `remove_agent`: a missed cache would be a birth that can't
+trade. Determinism is preserved — the caller supplies a fully formed `Agent`, and any
+culture mutation or birth decision is made deterministically upstream, never by an `Rng`
+in this path. `add_agent` moves no gold or goods of its own; it installs the agent the
+caller already endowed (a conserved transfer), so it mints nothing.
+
+**Goldens safe by construction.** No lab scenario adds an agent at runtime, so the
+insert + reconcile path is game-only; the no-add hot path is structurally unchanged. The
+six econ conformance goldens and every G1/G2*/G3*/G4a digest test stay byte-identical
+(econ `add_agent` unit tests pin the reconciliation directly; the round-trip
+`add_agent` → `remove_agent` restores `agent_order` and the live count exactly).
+
+### 2. Deterministic mutation without an `Rng` in the loop
+
+Births happen **mid-run**, but the loop draws no `Rng` — the load-bearing determinism
+rule. Everything that could be random is a pure function of a stable seed:
+
+- **culture inheritance** — `CultureParams::inherit(birth_seq, max_delta)` nudges each
+  field by a bounded delta derived from a SplitMix64 hash of `(field, birth_seq, salt)`;
+  same `(parent, birth_seq, max_delta)` → the same child.
+- **old-age lifespan + founder starting age** — `onset + hash(seed) % span` years and a
+  staggered start age from the same seed, so colonists age into old age at different
+  ticks (no synchronized die-off) with no per-tick draw.
+- **per-colonist seeds** — founders hash `(world_seed, founder_index)`, children hash
+  `(parent_seed, birth_seq)`; generation consumes the `Rng` only for culture (as G1–G3
+  already do), so demography adds **no** `Rng` draw at all.
+
+The colony's monotonic `birth_seq` counter gives each birth a unique, stable sequence
+number; reused arena slots get fresh children, so a sequence number is never reissued.
+A run with births and deaths is byte-identical across invocations (tick-by-tick digest
+lockstep is the tripwire).
+
+### 3. Households, the conserved provision, and estate-to-heirs
+
+The `sim` `Settlement` gains an opt-in `demography: Option<DemographyConfig>` overlay
+(`None` for every pre-G4b config, so the canonical layout and every golden are
+byte-identical; the demography fields and runtime are omitted from the digest entirely
+when absent). When present, the canonical bytes include both future-steering demography
+config (household provisions/endowments, birth cadence, lifespan/mutation knobs, caps) and
+runtime counters, so two states that would diverge on the next birth/provision/death tick
+do not digest equal. The overlay seeds **households** of **non-spatial** householders —
+they have an econ agent but **no world agent**, so the fast loop, the deposit transfer,
+and the world↔econ id coincidence the gatherers rely on are untouched, and a dead
+householder's world-escrow drain is a no-op.
+
+- **Provision (a conserved source).** Each living member is fed a renewable FOOD/WOOD
+  provision (the household hearth) delivered straight into econ stock, recorded in a new
+  `EconTickReport.endowment` term. The credited amount is clamped to the recipient's stock
+  headroom and only the actually credited units are reported, so saturated public configs
+  cannot claim source units that never entered stock. Conservation generalizes to
+  `after = before + regen + endowment + produced − consumed_as_input − consumed`;
+  `endowment` is empty without a demography overlay, so the identity reduces to the
+  G2b/G3a form and every existing conservation test is unchanged. `Region::econ_tick`
+  rolls the per-settlement `endowment` into the region-wide receipt the same way it
+  already rolls `regen`/`produced`, so a `Region` composed from demography settlements
+  conserves too (empty, and so inert, for a plain region). The provision keeps members
+  fed, so deaths are **old age**, not starvation.
+- **Births/deaths move goods *within* the whole system.** A birth's endowment is a
+  transfer debited from a parent's **unreserved** balances (FOOD required free after spot/
+  barter reservations; gold best-effort, clamped after spot/loan/labor/project
+  reservations — so a gold-poor lineage still reproduces without overcommitting live
+  quotes). A death's estate routes to a living household **heir** (the first survivor in
+  colonist-insertion order), or falls back to the **commons** if the lineage is extinct
+  (G4a's sink). Both are conserved transfers within `[society ∪ commons]`, so they need no
+  conservation term and whole-system totals hold across every birth and death (the closed
+  gold balance is invariant).
+- **Long-run cleanup.** Dead colonists remain in the generation-indexed public roster for
+  inspection, but hot tick phases iterate a compact live-slot roster and resolve
+  consumption/labor logs through a stable `AgentId -> slot` map. Spatial deaths drain carry
+  and then remove the world agent, so `World::tick` scales with live spatial agents, not
+  historical deaths. No `HashMap` is used.
+- **Phase order.** The econ tick gains, behind the overlay: aging + old-age death (after
+  the needs/starvation phase, reusing `remove_agent`), the provision (after scale
+  regeneration, before the market — mirroring `life::Camp`'s harvest), and births (after
+  the market, so a newborn first trades the *next* tick, and before the conservation
+  snapshot, so its transferred-in holdings balance the parent's debit).
+
+### 4. The `lineages` curated demonstration
+
+`SettlementConfig::lineages` seeds two households — a **patient** one (low time
+preference → a high saving target) and a **present-biased** one (high time preference →
+a small target) — identical but for time preference and a wood provision: the patient
+household gets a wood surplus it sells, the present-biased one buys wood for (non-lethal)
+warmth. Gold flows from the spenders to the savers, so the patient lineage
+**out-accumulates** the other (`patient_lineage_outaccumulates_impatient`, sign only).
+Both are food-secure, so the population **sustains in a band** — births ≈ old-age deaths,
+capped at `households × max_household_size`, neither extinct nor blowing up
+(`population_sustains_without_collapse`). Patience does its selection work through
+`regenerate_scale` (G1), **not** a scalar fitness function; reproduction is a threshold
+rule. The `oikos run lineages` dashboard surfaces population, cumulative births/old-age
+deaths, and per-lineage wealth tick over tick.
+
+### Excluded from G4b (deferred)
+
+- **No multi-seed stability or selection STUDY.** G4b proves the mechanism + curated
+  demonstrations on `lineages`; the game-spec's **100-seed stability band** and a
+  **multi-seed selection study** (analogous to M18/M19 for money emergence) are deferred
+  to a possible **G4-study** milestone. The acceptance suite asserts no tuned population
+  number and no statistical selection gate — the stability band and the selection result
+  are sign/smoke claims on a curated config.
+- **No inter-settlement migration** (later) — a household does not move between
+  settlements.
+- **No scalar reproduction optimization** — a threshold rule plus the heritable ordinal
+  patience bias, never a fitness function.
+- **No change to econ MARKET behaviour** — `add_agent` is additive and game-only, the six
+  goldens are byte-identical, and births/deaths are `sim`/`life`-only. **No non-empty M3
+  ledger estate routing** (the closed-GOLD M1 drivers keep no `MoneySystem`).
+- No `HashMap` in logic; nothing drawn in the loops (deterministic mutation); no asserted
+  magnitudes beyond the sign claims.

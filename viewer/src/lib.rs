@@ -135,6 +135,9 @@ pub fn run_dashboard(scenario: &str, ticks: u64, seed: u64) -> Result<String, St
             first_offending_good(&report, &goods)
         };
         let (hunger_max, hunger_sum, living) = living_hunger_stats(&settlement);
+        let lineage_stats = settlement.lineage_stats();
+        let lineage_living = lineage_stats.iter().map(|stats| stats.living).collect();
+        let lineage_gold = lineage_stats.iter().map(|stats| stats.gold).collect();
         rows.push(render::DashboardRow {
             econ_tick: report.econ_tick,
             living_gatherers: settlement.living_count(Vocation::Gatherer),
@@ -152,6 +155,10 @@ pub fn run_dashboard(scenario: &str, ticks: u64, seed: u64) -> Result<String, St
             hunger_max,
             hunger_sum,
             living,
+            births_total: settlement.births_total(),
+            old_age_deaths_total: settlement.old_age_deaths_total(),
+            lineage_living,
+            lineage_gold,
         });
     }
 
@@ -174,6 +181,19 @@ pub fn run_dashboard(scenario: &str, ticks: u64, seed: u64) -> Result<String, St
 /// (e.g. `starved-hauler`, or a long `emergent-chain` run) a total-ever prefix would
 /// no longer add up to the living sub-counts.
 fn population_label(settlement: &Settlement) -> String {
+    // A demography settlement (G4b) has no vocational division of labor — its colony
+    // is households (lineages), so the label is the living total broken down per
+    // lineage with that lineage's accumulated gold.
+    if settlement.is_demographic() {
+        let lineage_stats = settlement.lineage_stats();
+        let lineages: Vec<String> = (0..settlement.household_count())
+            .map(|h| {
+                let stats = lineage_stats.get(h).copied().unwrap_or_default();
+                format!("lineage {h}: {} alive, {} gold", stats.living, stats.gold)
+            })
+            .collect();
+        return format!("{} ({})", settlement.living_total(), lineages.join("; "));
+    }
     let mut parts = vec![
         format!("{} gatherers", settlement.living_count(Vocation::Gatherer)),
         format!("{} consumers", settlement.living_count(Vocation::Consumer)),
@@ -270,6 +290,7 @@ pub fn run_colonist(
     let (ticks, at_tick) = resolve_window(at_tick, ticks, DEFAULT_INSPECT_TICKS)?;
     let config = config_for(scenario)?;
     let mut settlement = Settlement::generate(seed, &config);
+    settlement.run(ticks);
     let population = settlement.population();
     if id >= population {
         return Err(format!(
@@ -277,7 +298,6 @@ pub fn run_colonist(
             population.saturating_sub(1)
         ));
     }
-    settlement.run(ticks);
     Ok(render::format_colonist(
         &settlement,
         scenario,
@@ -358,10 +378,11 @@ fn first_offending_good(report: &EconTickReport, goods: &[GoodId]) -> Option<Goo
         let before = i128::from(report.whole_system_before_of(good));
         let after = i128::from(report.whole_system_after_of(good));
         let regen = i128::from(report.regen_of(good));
+        let endowment = i128::from(report.endowment_of(good));
         let produced = i128::from(report.produced_of(good));
         let consumed_as_input = i128::from(report.consumed_as_input_of(good));
         let consumed = i128::from(report.consumed_of(good));
-        after != before + regen + produced - consumed_as_input - consumed
+        after != before + regen + endowment + produced - consumed_as_input - consumed
     })
 }
 

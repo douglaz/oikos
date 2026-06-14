@@ -8,7 +8,7 @@
 
 use std::fmt::Write as _;
 
-use sim::{Gold, GoodId, Horizon, Settlement, WantKind};
+use sim::{EstateDestination, Gold, GoodId, Horizon, Settlement, WantKind};
 
 use crate::scenarios::description_for;
 
@@ -153,6 +153,13 @@ pub struct DashboardRow {
     /// Sum of living colonists' hunger and the living count (for the mean).
     pub hunger_sum: u64,
     pub living: u64,
+    /// G4b demography surfacing (rendered behind `show_demography`): lifetime births
+    /// and old-age deaths so far, and the living count + accumulated gold of each
+    /// lineage. Empty / zero for a non-demography settlement.
+    pub births_total: u64,
+    pub old_age_deaths_total: u64,
+    pub lineage_living: Vec<usize>,
+    pub lineage_gold: Vec<u64>,
 }
 
 /// Format a fixed-point mean (one decimal) from an integer sum and count using
@@ -215,6 +222,25 @@ pub fn format_dashboard(
     aligns.push(Align::Left);
     aligns.push(Align::Right);
     aligns.push(Align::Right);
+    // G4b demography columns: total population, lifetime births and old-age deaths,
+    // and per-lineage living count + accumulated gold (the patient/present-biased
+    // wealth surfacing). Shown only for a demography settlement.
+    let show_demography = settlement.is_demographic();
+    let household_count = settlement.household_count();
+    if show_demography {
+        headers.push("pop".to_string());
+        headers.push("born".to_string());
+        headers.push("died".to_string());
+        aligns.push(Align::Right);
+        aligns.push(Align::Right);
+        aligns.push(Align::Right);
+        for h in 0..household_count {
+            headers.push(format!("L{h}.n"));
+            headers.push(format!("L{h}.gold"));
+            aligns.push(Align::Right);
+            aligns.push(Align::Right);
+        }
+    }
     for name in &good_names {
         headers.push(format!("{name}.px"));
         headers.push(format!("{name}.xfer"));
@@ -259,6 +285,15 @@ pub fn format_dashboard(
         cells.push(consv);
         cells.push(hunger_max);
         cells.push(mean_one_decimal(row.hunger_sum, row.living));
+        if show_demography {
+            cells.push(row.living.to_string());
+            cells.push(row.births_total.to_string());
+            cells.push(row.old_age_deaths_total.to_string());
+            for h in 0..household_count {
+                cells.push(row.lineage_living.get(h).copied().unwrap_or(0).to_string());
+                cells.push(row.lineage_gold.get(h).copied().unwrap_or(0).to_string());
+            }
+        }
         for good_index in 0..goods.len() {
             cells.push(price_cell(row.prices[good_index]));
             cells.push(row.transferred[good_index].to_string());
@@ -541,11 +576,24 @@ pub fn format_colonist(
         if alive {
             out.push_str("value scale: (empty)\n");
         } else {
-            // G4a real death: the colonist's arena slot is freed (its agent no
-            // longer resolves), and its estate has settled to the commons.
-            out.push_str(
-                "value scale: (none — colonist has died; estate settled to the commons)\n",
-            );
+            match settlement.estate_destination_of(index) {
+                Some(EstateDestination::Household { household, heir }) => {
+                    let _ = writeln!(
+                        out,
+                        "value scale: (none — colonist has died; estate settled to household {household} heirs via agent {heir})"
+                    );
+                }
+                Some(EstateDestination::Commons) => {
+                    out.push_str(
+                        "value scale: (none — colonist has died; estate settled to the commons)\n",
+                    );
+                }
+                None => {
+                    out.push_str(
+                        "value scale: (none — colonist has died; estate destination unavailable)\n",
+                    );
+                }
+            }
         }
         return out;
     }

@@ -293,6 +293,14 @@ impl MoneySystem {
         self.balance(agent).cloned()
     }
 
+    /// Ensure `agent` has a ledger row, initialized to an empty balance when it did
+    /// not already exist. Runtime insertion (`Society::add_agent`) uses this as the
+    /// ledger-side mirror of `forget_agent`: the new live id is represented in the
+    /// money system immediately, without minting any specie, fiat, or claims.
+    pub fn ensure_agent_balance(&mut self, agent: AgentId) {
+        self.ensure_balance(agent);
+    }
+
     pub fn public_fiat(&self, agent: AgentId) -> Gold {
         self.balance(agent)
             .map(|balance| balance.public_fiat)

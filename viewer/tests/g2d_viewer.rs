@@ -14,7 +14,7 @@
 //! proof is the workspace gate). They assert shape, exactness, and sign — never a
 //! pinned magnitude (the lab discipline).
 
-use sim::{Settlement, SettlementConfig, FOOD};
+use sim::{EstateDestination, Settlement, SettlementConfig, FOOD};
 
 /// Build the same settlement the viewer builds for `scenario`, advanced `ticks`
 /// econ ticks — so a test can compare the rendered text against the engine
@@ -185,6 +185,113 @@ fn chain_dashboard_shows_production_receipts() {
             .any(|row| row[bread_made].parse::<u64>().unwrap_or(0) > 0),
         "baking is hidden in the chain dashboard"
     );
+}
+
+#[test]
+fn lineages_dashboard_surfaces_demography() {
+    // The G4b demography dashboard surfaces population, births/deaths, and per-lineage
+    // wealth, and the patient lineage (L0) out-accumulates the present-biased one (L1).
+    let output = viewer::run_dashboard("lineages", 40, 7).expect("lineages dashboard");
+    let headers = table_headers(&output);
+
+    let born = headers
+        .iter()
+        .position(|h| h == "born")
+        .expect("a births column");
+    let died = headers
+        .iter()
+        .position(|h| h == "died")
+        .expect("an old-age deaths column");
+    let l0_gold = headers
+        .iter()
+        .position(|h| h == "L0.gold")
+        .expect("a patient-lineage gold column");
+    let l1_gold = headers
+        .iter()
+        .position(|h| h == "L1.gold")
+        .expect("a present-biased-lineage gold column");
+    let rows = table_rows(&output);
+
+    // Births and deaths accumulate over the run.
+    assert!(
+        rows.last().unwrap()[born].parse::<u64>().unwrap_or(0) > 0,
+        "the dashboard must surface births"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row[died].parse::<u64>().unwrap_or(0) > 0),
+        "the dashboard must surface old-age deaths"
+    );
+
+    // The selection result: by the end the patient lineage holds more gold than the
+    // present-biased one (sign only).
+    let last = rows.last().unwrap();
+    let patient = last[l0_gold].parse::<u64>().unwrap_or(0);
+    let impatient = last[l1_gold].parse::<u64>().unwrap_or(u64::MAX);
+    assert!(
+        patient > impatient,
+        "the patient lineage ({patient}) must out-accumulate the present-biased one ({impatient})"
+    );
+
+    // The per-lineage header line is present, and conservation holds every tick.
+    assert!(
+        output.contains("lineage 0:"),
+        "the header reports the lineages"
+    );
+    assert!(
+        !output.contains("VIOLATED"),
+        "a conserving scenario never prints VIOLATED"
+    );
+}
+
+#[test]
+fn lineages_colonist_inspector_can_show_newborn_after_run() {
+    let (seed, ticks, id) = (7u64, 40u64, 6usize);
+    let config = viewer::config_for("lineages").expect("lineages scenario");
+    let initial = Settlement::generate(seed, &config);
+    assert!(
+        id >= initial.population(),
+        "the regression id must be beyond the founder roster"
+    );
+    let settlement = build("lineages", seed, ticks);
+    assert!(
+        id < settlement.population(),
+        "a newborn exists after the run"
+    );
+    assert!(settlement.is_alive(id), "the inspected newborn is alive");
+
+    let output = viewer::run_colonist("lineages", id, None, Some(ticks), seed)
+        .expect("newborn colonist inspector runs");
+
+    assert!(output.contains("scenario \"lineages\""));
+    assert!(output.contains(&format!("colonist {id}")));
+    assert!(output.contains("consumer, ALIVE"));
+}
+
+#[test]
+fn lineages_colonist_inspector_reports_heir_routed_estate() {
+    let (seed, ticks, id) = (7u64, 100u64, 0usize);
+    let settlement = build("lineages", seed, ticks);
+    assert!(
+        !settlement.is_alive(id),
+        "the reviewed founder must be dead after the run"
+    );
+    assert!(matches!(
+        settlement.estate_destination_of(id),
+        Some(EstateDestination::Household { household: 0, .. })
+    ));
+    assert_eq!(
+        settlement.commons_gold().0,
+        0,
+        "the estate routed to a household heir, not the commons"
+    );
+
+    let output = viewer::run_colonist("lineages", id, None, Some(ticks), seed)
+        .expect("dead lineages colonist inspector runs");
+
+    assert!(output.contains("consumer, DEAD"));
+    assert!(output.contains("estate settled to household 0 heirs via agent"));
+    assert!(!output.contains("estate settled to the commons"));
 }
 
 // ---- 3. price → the trade tape -------------------------------------------

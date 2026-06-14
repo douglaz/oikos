@@ -394,6 +394,16 @@ impl World {
         Ok(id)
     }
 
+    /// Remove a spatial agent from the world, returning any carry it still held.
+    ///
+    /// This is an out-of-tick estate cleanup hook for the sim layer: callers must
+    /// settle the returned carry if it is non-empty. Removing an unknown id is a
+    /// no-op. No generation path calls it, so generated worlds and no-death runs are
+    /// byte-identical.
+    pub fn remove_agent(&mut self, id: AgentId) -> Option<BTreeMap<GoodId, u32>> {
+        self.agents.remove(&id).map(|agent| agent.carry)
+    }
+
     fn check_placement(&self, pos: Pos) -> Result<(), PlacementError> {
         if !self.grid.in_bounds(pos) {
             Err(PlacementError::OutOfBounds)
@@ -1043,6 +1053,29 @@ mod tests {
         assert_eq!(world.agent_carry(agent, FOOD), 0);
         assert_eq!(world.withdraw_agent_carry(AgentId(999), FOOD, 1), 0);
         assert_eq!(world.total_goods(), total_before - 6);
+    }
+
+    #[test]
+    fn remove_agent_returns_remaining_carry_and_forgets_agent() {
+        let mut world = open_world(3, 1);
+        let agent = world.add_agent(Pos::new(0, 0), 10, 5).unwrap();
+        let node = world
+            .add_node(ResourceNode::new(Pos::new(1, 0), FOOD, 6, 0, 6))
+            .unwrap();
+        world.assign_task(agent, Task::GoHarvest(node, 6));
+        world.tick();
+        let total_before = world.total_goods();
+
+        let carry = world.remove_agent(agent).expect("agent removes");
+        assert_eq!(carry.get(&FOOD), Some(&6));
+        assert_eq!(world.agent_status(agent), None);
+        assert_eq!(world.agent_carry(agent, FOOD), 0);
+        assert_eq!(
+            world.total_goods(),
+            total_before - 6,
+            "returned carry has relocated out of the world"
+        );
+        assert!(world.remove_agent(agent).is_none());
     }
 
     #[test]

@@ -3827,6 +3827,74 @@ impl Society {
         true
     }
 
+    /// Transfer **spendable** gold-denominated money between two live agents without
+    /// minting or burning. In closed-GOLD M1 this moves the raw `Agent.gold` field;
+    /// in M3 it delegates to the [`MoneySystem`] and reconciles the affected agent
+    /// caches. Emergent-money regimes reject the helper because `Agent.gold` is not
+    /// the circulating medium there.
+    ///
+    /// "Spendable" is load-bearing: the transfer refuses to move money that a resting
+    /// order, loan, labor quote, or project plan has already reserved, on **either**
+    /// the M3 or the closed-GOLD path. Moving reserved gold would leave the source
+    /// over-committed (`reserved_gold(from) > from.gold`), so a later clear or cancel
+    /// would operate on an order it can no longer fund. A self-transfer is a no-op and
+    /// needs no headroom.
+    pub fn transfer_gold(&mut self, from: AgentId, to: AgentId, amount: Gold) -> bool {
+        let Some(from_position) = self.agents.position_of(from) else {
+            return false;
+        };
+        let Some(to_position) = self.agents.position_of(to) else {
+            return false;
+        };
+        if self.dead_agents.binary_search(&from).is_ok()
+            || self.dead_agents.binary_search(&to).is_ok()
+        {
+            return false;
+        }
+        if amount == Gold::ZERO {
+            return true;
+        }
+        // Reservation guard (both regimes): never move gold already earmarked by a
+        // resting order / loan / labor quote / project plan. The closed-GOLD raw-balance
+        // check below and the M3 ledger's own spendable check are both blind to these
+        // Society-level reservations, so the helper enforces its "spendable" contract here.
+        if from != to && self.free_gold_after_all_reserves(from) < amount {
+            return false;
+        }
+
+        if let Some(money_system) = self.money_system.as_mut() {
+            if money_system.transfer_spendable(from, to, amount).is_err() {
+                return false;
+            }
+            let agents = self.agents.as_mut_slice();
+            money_system.reconcile_agent_cache_at(agents, from_position);
+            money_system.reconcile_agent_cache_at(agents, to_position);
+            return true;
+        }
+
+        if !self.uses_closed_gold_money() {
+            return false;
+        }
+        if from_position == to_position {
+            return self.agents[from_position].gold >= amount;
+        }
+
+        let from_gold = self.agents[from_position].gold;
+        if from_gold < amount {
+            return false;
+        }
+        let to_gold = self.agents[to_position].gold;
+        let Some(updated_to) = to_gold.checked_add(amount) else {
+            return false;
+        };
+        let updated_from = from_gold
+            .checked_sub(amount)
+            .expect("the balance was preflighted");
+        self.agents[from_position].gold = updated_from;
+        self.agents[to_position].gold = updated_to;
+        true
+    }
+
     fn record_consumption_log(&mut self, agent_index: usize, provisions: &TickProvisions) {
         let agent_id = self.agents[agent_index].id;
         // `provisions.allocated` is built index-parallel to `agent.scale`
@@ -3888,19 +3956,30 @@ impl Society {
     /// flag checked in each phase). It settles the **raw agent holdings** (the gold
     /// field + stock), the closed-GOLD M1 estate the `sim`/`life` drivers use;
     /// ledger-money (M3) estate routing is deferred (no lab path frees an M3 agent).
-    pub fn remove_agent(&mut self, agent: AgentId) -> Option<Estate> {
-        let position = self.agents.position_of(agent)?;
+    ///
+    /// Preflight for callers that need death bookkeeping to be transactional: `true`
+    /// means `remove_agent` can run without refusing a funded M3 ledger balance.
+    pub fn can_remove_agent(&self, agent: AgentId) -> bool {
+        if self.agents.position_of(agent).is_none() {
+            return false;
+        }
         if self.dead_agents.binary_search(&agent).is_ok() {
-            return None;
+            return false;
         }
         if let Some(balance) = self
             .money_system
             .as_ref()
             .and_then(|money_system| money_system.balance_snapshot(agent))
         {
-            if balance.spendable_total() != Gold::ZERO {
-                return None;
-            }
+            return balance.spendable_total() == Gold::ZERO;
+        }
+        true
+    }
+
+    pub fn remove_agent(&mut self, agent: AgentId) -> Option<Estate> {
+        let position = self.agents.position_of(agent)?;
+        if !self.can_remove_agent(agent) {
+            return None;
         }
 
         // 1. SETTLE the estate: extract gold + stock and quiet the agent. An empty
@@ -3989,6 +4068,86 @@ impl Society {
                 *position -= 1;
             }
         }
+    }
+
+    /// Real birth (G4b, game-spec §5.6): insert `agent` into the running society
+    /// and reconcile every external cache so it participates from the next econ
+    /// tick, returning its assigned [`AgentId`] (a fresh or reused arena slot with
+    /// a fresh generation). This is the exact insert-side **mirror** of
+    /// [`Society::remove_agent`]: where removal frees a slot and forgets the dead id
+    /// from every cache, birth inserts a slot and extends every cache for the new id.
+    ///
+    /// The reconciliation is the load-bearing work — a missed cache is a colonist
+    /// that cannot trade:
+    ///
+    /// 1. **INSERT** into the arena — [`AgentArena::insert`] appends the agent at the
+    ///    end of the dense live slice (a reused numeric index carries the bumped
+    ///    generation the free recorded, so a stale ancestor id stays `None`), and
+    ///    assigns the new id. Existing agents never relocate, so no other cache's
+    ///    positions shift.
+    /// 2. **RECONCILE `agent_order`** — append the new agent's (last) position, so the
+    ///    per-tick activation loop iterates it. Without this the newborn is never
+    ///    activated and posts no orders.
+    /// 3. **EXTEND the reservation/money caches** — materialize the new id's (empty)
+    ///    spot reservation slot via [`Reservations::ensure_agent_slot`], the mirror of
+    ///    the `forget_agent` removal does. Ledger-backed M3 societies also get an
+    ///    empty [`MoneySystem`] row for the new live id and reconcile `Agent.gold`
+    ///    from that ledger row. The id-keyed labor/loan reservation tables hold only
+    ///    nonzero entries by invariant, and a newborn reserves nothing, so they need
+    ///    no eager slot — the lazy `reserve_order` adds one on the agent's first order,
+    ///    which is the insert-side extension for those tables.
+    ///
+    /// Determinism: integer, order-stable, draws nothing (the caller supplies a fully
+    /// formed `Agent`; any culture mutation or birth decision is made deterministically
+    /// upstream, never by an `Rng` in this path). No lab scenario adds an agent at
+    /// runtime, so this whole path is game-only and the six econ goldens are
+    /// byte-identical by construction.
+    ///
+    /// Caller contract: the supplied `agent`'s `id` is ignored and overwritten by the
+    /// arena (the slot owns identity). A driver mirrors the new id in its own
+    /// per-colonist bookkeeping exactly as it mirrors removal. The agent's holdings
+    /// must be a conserved transfer the driver has already debited from elsewhere
+    /// (a household/commons), never a mint — `add_agent` moves no gold or goods of its
+    /// own; it only installs the agent the caller endowed. In M3, install the agent
+    /// with zero ledger money and then use [`Society::transfer_gold`] to move any
+    /// birth endowment from the parent/household.
+    pub fn add_agent(&mut self, agent: Agent) -> AgentId {
+        // 1. INSERT: the arena appends at the end of the live slice and assigns the id.
+        let id = self.agents.insert(agent);
+        let position = self
+            .agents
+            .position_of(id)
+            .expect("a just-inserted id resolves in the arena");
+
+        // 2. RECONCILE agent_order: the insert appended the agent, so its position is
+        // the new last slot — append it so the activation loop reaches the newborn.
+        self.reconcile_agent_order_after_insert(position);
+
+        // 3. EXTEND the reservation caches for the new id (the mirror of remove's
+        // forget_agent). The spot table keeps an id-keyed slot per live agent; seed an
+        // empty one now. The labor/loan tables are nonzero-only Vecs, so a newborn
+        // (which reserves nothing) needs no eager slot — its first order lazily adds it.
+        self.reservations.ensure_agent_slot(id);
+        if let Some(money_system) = self.money_system.as_mut() {
+            // M3 keeps money in the ledger, not in `Agent.gold`. Add an empty ledger
+            // row for the new live id and reconcile the cache; any birth endowment
+            // must arrive through `transfer_gold` after the caller has chosen the
+            // funding source.
+            money_system.ensure_agent_balance(id);
+            money_system.reconcile_agent_cache_at(self.agents.as_mut_slice(), position);
+        }
+
+        id
+    }
+
+    /// Append the freshly inserted agent's `position` to `agent_order` (G4b birth) —
+    /// the insert-side counterpart of [`Society::reconcile_agent_order_after_free`].
+    /// [`AgentArena::insert`] always appends at the end of the dense slice without
+    /// relocating any existing agent, so every existing `agent_order` entry stays
+    /// valid and the new agent's position is simply pushed (it activates last in the
+    /// tick, which is correct for a newborn). Deterministic: integer, draws nothing.
+    fn reconcile_agent_order_after_insert(&mut self, inserted_position: usize) {
+        self.agent_order.push(inserted_position);
     }
 
     fn capture_metric_observation(&mut self, tick_trades: &[Trade]) {
@@ -5194,13 +5353,24 @@ impl Society {
             .saturating_add(project_reserved)
     }
 
-    fn free_gold_after_all_reserves(&self, agent: AgentId) -> Gold {
+    pub fn free_gold_after_all_reserves(&self, agent: AgentId) -> Gold {
         let Some(index) = self.agent_index_for(agent) else {
             return Gold::ZERO;
         };
         self.agents[index]
             .gold
             .saturating_sub(self.reserved_gold_all(agent))
+    }
+
+    pub fn free_stock_after_all_reserves(&self, agent: AgentId, good: GoodId) -> u32 {
+        let Some(index) = self.agent_index_for(agent) else {
+            return 0;
+        };
+        let reserved = self
+            .reservations
+            .reserved_stock(agent, good)
+            .saturating_add(self.barter_book.reserved_qty(agent, good));
+        self.agents[index].stock.get(good).saturating_sub(reserved)
     }
 
     fn free_spot_tender_after_all_reserves(&self, agent: AgentId) -> Gold {
@@ -6413,6 +6583,287 @@ mod tests {
             gold_after_removal,
             "survivors conserve gold across the next tick"
         );
+    }
+
+    /// A minimal market agent for the birth/insert tests: holds gold + a FOOD ask
+    /// scale so it actually posts an order the tick after it is added.
+    fn birth_agent(gold: Gold, food: u32) -> Agent {
+        let mut stock = Stock::new(WOOD.0);
+        stock.add(FOOD, food);
+        let slots = usize::from(WOOD.0) + 1;
+        Agent {
+            id: AgentId(0), // overwritten by the arena on insert
+            scale: vec![
+                Want {
+                    kind: WantKind::Good(GOLD),
+                    horizon: Horizon::Later(4),
+                    qty: 1,
+                    satisfied: false,
+                },
+                Want {
+                    kind: WantKind::Good(GOLD),
+                    horizon: Horizon::Later(4),
+                    qty: 1,
+                    satisfied: false,
+                },
+            ],
+            stock,
+            gold,
+            labor_capacity: 0,
+            hunger_deficit: 0,
+            roles: vec![Role::Household],
+            expect: vec![PriceBelief::new(Gold(2), Gold(1)); slots],
+        }
+    }
+
+    #[test]
+    fn add_agent_inserts_and_reconciles_agent_order() {
+        // add_agent is the insert-side mirror of remove_agent: a new agent lands in
+        // the arena, is appended to agent_order, gets a reservation slot, and
+        // participates from the next step. Its endowment is whatever the caller
+        // supplied (a transfer accounted upstream) — add_agent mints nothing.
+        let mut society =
+            Society::from_scenario(builtin_market_scenario(ScenarioName::MarketPriceDiscovery));
+        society.step();
+
+        let order_len_before = society.agent_order.len();
+        let live_before = society.agents.len();
+        let total_gold_before = society.total_gold();
+
+        let newborn = birth_agent(Gold(3), 4);
+        let id = society.add_agent(newborn);
+
+        // The arena resolves the new id and it landed at the dense slice's end.
+        let position = society
+            .agents
+            .position_of(id)
+            .expect("the newborn resolves in the arena");
+        assert_eq!(
+            position, live_before,
+            "the newborn appends to the live slice"
+        );
+        assert_eq!(society.agents.len(), live_before + 1);
+
+        // agent_order grew by exactly one entry, pointing at the newborn's position;
+        // every entry still resolves to a live agent (no dangling/relocated slot).
+        assert_eq!(society.agent_order.len(), order_len_before + 1);
+        assert_eq!(*society.agent_order.last().unwrap(), position);
+        for &pos in &society.agent_order {
+            assert!(
+                pos < society.agents.len(),
+                "agent_order points past live slice"
+            );
+        }
+
+        // The newborn holds exactly the endowment it was handed — add_agent mints
+        // nothing — so total gold rose only by the (caller-supplied) endowment.
+        assert_eq!(society.agents.get(id).unwrap().gold, Gold(3));
+        assert_eq!(
+            society.total_gold(),
+            total_gold_before.saturating_add(Gold(3)),
+            "add_agent installs the endowment but mints no extra money"
+        );
+
+        // It participates the next tick without panic, and the run keeps clearing.
+        society.step();
+        assert!(
+            society.agents.get(id).is_some(),
+            "the newborn is still live after a step"
+        );
+    }
+
+    #[test]
+    fn add_agent_reuses_a_freed_slot_with_a_bumped_generation() {
+        // Birth after a death reuses the freed numeric slot with a fresh generation,
+        // so the dead ancestor's id stays None and the newborn's resolves.
+        let mut society =
+            Society::from_scenario(builtin_market_scenario(ScenarioName::MarketPriceDiscovery));
+        society.step();
+
+        let victim = society
+            .agent_order
+            .first()
+            .map(|&pos| society.agents[pos].id);
+        let victim = victim.expect("a live agent to remove");
+        assert!(society.remove_agent(victim).is_some());
+        assert!(society.agents.get(victim).is_none(), "victim is freed");
+
+        let id = society.add_agent(birth_agent(Gold(1), 1));
+        assert_eq!(
+            id.index(),
+            victim.index(),
+            "the birth reuses the freed numeric slot"
+        );
+        assert!(
+            id.generation() > victim.generation(),
+            "reuse bumps the slot generation"
+        );
+        assert!(
+            society.agents.get(victim).is_none(),
+            "the stale ancestor id stays None after reuse"
+        );
+        assert!(
+            society.agents.get(id).is_some(),
+            "the reused id resolves to the newborn"
+        );
+        // The newborn carries no stale reservation and is not flagged dead.
+        assert_eq!(society.reservations.reserved_gold(id), Gold::ZERO);
+        society.step();
+    }
+
+    #[test]
+    fn add_agent_then_remove_agent_round_trips_caches() {
+        // A birth followed by the newborn's removal leaves every cache exactly as a
+        // never-born society would: agent_order back to its length, no dangling
+        // reservation, conserved holdings. The two operations are exact inverses.
+        let mut society =
+            Society::from_scenario(builtin_market_scenario(ScenarioName::MarketPriceDiscovery));
+        society.step();
+
+        let order_len = society.agent_order.len();
+        let live = society.agents.len();
+
+        let id = society.add_agent(birth_agent(Gold(2), 2));
+        assert_eq!(society.agent_order.len(), order_len + 1);
+        assert_eq!(society.agents.len(), live + 1);
+
+        let estate = society.remove_agent(id).expect("the newborn removes");
+        assert_eq!(estate.gold, Gold(2), "removal recovers the endowment");
+        assert_eq!(society.agent_order.len(), order_len, "agent_order restored");
+        assert_eq!(society.agents.len(), live, "live count restored");
+        assert!(society.agents.get(id).is_none());
+        assert_eq!(society.reservations.reserved_gold(id), Gold::ZERO);
+        // Every surviving agent_order entry still resolves.
+        for &pos in &society.agent_order {
+            assert!(pos < society.agents.len());
+        }
+        society.step();
+    }
+
+    #[test]
+    fn add_agent_extends_m3_money_system_without_minting() {
+        let mut society = small_redemption_society();
+        let total_before = society.total_gold();
+        let money_before = society.money_system.as_ref().unwrap().snapshot();
+
+        let id = society.add_agent(birth_agent(Gold(3), 1));
+
+        let money_system = society.money_system.as_ref().unwrap();
+        let balance = money_system
+            .balance_snapshot(id)
+            .expect("add_agent creates an empty M3 ledger row");
+        assert_eq!(
+            balance.spendable_total(),
+            Gold::ZERO,
+            "add_agent does not mint an M3 endowment from Agent.gold"
+        );
+        assert_eq!(
+            society.agents.get(id).unwrap().gold,
+            Gold::ZERO,
+            "the newborn cache is reconciled from the ledger"
+        );
+        assert_eq!(society.total_gold(), total_before);
+        assert_eq!(money_system.snapshot(), money_before);
+        assert!(society.money_ledgers_reconcile());
+    }
+
+    #[test]
+    fn transfer_gold_moves_m3_ledger_value_to_newborn() {
+        let mut society = small_redemption_society();
+        let parent = AgentId(1);
+        let total_before = society.total_gold();
+        let id = society.add_agent(birth_agent(Gold::ZERO, 1));
+
+        assert!(society.transfer_gold(parent, id, Gold(1)));
+
+        let money_system = society.money_system.as_ref().unwrap();
+        assert_eq!(money_system.spendable_total(parent), Gold::ZERO);
+        assert_eq!(money_system.spendable_total(id), Gold(1));
+        assert_eq!(society.agents.get(parent).unwrap().gold, Gold::ZERO);
+        assert_eq!(society.agents.get(id).unwrap().gold, Gold(1));
+        assert_eq!(
+            society.total_gold(),
+            total_before,
+            "the M3 transfer moves money, it does not mint"
+        );
+        assert!(society.money_ledgers_reconcile());
+    }
+
+    #[test]
+    fn transfer_gold_refuses_to_spend_reserved_gold_m1() {
+        // `transfer_gold` advertises *spendable* gold: a resting bid that has
+        // earmarked part of the source's balance must not be raided by a transfer,
+        // or a later clear/cancel would operate on an order it can no longer fund.
+        let mut society = test_society(test_capitalist(Stock::new(WOOD.0)));
+        let from = AgentId(1);
+        let to = society.add_agent(birth_agent(Gold::ZERO, 0));
+        let total_before = society.total_gold();
+
+        // Agent 1 holds 10 gold; rest a bid that reserves 8 of it, leaving 2 free.
+        let bid = Order {
+            agent: from,
+            side: OrderSide::Bid,
+            good: FOOD,
+            limit: Gold(8),
+            qty: 1,
+            seq: 1,
+            expires_tick: 3,
+        };
+        assert!(society
+            .reservations
+            .reserve_order(society.agents.as_slice(), &bid));
+        assert_eq!(society.free_gold_after_all_reserves(from), Gold(2));
+
+        // Spending into the reservation is refused and mutates nothing.
+        assert!(!society.transfer_gold(from, to, Gold(10)));
+        assert!(!society.transfer_gold(from, to, Gold(3)));
+        assert_eq!(society.agents.get(from).unwrap().gold, Gold(10));
+        assert_eq!(society.agents.get(to).unwrap().gold, Gold::ZERO);
+        assert_eq!(society.reservations.reserved_gold(from), Gold(8));
+
+        // The unreserved remainder still transfers, and conserves.
+        assert!(society.transfer_gold(from, to, Gold(2)));
+        assert_eq!(society.agents.get(from).unwrap().gold, Gold(8));
+        assert_eq!(society.agents.get(to).unwrap().gold, Gold(2));
+        assert_eq!(society.free_gold_after_all_reserves(from), Gold::ZERO);
+        assert_eq!(society.total_gold(), total_before);
+    }
+
+    #[test]
+    fn transfer_gold_refuses_to_spend_reserved_gold_m3() {
+        // Same spendable contract on the M3 ledger path: the ledger's own spendable
+        // check is blind to Society-level order reservations, so the helper enforces
+        // the guard for both regimes.
+        let mut society = small_redemption_society();
+        let from = AgentId(1);
+        let to = AgentId(2);
+        let total_before = society.total_gold();
+
+        // Agent 1 holds Gold(1) spendable; a resting bid reserves all of it.
+        let bid = Order {
+            agent: from,
+            side: OrderSide::Bid,
+            good: FOOD,
+            limit: Gold(1),
+            qty: 1,
+            seq: 1,
+            expires_tick: 3,
+        };
+        assert!(society
+            .reservations
+            .reserve_order(society.agents.as_slice(), &bid));
+        assert_eq!(society.free_gold_after_all_reserves(from), Gold::ZERO);
+
+        // The reserved gold cannot be transferred, and nothing moves.
+        assert!(!society.transfer_gold(from, to, Gold(1)));
+        assert_eq!(society.total_gold(), total_before);
+        assert!(society.money_ledgers_reconcile());
+
+        // Once the reservation is released the same transfer succeeds and conserves.
+        society.reservations.release_order(&bid);
+        assert!(society.transfer_gold(from, to, Gold(1)));
+        assert_eq!(society.total_gold(), total_before);
+        assert!(society.money_ledgers_reconcile());
     }
 
     #[test]

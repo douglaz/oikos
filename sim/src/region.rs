@@ -186,16 +186,22 @@ impl RegionConfig {
 /// settlement's own [`crate::EconTickReport`] and adds the in-transit route
 /// escrow, so the invariant it pins is regional: for every tracked good the total
 /// over all settlements **plus** route escrow changes by exactly `+regen +
-/// produced − consumed_as_input − consumed`; for gold the regional total is
-/// unchanged (gold is a closed regional balance). Every caravan transfer is
-/// net-zero and so never appears. The two production terms are nonzero only when a
-/// composed settlement runs the G3a chain; for a plain region they stay empty and
-/// the invariant reduces to the G2c form `+regen − consumed`.
+/// endowment + produced − consumed_as_input − consumed`; for gold the regional
+/// total is unchanged (gold is a closed regional balance). Every caravan transfer
+/// is net-zero and so never appears. The `endowment` term is nonzero only with a
+/// demography settlement (G4b) and the two production terms only when a composed
+/// settlement runs the G3a chain; for a plain region all three stay empty and the
+/// invariant reduces to the G2c form `+regen − consumed`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RegionTickReport {
     pub econ_tick: u64,
     /// Goods created by node regen across all settlements (the only raw source).
     pub regen: BTreeMap<GoodId, u64>,
+    /// Goods minted by the G4b per-member **provision** (the household hearth)
+    /// across all settlements — a conserved source like `regen`. Empty for a
+    /// region with no demography-enabled settlement, so the invariant is
+    /// unchanged there.
+    pub endowment: BTreeMap<GoodId, u64>,
     /// Goods **produced** by recipe applications across all settlements (G3a) —
     /// the output side of every accounted transformation. Empty for a plain
     /// (non-chain) region.
@@ -223,6 +229,11 @@ impl RegionTickReport {
     pub fn regen_of(&self, good: GoodId) -> u64 {
         self.regen.get(&good).copied().unwrap_or(0)
     }
+    /// Units of `good` provisioned region-wide by the G4b household hearth this
+    /// tick — a source. Zero for a region with no demography settlement.
+    pub fn endowment_of(&self, good: GoodId) -> u64 {
+        self.endowment.get(&good).copied().unwrap_or(0)
+    }
     /// Units of `good` produced by recipe applications region-wide this tick (G3a).
     pub fn produced_of(&self, good: GoodId) -> u64 {
         self.produced.get(&good).copied().unwrap_or(0)
@@ -245,22 +256,24 @@ impl RegionTickReport {
     }
 
     /// Whether the regional ledger balances: for every tracked good `after ==
-    /// before + regen + produced − consumed_as_input − consumed`, and gold is
-    /// unchanged. This is the G2c conservation DoD, **generalized across G3a
-    /// transformations** exactly as [`crate::EconTickReport::conserves`] is: a
+    /// before + regen + endowment + produced − consumed_as_input − consumed`, and
+    /// gold is unchanged. This is the G2c conservation DoD, **generalized across
+    /// G3a transformations** exactly as [`crate::EconTickReport::conserves`] is: a
     /// recipe is a conserved conversion, so its output and input are accounted on
-    /// the producing/consuming sides. For a plain region the two production terms
-    /// are empty and this reduces to the G2c form `after == before + regen −
-    /// consumed`. [`Region::econ_tick`] also `debug_assert`s it.
+    /// the producing/consuming sides; the G4b household provision is a source like
+    /// `regen`. For a plain region the `endowment` and production terms are empty
+    /// and this reduces to the G2c form `after == before + regen − consumed`.
+    /// [`Region::econ_tick`] also `debug_assert`s it.
     pub fn conserves(&self) -> bool {
         let goods_ok = self.before.keys().all(|good| {
             let before = self.before_of(*good) as i128;
             let after = self.after_of(*good) as i128;
             let regen = self.regen_of(*good) as i128;
+            let endowment = self.endowment_of(*good) as i128;
             let produced = self.produced_of(*good) as i128;
             let consumed_as_input = self.consumed_as_input_of(*good) as i128;
             let consumed = self.consumed_of(*good) as i128;
-            after == before + regen + produced - consumed_as_input - consumed
+            after == before + regen + endowment + produced - consumed_as_input - consumed
         });
         goods_ok && self.gold_after == self.gold_before
     }
@@ -459,6 +472,9 @@ impl Region {
             let tick_report = settlement.econ_tick();
             for (&good, &qty) in &tick_report.regen {
                 *report.regen.entry(good).or_insert(0) += qty;
+            }
+            for (&good, &qty) in &tick_report.endowment {
+                *report.endowment.entry(good).or_insert(0) += qty;
             }
             for (&good, &qty) in &tick_report.produced {
                 *report.produced.entry(good).or_insert(0) += qty;

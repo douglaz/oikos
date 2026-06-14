@@ -8,8 +8,8 @@
 //!
 //! 1. **FAST** — run the `world` for [`FAST_TICKS_PER_ECON_TICK`] ticks
 //!    (movement, harvest node→carry, deposit carry→exchange stockpile). No money
-//!    moves. Dead colonists are frozen (idled), so they deliver nothing — their
-//!    carried goods stay escrowed, never destroyed.
+//!    moves. Dead colonists are removed from the spatial world after their carried
+//!    goods settle, so they deliver nothing and no escrow is destroyed.
 //! 2. **TRANSFER** — for each delivered exchange unit awaiting credit, *credit
 //!    the depositing colonist's econ stock* and then *withdraw it from the world*
 //!    (net-zero, conserved, recorded). A unit that cannot be credited stays
@@ -19,7 +19,7 @@
 //!    stays conserved in the stockpile).
 //! 3. **NEEDS** — advance each living colonist's [`NeedState`] from the last econ
 //!    tick's realized consumption + labor; apply starvation deaths as real removal
-//!    (G4a), settling each estate to the commons and idling the dead in the world.
+//!    (G4a), settling each estate to the commons and removing the dead from the world.
 //! 4. **SCALES** — [`regenerate_scale`] for every living colonist, then cancel
 //!    now-stale resting quotes (as G1 does).
 //! 5. **MARKET** — [`Society::step`], the unchanged econ clearing. Money moves
@@ -78,6 +78,7 @@ use life::{regenerate_scale, CultureParams, KnownGoods, NeedDynamics, NeedIntake
 use world::{AgentStatus, Grid, NodeId, Pos, ResourceNode, Stockpile, StockpileId, Task, World};
 
 use crate::content::ContentSet;
+use crate::demography::{child_seed, founder_seed, DemographyConfig};
 
 /// Fast `world` ticks per economic tick — the two-rate ratio (game-spec §4.1).
 /// A gatherer's round trip to a node costs `2 × distance` fast ticks, so a node
@@ -351,6 +352,15 @@ pub struct SettlementConfig {
     /// node good is grain, the staple is bread, and millers/bakers transform it).
     /// See [`ChainConfig`] and [`SettlementConfig::grain_flour_bread_chain`].
     pub chain: Option<ChainConfig>,
+    /// The G4b **demography** overlay (births, aging, households, inheritance), or
+    /// `None` for a pre-G4b settlement. `None` keeps every existing config and the
+    /// six econ goldens byte-identical (every demography code path is skipped and no
+    /// colonist is added or removed at runtime by a no-demography run); `Some` seeds
+    /// households of non-spatial householders that age, die of old age (via the G4a
+    /// removal path), and reproduce — children inheriting their parents' mutated
+    /// [`CultureParams`]. See [`DemographyConfig`] and
+    /// [`SettlementConfig::lineages`].
+    pub demography: Option<DemographyConfig>,
 }
 
 impl SettlementConfig {
@@ -404,6 +414,9 @@ impl SettlementConfig {
             // is opt-in via `grain_flour_bread_chain`, so `viable`/`price_probe`/
             // `starved_hauler` and every golden stay byte-identical.
             chain: None,
+            // No demography by default (G4b is opt-in via `lineages`), so every
+            // existing config and golden is byte-identical.
+            demography: None,
         }
     }
 
@@ -453,6 +466,7 @@ impl SettlementConfig {
             dynamics: NeedDynamics::lab_default(),
             resident_traders: Vec::new(),
             chain: Some(chain),
+            demography: None,
         }
     }
 
@@ -561,6 +575,7 @@ impl SettlementConfig {
             dynamics: NeedDynamics::lab_default(),
             resident_traders: Vec::new(),
             chain: Some(chain),
+            demography: None,
         }
     }
 
@@ -607,6 +622,29 @@ impl SettlementConfig {
         config
     }
 
+    /// The G4b **two-lineage demography** settlement: a non-spatial colony of two
+    /// households — a patient one and a present-biased one — whose members age, die
+    /// of old age (via the G4a removal path), and reproduce, children inheriting their
+    /// parents' mutated [`CultureParams`]. There are no gatherers or nodes: each
+    /// household feeds its members a renewable FOOD provision (so deaths are old age,
+    /// not starvation) and the patient household also gets a WOOD surplus it sells —
+    /// gold flows from the present-biased buyers to the patient savers, so the patient
+    /// lineage out-accumulates the other (sign only; the selection demonstration). See
+    /// [`DemographyConfig::lineages`].
+    pub fn lineages() -> Self {
+        let mut config = Self::viable();
+        // Non-spatial: no gatherers and no nodes (the households' provisions feed the
+        // colony directly). A tiny grid holds just the exchange tile every colonist
+        // nominally sits on.
+        config.width = 4;
+        config.height = 1;
+        config.gatherers = 0;
+        config.consumers = 0;
+        config.nodes = Vec::new();
+        config.demography = Some(DemographyConfig::lineages());
+        config
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).
@@ -641,8 +679,12 @@ impl SettlementConfig {
 pub struct EconTickReport {
     pub econ_tick: u64,
     pub fast_ticks: u64,
-    /// Goods created by node regen during the fast loop (the only source).
+    /// Goods created by node regen during the fast loop (a source).
     pub regen: BTreeMap<GoodId, u64>,
+    /// Goods minted by the G4b per-member **provision** (the household hearth) — a
+    /// conserved source, like `regen`, delivered directly into econ stock. Empty for
+    /// a non-demography settlement, so the conservation identity is unchanged there.
+    pub endowment: BTreeMap<GoodId, u64>,
     /// Goods relocated world→econ by the transfer (net-zero for the whole system).
     pub transferred: BTreeMap<GoodId, u64>,
     /// Goods consumed in [`Society::step`] (a sink — eaten).
@@ -666,12 +708,19 @@ pub struct EconTickReport {
     pub total_gold_after_fast: u64,
     /// Total money after [`Society::step`] (a closed balance is conserved).
     pub total_gold_after_step: u64,
+    /// Deaths this tick — starvation (any config) plus old age (G4b).
     pub deaths: u32,
+    /// Births this tick (G4b). Zero for a non-demography settlement.
+    pub births: u32,
 }
 
 impl EconTickReport {
     pub fn regen_of(&self, good: GoodId) -> u64 {
         self.regen.get(&good).copied().unwrap_or(0)
+    }
+    /// Units of `good` provisioned (G4b household hearth) this tick — a source.
+    pub fn endowment_of(&self, good: GoodId) -> u64 {
+        self.endowment.get(&good).copied().unwrap_or(0)
     }
     pub fn transferred_of(&self, good: GoodId) -> u64 {
         self.transferred.get(&good).copied().unwrap_or(0)
@@ -703,25 +752,45 @@ impl EconTickReport {
     /// accounted output — so per good X:
     ///
     /// ```text
-    /// after(X) == before(X) + regen(X) + produced(X)
+    /// after(X) == before(X) + regen(X) + endowment(X) + produced(X)
     ///                       − consumed_as_input(X) − consumed(X)
     /// ```
     ///
-    /// For a plain settlement `produced`/`consumed_as_input` are empty, so this
-    /// reduces exactly to the G2b form (every existing test stays green). Tools
-    /// are durable — they appear in neither production term, so a recipe that
-    /// needs a tool never moves the tool's ledger.
+    /// For a plain settlement `endowment`/`produced`/`consumed_as_input` are empty,
+    /// so this reduces exactly to the G2b form (every existing test stays green).
+    /// `endowment` is the G4b household provision (a source); births and deaths move
+    /// goods *within* the whole system (parent→child, dead→heir/commons) so they
+    /// cancel in `before`/`after` and need no term here. Tools are durable — they
+    /// appear in neither production term, so a recipe that needs a tool never moves
+    /// the tool's ledger.
     pub fn conserves(&self) -> bool {
         self.whole_system_before.keys().all(|good| {
             let before = self.whole_system_before_of(*good) as i128;
             let after = self.whole_system_after_of(*good) as i128;
             let regen = self.regen_of(*good) as i128;
+            let endowment = self.endowment_of(*good) as i128;
             let consumed = self.consumed_of(*good) as i128;
             let produced = self.produced_of(*good) as i128;
             let consumed_as_input = self.consumed_as_input_of(*good) as i128;
-            after == before + regen + produced - consumed_as_input - consumed
+            after == before + regen + endowment + produced - consumed_as_input - consumed
         })
     }
+}
+
+/// Where a dead colonist's estate was routed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EstateDestination {
+    /// The estate settled to the settlement commons.
+    Commons,
+    /// The estate settled to a living member of the dead colonist's household.
+    Household { household: usize, heir: AgentId },
+}
+
+/// Single-pass lineage dashboard stats for one household.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LineageStats {
+    pub living: usize,
+    pub gold: u64,
 }
 
 struct Colonist {
@@ -735,8 +804,8 @@ struct Colonist {
     /// Mirrors real removal (see [`Society::remove_agent`]'s caller contract): set
     /// `false` the tick a colonist dies, checked in every phase so a dead colonist
     /// is never re-scaled, re-credited, re-tasked, or read back. After removal its
-    /// id resolves to `None` in the arena; a dead gatherer is idled in the world and
-    /// its carry settled to the commons.
+    /// id resolves to `None` in the arena; a dead gatherer's carry settles to the
+    /// commons and its spatial world agent is removed after that drain.
     alive: bool,
     /// G3b: the recipe this colonist *could* run with its latent tool, if any.
     /// `Some(Mill)` for a latent miller (holds a mill), `Some(Bake)` for a latent
@@ -746,6 +815,26 @@ struct Colonist {
     /// spread; a `None` colonist is never re-appraised, so the seeded G3a config is
     /// byte-identical (its producers are permanent).
     latent: Option<RecipeId>,
+    /// G4b demography: the household (lineage) this colonist belongs to, indexing
+    /// [`Settlement::households`], or `None` for a non-demography colonist
+    /// (gatherer/consumer/producer in a pre-G4b config). Drives the per-member
+    /// provision, the birth roster, and estate routing to heirs.
+    household: Option<usize>,
+    /// G4b: age in **econ ticks** since birth (founders seeded with a staggered
+    /// starting age). Advanced once per econ tick for a living demography colonist;
+    /// `0` and untouched for a non-demography colonist.
+    age: u64,
+    /// G4b: the colonist's deterministic old-age lifespan in econ ticks — it dies of
+    /// old age (via the G4a removal path) once `age >= lifespan`. `None` (no old-age
+    /// mortality) for a non-demography colonist.
+    lifespan: Option<u64>,
+    /// G4b: a stable per-colonist seed — the deterministic source of its lifespan and
+    /// (as a parent) its children's mutation and seeds. No loop-time `Rng` draws from
+    /// it. `0` for a non-demography colonist.
+    seed: u64,
+    /// The settlement destination recorded once this colonist dies and its estate
+    /// is collected. `None` while alive.
+    estate_destination: Option<EstateDestination>,
 }
 
 /// A settlement of generated colonists driven over a real `world` + `econ`.
@@ -753,6 +842,12 @@ pub struct Settlement {
     world: World,
     society: Society,
     colonists: Vec<Colonist>,
+    /// Live colonist slots in colonist-insertion order. Dead historical entries stay
+    /// addressable for tests/viewer, but hot tick phases iterate this compact roster.
+    live_colonist_slots: Vec<usize>,
+    /// Stable id -> colonist slot, including dead historical colonists. This avoids a
+    /// history-length search when a reused numeric id appears in the econ logs.
+    colonist_slot_by_id: BTreeMap<AgentId, usize>,
     dynamics: NeedDynamics,
     known: KnownGoods,
     exchange: StockpileId,
@@ -771,11 +866,6 @@ pub struct Settlement {
     /// touches them). The `Region` addresses its caravan trader pair through
     /// these. Empty for a plain settlement.
     trader_ids: Vec<AgentId>,
-    /// The numeric id of colonist slot 0 — equal to the resident-trader count,
-    /// since traders take the lowest ids. Zero for a plain settlement (colonist
-    /// `i` has `AgentId(i)`, exactly as in G2b). Lets [`Settlement::slot_for_id`]
-    /// map a colonist id back to its slot in O(1) despite the trader offset.
-    colonist_id_base: u64,
     /// The G3a production-chain runtime (content + throughput), or `None` for a
     /// plain settlement. Drives the econ tick's scale-injection and production
     /// phases; `None` skips both, so a plain settlement is byte-identical to G2b.
@@ -794,6 +884,31 @@ pub struct Settlement {
     /// The commons' physical-good holdings, `GoodId`-keyed (a subset of
     /// [`Settlement::goods`]). Joins [`Settlement::whole_system_total`].
     commons_stock: BTreeMap<GoodId, u64>,
+    /// The G4b **demography** overlay config, or `None` for a pre-G4b settlement
+    /// (every demography phase is then skipped, so the run is byte-identical to
+    /// G3/G4a). Read each tick to drive provisions, aging/mortality, and births.
+    demography: Option<DemographyConfig>,
+    /// Per-household runtime state (the birth cadence), index-parallel to
+    /// `demography.households`. Empty for a non-demography settlement.
+    households: Vec<HouseholdRuntime>,
+    /// The colony's monotonic **birth sequence** counter — the stable, unique number
+    /// per birth that seeds the child's deterministic culture mutation and its own
+    /// seed (no loop-time `Rng`). Never decreases; reused arena slots get fresh
+    /// children, so a sequence number is never reissued.
+    birth_seq: u64,
+    /// Lifetime birth count (the viewer/acceptance surface).
+    births_total: u64,
+    /// Lifetime old-age death count (distinct from starvation deaths).
+    old_age_deaths_total: u64,
+}
+
+/// Per-household birth-cadence runtime (G4b), index-parallel to a
+/// [`DemographyConfig`]'s households. The household's *membership* lives on the
+/// colonists (`Colonist::household`); only the cadence needs mutable runtime state.
+struct HouseholdRuntime {
+    /// The econ tick of this household's most recent birth, or `None` if it has not
+    /// birthed yet — the birth-interval gate reads it.
+    last_birth_tick: Option<u64>,
 }
 
 /// The per-settlement production-chain runtime (G3a): the interned content and
@@ -857,6 +972,19 @@ impl Settlement {
             // every plain settlement eats gathered FOOD.
             Some(_) | None => KnownGoods::lab_default(),
         };
+        // The G4b demography overlay provisions FOOD as the household hunger staple
+        // (`deliver_demography_provisions`, the birth FOOD gate, and the newborn
+        // endowment all use FOOD). A non-FOOD staple (a `bread_is_staple` chain maps
+        // hunger ↔ bread) would leave members provisioned in a good they never eat —
+        // they would starve and the birth security gate would never clear despite a
+        // nonzero provision. The curated `lineages()` config has no chain (hunger ↔
+        // FOOD), so this holds by construction; reject the unsupported combination
+        // loudly rather than ship the silent-starvation config.
+        assert!(
+            config.demography.is_none() || known.hunger == FOOD,
+            "G4b demography provisions FOOD as the household hunger staple; a non-FOOD \
+             staple (e.g. a bread_is_staple chain) is not supported by the demography overlay"
+        );
         let mut rng = Rng::new(seed);
 
         // ---- world: grid, exchange stockpile, resource nodes ----
@@ -1002,7 +1130,62 @@ impl Settlement {
                 critical_streak: 0,
                 alive: true,
                 latent,
+                // Pre-G4b colonists carry no demography state (no household, no
+                // aging, no old-age mortality), so a no-demography settlement is
+                // byte-identical to G3/G4a.
+                household: None,
+                age: 0,
+                lifespan: None,
+                seed: 0,
+                estate_destination: None,
             });
+        }
+
+        // ---- G4b demography founders: the non-spatial household members ----
+        // When a demography overlay is present, its households' founders follow the
+        // normal colonist roster in id order (a non-demography settlement adds none,
+        // so it is byte-identical). A founder is a NON-SPATIAL householder: it has
+        // an econ agent but **no world agent** — it never hauls, so the fast loop,
+        // the deposit transfer, and the world↔econ id coincidence the gatherers rely
+        // on are untouched. Its stable seed (hashed from the world seed + its global
+        // founder index — no extra `Rng` draw) fixes its staggered starting age and
+        // its deterministic old-age lifespan; its culture is drawn from the
+        // household's time-preference base (the heritable ordinal bias).
+        let mut households: Vec<HouseholdRuntime> = Vec::new();
+        if let Some(demo) = &config.demography {
+            let mut founder_index = 0usize;
+            for (household_index, spec) in demo.households.iter().enumerate() {
+                households.push(HouseholdRuntime {
+                    last_birth_tick: None,
+                });
+                for _ in 0..spec.founders {
+                    let id = AgentId(colonist_id_base + colonists.len() as u64);
+                    let seed = founder_seed(seed, founder_index);
+                    founder_index += 1;
+                    let culture = draw_culture(
+                        &mut rng,
+                        spec.time_preference_base_bps,
+                        config.leisure_weight_base_bps,
+                    );
+                    let need = NeedState::rested();
+                    agents.push(build_demography_agent(id, &need, &culture, &known, spec));
+                    colonists.push(Colonist {
+                        id,
+                        vocation: Vocation::Consumer,
+                        node: None,
+                        need,
+                        culture,
+                        critical_streak: 0,
+                        alive: true,
+                        latent: None,
+                        household: Some(household_index),
+                        age: demo.founder_start_age_ticks(seed),
+                        lifespan: Some(demo.lifespan_ticks(seed)),
+                        seed,
+                        estate_destination: None,
+                    });
+                }
+            }
         }
 
         // The goods tracked for conservation: node goods plus anything a colonist
@@ -1014,6 +1197,13 @@ impl Settlement {
                 goods.push(g);
             }
         };
+        // A demography settlement trades FOOD (the staple) and WOOD (warmth) even if
+        // a household starts a buffer at zero, and the per-member provision mints both
+        // into econ stock — so both join the conservation ledger up front.
+        if config.demography.is_some() {
+            push_good(FOOD, &mut goods);
+            push_good(WOOD, &mut goods);
+        }
         for spec in &config.nodes {
             push_good(spec.good, &mut goods);
         }
@@ -1054,6 +1244,20 @@ impl Settlement {
         let mut society = Society::from_scenario(scenario);
         society.enable_consumption_log();
 
+        // G4b estate routing is closed-GOLD M1 only. On an M3 (ledger-money) society
+        // `Society::can_remove_agent` refuses to remove an agent that still holds
+        // spendable ledger gold, so an elderly M3 colonist would be *silently* skipped
+        // by `age_and_remove_elderly`/`update_needs_and_remove_dead` — an immortal
+        // elder with `deaths` undercounted, while conservation still passes. M3 estate
+        // routing is explicitly deferred (see `docs/impl-g4b.md`); the demography
+        // settlement is built SoundGold M1 above, so this holds by construction. A real
+        // `assert!` (not `debug_assert!`) so a future M3 demography config trips loudly at
+        // generation even in release, instead of silently undercounting deaths.
+        assert!(
+            config.demography.is_none() || society.money_system.is_none(),
+            "G4b demography requires a closed-GOLD M1 society (M3 estate routing is deferred)"
+        );
+
         // Build the production-chain runtime and register the content good names
         // so the society's registry resolves them (the viewer reads names through
         // `Society::good_name`). The ids the society interns must equal those the
@@ -1075,10 +1279,19 @@ impl Settlement {
             }
         });
 
+        let live_colonist_slots: Vec<usize> = (0..colonists.len()).collect();
+        let colonist_slot_by_id: BTreeMap<AgentId, usize> = colonists
+            .iter()
+            .enumerate()
+            .map(|(slot, colonist)| (colonist.id, slot))
+            .collect();
+
         Self {
             world,
             society,
             colonists,
+            live_colonist_slots,
+            colonist_slot_by_id,
             dynamics,
             known,
             exchange,
@@ -1086,12 +1299,16 @@ impl Settlement {
             goods,
             pending_deposits: BTreeMap::new(),
             trader_ids,
-            colonist_id_base,
             chain,
             econ_tick: 0,
             last_report: EconTickReport::default(),
             commons_gold: Gold::ZERO,
             commons_stock: BTreeMap::new(),
+            demography: config.demography.clone(),
+            households,
+            birth_seq: 0,
+            births_total: 0,
+            old_age_deaths_total: 0,
         }
     }
 
@@ -1146,8 +1363,16 @@ impl Settlement {
         report.transferred = self.transfer_pending_deposits();
 
         // ---- 3. NEEDS + real death (G4a): settle each starvation death's estate to
-        // the commons, free its arena slot, reconcile the society's caches.
+        // the household heir (G4b) or the commons (G4a fallback), free its arena
+        // slot, reconcile the society's caches.
         report.deaths = self.update_needs_and_remove_dead();
+
+        // ---- 3b. AGING + OLD-AGE DEATH (G4b): advance each living householder's age
+        // and remove any that reach their deterministic lifespan, routing the estate
+        // to a household heir (commons if the lineage is extinct). Reuses G4a's
+        // removal path; a no-op without a demography overlay. Deterministic — the
+        // lifespan is a function of the stable seed, nothing is drawn.
+        report.deaths += self.age_and_remove_elderly();
 
         // ---- 4. SCALES.
         self.regenerate_scales();
@@ -1168,6 +1393,14 @@ impl Settlement {
             self.regenerate_scales();
         }
 
+        // ---- 4c. PROVISION (G4b): deliver each living householder its household's
+        // renewable FOOD/WOOD hearth into econ stock, recorded as a conserved source
+        // (`report.endowment`). Mirrors `life::Camp`'s harvest delivery — after the
+        // scale regeneration (the stock add does not change the scale, so no resting
+        // quote goes stale), before the market clears. A no-op without a demography
+        // overlay.
+        self.deliver_demography_provisions(&mut report);
+
         // ---- 5. MARKET: the unchanged econ clearing; money is redistributed
         // between colonists here. Producers have bought their inputs (a miller a
         // unit of grain, a baker a unit of flour) and sold last tick's output.
@@ -1182,12 +1415,22 @@ impl Settlement {
         // for a plain settlement (no chain).
         self.run_production(&mut report);
 
+        // ---- 6b. BIRTHS (G4b): each food-secure household under its size cap and
+        // past its birth interval bears one child — a new colonist with an inherited,
+        // mutated culture and a conserved endowment transferred from a parent, added
+        // via `Society::add_agent` so it participates from the NEXT econ tick. Runs
+        // after the market so the newborn does not trade the tick it is born, and
+        // before the after-snapshot so its (transferred-in) holdings balance the
+        // parent's debit. A no-op without a demography overlay; draws no randomness.
+        report.births = self.run_births();
+
         // ---- 7. READ-BACK happens at the top of the next tick's NEEDS phase.
 
         // Conservation receipt: consumed (the eating sink) is this tick's
-        // consumption log; the whole-system after-totals (taken AFTER production)
-        // must balance against before + regen + produced − consumed_as_input −
-        // consumed for every good.
+        // consumption log; the whole-system after-totals (taken AFTER production and
+        // births) must balance against before + regen + endowment + produced −
+        // consumed_as_input − consumed for every good (births/deaths move goods
+        // within the whole system, so they need no term).
         for &(_, good, qty) in self.society.consumption_log_last_tick() {
             *report.consumed.entry(good).or_insert(0) += u64::from(qty);
         }
@@ -1230,8 +1473,9 @@ impl Settlement {
         let mut deposited: BTreeMap<(AgentId, GoodId), u32> = BTreeMap::new();
         // Opening carry baseline (the current escrow), per living gatherer/good.
         let mut prev_carry: BTreeMap<(AgentId, GoodId), u32> = BTreeMap::new();
-        for colonist in &self.colonists {
-            if colonist.alive && colonist.vocation == Vocation::Gatherer {
+        for &slot in &self.live_colonist_slots {
+            let colonist = &self.colonists[slot];
+            if colonist.vocation == Vocation::Gatherer {
                 for &good in &self.goods {
                     prev_carry.insert(
                         (colonist.id, good),
@@ -1255,8 +1499,9 @@ impl Settlement {
         for _ in 0..FAST_TICKS_PER_ECON_TICK {
             self.assign_idle_gatherer_tasks();
             self.world.tick();
-            for colonist in &self.colonists {
-                if !colonist.alive || colonist.vocation != Vocation::Gatherer {
+            for &slot in &self.live_colonist_slots {
+                let colonist = &self.colonists[slot];
+                if colonist.vocation != Vocation::Gatherer {
                     continue;
                 }
                 for &good in &self.goods {
@@ -1382,11 +1627,12 @@ impl Settlement {
 
     /// Give every idle, living gatherer its next task: deposit if it is carrying
     /// anything, else harvest a full load from its node. Deterministic (id order,
-    /// no RNG). Dead gatherers are idled and skipped, so their carry stays frozen.
+    /// no RNG). Dead gatherers have already had their carry settled and their world
+    /// agents removed, so this loop never sees them.
     fn assign_idle_gatherer_tasks(&mut self) {
-        for index in 0..self.colonists.len() {
-            let colonist = &self.colonists[index];
-            if !colonist.alive || colonist.vocation != Vocation::Gatherer {
+        for &slot in &self.live_colonist_slots {
+            let colonist = &self.colonists[slot];
+            if colonist.vocation != Vocation::Gatherer {
                 continue;
             }
             let Some(node) = colonist.node else { continue };
@@ -1408,103 +1654,125 @@ impl Settlement {
     /// NEEDS phase: advance living colonists' needs from the last econ tick's
     /// realized consumption + labor, then apply starvation deaths as **real
     /// removal** (G4a) — settling each dead colonist's estate to the commons,
-    /// freeing its arena slot, and idling it in the world. Returns the number of
+    /// freeing its arena slot, and removing it from the world. Returns the number of
     /// deaths. Deterministic: deaths are collected in generation order and settled
     /// in that order; nothing is drawn.
     fn update_needs_and_remove_dead(&mut self) -> u32 {
-        let mut intakes = vec![NeedIntake::default(); self.colonists.len()];
+        let live_slots = self.live_colonist_slots.clone();
+        let mut intakes = vec![NeedIntake::default(); live_slots.len()];
         for &(agent, good, qty) in self.society.consumption_log_last_tick() {
             let Some(index) = self.slot_for_id(agent) else {
                 continue;
             };
-            if !self.colonists[index].alive {
+            let Ok(intake_index) = live_slots.binary_search(&index) else {
                 continue;
-            }
+            };
             if good == self.known.hunger {
-                intakes[index].food_consumed = intakes[index].food_consumed.saturating_add(qty);
+                intakes[intake_index].food_consumed =
+                    intakes[intake_index].food_consumed.saturating_add(qty);
             } else if good == self.known.warmth {
-                intakes[index].wood_consumed = intakes[index].wood_consumed.saturating_add(qty);
+                intakes[intake_index].wood_consumed =
+                    intakes[intake_index].wood_consumed.saturating_add(qty);
             }
         }
         for &(agent, labor) in self.society.labor_used_last_tick() {
             let Some(index) = self.slot_for_id(agent) else {
                 continue;
             };
-            if self.colonists[index].alive {
-                intakes[index].labor_used = intakes[index].labor_used.saturating_add(labor);
-            }
+            let Ok(intake_index) = live_slots.binary_search(&index) else {
+                continue;
+            };
+            intakes[intake_index].labor_used =
+                intakes[intake_index].labor_used.saturating_add(labor);
         }
 
-        for (index, colonist) in self.colonists.iter_mut().enumerate() {
-            if colonist.alive {
-                colonist.need.advance(&self.dynamics, intakes[index]);
-            }
+        for (intake_index, &slot) in live_slots.iter().enumerate() {
+            self.colonists[slot]
+                .need
+                .advance(&self.dynamics, intakes[intake_index]);
         }
 
-        let mut deaths = 0;
         // Collect deaths first (immutable read of `dynamics`), then apply.
         let mut dying = Vec::new();
-        for colonist in &mut self.colonists {
-            if !colonist.alive {
-                continue;
-            }
+        for &slot in &live_slots {
+            let colonist = &mut self.colonists[slot];
             if colonist.need.is_critical(&self.dynamics) {
                 colonist.critical_streak = colonist.critical_streak.saturating_add(1);
             } else {
                 colonist.critical_streak = 0;
             }
             if colonist.critical_streak >= self.dynamics.death_window {
-                colonist.alive = false;
                 dying.push(colonist.id);
-                deaths += 1;
             }
         }
+        let dying: Vec<_> = dying
+            .into_iter()
+            .filter(|&id| self.society.can_remove_agent(id))
+            .collect();
+        for &id in &dying {
+            if let Some(slot) = self.slot_for_id(id) {
+                self.mark_colonist_dead(slot);
+            }
+        }
+        let mut deaths = 0;
         for id in dying {
-            self.settle_estate_to_commons(id);
+            deaths += u32::from(self.settle_death(id));
         }
         deaths
     }
 
-    /// Settle a starved colonist's estate to the commons and remove it (G4a real
-    /// death). The order of operations is the spec's: [`Society::remove_agent`]
-    /// settles the estate (gold + econ stock), cancels the colonist's market
-    /// presence, frees its arena slot, and reconciles its caches — handing back the
-    /// [`econ::society::Estate`]. We route that to the commons, drain the colonist's
-    /// world-carried delivery escrow to the commons too, and idle it in the world so
-    /// it hauls or deposits nothing more. A conserved transfer end to end: the gold
-    /// and goods leave the society and the world for the commons, nothing created or
-    /// destroyed (heirs/households are G4b). Deterministic: id-ordered, no RNG.
-    fn settle_estate_to_commons(&mut self, id: AgentId) {
-        if let Some(estate) = self.society.remove_agent(id) {
-            // Econ estate: the dead colonist's gold plus every physical good it held
-            // (its stock is a subset of `self.goods`; GOLD is money, not stock).
-            self.commons_gold = self.commons_gold.saturating_add(estate.gold);
-            for &good in &self.goods {
-                let qty = estate.stock.get(good);
-                if qty > 0 {
-                    *self.commons_stock.entry(good).or_insert(0) += u64::from(qty);
-                }
+    /// Route a dead colonist's estate (G4a removal + G4b inheritance). A demography
+    /// settlement routes to the household **heirs** (the commons only if the lineage
+    /// is extinct); every pre-G4b settlement routes to the commons exactly as G4a.
+    /// The dispatch keeps the no-demography path structurally unchanged, so the G4a
+    /// suite and the conformance goldens are byte-identical.
+    fn settle_death(&mut self, id: AgentId) -> bool {
+        if self.demography.is_some() {
+            self.settle_estate_to_heirs(id)
+        } else {
+            self.settle_estate_to_commons(id)
+        }
+    }
+
+    /// Remove `id` from the running settlement and collect its full estate — econ
+    /// gold + stock (via [`Society::remove_agent`]), world-carried delivery escrow,
+    /// and any stranded exchange-deposit escrow — returning the gold and a per-good
+    /// map, and removing its world agent. The estate is collected but NOT yet routed;
+    /// the caller settles it to the commons (G4a) or the household heirs (G4b). The
+    /// order is the spec's (settle → cancel → free → reconcile, inside
+    /// `remove_agent`; then drain world/exchange escrow), so wherever the estate goes
+    /// the whole-system total is conserved. Deterministic: id-ordered, no RNG.
+    fn collect_estate(&mut self, id: AgentId) -> Option<(Gold, BTreeMap<GoodId, u64>)> {
+        let estate = self.society.remove_agent(id)?;
+        let gold = estate.gold;
+        let mut stock: BTreeMap<GoodId, u64> = BTreeMap::new();
+        // Econ estate: the dead colonist's gold plus every physical good it held
+        // (its stock is a subset of `self.goods`; GOLD is money, not stock).
+        for &good in &self.goods {
+            let qty = estate.stock.get(good);
+            if qty > 0 {
+                *stock.entry(good).or_insert(0) += u64::from(qty);
             }
         }
-        // World-carried escrow: drain it out of the world into the commons (rather
-        // than freezing it in place as the G1 tombstone did).
+        // World-carried escrow: drain it out of the world (rather than freezing it in
+        // place as the G1 tombstone did). A non-spatial householder (G4b) carries
+        // nothing, so this is a no-op for it.
         for &good in &self.goods {
             let carried = self.world.agent_carry(id, good);
             if carried > 0 {
                 let drained = self.world.withdraw_agent_carry(id, good, carried);
-                *self.commons_stock.entry(good).or_insert(0) += u64::from(drained);
+                *stock.entry(good).or_insert(0) += u64::from(drained);
             }
         }
         // Pending exchange-deposit escrow: units this colonist delivered to the
         // exchange stockpile but never had credited (its attribution still sitting in
         // `pending_deposits`) are part of its estate. Drain them out of the world's
-        // exchange into the commons and drop the attribution — a conserved transfer
-        // (world exchange → commons) that leaves no entry keyed by the freed id for
-        // `transfer_pending_deposits` to retry against forever. The withdraw mirrors
-        // the removed attribution unit-for-unit, preserving the pending↔exchange
-        // invariant. Empty in the starvation-only death model (the transfer phase
-        // credits a still-live depositor before it can die), so this is a defensive
-        // settle for any future death that strands a pending deposit.
+        // exchange and drop the attribution — a conserved transfer that leaves no
+        // entry keyed by the freed id for `transfer_pending_deposits` to retry against
+        // forever. The withdraw mirrors the removed attribution unit-for-unit,
+        // preserving the pending↔exchange invariant. Empty in the starvation/old-age
+        // death models (the transfer credits a still-live depositor before it can
+        // die; a householder never deposits), so this is a defensive settle.
         let stranded: Vec<(AgentId, GoodId)> = self
             .pending_deposits
             .keys()
@@ -1523,11 +1791,378 @@ impl Settlement {
                 "the exchange must hold every pending unit attributed to a dead depositor"
             );
             if drained > 0 {
-                *self.commons_stock.entry(good).or_insert(0) += u64::from(drained);
+                *stock.entry(good).or_insert(0) += u64::from(drained);
             }
         }
-        // Idle it in the world so it hauls/deposits nothing more.
-        self.world.assign_task(id, Task::Idle);
+        // Remove its spatial body after draining carry so future world ticks do not
+        // scan historical deaths. Non-spatial G4b householders were never in the
+        // world, so this is a no-op for them.
+        if let Some(remaining_carry) = self.world.remove_agent(id) {
+            // The loop above drains every good in `self.goods`; this sweeps any residual
+            // into the estate rather than dropping it in release builds (the assert pins
+            // the invariant in debug). Conservation is enforced, never assumed.
+            debug_assert!(
+                remaining_carry.values().all(|&qty| qty == 0),
+                "estate collection must drain carry before removing a world agent"
+            );
+            for (good, qty) in remaining_carry {
+                if qty > 0 {
+                    *stock.entry(good).or_insert(0) += u64::from(qty);
+                }
+            }
+        }
+        Some((gold, stock))
+    }
+
+    /// Settle a dead colonist's estate to the **commons** (G4a). A conserved transfer
+    /// end to end: the gold and goods leave the society and the world for the commons,
+    /// nothing created or destroyed. Deterministic: id-ordered, no RNG.
+    fn settle_estate_to_commons(&mut self, id: AgentId) -> bool {
+        if !self.society.can_remove_agent(id) {
+            return false;
+        }
+        if let Some(slot) = self.slot_for_id(id) {
+            self.mark_colonist_dead(slot);
+        }
+        let Some((gold, stock)) = self.collect_estate(id) else {
+            return false;
+        };
+        self.commons_gold = self.commons_gold.saturating_add(gold);
+        for (good, qty) in stock {
+            if qty > 0 {
+                *self.commons_stock.entry(good).or_insert(0) += qty;
+            }
+        }
+        self.record_estate_destination(id, EstateDestination::Commons);
+        true
+    }
+
+    /// Settle a dead colonist's estate to the household **heirs** (G4b inheritance):
+    /// credit the whole estate to a living member of the same household (the first
+    /// surviving heir in colonist-insertion order), falling back to the **commons** if the lineage is extinct (no
+    /// living member remains). Crediting a live heir is a conserved transfer *within*
+    /// the society (the dead's holdings move to a survivor), and the commons fallback
+    /// is the same conserved transfer G4a used — so whole-system conservation holds
+    /// either way. Any unplaceable remainder (an heir at the `u32`/`u64` ceiling — never
+    /// reached with these small quantities) routes to the commons rather than vanish.
+    fn settle_estate_to_heirs(&mut self, id: AgentId) -> bool {
+        if !self.society.can_remove_agent(id) {
+            return false;
+        }
+        if let Some(slot) = self.slot_for_id(id) {
+            self.mark_colonist_dead(slot);
+        }
+        let Some((gold, stock)) = self.collect_estate(id) else {
+            return false;
+        };
+        let destination = self.heir_for(id).map(|heir| EstateDestination::Household {
+            household: self.colonist_household(id).unwrap_or_default(),
+            heir,
+        });
+        match destination {
+            Some(EstateDestination::Household { heir, .. }) => {
+                if gold > Gold::ZERO && !self.society.credit_gold(heir, gold) {
+                    // Defensive: an overflow at the heir routes the gold to the commons.
+                    self.commons_gold = self.commons_gold.saturating_add(gold);
+                }
+                for (good, qty) in stock {
+                    if qty == 0 {
+                        continue;
+                    }
+                    // Clamp the credit to the heir's remaining headroom so the
+                    // saturating `Stock::add` can never silently drop goods: any amount
+                    // the heir cannot hold (its stock would pass `u32::MAX`) routes to
+                    // the commons instead of vanishing — the same clamp the provision
+                    // path uses. Unreached with these small quantities, but conservation
+                    // is load-bearing, so it is enforced here, never assumed.
+                    let held = self
+                        .society
+                        .agents
+                        .get(heir)
+                        .map_or(0, |agent| agent.stock.get(good));
+                    let headroom = u64::from(u32::MAX - held);
+                    let credited = u32::try_from(qty.min(headroom)).unwrap_or(0);
+                    let placed = if credited > 0 && self.society.credit_stock(heir, good, credited)
+                    {
+                        u64::from(credited)
+                    } else {
+                        0
+                    };
+                    if qty > placed {
+                        *self.commons_stock.entry(good).or_insert(0) += qty - placed;
+                    }
+                }
+            }
+            Some(EstateDestination::Commons) | None => {
+                self.commons_gold = self.commons_gold.saturating_add(gold);
+                for (good, qty) in stock {
+                    if qty > 0 {
+                        *self.commons_stock.entry(good).or_insert(0) += qty;
+                    }
+                }
+            }
+        }
+        self.record_estate_destination(id, destination.unwrap_or(EstateDestination::Commons));
+        true
+    }
+
+    fn colonist_household(&self, id: AgentId) -> Option<usize> {
+        self.slot_for_id(id)
+            .and_then(|slot| self.colonists[slot].household)
+    }
+
+    fn record_estate_destination(&mut self, id: AgentId, destination: EstateDestination) {
+        if let Some(slot) = self.slot_for_id(id) {
+            self.colonists[slot].estate_destination = Some(destination);
+        }
+    }
+
+    /// The heir for a dead colonist's estate (G4b): the first **living** member of
+    /// the dead colonist's household, in colonist-insertion order, that still resolves as a live econ agent, or
+    /// `None` if the lineage is extinct (or the colonist has no household — a pre-G4b
+    /// colonist, which therefore settles to the commons). The dead colonist is already
+    /// marked `alive = false` before settlement, so it is never its own heir.
+    fn heir_for(&self, dead_id: AgentId) -> Option<AgentId> {
+        let household = self
+            .slot_for_id(dead_id)
+            .and_then(|s| self.colonists[s].household)?;
+        // Scan only the compact live roster: the dead colonist is marked dead — and so
+        // already off `live_colonist_slots` — before settlement, so it is never its own
+        // heir, and co-dying members (marked before any are settled) are excluded too.
+        // `live_colonist_slots` is kept in slot order, so this yields the first
+        // surviving household member in colonist-insertion order, the same colonist the
+        // historical scan picked, without walking the full historical roster.
+        self.live_colonist_slots
+            .iter()
+            .map(|&slot| &self.colonists[slot])
+            .filter(|c| c.household == Some(household))
+            .map(|c| c.id)
+            .find(|&heir| self.society.agents.get(heir).is_some())
+    }
+
+    /// AGING + OLD-AGE DEATH (G4b): advance each living householder's age by one econ
+    /// tick and remove any that reach their deterministic `lifespan` via the G4a
+    /// removal path, settling the estate to a household heir. Returns the old-age
+    /// death count. A no-op without a demography overlay. Deterministic: ages and
+    /// deaths are taken in slot order, the lifespan is a pure function of the
+    /// colonist's seed, nothing is drawn.
+    fn age_and_remove_elderly(&mut self) -> u32 {
+        if self.demography.is_none() {
+            return 0;
+        }
+        let mut dying = Vec::new();
+        let live_slots = self.live_colonist_slots.clone();
+        for &slot in &live_slots {
+            let colonist = &mut self.colonists[slot];
+            let Some(lifespan) = colonist.lifespan else {
+                continue;
+            };
+            colonist.age = colonist.age.saturating_add(1);
+            if colonist.age >= lifespan {
+                dying.push(colonist.id);
+            }
+        }
+        let dying: Vec<_> = dying
+            .into_iter()
+            .filter(|&id| self.society.can_remove_agent(id))
+            .collect();
+        for &id in &dying {
+            if let Some(slot) = self.slot_for_id(id) {
+                self.mark_colonist_dead(slot);
+            }
+        }
+        let mut deaths = 0;
+        for id in dying {
+            deaths += u32::from(self.settle_estate_to_heirs(id));
+        }
+        self.old_age_deaths_total = self.old_age_deaths_total.saturating_add(u64::from(deaths));
+        deaths
+    }
+
+    /// PROVISION phase (G4b): deliver each living householder its household's
+    /// renewable FOOD/WOOD hearth into econ stock, recording the total as a conserved
+    /// source in `report.endowment`. A no-op without a demography overlay.
+    /// Deterministic: slot order, no RNG. The provision keeps members fed (so deaths
+    /// are old age, not starvation) and supplies the wood-surplus household its
+    /// tradeable surplus.
+    fn deliver_demography_provisions(&mut self, report: &mut EconTickReport) {
+        let Some(demo) = self.demography.clone() else {
+            return;
+        };
+        // Collect (id, household) first so the colonists borrow is released before the
+        // society is mutated.
+        let members: Vec<(AgentId, usize)> = self
+            .live_colonist_slots
+            .iter()
+            .filter_map(|&slot| {
+                let colonist = &self.colonists[slot];
+                colonist.household.map(|h| (colonist.id, h))
+            })
+            .collect();
+        for (id, h) in members {
+            let spec = &demo.households[h];
+            self.deliver_demography_provision_unit(id, FOOD, spec.food_provision, report);
+            self.deliver_demography_provision_unit(id, WOOD, spec.wood_provision, report);
+        }
+    }
+
+    fn deliver_demography_provision_unit(
+        &mut self,
+        id: AgentId,
+        good: GoodId,
+        provision: u32,
+        report: &mut EconTickReport,
+    ) {
+        if provision == 0 {
+            return;
+        }
+        let Some(held) = self
+            .society
+            .agents
+            .get(id)
+            .map(|agent| agent.stock.get(good))
+        else {
+            return;
+        };
+        let credited = provision.min(u32::MAX - held);
+        if credited > 0 && self.society.credit_stock(id, good, credited) {
+            *report.endowment.entry(good).or_insert(0) += u64::from(credited);
+        }
+    }
+
+    /// BIRTHS phase (G4b): each food-secure household, under its size cap and past its
+    /// birth interval, bears one child. The newborn inherits its chosen parent's
+    /// **mutated** culture (deterministic — a hash of the parent's culture and the
+    /// colony's monotonic birth sequence, no `Rng`), is endowed by **conserved
+    /// transfers** from that parent (a FOOD buffer it must hold plus a best-effort
+    /// gold gift), and joins the society via [`Society::add_agent`] so it
+    /// participates from the next econ tick. Returns the birth count. A no-op without
+    /// a demography overlay.
+    ///
+    /// The birth is a **threshold rule**, not an optimizer: a household reproduces
+    /// when it clears the need-security margin and can feed a child — the heritable
+    /// ordinal patience bias does its selection work through the market
+    /// (`regenerate_scale`), not a fitness function. The gold gift is best-effort
+    /// (clamped to the parent's unreserved balance), so a gold-poor lineage still reproduces;
+    /// poverty shapes a lineage's wealth, never its survival.
+    fn run_births(&mut self) -> u32 {
+        let Some(demo) = self.demography.clone() else {
+            return 0;
+        };
+        let mut births = 0u32;
+        for h in 0..demo.households.len() {
+            let next_eligible = self.households[h]
+                .last_birth_tick
+                .map_or(demo.birth_interval, |t| t + demo.birth_interval);
+            if self.econ_tick < next_eligible {
+                continue;
+            }
+
+            // The household's living members (slots), in slot order.
+            let member_slots: Vec<usize> = self
+                .live_colonist_slots
+                .iter()
+                .copied()
+                .filter(|&slot| self.colonists[slot].household == Some(h))
+                .collect();
+            if member_slots.is_empty() || member_slots.len() >= usize::from(demo.max_household_size)
+            {
+                continue; // extinct (cannot reproduce) or at the size cap (blowup bound)
+            }
+
+            // Need-security gate: every living member's hunger at or below the ceiling.
+            if !member_slots
+                .iter()
+                .all(|&slot| self.colonists[slot].need.hunger <= demo.birth_hunger_ceiling)
+            {
+                continue;
+            }
+
+            // Choose the parent: a member that can endow the child's FOOD buffer,
+            // preferring the wealthiest (most gold), ties broken to the lowest slot —
+            // a fully deterministic choice. None can endow → skip (poverty of FOOD,
+            // which the provision makes rare).
+            let parent_slot = member_slots
+                .iter()
+                .copied()
+                .filter(|&slot| {
+                    let pid = self.colonists[slot].id;
+                    self.society.agents.get(pid).is_some_and(|_| {
+                        self.society.free_stock_after_all_reserves(pid, FOOD)
+                            >= demo.child_food_endowment
+                    })
+                })
+                .max_by_key(|&slot| {
+                    let pid = self.colonists[slot].id;
+                    let gold = self.society.free_gold_after_all_reserves(pid).0;
+                    (gold, std::cmp::Reverse(slot))
+                });
+            let Some(parent_slot) = parent_slot else {
+                continue;
+            };
+
+            let parent_id = self.colonists[parent_slot].id;
+            let parent_culture = self.colonists[parent_slot].culture;
+            let parent_seed = self.colonists[parent_slot].seed;
+
+            // The endowment: conserved TRANSFERS from the parent — the FOOD buffer
+            // (required, already verified free after reservations) plus a best-effort
+            // gold gift clamped to the parent's unreserved balance.
+            if !self
+                .society
+                .debit_stock(parent_id, FOOD, demo.child_food_endowment)
+            {
+                continue; // guarded above; defensive
+            }
+            let parent_gold = self.society.free_gold_after_all_reserves(parent_id).0;
+            let gold_endow = demo.child_gold_endowment.min(parent_gold);
+
+            // The child: inherited+mutated culture, a deterministic lifespan from its
+            // own seed, the transferred endowment, and a fresh arena slot via add_agent.
+            let birth_seq = self.birth_seq;
+            self.birth_seq = self.birth_seq.saturating_add(1);
+            let child_culture = parent_culture.inherit(birth_seq, demo.mutation_delta_bps);
+            let cseed = child_seed(parent_seed, birth_seq);
+            let lifespan = demo.lifespan_ticks(cseed);
+            let need = NeedState::rested();
+            let child_agent = build_newborn_agent(
+                &need,
+                &child_culture,
+                &self.known,
+                0,
+                demo.child_food_endowment,
+            );
+            let child_id = self.society.add_agent(child_agent);
+            if gold_endow > 0 {
+                let transferred = self
+                    .society
+                    .transfer_gold(parent_id, child_id, Gold(gold_endow));
+                debug_assert!(transferred, "the parent's gold gift must transfer");
+            }
+
+            self.colonists.push(Colonist {
+                id: child_id,
+                vocation: Vocation::Consumer,
+                node: None,
+                need,
+                culture: child_culture,
+                critical_streak: 0,
+                alive: true,
+                latent: None,
+                household: Some(h),
+                age: 0,
+                lifespan: Some(lifespan),
+                seed: cseed,
+                estate_destination: None,
+            });
+            let child_slot = self.colonists.len() - 1;
+            self.live_colonist_slots.push(child_slot);
+            self.colonist_slot_by_id.insert(child_id, child_slot);
+            self.households[h].last_birth_tick = Some(self.econ_tick);
+            self.births_total = self.births_total.saturating_add(1);
+            births += 1;
+        }
+        births
     }
 
     /// SCALES phase: regenerate every living colonist's value scale from its need
@@ -1540,10 +2175,8 @@ impl Settlement {
     /// no RNG is drawn here.
     fn regenerate_scales(&mut self) {
         let mut rewritten = Vec::new();
-        for colonist in &self.colonists {
-            if !colonist.alive {
-                continue;
-            }
+        for &slot in &self.live_colonist_slots {
+            let colonist = &self.colonists[slot];
             let mut scale = regenerate_scale(&colonist.need, &colonist.culture, &self.known);
             if let Some(chain) = &self.chain {
                 // A producer's tool/input wants follow its production specialty —
@@ -1588,11 +2221,8 @@ impl Settlement {
         // fields, so id-ordered iteration here borrows them side by side. The
         // recipe ids are content data; mutation delegates to econ's existing
         // direct-recipe executor through an additive `Society` accessor.
-        for slot in 0..self.colonists.len() {
+        for &slot in &self.live_colonist_slots {
             let colonist = &self.colonists[slot];
-            if !colonist.alive {
-                continue;
-            }
             let recipe_id = match colonist.vocation {
                 Vocation::Miller => mill_recipe,
                 Vocation::Baker => bake_recipe,
@@ -1652,11 +2282,8 @@ impl Settlement {
         let tick = self.society.tick.0;
         let mut changed = false;
 
-        for slot in 0..self.colonists.len() {
+        for &slot in &self.live_colonist_slots {
             let colonist = &self.colonists[slot];
-            if !colonist.alive {
-                continue;
-            }
             // Only latent colonists re-appraise; a `None` latent (gatherer,
             // consumer, or seeded G3a producer) keeps its vocation untouched.
             let Some(latent) = colonist.latent else {
@@ -1704,19 +2331,17 @@ impl Settlement {
     }
 
     fn slot_for_id(&self, id: AgentId) -> Option<usize> {
-        // Colonist slot `s` has `AgentId(colonist_id_base + s)` (the resident-trader
-        // pair, if any, takes the lower ids), so subtracting the base is its slot —
-        // an O(1) hit. A non-colonist id (a trader, below the base) or any mismatch
-        // falls back to a search, which returns `None` for a trader. (Traders never
-        // appear in the consumption/labor logs this resolves, so the fallback is
-        // belt-and-braces, not a hot path.)
-        if let Some(guess) = (u64::from(id.index())).checked_sub(self.colonist_id_base) {
-            let guess = guess as usize;
-            if self.colonists.get(guess).map(|c| c.id) == Some(id) {
-                return Some(guess);
-            }
+        self.colonist_slot_by_id.get(&id).copied()
+    }
+
+    fn mark_colonist_dead(&mut self, slot: usize) {
+        if !self.colonists[slot].alive {
+            return;
         }
-        self.colonists.iter().position(|c| c.id == id)
+        self.colonists[slot].alive = false;
+        if let Ok(index) = self.live_colonist_slots.binary_search(&slot) {
+            self.live_colonist_slots.remove(index);
+        }
     }
 
     // ---- accessors ------------------------------------------------------
@@ -1868,9 +2493,9 @@ impl Settlement {
 
     /// Living colonists of a vocation.
     pub fn living_count(&self, vocation: Vocation) -> usize {
-        self.colonists
+        self.live_colonist_slots
             .iter()
-            .filter(|c| c.alive && c.vocation == vocation)
+            .filter(|&&slot| self.colonists[slot].vocation == vocation)
             .count()
     }
 
@@ -1884,16 +2509,118 @@ impl Settlement {
 
     /// Total living colonists.
     pub fn living_total(&self) -> usize {
-        self.colonists.iter().filter(|c| c.alive).count()
+        self.live_colonist_slots.len()
+    }
+
+    // ---- G4b demography surface ----------------------------------------
+
+    /// Whether this settlement runs the G4b demography overlay.
+    pub fn is_demographic(&self) -> bool {
+        self.demography.is_some()
+    }
+
+    /// The number of seeded households (lineages); `0` without a demography overlay.
+    pub fn household_count(&self) -> usize {
+        self.households.len()
+    }
+
+    /// Lifetime births so far (G4b).
+    pub fn births_total(&self) -> u64 {
+        self.births_total
+    }
+
+    /// Lifetime old-age deaths so far (G4b) — distinct from starvation deaths.
+    pub fn old_age_deaths_total(&self) -> u64 {
+        self.old_age_deaths_total
+    }
+
+    /// The household (lineage) the colonist at generation `index` belongs to, or
+    /// `None` for a non-demography colonist.
+    pub fn household_of(&self, index: usize) -> Option<usize> {
+        self.colonists.get(index).and_then(|c| c.household)
+    }
+
+    /// The age (econ ticks) of the colonist at generation `index`, or `None`.
+    pub fn age_of(&self, index: usize) -> Option<u64> {
+        self.colonists.get(index).map(|c| c.age)
+    }
+
+    /// The deterministic old-age lifespan (econ ticks) of the colonist at generation
+    /// `index`, or `None` (no demography / no old-age mortality).
+    pub fn lifespan_of(&self, index: usize) -> Option<u64> {
+        self.colonists.get(index).and_then(|c| c.lifespan)
+    }
+
+    /// The culture (the heritable [`CultureParams`]) of the colonist at generation
+    /// `index`, or `None`.
+    pub fn culture_of(&self, index: usize) -> Option<CultureParams> {
+        self.colonists.get(index).map(|c| c.culture)
+    }
+
+    /// The destination a dead colonist's estate settled to, or `None` while alive.
+    pub fn estate_destination_of(&self, index: usize) -> Option<EstateDestination> {
+        self.colonists.get(index).and_then(|c| c.estate_destination)
+    }
+
+    /// Living count and accumulated gold for every household, computed in one pass
+    /// over the live roster.
+    pub fn lineage_stats(&self) -> Vec<LineageStats> {
+        let mut stats = vec![LineageStats::default(); self.households.len()];
+        for &slot in &self.live_colonist_slots {
+            let colonist = &self.colonists[slot];
+            let Some(household) = colonist.household else {
+                continue;
+            };
+            let Some(lineage) = stats.get_mut(household) else {
+                continue;
+            };
+            lineage.living += 1;
+            if let Some(agent) = self.society.agents.get(colonist.id) {
+                lineage.gold = lineage.gold.saturating_add(agent.gold.0);
+            }
+        }
+        stats
+    }
+
+    /// Living members of household (lineage) `household`.
+    pub fn lineage_living_count(&self, household: usize) -> usize {
+        self.lineage_stats()
+            .get(household)
+            .map_or(0, |stats| stats.living)
+    }
+
+    /// The lineage's **accumulated gold** — the sum of its living members' econ gold
+    /// balances (G4b). Estates route to heirs, so a lineage's gold stays within it
+    /// across deaths; this is the wealth the patient/present-biased comparison reads.
+    pub fn lineage_gold(&self, household: usize) -> u64 {
+        self.lineage_stats()
+            .get(household)
+            .map_or(0, |stats| stats.gold)
+    }
+
+    /// The lineage's total holdings of `good` across its living members (G4b) — used
+    /// for the per-lineage wealth surfacing.
+    pub fn lineage_stock(&self, household: usize, good: GoodId) -> u64 {
+        self.live_colonist_slots
+            .iter()
+            .filter_map(|&slot| {
+                let colonist = &self.colonists[slot];
+                if colonist.household == Some(household) {
+                    self.society.agents.get(colonist.id)
+                } else {
+                    None
+                }
+            })
+            .map(|a| u64::from(a.stock.get(good)))
+            .sum()
     }
 
     /// The highest hunger any living colonist carries — the boundedness probe for
     /// the smoke test (hunger is the need that kills).
     pub fn max_living_hunger(&self) -> u16 {
-        self.colonists
+        self.live_colonist_slots
             .iter()
-            .filter(|c| c.alive)
-            .map(|c| c.need.hunger)
+            .map(|&slot| self.colonists[slot].need.hunger)
             .max()
             .unwrap_or(0)
     }
@@ -1983,6 +2710,30 @@ impl Settlement {
             }
         }
 
+        // The G4b demography runtime (the birth cadence + lifetime counters). It is
+        // omitted entirely without a demography overlay, so a pre-G4b settlement's
+        // bytes are unchanged; when present it steers future births, so it is part of
+        // the future-behaviour identity. The per-household block is index-ordered
+        // (deterministic). The per-colonist demography fields (household, age,
+        // lifespan, seed) are appended in the colonist loop below, also gated.
+        let is_demographic = self.demography.is_some();
+        if let Some(demo) = &self.demography {
+            push_demography_config_bytes(&mut out, demo);
+            out.extend_from_slice(&self.birth_seq.to_le_bytes());
+            out.extend_from_slice(&self.births_total.to_le_bytes());
+            out.extend_from_slice(&self.old_age_deaths_total.to_le_bytes());
+            out.extend_from_slice(&(self.households.len() as u32).to_le_bytes());
+            for household in &self.households {
+                match household.last_birth_tick {
+                    Some(tick) => {
+                        out.push(1);
+                        out.extend_from_slice(&tick.to_le_bytes());
+                    }
+                    None => out.push(0),
+                }
+            }
+        }
+
         // Econ agent state in id order, over the LIVE arena agents (a dead colonist
         // is freed by G4a real removal, so it drops out here). This includes every
         // mutable public field that can affect later stepping: holdings, labor, full
@@ -2034,6 +2785,10 @@ impl Settlement {
         }
 
         // Colonist need/liveness state in generation order.
+        let has_estate_destinations = self
+            .colonists
+            .iter()
+            .any(|colonist| colonist.estate_destination.is_some());
         out.extend_from_slice(&(self.colonists.len() as u32).to_le_bytes());
         for colonist in &self.colonists {
             out.extend_from_slice(&colonist.id.0.to_le_bytes());
@@ -2067,6 +2822,39 @@ impl Settlement {
                     Some(recipe) => {
                         out.push(1);
                         push_recipe_id_bytes(&mut out, recipe);
+                    }
+                    None => out.push(0),
+                }
+            }
+            if is_demographic {
+                // The G4b demography fields steer aging, old-age mortality, the birth
+                // roster, and culture inheritance, so they are part of the
+                // future-behavior identity. Gated on a demography overlay, so the
+                // pre-G4b canonical layout for every other config is unchanged.
+                match colonist.household {
+                    Some(h) => {
+                        out.push(1);
+                        out.extend_from_slice(&(h as u32).to_le_bytes());
+                    }
+                    None => out.push(0),
+                }
+                out.extend_from_slice(&colonist.age.to_le_bytes());
+                match colonist.lifespan {
+                    Some(life) => {
+                        out.push(1);
+                        out.extend_from_slice(&life.to_le_bytes());
+                    }
+                    None => out.push(0),
+                }
+                out.extend_from_slice(&colonist.seed.to_le_bytes());
+            }
+            if has_estate_destinations {
+                match colonist.estate_destination {
+                    Some(EstateDestination::Commons) => out.push(1),
+                    Some(EstateDestination::Household { household, heir }) => {
+                        out.push(2);
+                        out.extend_from_slice(&(household as u32).to_le_bytes());
+                        out.extend_from_slice(&heir.0.to_le_bytes());
                     }
                     None => out.push(0),
                 }
@@ -2202,6 +2990,62 @@ fn build_agent(
     };
     Agent {
         id,
+        scale: regenerate_scale(need, culture, known),
+        stock,
+        gold: Gold(gold),
+        labor_capacity: 0,
+        hunger_deficit: 0,
+        roles: vec![Role::Household],
+        expect: belief_vec(),
+    }
+}
+
+/// Build a G4b household member's econ agent (a founder or a newborn): a
+/// non-spatial householder endowed from its household's `spec` (gold + a FOOD/WOOD
+/// buffer), with a value scale generated from its need state and (inherited)
+/// culture. Like every other colonist it is a `Household`-role agent with neutral
+/// price beliefs; it has no labor capacity and no world agent (it never hauls).
+fn build_demography_agent(
+    id: AgentId,
+    need: &NeedState,
+    culture: &CultureParams,
+    known: &KnownGoods,
+    spec: &crate::demography::HouseholdSpec,
+) -> Agent {
+    let mut stock = Stock::new(NET.0);
+    stock.add(FOOD, spec.starting_food);
+    stock.add(WOOD, spec.starting_wood);
+    Agent {
+        id,
+        scale: regenerate_scale(need, culture, known),
+        stock,
+        gold: Gold(spec.starting_gold),
+        labor_capacity: 0,
+        hunger_deficit: 0,
+        roles: vec![Role::Household],
+        expect: belief_vec(),
+    }
+}
+
+/// Build a newborn householder's econ agent (G4b): a non-spatial `Household`-role
+/// agent endowed only with the **conserved transfer** its parent gave it (a FOOD
+/// buffer plus, on closed-GOLD M1, any gold gift already represented in `gold`),
+/// its value scale generated from a newborn-rested need state and its
+/// inherited+mutated culture. Its `id` is overwritten by [`Society::add_agent`].
+/// It carries no wood — the household provision supplies that from its first tick.
+/// M3 callers install the newborn with zero ledger money and move any gold gift
+/// afterward through [`Society::transfer_gold`], so this mints nothing.
+fn build_newborn_agent(
+    need: &NeedState,
+    culture: &CultureParams,
+    known: &KnownGoods,
+    gold: u64,
+    food: u32,
+) -> Agent {
+    let mut stock = Stock::new(NET.0);
+    stock.add(FOOD, food);
+    Agent {
+        id: AgentId(0), // overwritten by the arena on insert
         scale: regenerate_scale(need, culture, known),
         stock,
         gold: Gold(gold),
@@ -2478,6 +3322,28 @@ fn push_dynamics_bytes(out: &mut Vec<u8>, d: &NeedDynamics) {
     out.extend_from_slice(&d.death_window.to_le_bytes());
 }
 
+fn push_demography_config_bytes(out: &mut Vec<u8>, demo: &DemographyConfig) {
+    out.extend_from_slice(&(demo.households.len() as u32).to_le_bytes());
+    for household in &demo.households {
+        out.extend_from_slice(&household.founders.to_le_bytes());
+        out.extend_from_slice(&household.time_preference_base_bps.to_le_bytes());
+        out.extend_from_slice(&household.food_provision.to_le_bytes());
+        out.extend_from_slice(&household.wood_provision.to_le_bytes());
+        out.extend_from_slice(&household.starting_gold.to_le_bytes());
+        out.extend_from_slice(&household.starting_food.to_le_bytes());
+        out.extend_from_slice(&household.starting_wood.to_le_bytes());
+    }
+    out.extend_from_slice(&demo.ticks_per_year.to_le_bytes());
+    out.extend_from_slice(&demo.old_age_onset_years.to_le_bytes());
+    out.extend_from_slice(&demo.lifespan_span_years.to_le_bytes());
+    out.extend_from_slice(&demo.birth_interval.to_le_bytes());
+    out.extend_from_slice(&demo.birth_hunger_ceiling.to_le_bytes());
+    out.extend_from_slice(&demo.max_household_size.to_le_bytes());
+    out.extend_from_slice(&demo.child_food_endowment.to_le_bytes());
+    out.extend_from_slice(&demo.child_gold_endowment.to_le_bytes());
+    out.extend_from_slice(&demo.mutation_delta_bps.to_le_bytes());
+}
+
 fn push_role_bytes(out: &mut Vec<u8>, role: Role) {
     out.push(match role {
         Role::Household => 0,
@@ -2635,6 +3501,147 @@ mod tests {
     }
 
     #[test]
+    fn demography_provisions_report_only_credited_headroom() {
+        let mut config = SettlementConfig::lineages();
+        config.demography = Some(DemographyConfig {
+            households: vec![crate::demography::HouseholdSpec {
+                founders: 1,
+                time_preference_base_bps: 500,
+                food_provision: 7,
+                wood_provision: 7,
+                starting_gold: 0,
+                starting_food: u32::MAX,
+                starting_wood: u32::MAX - 1,
+            }],
+            birth_interval: 100,
+            ..DemographyConfig::lineages()
+        });
+        let mut s = Settlement::generate(1, &config);
+        let id = s.colonist_id(0).unwrap();
+        let mut report = EconTickReport::default();
+
+        s.deliver_demography_provisions(&mut report);
+
+        let agent = s.society.agents.get(id).unwrap();
+        assert_eq!(agent.stock.get(FOOD), u32::MAX);
+        assert_eq!(agent.stock.get(WOOD), u32::MAX);
+        assert_eq!(
+            report.endowment_of(FOOD),
+            0,
+            "saturated FOOD stock must not report uncredited provision"
+        );
+        assert_eq!(
+            report.endowment_of(WOOD),
+            1,
+            "only WOOD headroom should be reported as provisioned"
+        );
+    }
+
+    #[test]
+    fn estate_to_heir_overflow_routes_remainder_to_commons() {
+        // A death's estate that would push a living heir's stock past `u32::MAX` must
+        // not silently saturate-and-drop the overflow: the heir takes only its headroom
+        // and the uncreditable remainder routes to the commons, so whole-system
+        // conservation holds even at the ceiling. (The saturating `Stock::add` would
+        // otherwise vanish the overflow — this pins the headroom clamp.)
+        let mut config = SettlementConfig::lineages();
+        config.demography = Some(DemographyConfig {
+            households: vec![crate::demography::HouseholdSpec {
+                founders: 2,
+                time_preference_base_bps: 500,
+                food_provision: 0,
+                wood_provision: 0,
+                starting_gold: 0,
+                starting_food: u32::MAX - 1,
+                starting_wood: 0,
+            }],
+            ..DemographyConfig::lineages()
+        });
+        // Settle directly post-generate (no tick, no provision, no consumption), so each
+        // founder holds exactly `starting_food` and the heir's headroom is a single unit.
+        let mut s = Settlement::generate(1, &config);
+        let deceased = s.colonist_id(0).unwrap();
+        let heir = s.colonist_id(1).unwrap();
+        assert_eq!(
+            s.society.agents.get(heir).unwrap().stock.get(FOOD),
+            u32::MAX - 1
+        );
+
+        let before = s.whole_system_total(FOOD);
+
+        // Mirror the real caller: mark the dying member dead, then settle to heirs.
+        let slot = s.slot_for_id(deceased).unwrap();
+        s.mark_colonist_dead(slot);
+        s.settle_estate_to_heirs(deceased);
+
+        // The heir saturates at the ceiling, the remainder (the deceased's stock minus
+        // the heir's single unit of headroom) lands in the commons, and total FOOD is
+        // unchanged — nothing minted, nothing lost.
+        assert_eq!(
+            s.society.agents.get(heir).unwrap().stock.get(FOOD),
+            u32::MAX
+        );
+        assert_eq!(s.commons_stock_of(FOOD), u64::from(u32::MAX - 2));
+        assert_eq!(
+            s.whole_system_total(FOOD),
+            before,
+            "estate overflow to the commons must conserve total FOOD"
+        );
+    }
+
+    #[test]
+    fn birth_gold_endowment_uses_only_unreserved_parent_balance() {
+        let mut config = SettlementConfig::lineages();
+        config.demography = Some(DemographyConfig {
+            households: vec![crate::demography::HouseholdSpec {
+                founders: 1,
+                time_preference_base_bps: 500,
+                food_provision: 0,
+                wood_provision: 0,
+                starting_gold: 5,
+                starting_food: 8,
+                starting_wood: 0,
+            }],
+            birth_interval: 0,
+            max_household_size: 2,
+            child_food_endowment: 4,
+            child_gold_endowment: 5,
+            ..DemographyConfig::lineages()
+        });
+        let mut s = Settlement::generate(1, &config);
+        let parent = s.colonist_id(0).unwrap();
+        let bid = econ::market::Order {
+            agent: parent,
+            side: econ::market::OrderSide::Bid,
+            good: FOOD,
+            limit: Gold(1),
+            qty: 4,
+            seq: 1,
+            expires_tick: 10,
+        };
+        assert!(s
+            .society
+            .reservations
+            .reserve_order(&s.society.agents, &bid));
+        assert_eq!(s.society.reservations.reserved_gold(parent), Gold(4));
+
+        assert_eq!(s.run_births(), 1);
+
+        let child = s.colonist_id(1).unwrap();
+        assert_eq!(
+            s.society.agents.get(child).unwrap().gold,
+            Gold(1),
+            "the newborn gets only the parent's unreserved gold"
+        );
+        let parent_agent = s.society.agents.get(parent).unwrap();
+        assert_eq!(parent_agent.gold, Gold(4));
+        assert!(
+            s.society.reservations.reserved_gold(parent) <= parent_agent.gold,
+            "birth must not leave reserved gold above the parent's balance"
+        );
+    }
+
+    #[test]
     fn settle_estate_drains_a_stranded_pending_deposit_to_the_commons() {
         // A gatherer can deliver units to the exchange whose econ credit is still
         // pending when it dies. Estate settlement must drain that stranded escrow to
@@ -2774,6 +3781,19 @@ mod tests {
     fn generate_rejects_gatherers_without_nodes() {
         let mut config = SettlementConfig::viable();
         config.nodes.clear();
+        let _ = Settlement::generate(1, &config);
+    }
+
+    #[test]
+    #[should_panic(expected = "non-FOOD staple")]
+    fn generate_rejects_demography_with_a_non_food_staple() {
+        // The demography overlay provisions FOOD as the hunger staple. Pairing it with
+        // a `bread_is_staple` chain (hunger ↔ bread) would leave householders fed a
+        // good they never eat — `generate` rejects the combination loudly rather than
+        // ship a silent-starvation config. `grain_flour_bread()` defaults the staple to
+        // bread, so the guard trips before any colonist is placed.
+        let mut config = SettlementConfig::lineages();
+        config.chain = Some(ChainConfig::grain_flour_bread());
         let _ = Settlement::generate(1, &config);
     }
 

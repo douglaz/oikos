@@ -179,6 +179,19 @@ impl Reservations {
         }
     }
 
+    /// Materialize a zero-reservation slot for `agent` (G4b birth) — the
+    /// insert-side mirror of [`Reservations::forget_agent`]. The constructor
+    /// pre-creates an (empty) slot for every agent in the initial cast, so a
+    /// runtime-born agent must too, keeping the table's "every live agent has a
+    /// reservation slot" invariant. Reserving nothing (`Gold::ZERO`, empty stock)
+    /// is exactly a newborn's state, and lazy [`Reservations::reserve_order`] would
+    /// create the same slot on the agent's first bid/ask — this just does it eagerly
+    /// at birth so the cache is reconciled the instant the agent joins. Called only
+    /// on a birth; no lab/no-birth path invokes it, so the goldens are byte-identical.
+    pub fn ensure_agent_slot(&mut self, agent: AgentId) {
+        self.ensure_agent(agent);
+    }
+
     fn index_of(&self, agent: AgentId) -> Option<usize> {
         self.agent_ids.binary_search(&agent).ok()
     }

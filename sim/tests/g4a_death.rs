@@ -105,6 +105,11 @@ fn death_frees_the_arena_slot() {
         s.society().agents.get(hauler).is_none(),
         "the dead colonist's id resolves to None"
     );
+    assert_eq!(
+        s.world().agent_status(hauler),
+        None,
+        "the dead colonist's spatial agent is removed"
+    );
 
     // The slot is reusable: a fresh insert takes the freed numeric index with a
     // bumped generation, and the stale id stays None even after reuse.
@@ -257,6 +262,7 @@ fn dead_colonist_places_no_orders_and_is_not_activated() {
             );
             // Resolves to None and holds no spot reservation (posts no orders).
             assert!(s.society().agents.get(dead).is_none());
+            assert_eq!(s.world().agent_status(dead), None);
             assert_eq!(
                 s.society().reservations.reserved_gold(dead),
                 Gold::ZERO,

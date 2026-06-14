@@ -69,6 +69,12 @@ const SCENARIOS: &[Scenario] = &[
         description: "G3b no-spread control: bread demand removed, so no roles form",
         build: SettlementConfig::emergent_chain_control,
     },
+    Scenario {
+        name: "lineages",
+        description:
+            "G4b demography: two households age, reproduce, inherit — the patient lineage out-saves",
+        build: SettlementConfig::lineages,
+    },
 ];
 
 fn build_near() -> SettlementConfig {
