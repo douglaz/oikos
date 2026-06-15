@@ -97,8 +97,8 @@ pub use region::{Region, RegionConfig, RegionTickReport, RoadPlan, Route};
 pub use settlement::{
     recipe_adoption_pays, recipe_adoption_pays_for_money, BankConfig, BarterConfig, BenchSurface,
     ChainConfig, CycleConfig, CycleKind, EconTickReport, EstateDestination, LineageStats, NodeSpec,
-    Settlement, SettlementConfig, TenderBench, TenderPolicy, TraderEndowment, Vocation,
-    ECON_TICKS_PER_YEAR, FAST_TICKS_PER_ECON_TICK,
+    Settlement, SettlementConfig, TaxLevy, TaxPolicy, TenderBench, TenderPolicy, TraderEndowment,
+    Vocation, ECON_TICKS_PER_YEAR, FAST_TICKS_PER_ECON_TICK,
 };
 
 /// Read-only re-exports of the `econ`/`life` types that make up the settlement's
@@ -128,6 +128,6 @@ pub use life::NeedState;
 /// [`settlement::TenderPolicy`].
 pub use econ::money::{
     bank_repayment_tender_name, issuer_repayment_tender_name, labor_wage_tender_name,
-    public_debt_tender_name, public_spot_tender_name, BankRepaymentTender, IssuerRepaymentTender,
-    LaborWageTender, PublicDebtTender, PublicSpotTender,
+    public_debt_tender_name, public_spot_tender_name, tax_receivability_name, BankRepaymentTender,
+    IssuerRepaymentTender, LaborWageTender, PublicDebtTender, PublicSpotTender, TaxReceivability,
 };

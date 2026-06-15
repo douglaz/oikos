@@ -2219,3 +2219,103 @@ alike. No `HashMap` in logic.
   `sound-money` and every spatial settlement are unchanged).
 - **No multi-seed study.** Magnitudes are SIGN only (the cycle fires vs is inert) plus exact
   conservation.
+
+## G8c-3 — tax receivability (the state's counter-lever) (`docs/impl-g8c3.md`)
+
+G8c-2 gave the player the *private* acceptance levers: when the labor market refuses fiat wages,
+fiat credit is **inert**. **G8c-3** adds the *state's* counter-lever — **tax receivability** (the
+lab's **M21**, chartalist) — as a sim policy on that same settlement. The state levies a tax and
+declares which media discharge it; when the tax is **receivable only in fiat**, agents must obtain
+and remit fiat to settle the liability, so fiat gains a *compelled* demand through the **fiscal**
+channel even where the labor market refused it. The headline ties straight back to G8c-2: in a
+settlement whose wages are **specie-only** (fiat credit inert, no private fiat demand), a
+**fiat-receivable** tax routes fiat through the fiscal channel — the chartalist answer to private
+refusal, sitting opposite the M17 wage lever. **G8c-3 is the last economic milestone before the G9
+graphical-UI hand-off.**
+
+### The divergence: a tax LEVER routed into econ's unchanged M21 machinery
+
+The M21 tax layer already lives in econ: a tax is a `DebtContract` with `principal = ZERO` whose
+lender is the single state issuer; the payables view (`agent_debt_views`) is the demand mechanism;
+settlement is `settle_due_debts_m3` **gated by `TaxReceivability`, never the credit tenders**; the
+issuer tracks `taxes_levied` / `tax_receipts_fiat` / `tax_receipts_specie` / `taxes_defaulted`; and
+the `SetTaxReceivability` / `LevyTax` events author the policy timeline. So G8c-3 adds a **config
+lever**, not new economics:
+
+- A sim `TaxPolicy` carries the `receivability` (the chartalist gate) and a `Vec<TaxLevy>` (each a
+  zero-principal `LevyTax`, single-issuer — no issuer id, exactly as econ's M21). `apply_to`
+  appends a `SetTaxReceivability` (always, so the twin differs in exactly the receivability byte and
+  the active policy is set explicitly) plus one `LevyTax` per levy, all at `Tick(0)`.
+- `SettlementConfig` gains `tax: Option<TaxPolicy>`, layered onto the **cycle** scenario in
+  `generate_finance` (the tax overlay requires the credit cycle — the chartalist counter-lever to
+  the wage refusal — and is rejected on a bench). A `None` overlay adds nothing and omits the
+  canonical tax block entirely, so every non-tax settlement is byte-identical by construction.
+- `tax_in_fiat` (`FiatOnly`) and `tax_in_specie` (`SpecieOnly`) are the headline twin, both built on
+  `wage_refusal_cycle` (specie-only wages). They levy the **same** set — a fiat-holding capitalist
+  (`AgentId(200)`, holding the issuer's idle fiat) and a specie-holding trader (`AgentId(100)`) — so
+  the *only* difference is the receivability.
+
+### The headline: the fiscal channel circulates fiat the labor channel refused
+
+Under specie-only wages the fiat-credit capitalist holds the issuer's fiat **idle** (it cannot pay
+specie-only wages). The receivability gate then decides which media remit at settlement:
+
+- **`tax-in-fiat`** (`FiatOnly`): the capitalist must remit its idle fiat, so the tax settles in
+  fiat (`tax_receipts_fiat > 0`) while **no** fiat wage ever settles (`wage_fiat_settled() == 0`).
+  Fiat circulates **via tax** where the labor market refused it. The specie-holding trader holds no
+  fiat, so its levy is **unmet by rule** (a default — conserved, not a leak).
+- **`tax-in-specie`** (`SpecieOnly`): the trader remits specie (`tax_receipts_specie > 0`) and **no**
+  fiat is compelled (`tax_receipts_fiat == 0`); the capitalist's fiat is refused, so it defaults.
+
+Because the levy set is identical, the compelled fiat demand is isolated to the **receivability**
+gate — not the levy, not the spatial dynamics. *If the control showed fiat receipts, the gate would
+not be routing settlement.* This is M21's media gate (`receivability_gates_media_not_amounts`) at
+the settlement level: a medium not in the active `TaxReceivability` cannot discharge the tax **even
+if held** — the specie-holder defaults though it holds specie; the fiat-holder defaults though it
+holds fiat. The declared **Known Seam** is preserved: the payable-accounting labor pull is
+amount-based and media enter only at settlement (the receivable medium settles via the fiat-first
+debit order); G8c-3 engineers no media-aware planning into the tax path.
+
+### Tax is fiscal, not credit
+
+A levy is a zero-principal `DebtContract` owed to the single issuer, funded as `Tax` (not credit).
+The tax levy/receipt **never** moves `credit_retired` or `fiat_credit_outstanding` (econ's M21 fact
+2): through the levy's due tick `credit_retired` stays zero while the tax settles, so a fiat receipt
+is honest money contraction (`fiat_retired`) and a specie receipt goes to the issuer vault — never
+credit retirement. The tax is the **fiscal** channel that circulates fiat the **labor** channel
+(G8c-2) refused.
+
+### Conservation
+
+A levy is either **received** (into the issuer, in the receivable medium) or **defaulted** (unmet
+**by rule** — the holder lacks the receivable medium), never created or destroyed:
+`taxes_levied == tax_receipts_fiat + tax_receipts_specie + taxes_defaulted`. The M3 ledger
+reconciles every tick under every receivability, and the fiat base stays the exact `issued −
+retired` identity. A default is unmet-by-rule, not a leak.
+
+### Determinism
+
+Integer state; the econ `Rng` is consumed only at generation; nothing is drawn in the loop. The
+canonical bytes carry the finance state plus the levy timeline (already in the cycle scenario's
+events) and a gated tax block (the configured + active receivability and the issuer tax accounts —
+the settled outcome), so `tax_run_is_deterministic` is byte-identical for the fiat headline and the
+specie control alike. The block is **omitted** for a non-tax settlement, so every pre-G8c-3 layout
+is unchanged. No `HashMap` in logic.
+
+### Excluded from G8c-3 (deferred), and the G9 hand-off
+
+- **No change to econ M21 BEHAVIOR** — the six goldens are byte-identical; all tax wiring is
+  additive/game-only (a no-tax settlement omits the canonical block, so every plain cycle, bench,
+  and spatial settlement is unchanged). The Known Seam is preserved, not engineered around.
+- **No player-`Command`/UI tax setting** — the levy/receivability are config-set here; the command
+  route is G9.
+- **No multi-issuer tax** — econ's M21 is single-issuer; the levy carries no issuer id.
+- **No multi-seed study.** Magnitudes are SIGN only (`tax_receipts_fiat > 0` vs `== 0`; defaults
+  `> 0` vs `0`) plus exact conservation.
+- **The next milestone is G9 — the Bevy graphical UI.** G9 is the player-facing interactive layer
+  (graphics, input, the player-`Command` route for tenders/taxes and every other lever). **It cannot
+  be driven by the headless `rb-lite` + golden-test loop** — there is no text dashboard or canonical
+  byte string to assert against a windowed, input-driven renderer — **so G9 is the explicit hand-off
+  point to the user.** G8c-3 closes the economic-engine arc the headless loop has built from G0b
+  through the full Austrian cycle, the tender levers, and now the chartalist tax counter-lever; the
+  remaining work (wiring these proven levers to a graphical UI) is handed off.

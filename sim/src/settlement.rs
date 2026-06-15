@@ -322,6 +322,130 @@ pub struct TenderBench {
     pub tender: TenderPolicy,
 }
 
+/// The fiat-holding agent the G8c-3 counter-lever levies: a fiat-credit **capitalist**
+/// in the wage-refusal cycle. Under specie-only wages it holds the issuer's fiat
+/// **idle** (it cannot pay specie-only wages), so a `FiatOnly` tax compels that idle
+/// fiat back to the issuer through the fiscal channel — fiat circulates via tax where
+/// the labor market refused it (the chartalist headline). The lab's
+/// `EmergedGoldFiatCreditExpansion` seeds it (a `project_cluster` capitalist).
+const TAX_FIAT_HOLDER: AgentId = AgentId(200);
+
+/// The specie-holding agent the same levy targets: an `organic_credit_pair` **trader**
+/// that holds specie (and no fiat) throughout the cycle. Under a `SpecieOnly` tax it
+/// remits specie (`tax_receipts_specie > 0`); under a `FiatOnly` tax it holds no fiat
+/// and the levy is unmet-by-rule (a default, not a leak). Taxing both a fiat-holder and
+/// a specie-holder with the *same* levy in both configs is what isolates the compelled
+/// fiat demand to the **receivability** policy: the two configs differ only in the
+/// `SetTaxReceivability` value, and the gate alone decides which medium settles.
+const TAX_SPECIE_HOLDER: AgentId = AgentId(100);
+
+/// The levy each counter-lever target owes (well within each holder's balance, so the
+/// receivable medium settles in full and the non-receivable one defaults — sign only).
+const TAX_LEVY_AMOUNT: Gold = Gold(1);
+
+/// The tick the counter-lever levy comes due. Chosen inside the cycle's
+/// fiat-outstanding window (after the regime reaches `Fiat` and the capitalists hold
+/// the borrowed fiat, before the loans unwind) and before any loan repayment retires
+/// credit — so the tax settlement is purely fiscal at its due tick (test 4).
+const TAX_DUE_TICK: Tick = Tick(8);
+
+/// The G8c-3 **tax overlay** — the state's levy + receivability layered on the finance
+/// (wage-refusal cycle) settlement, routed through econ's *unchanged* M21 machinery
+/// (the `SetTaxReceivability` / `LevyTax` events, `apply_levy_tax`, `settle_due_debts_m3`
+/// gated by [`TaxReceivability`], and the issuer tax accounts). The chartalist
+/// counter-lever to G8c-2: under specie-only wages (fiat credit inert, no private fiat
+/// demand) a **fiat-receivable** tax compels fiat demand through the **fiscal** channel.
+///
+/// A tax is a zero-principal [`DebtContract`] owed to the single state issuer; the
+/// payables view pulls the agent's labor to cover the **amount**, and the receivability
+/// gate decides which media may remit at settlement (the declared Known Seam — media
+/// enter only at settlement; this overlay engineers no media-aware planning). Tax is
+/// **fiscal, not credit**: receipts move into the issuer's tax accounts and never touch
+/// `credit_retired` / `fiat_credit_outstanding`. Set by config here; the
+/// player-`Command` route is G9. Single-issuer only (econ's M21): the levy carries no
+/// issuer id.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaxPolicy {
+    /// Which media discharge the tax — the chartalist gate. `FiatOnly` compels fiat
+    /// demand; `SpecieOnly` (the control) compels none; `FiatAndSpecie` accepts either.
+    pub receivability: TaxReceivability,
+    /// The levies the state raises, each a zero-principal liability owed to the single
+    /// issuer. The counter-lever twin levies the *same* set in both configs, so only the
+    /// receivability differs.
+    pub levies: Vec<TaxLevy>,
+}
+
+/// One state levy — a single `LevyTax` event (econ's M21, single-issuer, no issuer id).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TaxLevy {
+    /// The taxed agent (the liability's borrower).
+    pub agent: AgentId,
+    /// The amount owed (the zero-principal debt's `due`).
+    pub amount: Gold,
+    /// The tick the levy comes due (when `settle_due_debts_m3` discharges or defaults it).
+    pub due_tick: Tick,
+}
+
+impl TaxPolicy {
+    /// The G8c-3 **counter-lever** levy: tax a fiat-holding capitalist
+    /// ([`TAX_FIAT_HOLDER`]) and a specie-holding trader ([`TAX_SPECIE_HOLDER`]) the
+    /// same fixed amount at the same due tick. Paired with [`TaxReceivability::FiatOnly`]
+    /// (the headline) the fiat-holder remits fiat (`tax_receipts_fiat > 0`) and the
+    /// specie-holder defaults; with [`TaxReceivability::SpecieOnly`] (the control) the
+    /// specie-holder remits specie (`tax_receipts_specie > 0`, `tax_receipts_fiat == 0`)
+    /// and the fiat-holder defaults. Because the levy set is identical, the *only*
+    /// difference between the twin is the receivability — so the compelled fiat demand
+    /// is isolated to the gate, not the levy or the spatial dynamics.
+    fn counter_lever(receivability: TaxReceivability) -> Self {
+        Self {
+            receivability,
+            levies: vec![
+                TaxLevy {
+                    agent: TAX_FIAT_HOLDER,
+                    amount: TAX_LEVY_AMOUNT,
+                    due_tick: TAX_DUE_TICK,
+                },
+                TaxLevy {
+                    agent: TAX_SPECIE_HOLDER,
+                    amount: TAX_LEVY_AMOUNT,
+                    due_tick: TAX_DUE_TICK,
+                },
+            ],
+        }
+    }
+
+    /// Layer this overlay's M21 events onto a finance scenario: the
+    /// [`EventKind::SetTaxReceivability`] (always emitted, so the counter-lever twin
+    /// differs in exactly the receivability byte and the active policy is set
+    /// explicitly) and one [`EventKind::LevyTax`] per levy — all at `Tick(0)`, before
+    /// any settlement. Reuses econ's unchanged tax events; the sim only authors the
+    /// timeline.
+    fn apply_to(&self, scenario: &mut MarketScenario) {
+        scenario.events.push(Event {
+            tick: Tick(0),
+            kind: EventKind::SetTaxReceivability(self.receivability),
+        });
+        for levy in &self.levies {
+            scenario.events.push(Event {
+                tick: Tick(0),
+                kind: EventKind::LevyTax {
+                    agent: levy.agent,
+                    amount: levy.amount,
+                    due_tick: levy.due_tick,
+                },
+            });
+        }
+    }
+
+    /// The total levied across this overlay's levies (`taxes_levied` should match it
+    /// once every levy event has fired) — the canonical/viewer headline magnitude.
+    fn total_levied(&self) -> Gold {
+        self.levies
+            .iter()
+            .fold(Gold::ZERO, |sum, levy| sum.saturating_add(levy.amount))
+    }
+}
+
 /// Build the econ [`MarketScenario`] a [`CycleConfig`] runs. Both kinds share the
 /// lab's `EmergedGoldFiatCreditExpansion` agents, roundabout project line, and
 /// issuer (so they are a true falsification twin); they differ only in the **regime
@@ -980,6 +1104,17 @@ pub struct SettlementConfig {
     /// [`issuer_repayment_tender_bench`](SettlementConfig::issuer_repayment_tender_bench)
     /// constructors.
     pub tender_bench: Option<TenderBench>,
+    /// The G8c-3 **tax overlay** (the state's levy + receivability), or `None` for every
+    /// config that levies no tax — which keeps them all byte-identical by construction
+    /// (the canonical tax block is omitted entirely). When `Some`, the settlement is the
+    /// finance (credit-cycle) settlement with econ's unchanged M21 tax machinery routed
+    /// in: the [`SetTaxReceivability`](EventKind::SetTaxReceivability) /
+    /// [`LevyTax`](EventKind::LevyTax) events are layered onto the cycle scenario, and
+    /// each econ tick steps the society so the levy seeds and settles endogenously.
+    /// Requires the credit cycle ([`Self::cycle`] `Some`) and is mutually exclusive with
+    /// a tender bench. See [`TaxPolicy`], [`SettlementConfig::tax_in_fiat`], and
+    /// [`SettlementConfig::tax_in_specie`].
+    pub tax: Option<TaxPolicy>,
 }
 
 impl SettlementConfig {
@@ -1046,6 +1181,7 @@ impl SettlementConfig {
             bank: None,
             cycle: None,
             tender_bench: None,
+            tax: None,
         }
     }
 
@@ -1183,6 +1319,39 @@ impl SettlementConfig {
                 },
             }),
             ..Self::finance_base()
+        }
+    }
+
+    /// The G8c-3 **tax-in-fiat** headline — the state's chartalist counter-lever to
+    /// G8c-2. The wage-refusal cycle (specie-only wages → fiat credit inert, no private
+    /// fiat demand) with a **fiat-receivable** state tax ([`TaxReceivability::FiatOnly`]):
+    /// the fiat-credit capitalist holding idle fiat must remit it to the state, so fiat
+    /// circulates through the **fiscal** channel (`tax_receipts_fiat > 0`) even though
+    /// the **labor** channel refused it — the state compels what the market would not.
+    /// Paired with [`Self::tax_in_specie`] it is the milestone's falsification twin: the
+    /// *only* difference is the receivability, so the compelled fiat demand is isolated
+    /// to the gate (not the levy, which is identical, or the spatial dynamics). Routes
+    /// econ's unchanged M21 tax machinery; adds no tax logic to econ.
+    pub fn tax_in_fiat() -> Self {
+        Self {
+            tax: Some(TaxPolicy::counter_lever(TaxReceivability::FiatOnly)),
+            ..Self::wage_refusal_cycle()
+        }
+    }
+
+    /// The G8c-3 **tax-in-specie** control — the falsification twin of
+    /// [`Self::tax_in_fiat`]. The same wage-refusal cycle and the *same* levy set, but a
+    /// **specie-receivable** state tax ([`TaxReceivability::SpecieOnly`]): the
+    /// specie-holding trader remits specie (`tax_receipts_specie > 0`) and **no** fiat
+    /// is compelled (`tax_receipts_fiat == 0`). Paired with the headline this proves the
+    /// compelled fiat demand comes from the **receivability** policy: if the control
+    /// showed fiat receipts, the gate would not be routing settlement. The fiat-holder's
+    /// levy is unmet-by-rule under specie receivability (a default, conserved — not a
+    /// leak), exactly as the headline's specie-holder defaults under fiat receivability.
+    pub fn tax_in_specie() -> Self {
+        Self {
+            tax: Some(TaxPolicy::counter_lever(TaxReceivability::SpecieOnly)),
+            ..Self::wage_refusal_cycle()
         }
     }
 
@@ -1330,6 +1499,7 @@ impl SettlementConfig {
             bank: None,
             cycle: None,
             tender_bench: None,
+            tax: None,
         }
     }
 
@@ -1404,6 +1574,7 @@ impl SettlementConfig {
             bank: None,
             cycle: None,
             tender_bench: None,
+            tax: None,
         }
     }
 
@@ -1518,6 +1689,7 @@ impl SettlementConfig {
             bank: None,
             cycle: None,
             tender_bench: None,
+            tax: None,
         }
     }
 
@@ -1654,6 +1826,7 @@ impl SettlementConfig {
             bank: None,
             cycle: None,
             tender_bench: None,
+            tax: None,
         }
     }
 
@@ -1898,6 +2071,7 @@ impl SettlementConfig {
             bank: None,
             cycle: None,
             tender_bench: None,
+            tax: None,
         }
     }
 
@@ -2259,6 +2433,30 @@ pub struct Settlement {
     /// surface's refusal-vs-acceptance. Mutually exclusive with [`Self::cycle`]. Retains
     /// the surface + base scenario for the canonical-bytes determinism surface.
     bench: Option<BenchRuntime>,
+    /// The G8c-3 **tax overlay** runtime, or `None` for every settlement that levies no
+    /// tax (the canonical tax block is then omitted, so non-tax runs are byte-identical).
+    /// When `Some`, the finance (cycle) settlement carries the state's levy +
+    /// receivability: the M21 events are in `society` (and in `cycle.scenario`), and this
+    /// retains the configured receivability + levied total for readback and the canonical
+    /// fingerprint. The live receivability, receipts, and defaults are read from the
+    /// society / its issuer.
+    tax: Option<TaxRuntime>,
+}
+
+/// The G8c-3 tax-overlay runtime (held on a finance [`Settlement`]). Reused econ M21
+/// machinery does the work (seeds the zero-principal liability, settles it under the
+/// receivability gate, books the issuer tax accounts); this retains only what the sim
+/// surfaces and pins: the configured receivability and the total levied. The live
+/// outcomes (receipts, defaults, the active receivability after the Tick(0) event fires)
+/// are read from the society and its single issuer.
+struct TaxRuntime {
+    /// The receivability the overlay set — the chartalist gate. Read back live from the
+    /// society for the active policy; retained here for the canonical fingerprint and to
+    /// mark the settlement as a tax settlement.
+    receivability: TaxReceivability,
+    /// The total the overlay levies (matches the issuer's `taxes_levied` once every levy
+    /// event has fired) — the viewer/headline magnitude.
+    levied: Gold,
 }
 
 /// The G8c-1 credit-cycle runtime (held on a finance [`Settlement`]). Reused econ
@@ -2336,10 +2534,11 @@ impl Settlement {
     /// randomness (per-colonist culture) is drawn here; neither loop draws any.
     /// Deterministic: same `(seed, config)` → byte-identical settlement.
     pub fn generate(seed: u64, config: &SettlementConfig) -> Self {
-        // G8c-1/G8c-2: a finance settlement (the credit cycle or a tender bench) is
-        // built from econ's unchanged scenario, not a spatial colony — branch before
-        // the spatial setup. The guards live in `generate_finance`.
-        if config.cycle.is_some() || config.tender_bench.is_some() {
+        // G8c-1/G8c-2/G8c-3: a finance settlement (the credit cycle, a tender bench, or
+        // the tax overlay on the cycle) is built from econ's unchanged scenario, not a
+        // spatial colony — branch before the spatial setup. The guards live in
+        // `generate_finance`.
+        if config.cycle.is_some() || config.tender_bench.is_some() || config.tax.is_some() {
             return Self::generate_finance(seed, config);
         }
         assert!(
@@ -3061,6 +3260,9 @@ impl Settlement {
             cycle: None,
             shadow_cycle_cache: RefCell::new(None),
             bench: None,
+            // G8c-3: a spatial settlement levies no tax (the finance path returns early
+            // from `generate`), so the tax overlay is always absent here.
+            tax: None,
         }
     }
 
@@ -3097,6 +3299,14 @@ impl Settlement {
              gatherers/consumers/nodes); use the credit_cycle / sound_money / \
              *_tender_* constructors"
         );
+        // G8c-3: the tax overlay rides on the credit-cycle settlement (the chartalist
+        // counter-lever to the wage refusal) — never on a tender bench, which exercises
+        // a different surface. The levy/receivability route through econ's M21 machinery
+        // on the cycle society.
+        assert!(
+            config.tax.is_none() || config.cycle.is_some(),
+            "a G8c-3 tax overlay requires the credit cycle (use tax_in_fiat / tax_in_specie)"
+        );
 
         // Build the society from econ's unchanged scenario — the credit-ladder cycle
         // (with its tender policy layered in) or a fiat-displacement tender bench. The
@@ -3113,8 +3323,23 @@ impl Settlement {
                 let scenario = tender_bench_scenario(bench);
                 (scenario, None, Some(bench.surface))
             }
-            _ => unreachable!("the finance branch is taken only with a cycle or a bench"),
+            _ => unreachable!(
+                "the finance branch is taken only with a cycle, a bench, or a tax on the cycle \
+                 (cycle and bench are asserted mutually exclusive above)"
+            ),
         };
+        // G8c-3: layer the tax overlay's M21 events (SetTaxReceivability + the levies)
+        // onto the cycle scenario, before stamping the seed and building the society, so
+        // the events flow into the society, the retained cycle scenario (canonical bytes
+        // + shadow replay), and the run identically. A `None` overlay adds nothing, so a
+        // tax-free cycle is byte-identical.
+        let tax_runtime = config.tax.as_ref().map(|tax| {
+            tax.apply_to(&mut scenario);
+            TaxRuntime {
+                receivability: tax.receivability,
+                levied: tax.total_levied(),
+            }
+        });
         scenario.seed = seed;
         let mut society = Society::from_scenario(scenario.clone());
         society.enable_consumption_log();
@@ -3171,6 +3396,7 @@ impl Settlement {
             }),
             shadow_cycle_cache: RefCell::new(None),
             bench: bench_runtime.map(|surface| BenchRuntime { surface, scenario }),
+            tax: tax_runtime,
         }
     }
 
@@ -5264,6 +5490,67 @@ impl Settlement {
             .unwrap_or(Gold::ZERO)
     }
 
+    /// Whether this settlement levies the G8c-3 **tax overlay** (the state's levy +
+    /// receivability on the credit cycle). `false` for a plain cycle, every tender bench,
+    /// and every spatial settlement — none of which the viewer's tax banner surfaces.
+    pub fn is_tax(&self) -> bool {
+        self.tax.is_some()
+    }
+
+    /// The G8c-3 **configured** tax receivability — the chartalist gate this overlay set,
+    /// or `None` for a settlement that levies no tax. This is the policy the config
+    /// chose; the *active* receivability ([`Self::tax_receivability`]) reads it back live
+    /// from the society once the `Tick(0)` event has fired.
+    pub fn configured_tax_receivability(&self) -> Option<TaxReceivability> {
+        self.tax.as_ref().map(|tax| tax.receivability)
+    }
+
+    /// The **active** tax receivability — which media discharge the tax (reused from
+    /// econ's society state; the viewer surfaces it). Reads the live policy, so a config
+    /// that set it, or the `Tick(0)` `SetTaxReceivability` event that fired it, both show.
+    /// econ's default is [`TaxReceivability::SpecieOnly`] until an event sets otherwise.
+    pub fn tax_receivability(&self) -> TaxReceivability {
+        self.society.tax_receivability
+    }
+
+    /// Total tax **levied** over the run — the sum of the single state issuer's
+    /// `taxes_levied` (the zero-principal liabilities the state raised). `Gold::ZERO`
+    /// without an issuer. Matches the overlay's configured total once every levy fired.
+    pub fn taxes_levied(&self) -> Gold {
+        self.sum_issuer_tax(|issuer| issuer.taxes_levied)
+    }
+
+    /// Total tax settled in **fiat** over the run (the issuer's `tax_receipts_fiat`). The
+    /// chartalist headline signal: positive under a fiat-receivable tax (the fiscal
+    /// channel circulates fiat the labor market refused), `Gold::ZERO` under a
+    /// specie-receivable tax (no compelled fiat demand).
+    pub fn tax_receipts_fiat(&self) -> Gold {
+        self.sum_issuer_tax(|issuer| issuer.tax_receipts_fiat)
+    }
+
+    /// Total tax settled in **specie** over the run (the issuer's `tax_receipts_specie`).
+    /// Positive under a specie-receivable tax; `Gold::ZERO` when only fiat discharges.
+    pub fn tax_receipts_specie(&self) -> Gold {
+        self.sum_issuer_tax(|issuer| issuer.tax_receipts_specie)
+    }
+
+    /// Total tax **defaulted** over the run (the issuer's `taxes_defaulted`) — a levy
+    /// unmet **by rule** (the holder lacks the receivable medium), conserved, never a
+    /// leak. In the counter-lever twin the non-receivable holder always defaults.
+    pub fn taxes_defaulted(&self) -> Gold {
+        self.sum_issuer_tax(|issuer| issuer.taxes_defaulted)
+    }
+
+    /// Sum a per-issuer tax counter across the society's issuers. econ's M21 is
+    /// single-issuer, so this is the lone state issuer's counter; the fold is the
+    /// defensive form (and `Gold::ZERO` for an issuer-free settlement).
+    fn sum_issuer_tax(&self, field: impl Fn(&econ::issuer::Issuer) -> Gold) -> Gold {
+        self.society
+            .issuers
+            .iter()
+            .fold(Gold::ZERO, |sum, issuer| sum.saturating_add(field(issuer)))
+    }
+
     fn shadow_cycle_metrics(&self) -> Option<ShadowCycleMetrics> {
         let cycle = self.cycle.as_ref()?;
 
@@ -5736,6 +6023,26 @@ impl Settlement {
             out.push(issuer_repayment_tender_tag(
                 self.society.issuer_repayment_tender,
             ));
+        }
+
+        // The G8c-3 tax-overlay state. Omitted entirely for a non-tax settlement (so
+        // every pre-G8c-3 canonical layout — and the tax-free cycle — is byte-identical);
+        // present for a tax settlement so the configured + active receivability and the
+        // issuer tax accounts (the levy/receipt/default outcome) are part of the
+        // "byte-identical iff future behaviour identical" identity. The levy events are
+        // already carried by the cycle scenario block above; this pins the settled
+        // outcome the test-1 determinism tripwire reads back.
+        if let Some(tax) = &self.tax {
+            out.push(tax_receivability_tag(tax.receivability));
+            out.extend_from_slice(&tax.levied.0.to_le_bytes());
+            out.push(tax_receivability_tag(self.society.tax_receivability));
+            out.extend_from_slice(&(self.society.issuers.len() as u32).to_le_bytes());
+            for issuer in &self.society.issuers {
+                out.extend_from_slice(&issuer.taxes_levied.0.to_le_bytes());
+                out.extend_from_slice(&issuer.tax_receipts_fiat.0.to_le_bytes());
+                out.extend_from_slice(&issuer.tax_receipts_specie.0.to_le_bytes());
+                out.extend_from_slice(&issuer.taxes_defaulted.0.to_le_bytes());
+            }
         }
 
         // Delivered exchange-stockpile units that are still awaiting econ credit

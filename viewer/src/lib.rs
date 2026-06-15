@@ -345,6 +345,21 @@ pub fn run_dashboard(scenario: &str, ticks: u64, seed: u64) -> Result<String, St
         None
     };
 
+    // G8c-3 tax banner: the active tax receivability (the chartalist counter-lever) and
+    // the levy/receipt/default split. Shown only for a tax settlement (`tax-in-fiat` /
+    // `tax-in-specie`); `None` otherwise, so every non-tax dashboard is unchanged.
+    let tax_summary = if settlement.is_tax() {
+        Some(render::TaxSummary {
+            receivability: sim::tax_receivability_name(settlement.tax_receivability()),
+            levied: settlement.taxes_levied().0,
+            receipts_fiat: settlement.tax_receipts_fiat().0,
+            receipts_specie: settlement.tax_receipts_specie().0,
+            defaulted: settlement.taxes_defaulted().0,
+        })
+    } else {
+        None
+    };
+
     let banners = render::DashboardBanners {
         era: era_summary.as_ref(),
         research: research_summary.as_ref(),
@@ -352,6 +367,7 @@ pub fn run_dashboard(scenario: &str, ticks: u64, seed: u64) -> Result<String, St
         bank: bank_summary.as_ref(),
         cycle: cycle_summary.as_ref(),
         tender: tender_summary.as_ref(),
+        tax: tax_summary.as_ref(),
     };
     Ok(render::format_dashboard(
         &settlement,

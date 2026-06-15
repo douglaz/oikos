@@ -148,6 +148,18 @@ const SCENARIOS: &[Scenario] = &[
         build: SettlementConfig::wage_refusal_cycle,
     },
     Scenario {
+        name: "tax-in-fiat",
+        description:
+            "G8c-3 headline: the specie-only-wage cycle with a fiat-receivable state tax — the state compels fiat through the fiscal channel where the labor market refused it (tax receipts in fiat)",
+        build: SettlementConfig::tax_in_fiat,
+    },
+    Scenario {
+        name: "tax-in-specie",
+        description:
+            "G8c-3 control: the same settlement with a specie-receivable tax — no compelled fiat demand (tax receipts in specie, none in fiat); only the receivability differs",
+        build: SettlementConfig::tax_in_specie,
+    },
+    Scenario {
         name: "spot-tender-legal",
         description:
             "G8c-2 spot bench (M11): fiat is legal tender on the spot market, so the printed fiat settles goods trades (composition flips, totals do not)",

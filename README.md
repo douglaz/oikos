@@ -1280,6 +1280,71 @@ G8c-2:
 and the multi-seed robustness study (deferred)** are **not** here — G8c-2 is the tender surfaces + the
 wage×cycle headline. See `sim/tests/g8c2_tender.rs` and `docs/engine-divergence.md` (the G8c-2 entry).
 
+## Status: G8c-3 (tax receivability — the state's counter-lever) — complete
+
+G8c-2 gave the player the *private* acceptance levers: when the labor market refuses fiat wages, fiat
+credit is **inert**. **G8c-3** adds the *state's* counter-lever — **tax receivability** (the lab's
+**M21**, chartalist) — as a sim policy on that same settlement. The reuse is **total**: econ's
+`apply_levy_tax`, `settle_due_debts_m3` (gated by `TaxReceivability`, **never** the credit tenders),
+the `SetTaxReceivability` / `LevyTax` events, and the issuer tax accounts (`taxes_levied`,
+`tax_receipts_fiat` / `tax_receipts_specie`, `taxes_defaulted`) are all **unchanged**; G8c-3 only
+**routes** the levy/receivability in (config-set; the player-`Command` route is G9). It adds **no** tax
+logic to econ, so the six conformance goldens stay byte-identical by construction. **G8c-3 is the last
+economic milestone before the G9 graphical-UI hand-off.**
+
+- **The headline: a fiat-receivable tax compels what the market refused.** This is the chartalist
+  answer to private refusal. In a settlement whose **wages are specie-only** (the G8c-2
+  `wage-refusal-cycle`: fiat credit inert, no private fiat demand), a **fiat-receivable** tax routes
+  fiat through the **fiscal** channel even where the **labor** channel refused it:
+  - **`tax-in-fiat`** (`SettlementConfig::tax_in_fiat`, `FiatOnly` tax): the fiat-credit capitalist
+    holding idle fiat must remit it to the state, so the tax settles in fiat (`tax_receipts_fiat > 0`)
+    while **no** fiat wage ever settles (`wage_fiat_settled() == 0`). Fiat circulates **via tax** where
+    the labor market refused it.
+  - **`tax-in-specie`** (`SettlementConfig::tax_in_specie`, `SpecieOnly` tax): the **control** — the
+    specie-holding trader remits specie (`tax_receipts_specie > 0`) and **no** fiat is compelled
+    (`tax_receipts_fiat == 0`). The twin levies the **same** set; the *only* difference is the
+    receivability, so the compelled fiat demand is isolated to that gate (not the levy or the spatial
+    dynamics). *If the control showed fiat receipts, the receivability gate would not be routing
+    settlement.*
+- **The receivability gate decides the tax surface.** A medium **not** in the active `TaxReceivability`
+  cannot discharge the tax **even if held**; the receivable medium does. Under the fiat-receivable tax
+  the specie-holder defaults **though it holds specie**; under the specie-receivable tax the fiat-holder
+  defaults **though it holds fiat** — the M21 media gate, in the sim.
+- **Tax is fiscal, not credit.** A levy is a **zero-principal** `DebtContract` owed to the single state
+  issuer (funded as `Tax`, not credit); the tax levy/receipt **never** moves `credit_retired` or
+  `fiat_credit_outstanding` — through the levy's due tick `credit_retired` stays zero while the tax
+  settles, so the receipt is honest money contraction (`fiat_retired`) / the specie vault, never credit
+  retirement.
+- **Conservation is exact.** A levy is either **received** (into the issuer, in the receivable medium)
+  or **defaulted** (unmet **by rule** — the holder lacks the receivable medium), never created or
+  destroyed: `levied == receipts_fiat + receipts_specie + defaulted`. The M3 ledger reconciles every
+  tick and the fiat base stays the exact `issued − retired` identity.
+- **A no-tax settlement is byte-identical.** A settlement that levies no tax (every plain cycle, bench,
+  and spatial settlement) omits the canonical tax block entirely and surfaces no tax banner — unchanged.
+- **Viewer surfacing.** A tax settlement adds a `tax:` banner — `tax: receivability R · levied L ·
+  receipts fiat F / specie P · defaulted D` — so the active receivability (the chartalist gate), the
+  levy, the fiat-vs-specie split, and the by-rule defaults are visible.
+
+G8c-3:
+
+- [x] the state levy + receivability as a sim config overlay (`sim::TaxPolicy` + the
+      `SetTaxReceivability` / `LevyTax` routing in `cycle_scenario` — no tax logic added to econ; a
+      no-tax settlement omits the canonical block, keeping the finance bytes byte-identical)
+- [x] the headline — `tax_in_fiat` (a fiat-receivable tax compels fiat through the fiscal channel) and
+      `tax_in_specie` (the specie-receivable control compels none), with the `tax_receivability`,
+      `taxes_levied`, `tax_receipts_fiat` / `tax_receipts_specie`, and `taxes_defaulted` accessors
+- [x] tax is fiscal not credit (zero-principal liability to the single issuer; receipts never touch the
+      credit aggregates) + exact conservation (`levied == received + defaulted`, a default unmet-by-rule)
+- [x] viewer surfacing — the `tax-in-fiat` / `tax-in-specie` scenarios and the `tax:` banner
+- [x] acceptance suite (`sim/tests/g8c3_tax.rs`: the seven acceptance tests + unit tests) + viewer
+      dashboard test + README + divergence-log updates
+
+**The player-`Command` tax/tender route and the Bevy graphical UI (G9), and the multi-seed robustness
+study (deferred)** are **not** here — G8c-3 is the tax-receivability counter-lever + the chartalist
+headline. **The next milestone is G9 (the Bevy graphical UI), which cannot be driven by the headless
+test loop and is the explicit hand-off point to the user.** See `sim/tests/g8c3_tax.rs` and
+`docs/engine-divergence.md` (the G8c-3 entry).
+
 ## Build and test
 
 ```bash
@@ -1327,4 +1392,6 @@ cargo run -p viewer -- run bank-repayment-tender-legal --ticks 5      # G8c-2: b
 cargo run -p viewer -- run bank-repayment-tender-refusal --ticks 5    # G8c-2: bank repayment control — held claim refused
 cargo run -p viewer -- run issuer-repayment-tender-legal --ticks 14   # G8c-2: issuer repayment (M16) — fiat accepted, credit retired
 cargo run -p viewer -- run issuer-repayment-tender-refusal --ticks 14 # G8c-2: issuer repayment control — held fiat refused
+cargo run -p viewer -- run tax-in-fiat --ticks 80           # G8c-3: a fiat-receivable tax compels fiat through the fiscal channel where wages refused it
+cargo run -p viewer -- run tax-in-specie --ticks 80         # G8c-3: the specie-receivable control — tax settles in specie, no compelled fiat demand
 ```

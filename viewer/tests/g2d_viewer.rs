@@ -553,6 +553,72 @@ fn tender_bench_dashboards_show_composition_not_totals() {
     );
 }
 
+/// G8c-3: the tax-in-fiat headline and its tax-in-specie control surface the active tax
+/// receivability (the chartalist counter-lever) and the fiat vs specie receipt split —
+/// the headline circulates fiat through the fiscal channel where the labor market
+/// refused it; the control compels no fiat. Only the receivability differs.
+#[test]
+fn tax_dashboards_surface_the_counter_lever() {
+    let tax_of = |output: &str| -> String {
+        output
+            .lines()
+            .find(|line| line.starts_with("tax: "))
+            .expect("a tax dashboard prints a tax banner")
+            .to_string()
+    };
+
+    // The headline: a fiat-receivable tax compels fiat through the fiscal channel.
+    let fiat = viewer::run_dashboard("tax-in-fiat", 80, 0xC0FFEE).expect("tax-in-fiat dashboard");
+    let banner = tax_of(&fiat);
+    assert!(
+        banner.contains("receivability fiat-only"),
+        "the headline surfaces the active fiat receivability: {banner:?}"
+    );
+    assert!(
+        banner.contains("receipts fiat 1 / specie 0"),
+        "the fiat-receivable tax settles in fiat (the fiscal channel), not specie: {banner:?}"
+    );
+    assert!(
+        banner.contains("levied 2") && banner.contains("defaulted 1"),
+        "the headline surfaces the levy and the by-rule default (the specie-holder): {banner:?}"
+    );
+    // The labor channel refused fiat — the cycle is inert — yet the fiscal channel moved
+    // fiat: the chartalist counter-lever.
+    let cycle = fiat
+        .lines()
+        .find(|line| line.starts_with("cycle: "))
+        .expect("the tax settlement is the cycle settlement");
+    assert!(
+        cycle.contains("wages specie-only") && cycle.contains("inert"),
+        "the labor market refused fiat (specie-only wages, inert): {cycle:?}"
+    );
+
+    // The control: a specie-receivable tax compels no fiat — only the receivability flips.
+    let specie =
+        viewer::run_dashboard("tax-in-specie", 80, 0xC0FFEE).expect("tax-in-specie dashboard");
+    let banner = tax_of(&specie);
+    assert!(
+        banner.contains("receivability specie-only"),
+        "the control surfaces the active specie receivability: {banner:?}"
+    );
+    assert!(
+        banner.contains("receipts fiat 0 / specie 1"),
+        "the specie-receivable control settles in specie and compels no fiat: {banner:?}"
+    );
+    assert!(
+        banner.contains("levied 2") && banner.contains("defaulted 1"),
+        "the control surfaces the same levy and the by-rule default (the fiat-holder): {banner:?}"
+    );
+
+    // A non-tax finance settlement prints no tax banner (the additions are inert).
+    let plain =
+        viewer::run_dashboard("wage-refusal-cycle", 80, 0xC0FFEE).expect("wage-refusal-cycle");
+    assert!(
+        !plain.lines().any(|line| line.starts_with("tax: ")),
+        "a settlement that levies no tax prints no tax banner"
+    );
+}
+
 #[test]
 fn lineages_dashboard_surfaces_demography() {
     // The G4b demography dashboard surfaces population, births/deaths, and per-lineage

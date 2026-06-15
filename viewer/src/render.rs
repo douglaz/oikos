@@ -213,6 +213,7 @@ pub struct DashboardBanners<'a> {
     pub bank: Option<&'a BankSummary>,
     pub cycle: Option<&'a CycleSummary>,
     pub tender: Option<&'a TenderSummary>,
+    pub tax: Option<&'a TaxSummary>,
 }
 
 /// G8c-1 credit-cycle summary: the demonstration kind, the final regime rung, and the
@@ -270,6 +271,27 @@ pub struct TenderSummary {
     pub bench_credit_retired: u64,
     /// The settlement's total broad money after the run.
     pub broad_money: u64,
+}
+
+/// G8c-3 tax-receivability summary: the state's counter-lever to G8c-2. The active tax
+/// receivability (the chartalist gate), the total levied, the fiat vs specie receipts,
+/// and the defaults. A read-only digest rendered above the dashboard for a tax
+/// settlement (the `tax-in-fiat` headline and its `tax-in-specie` control); `None` for
+/// every settlement that levies no tax. The fiat-receivable tax compels fiat through the
+/// fiscal channel (`receipts_fiat > 0`) where the labor market refused it; the
+/// specie-receivable control compels none (`receipts_fiat == 0`, `receipts_specie > 0`).
+/// A default is a levy unmet by rule (the holder lacks the receivable medium), conserved.
+pub struct TaxSummary {
+    /// The active tax receivability label (`fiat-only`, `specie-only`, `fiat-and-specie`).
+    pub receivability: &'static str,
+    /// Total tax levied (the zero-principal liabilities the state raised).
+    pub levied: u64,
+    /// Tax settled in fiat — the chartalist headline signal (positive iff fiat-receivable).
+    pub receipts_fiat: u64,
+    /// Tax settled in specie.
+    pub receipts_specie: u64,
+    /// Tax defaulted — a levy unmet by rule (not a leak; conserved).
+    pub defaulted: u64,
 }
 
 /// G8a/G8b M3 money-composition summary: the settlement's M3 ledger money broken into
@@ -473,6 +495,17 @@ pub fn format_dashboard(
             }
         }
         let _ = writeln!(out, " · broad money {}", tender.broad_money);
+    }
+    // G8c-3 tax banner: the active tax receivability (the chartalist gate) and the
+    // levy/receipt/default split. The fiat-receivable headline shows receipts in fiat
+    // (the fiscal channel) where wages refused it; the specie-receivable control shows
+    // receipts in specie and none in fiat. Shown only for a tax settlement.
+    if let Some(tax) = banners.tax {
+        let _ = writeln!(
+            out,
+            "tax: receivability {} · levied {} · receipts fiat {} / specie {} · defaulted {}",
+            tax.receivability, tax.levied, tax.receipts_fiat, tax.receipts_specie, tax.defaulted,
+        );
     }
     out.push('\n');
 
