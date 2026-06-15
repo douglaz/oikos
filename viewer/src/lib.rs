@@ -221,8 +221,9 @@ pub fn run_dashboard(scenario: &str, ticks: u64, seed: u64) -> Result<String, St
         unlocked_at: settlement.tier2_unlocked_at(),
     });
 
-    // G8a money banner: the M3 ledger composition (specie; fiat/claims/reserves zero).
-    // `None` for a closed-GOLD M1 settlement, so non-M3 dashboards are unchanged.
+    // G8a/G8b money banner: the M3 ledger composition (specie/fiat/claims/reserves/
+    // fiduciary). `None` for a closed-GOLD M1 settlement, so non-M3 dashboards are
+    // unchanged. A G8b bank fills in claims/reserves/fiduciary; G8a is pure specie.
     let money_summary = settlement
         .money_composition()
         .map(|c| render::MoneySummary {
@@ -230,12 +231,24 @@ pub fn run_dashboard(scenario: &str, ticks: u64, seed: u64) -> Result<String, St
             fiat: c.public_fiat.0,
             claims: c.demand_claims.0,
             reserves: c.bank_reserves.0,
+            fiduciary: c.fiduciary.0,
         });
+
+    // G8b bank banner: the chartered bank's balance sheet. `None` for a bank-free
+    // settlement (G8a and earlier), so those dashboards are unchanged.
+    let bank_summary = settlement.bank().map(|bank| render::BankSummary {
+        name: bank.name.to_string(),
+        reserves: bank.reserves.0,
+        demand_deposits: bank.demand_deposits.0,
+        fiduciary_issued: bank.fiduciary_issued.0,
+        reserve_ratio_bps: bank.reserve_ratio_bps.0,
+    });
 
     let banners = render::DashboardBanners {
         era: era_summary.as_ref(),
         research: research_summary.as_ref(),
         money: money_summary.as_ref(),
+        bank: bank_summary.as_ref(),
     };
     Ok(render::format_dashboard(
         &settlement,

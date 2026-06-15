@@ -84,7 +84,7 @@ pub use era::{
 };
 pub use region::{Region, RegionConfig, RegionTickReport, RoadPlan, Route};
 pub use settlement::{
-    recipe_adoption_pays, recipe_adoption_pays_for_money, BarterConfig, ChainConfig,
+    recipe_adoption_pays, recipe_adoption_pays_for_money, BankConfig, BarterConfig, ChainConfig,
     EconTickReport, EstateDestination, LineageStats, NodeSpec, Settlement, SettlementConfig,
     TraderEndowment, Vocation, ECON_TICKS_PER_YEAR, FAST_TICKS_PER_ECON_TICK,
 };

@@ -1057,6 +1057,66 @@ G8a:
 (G8c); and the Credit/Modern era rungs** are **deferred** — G8a is M3 **specie** money only. See
 `sim/tests/g8a_m3_money.rs` and `docs/engine-divergence.md` (the G8a entry).
 
+## Status: G8b (banks & credit) — complete
+
+G8a put the settlement on M3 ledger **specie**. **G8b** adds the **bank**: a chartered institution
+that takes **deposits** and lends **fiduciary credit** — demand claims beyond its reserves — gated by
+its reserve ratio. This is the credit layer the lab proved drives the Austrian boom/bust, now in the
+spatial game on emerged/ledger money. The reuse is **total**: deposits and fiduciary lending route
+through econ's existing M3 ledger / `Bank` balance-sheet paths **unchanged** — the bank is chartered
+in the *settlement* (config-chartered; the player-`Command` charter is G8c/UI), not in a new econ
+scenario, so the spot market is byte-identical to G8a and the six conformance goldens stay
+byte-identical by construction.
+
+The `bank` scenario is the `m3-settlement` economy with one chartered fractional-reserve bank; the
+`bank-full-reserve` scenario is its **falsification twin** — identical but for a 100% reserve ratio.
+
+- **Deposits become claims backed by reserves.** Each econ tick, consumers deposit M3 specie into the
+  bank: `MoneySystem::issue_demand_claim` moves the specie into the bank's reserves and credits the
+  depositor an equal demand claim, and `Bank::credit_reserves` mirrors it on the balance sheet. The
+  depositor's spendable total is unchanged (specie became a claim), so **claims circulate as money**
+  in the specie's place — the colony keeps trading and stays fed on a claim-dominated money supply.
+- **Fiduciary lending creates credit beyond reserves.** The bank lends its full
+  `Bank::fiduciary_lend_capacity(regime)` (issued with zero reserve backing, so the ledger tracks it
+  as `fiduciary = demand_claims − reserves`) to the gatherers, who spend it into the economy. The
+  chartered bank runs the `FractionalConvertible` regime (set once via econ's existing
+  `apply_command(SetRegime)` — its fixed operating regime, **not** the G8c regime *ladder*).
+- **The 100%-reserve control lends ZERO fiduciary.** A `ReserveRatioBps::FULL` bank's lend capacity
+  is zero, so the same phase lends nothing while its deposits still circulate as claims (every claim
+  fully backed: `demand_claims == reserves`). Paired with the fractional bank — same deposits, same
+  regime, only the reserve ratio differs — this isolates credit creation to the fractional reserve
+  (the lab's `hundred_pct_reserve_lends_no_fiduciary`, in the sim).
+- **Conservation spans the M3 ledger with credit + goods** every econ tick: `fiduciary <=
+  demand_claims`, reserves back claims, **specie is conserved** (`commodity_base` never moves —
+  fiduciary is credit, not minted specie), goods are conserved, and the ledger reconciles
+  (`money_ledgers_reconcile`). The broad money (TMS = specie + claims) exceeds the specie base by
+  exactly the fiduciary — credit expansion without new specie.
+- **Viewer surfacing.** The `bank` / `bank-full-reserve` dashboards surface the M3 composition as
+  `money: M3 ledger — specie S · fiat 0 · claims C · reserves R · fiduciary F` plus a bank
+  balance-sheet banner `bank: NAME — reserves R · deposits D · fiduciary issued F · reserve ratio P%`.
+- **Goldens byte-identical by construction.** The bank phase is skipped entirely without a charter
+  (a `SettlementConfig::bank` of `None`, the default for every pre-G8b config), so the six econ
+  goldens and every G1–G8a test stay green.
+- **Claims estates are deferred.** Banked demography is rejected for G8b: demand-claim estate
+  routing lands with the later finance/UI work, so the bank configs remain no-death controls.
+
+G8b:
+
+- [x] the bank charter overlay (`SettlementConfig::bank` / `bank` / `bank_full_reserve`, one econ
+      `Bank` chartered in `society.banks`, the `FractionalConvertible` operating regime)
+- [x] the deposit + fiduciary-lend bank phase (`Settlement::run_bank_phase`, routed through
+      `issue_demand_claim` / `credit_reserves` / `record_fiduciary_loan` — no bank logic added to econ)
+- [x] viewer surfacing — the `bank` / `bank-full-reserve` scenarios, the M3 fiduciary composition, and
+      the bank balance-sheet banner
+- [x] acceptance suite (`sim/tests/g8b_banks.rs`: the seven acceptance tests + unit tests) + README +
+      divergence-log updates
+
+**Fiat, the regime ladder, tender policies, and taxation (G8c); the full ABCT boom/bust
+demonstration (it needs the regime ladder to enable-then-stop credit, G8c); the player-`Command` bank
+charter (G8c/UI); demand-claim estate routing; and the Credit/Modern era rungs** are **deferred** —
+G8b proves the lending **mechanism** + the reserve control. See `sim/tests/g8b_banks.rs` and
+`docs/engine-divergence.md` (the G8b entry).
+
 ## Build and test
 
 ```bash
@@ -1090,4 +1150,6 @@ cargo run -p viewer -- run research-control --ticks 60        # G6b: no scholars
 cargo run -p viewer -- run roads --ticks 60                   # G7: a road is built from labor, transit drops, the gap converges faster
 cargo run -p viewer -- run roads-control --ticks 60           # G7: no road → transit stays high → the gap converges slower
 cargo run -p viewer -- run m3-settlement --ticks 40           # G8a: the viable economy on M3 ledger money (specie composition banner)
+cargo run -p viewer -- run bank --ticks 40                    # G8b: a fractional-reserve bank — deposits, claims, fiduciary credit
+cargo run -p viewer -- run bank-full-reserve --ticks 40       # G8b: the 100%-reserve control — deposits circulate, zero fiduciary
 ```

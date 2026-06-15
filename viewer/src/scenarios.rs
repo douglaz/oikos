@@ -111,6 +111,18 @@ const SCENARIOS: &[Scenario] = &[
             "G8a: the viable settlement run on M3 ledger money (specie — no banks, no fiat); money is ledger-accounted, economically M1",
         build: SettlementConfig::m3_settlement,
     },
+    Scenario {
+        name: "bank",
+        description:
+            "G8b: a chartered fractional-reserve bank — deposits become claims, the bank lends fiduciary credit beyond its reserves",
+        build: SettlementConfig::bank,
+    },
+    Scenario {
+        name: "bank-full-reserve",
+        description:
+            "G8b 100%-reserve control: the same bank at a full reserve ratio lends ZERO fiduciary, while deposits still circulate as claims",
+        build: SettlementConfig::bank_full_reserve,
+    },
 ];
 
 fn build_near() -> SettlementConfig {

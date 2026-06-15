@@ -152,3 +152,26 @@ cargo run -p viewer -- run bank-full-reserve --ticks 40
   in G8c; do not build the regime ladder here.
 - config-chartered bank; the player-`Command` charter is G8c/UI.
 - `git add` new files; gitignore stray build artifacts.
+
+## Amendment A1 (spec-owner, 2026-06-15) — unify claim-holder death settlement
+
+Review surfaced a split on claim-holder starvation deaths (an always-on
+`assert!` vs graceful handling). Ruling, AUTHORITATIVE for G8b:
+
+- **`remove_agent`'s M3 estate drain handles ALL public media** — specie,
+  demand claims, AND fiat — not just specie. A death routes the agent's full
+  M3 balance (specie + claims + fiat) to the `Estate`, conserved, regardless
+  of death CAUSE (old-age, demography, starvation). The G4a-style refusal and
+  the G8b starvation `assert!` are both removed: a claim/fiat holder death
+  simply settles, like a specie holder death. There is no death cause that
+  panics. (`drain_m3_estate` covers the full composition; `can_remove_agent`
+  no longer rejects claim/fiat holders.)
+- **The conservation gate must be complete**: `invariants_hold_with_banks`
+  additionally asserts the sum of bank `demand_deposits` equals the ledger's
+  aggregate `demand_claims` (not only reserves) — so a bank balance-sheet
+  drift from the ledger is caught by the reconcile gate the G8b tests use.
+
+Acceptance additions: a claim-holder (and a fiat-holder) starvation death
+settles its full M3 balance to the estate and frees, no panic; and the
+deposits==claims invariant is exercised. These supersede any G8b text that
+implies a claim-holder death is rejected or asserts.

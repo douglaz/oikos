@@ -192,27 +192,46 @@ pub struct ResearchSummary {
 }
 
 /// The optional milestone banners rendered above the dashboard table: the G6a era
-/// summary, the G6b research summary, and the G8a M3 money composition. Each is `None`
-/// unless its overlay is present (era for an emergent settlement, research for a research
-/// settlement, money for an M3 ledger settlement). Grouped so the renderer takes one
-/// banner argument rather than many.
+/// summary, the G6b research summary, the G8a M3 money composition, and the G8b bank
+/// balance sheet. Each is `None` unless its overlay is present (era for an emergent
+/// settlement, research for a research settlement, money for an M3 ledger settlement,
+/// bank for a chartered-bank settlement). Grouped so the renderer takes one banner
+/// argument rather than many.
 #[derive(Default)]
 pub struct DashboardBanners<'a> {
     pub era: Option<&'a EraSummary>,
     pub research: Option<&'a ResearchSummary>,
     pub money: Option<&'a MoneySummary>,
+    pub bank: Option<&'a BankSummary>,
 }
 
-/// G8a M3 money-composition summary: the settlement's M3 ledger money broken into its
-/// four components. A read-only digest of the [`sim::Settlement::money_composition`]
+/// G8a/G8b M3 money-composition summary: the settlement's M3 ledger money broken into
+/// its components. A read-only digest of the [`sim::Settlement::money_composition`]
 /// snapshot, rendered above the dashboard for an M3 settlement. `None` for a closed-GOLD
-/// M1 settlement. In G8a the money is pure **specie**: `fiat`, `claims`, and `reserves`
-/// are all zero (banks and fiat are G8b/G8c).
+/// M1 settlement. In G8a (no bank) the money is pure **specie**: `fiat`, `claims`,
+/// `reserves`, and `fiduciary` are all zero. In G8b a fractional bank makes `claims`,
+/// `reserves`, and `fiduciary` (claims beyond reserves) all nonzero, while the
+/// 100%-reserve control keeps `fiduciary` zero. `fiat` stays zero until G8c.
 pub struct MoneySummary {
     pub specie: u64,
     pub fiat: u64,
     pub claims: u64,
     pub reserves: u64,
+    pub fiduciary: u64,
+}
+
+/// G8b bank balance-sheet summary: the chartered bank's reserves, demand-deposit
+/// liabilities, fiduciary credit issued, and reserve ratio. A read-only digest of the
+/// reused econ [`Bank`](econ::bank::Bank) the sim charters, rendered above the dashboard
+/// for a banked settlement. `None` without a bank charter (G8a and earlier). The
+/// reserve ratio is shown in percent; `fiduciary_issued` is the credit the bank created
+/// beyond its reserves (zero for the 100%-reserve control).
+pub struct BankSummary {
+    pub name: String,
+    pub reserves: u64,
+    pub demand_deposits: u64,
+    pub fiduciary_issued: u64,
+    pub reserve_ratio_bps: u16,
 }
 
 /// G6a era-banner summary: the current institutional era and the timeline of the
@@ -224,6 +243,22 @@ pub struct EraSummary {
     pub current: String,
     /// `(era label, first tick)` for each rung reached, lowest rung first.
     pub timeline: Vec<(String, u64)>,
+}
+
+/// Format a reserve ratio (basis points) as a percent for the bank banner, using
+/// integer math only. `2_000 → "20%"`, `10_000 → "100%"`, `1_550 → "15.5%"`.
+fn format_reserve_ratio(bps: u16) -> String {
+    let whole = bps / 100;
+    let frac = bps % 100;
+    if frac == 0 {
+        format!("{whole}%")
+    } else if frac.is_multiple_of(10) {
+        // `u16::is_multiple_of` is a stabilized std inherent method (no external trait,
+        // no `num_integer`); clippy's `manual_is_multiple_of` mandates it over `% 10 == 0`.
+        format!("{whole}.{}%", frac / 10)
+    } else {
+        format!("{whole}.{frac:02}%")
+    }
 }
 
 /// Format a fixed-point mean (one decimal) from an integer sum and count using
@@ -295,14 +330,29 @@ pub fn format_dashboard(
             research.knowledge, research.tier
         );
     }
-    // G8a money banner: the M3 ledger composition — "money is ledger-accounted now".
-    // In G8a it is pure specie (fiat/claims/reserves all zero); banks and fiat are
-    // G8b/G8c. Shown only for an M3 settlement (the closed-GOLD M1 path surfaces none).
+    // G8a/G8b money banner: the M3 ledger composition — "money is ledger-accounted
+    // now". In G8a it is pure specie; a G8b bank makes claims/reserves/fiduciary
+    // nonzero (the 100%-reserve control keeps fiduciary zero). Shown only for an M3
+    // settlement (the closed-GOLD M1 path surfaces none).
     if let Some(money) = banners.money {
         let _ = writeln!(
             out,
-            "money: M3 ledger — specie {} · fiat {} · claims {} · reserves {}",
-            money.specie, money.fiat, money.claims, money.reserves
+            "money: M3 ledger — specie {} · fiat {} · claims {} · reserves {} · fiduciary {}",
+            money.specie, money.fiat, money.claims, money.reserves, money.fiduciary
+        );
+    }
+    // G8b bank banner: the chartered bank's balance sheet — deposits taken in as
+    // reserves and the fiduciary credit lent beyond them, gated by the reserve ratio.
+    // Shown only for a banked settlement.
+    if let Some(bank) = banners.bank {
+        let _ = writeln!(
+            out,
+            "bank: {} — reserves {} · deposits {} · fiduciary issued {} · reserve ratio {}",
+            bank.name,
+            bank.reserves,
+            bank.demand_deposits,
+            bank.fiduciary_issued,
+            format_reserve_ratio(bank.reserve_ratio_bps),
         );
     }
     out.push('\n');
@@ -832,6 +882,47 @@ mod tests {
         assert_eq!(mean_one_decimal(7, 3), "2.3"); // 70/3 = 23 tenths (floored)
         assert_eq!(mean_one_decimal(0, 4), "0.0");
         assert_eq!(mean_one_decimal(5, 0), "-"); // no living colonist
+    }
+
+    #[test]
+    fn format_reserve_ratio_keeps_fractional_basis_points() {
+        assert_eq!(format_reserve_ratio(2_000), "20%");
+        assert_eq!(format_reserve_ratio(10_000), "100%");
+        assert_eq!(format_reserve_ratio(1_550), "15.5%");
+        assert_eq!(format_reserve_ratio(1_505), "15.05%");
+    }
+
+    #[test]
+    fn dashboard_renders_m3_money_and_bank_banners() {
+        let settlement = Settlement::generate(1, &sim::SettlementConfig::viable());
+        let money = MoneySummary {
+            specie: 48,
+            fiat: 0,
+            claims: 240,
+            reserves: 48,
+            fiduciary: 192,
+        };
+        let bank = BankSummary {
+            name: "settlement bank".to_string(),
+            reserves: 48,
+            demand_deposits: 240,
+            fiduciary_issued: 192,
+            reserve_ratio_bps: 2_000,
+        };
+        let banners = DashboardBanners {
+            money: Some(&money),
+            bank: Some(&bank),
+            ..DashboardBanners::default()
+        };
+
+        let rendered = format_dashboard(&settlement, "bank", 1, 40, "0 living", &banners, &[]);
+
+        assert!(rendered.contains(
+            "money: M3 ledger — specie 48 · fiat 0 · claims 240 · reserves 48 · fiduciary 192"
+        ));
+        assert!(rendered.contains(
+            "bank: settlement bank — reserves 48 · deposits 240 · fiduciary issued 192 · reserve ratio 20%"
+        ));
     }
 
     #[test]
