@@ -87,6 +87,12 @@ const SCENARIOS: &[Scenario] = &[
             "G5a no-surplus control: no saleability differential, so the camp stays in barter (nothing monetizes)",
         build: SettlementConfig::barter_camp_control,
     },
+    Scenario {
+        name: "frontier",
+        description:
+            "G5b: emergence composed — money emerges, then producer roles adopt from the spread, while births/deaths run (one settlement)",
+        build: SettlementConfig::frontier,
+    },
 ];
 
 fn build_near() -> SettlementConfig {

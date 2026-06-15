@@ -744,12 +744,76 @@ G5a:
 - [x] acceptance suite (`sim/tests/g5a_emergence.rs`: the seven acceptance tests plus
       unit tests) + README + divergence-log updates
 
-Deferred (noted in `docs/engine-divergence.md`): **G5b** — emergence composed with the
-full stack (production, demography, multi-settlement); and the **multi-seed spatial
-robustness STUDY** (emergence rate under encounter/transport frictions, analogous to
-M18/M19 for the lab's non-spatial money emergence). G5a is the mechanism slice — a plain
-gatherer/consumer barter camp. See `sim/tests/g5a_emergence.rs` and
-`docs/engine-divergence.md` (the G5a entry).
+Deferred (noted in `docs/engine-divergence.md`): the **multi-seed spatial robustness
+STUDY** (emergence rate under encounter/transport frictions, analogous to M18/M19 for the
+lab's non-spatial money emergence). G5a is the mechanism slice — a plain gatherer/consumer
+barter camp; composition with the full stack is **G5b** (next). See
+`sim/tests/g5a_emergence.rs` and `docs/engine-divergence.md` (the G5a entry).
+
+## Status: G5b (emergence composed with the full stack — the `frontier`) — complete
+
+G5a/G3b/G4b each proved one emergent phenomenon in isolation. **G5b composes all three
+in ONE settlement.** `SettlementConfig::frontier()` is a barter camp where money
+**emerges** (G5a), then producers take up milling/baking from the resulting **money price
+spreads** (G3b), while **births and deaths** run demographic selection (G4b) — all
+conserving and deterministic. It proves the simulation composes: the whole economic
+foundation (G1 needs → G2 space/trade → G3 production → G4 demography → G5a money) runs as
+one coherent society, not as separate demos.
+
+G5b is **composition, not new mechanism**: G5a money emergence, G3b role-choice, and G4b
+demography are reused unchanged. The work is ordering them coherently in one econ tick, a
+combined config, and fixing the interaction bugs the combination surfaces:
+
+- **the combined econ tick** — FAST gather/haul → TRANSFER world→econ → EXCHANGE
+  (pre-promotion spatial barter + saleability + promotion check; post-promotion the money
+  market) → PRODUCTION (recipes; latent colonists appraise and adopt roles) → DEMOGRAPHY
+  (needs, old-age + starvation deaths, births into households, estates to heirs) → MEASURE
+  (whole-system conservation over every pool + flow).
+- **the economic ordering is load-bearing** — appraising a flour−grain spread needs
+  realized *money* prices, which exist only after promotion. So **production roles emerge
+  only AFTER money does** (role-choice is gated on the post-promotion money phase): a
+  division of labor presupposes a medium of exchange. No role is adopted during the barter
+  phase. The role-choice appraisal is threaded with the settlement's *current* money good
+  (the emergent **SALT**, not assumed GOLD), so the appraisal and the market agree on what
+  the future savings want is.
+- **conservation with ALL flows at once** — a single econ tick can run a barter swap (a
+  relocation, net 0), the promotion conversion (good→money, exact), a recipe transformation,
+  a birth endowment + a death estate (transfers), harvest/regen, and consumption — and the
+  whole-system identity still balances, including the awkward coincidence of a birth on the
+  promotion tick.
+- **the veto list now bites** — the promotion-rejection list covers every **renewable**
+  source: the spatial nodes, the chain's recipe outputs, AND (newly, because demography is
+  active) the household hearth's provisioned goods. So a demography-provisioned staple
+  (bread) cannot monetize; money emerges on the durable, non-renewable **SALT** medium —
+  or not at all.
+- **interaction fixes the combination surfaced** — the generation guard that made barter
+  mutually exclusive with production/demography is lifted (with new guards that every
+  composed gold source is zero before promotion and the medium is non-renewable); the
+  emergent-medium endowment now lands on the chain path too; the demography hearth
+  provisions the settlement's hunger staple (FOOD on a `lineages` colony, bread on the
+  frontier) so members are fed the good they eat. Every change keeps the no-overlay paths
+  structurally unchanged, so the six econ goldens and all G1/G2*/G3*/G4*/G5a tests stay
+  byte-identical. The only econ touch is **additive accessors** (none here — G5b reuses
+  G5a/G3b/G4b's).
+
+G5b:
+
+- [x] the combined `frontier` config (barter-start + production roles + demography) and the
+      coherent econ-tick phase ordering so all three coexist
+- [x] role-choice gated on the money phase (roles follow money) + the appraisal threaded
+      with the current (emergent) money good
+- [x] the promotion-rejection list extended to recipe outputs and the demography hearth, so
+      a renewable/provisioned good cannot monetize
+- [x] whole-system conservation with all flows active simultaneously (barter, promotion,
+      recipes, births, deaths), including a birth on the promotion tick
+- [x] viewer `frontier` scenario surfacing the phase, money good, producer roles, and
+      population together
+- [x] acceptance suite (`sim/tests/g5b_frontier.rs`: the seven acceptance tests plus unit
+      tests) + README + divergence-log updates
+
+Deferred (noted in `docs/engine-divergence.md`): the multi-seed robustness **study** and
+**multi-settlement** composition (the Region with all overlays). G5b is a single combined
+settlement. See `sim/tests/g5b_frontier.rs` and `docs/engine-divergence.md` (the G5b entry).
 
 ## Build and test
 
@@ -776,4 +840,5 @@ cargo run -p viewer -- run starved-hauler --ticks 20  # G4a: a colonist dies, th
 cargo run -p viewer -- run lineages --ticks 200        # G4b: two households age, reproduce, inherit
 cargo run -p viewer -- run barter-camp --ticks 40             # G5a: money emerges (barter → promotion → money-priced)
 cargo run -p viewer -- run barter-camp-control --ticks 40     # G5a: no saleability differential → stays in barter
+cargo run -p viewer -- run frontier --ticks 80                # G5b: money emerges, then roles adopt, with demography
 ```

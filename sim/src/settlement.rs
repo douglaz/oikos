@@ -79,7 +79,7 @@ use life::{regenerate_scale, CultureParams, KnownGoods, NeedDynamics, NeedIntake
 use world::{AgentStatus, Grid, NodeId, Pos, ResourceNode, Stockpile, StockpileId, Task, World};
 
 use crate::content::ContentSet;
-use crate::demography::{child_seed, founder_seed, DemographyConfig};
+use crate::demography::{child_seed, founder_seed, DemographyConfig, HouseholdSpec};
 
 /// Fast `world` ticks per economic tick — the two-rate ratio (game-spec §4.1).
 /// A gatherer's round trip to a node costs `2 × distance` fast ticks, so a node
@@ -260,6 +260,13 @@ pub struct ChainConfig {
     /// WOOD every colonist is seeded holding — a warmth battery. Warmth never
     /// kills (only hunger does), so this just keeps the warmth need low/bounded.
     pub wood_buffer: u32,
+    /// WOOD a **consumer** is seeded holding. In G3a/G3b it equals `wood_buffer`
+    /// (consumers are warmth-batteried like everyone else), so those configs are
+    /// byte-identical. The G5b frontier keeps it small so consumers run WOOD-short and
+    /// *buy* WOOD with the SALT medium — making the SALT-rich consumers the buyers of
+    /// BOTH barter counterparts (bread and WOOD), the saleability hub that lets SALT
+    /// monetize (the same goods-poor/medium-rich consumer that drives `barter_camp`).
+    pub consumer_wood_buffer: u32,
     /// Working gold a producer (miller/baker) starts with — capital to buy its
     /// input while it sells its output.
     pub producer_gold: u64,
@@ -298,6 +305,9 @@ impl ChainConfig {
             // G3a config and its goldens are unchanged.
             consumer_staple_buffer: 24,
             wood_buffer: 48,
+            // G3a/G3b consumers carry the same warmth battery as everyone else, so
+            // those configs stay byte-identical; the G5b frontier overrides it.
+            consumer_wood_buffer: 48,
             producer_gold: 24,
         }
     }
@@ -844,6 +854,180 @@ impl SettlementConfig {
         config
     }
 
+    /// The G5b **frontier** — emergence composed with the full stack in ONE
+    /// settlement: a barter camp where **money emerges**, then **producer roles**
+    /// take up milling/baking from the resulting price spreads, while **births and
+    /// deaths** run demographic selection — all conserving and deterministic.
+    ///
+    /// It composes three reused mechanisms unchanged:
+    /// - **G5a money emergence** — colonists barter goods-for-goods for a durable
+    ///   SALT medium until the lab's Mengerian `winner` rule promotes it; from the
+    ///   next tick trade is money-priced. Bread (the chain staple, from buffers and
+    ///   the household hearth) and WOOD (warmth, gathered) are the two counterpart
+    ///   goods the universal SALT demand trades against — the saleability hub that
+    ///   makes SALT the money good (the spatial analogue of `barter_camp`'s FOOD/WOOD).
+    /// - **G3b production roles** — a latent miller/baker pool starts `Unassigned`
+    ///   and *adopts* its vocation only when the realized **money** spread pays, which
+    ///   exists only post-promotion: a division of labor follows the medium of
+    ///   exchange (role-choice is gated on the money phase).
+    /// - **G4b demography** — two households (a patient and a present-biased lineage)
+    ///   whose non-spatial members are provisioned the **bread staple** + WOOD, age,
+    ///   die of old age (via the G4a removal path), and reproduce, children inheriting
+    ///   their parents' mutated culture.
+    ///
+    /// Every gold source is **zero** before promotion (the econ V2 path requires zero
+    /// initial money balances; `generate` asserts it), and hunger is resilient (it
+    /// never reaches the critical ceiling) so the camp survives the emergence window
+    /// and the only deaths are old age. The buffers are generous *mechanism* knobs that
+    /// bridge the barter window and the chain's pipeline fill — sign/conservation only,
+    /// no magnitude pinned. The promotion-rejection list (nodes ∪ recipe outputs ∪ the
+    /// demography hearth) vetoes every renewable good, so SALT — the one durable,
+    /// non-renewable candidate — is what monetizes (or nothing does).
+    pub fn frontier() -> Self {
+        // The emergent grain→flour→bread chain (no seeded roles — millers/bakers
+        // *adopt* from the post-promotion spread). Zero producer gold: a barter-start
+        // settlement holds no money before promotion.
+        let mut chain = ChainConfig::grain_flour_bread();
+        chain.millers = 0;
+        chain.bakers = 0;
+        chain.latent_millers = 3;
+        chain.latent_bakers = 3;
+        chain.operating_cost = 1;
+        chain.bread_is_staple = true;
+        chain.throughput = 1;
+        chain.miller_grain_buffer = 0;
+        chain.baker_flour_buffer = 0;
+        // A latent miller's flour bootstrap stock, so the first adopted baker's flour
+        // bid finds a seller and flour realizes a price (the chain prices bottom-up).
+        chain.latent_flour_seed = 12;
+        // A generous bread surplus bridges the whole barter window (the chain produces
+        // no bread until roles adopt post-promotion) and gives every non-consumer bread
+        // to offer — the bread side of the SALT saleability hub.
+        chain.bread_buffer = 64;
+        // Consumers start nearly bread-empty so they *buy* bread (with SALT) from the
+        // first ticks — that demand is the bread side of the barter hub and, after
+        // promotion, the realized bread price the first baker adopts on.
+        chain.consumer_staple_buffer = 2;
+        chain.wood_buffer = 48;
+        // Consumers are also WOOD-poor: with almost no WOOD of their own they pay the
+        // SALT medium (not their own WOOD) for both bread AND WOOD, so the SALT-rich
+        // consumers are the buyers of both barter counterparts — the saleability hub
+        // (exactly `barter_camp`'s goods-poor/medium-rich consumer) that lets SALT win.
+        chain.consumer_wood_buffer = 1;
+        // Barter start: no money before promotion.
+        chain.producer_gold = 0;
+
+        // Two lineages, food-secure (so deaths are old age) with a fast aging cadence
+        // so deaths fall inside a modest horizon; the patient lineage gets a WOOD
+        // surplus it sells (selection sign). All gold sources are zero (barter start).
+        let demography = DemographyConfig {
+            households: vec![
+                HouseholdSpec {
+                    founders: 2,
+                    time_preference_base_bps: 500,
+                    food_provision: 3,
+                    wood_provision: 3,
+                    starting_gold: 0,
+                    starting_food: 8,
+                    starting_wood: 6,
+                },
+                HouseholdSpec {
+                    founders: 2,
+                    time_preference_base_bps: 9_400,
+                    food_provision: 3,
+                    wood_provision: 0,
+                    starting_gold: 0,
+                    starting_food: 8,
+                    starting_wood: 6,
+                },
+            ],
+            ticks_per_year: 6,
+            old_age_onset_years: 3,
+            lifespan_span_years: 3,
+            birth_interval: 4,
+            birth_hunger_ceiling: 12,
+            max_household_size: 5,
+            child_food_endowment: 4,
+            // Barter start: a newborn inherits no money before promotion.
+            child_gold_endowment: 0,
+            mutation_delta_bps: 200,
+        };
+
+        let exchange = Pos::new(0, 0);
+        let bread = chain.content.bread();
+        Self {
+            width: 64,
+            height: 1,
+            exchange,
+            exchange_cap: 1_000_000,
+            // Two close, rich gathered goods: grain (the chain's raw input) and WOOD
+            // (warmth). The gatherers split round-robin. WOOD is one barter counterpart
+            // for SALT (everyone warms with it); grain feeds the chain post-promotion.
+            // Neither is the money good — both are in the promotion-rejection list.
+            nodes: vec![
+                NodeSpec {
+                    good: chain.content.grain(),
+                    pos: Pos::new(2, 0),
+                    stock: 8_000,
+                    regen: 64,
+                    cap: 8_000,
+                },
+                NodeSpec {
+                    good: WOOD,
+                    pos: Pos::new(3, 0),
+                    stock: 8_000,
+                    regen: 64,
+                    cap: 8_000,
+                },
+            ],
+            gatherers: 8,
+            consumers: 4,
+            carry_cap: 6,
+            move_speed: 1,
+            // Barter start: no money is designated, so colonists hold no gold.
+            starting_gold_gatherer: 0,
+            starting_gold_consumer: 0,
+            // These FOOD-buffer knobs are unused on the chain path (the staple is
+            // bread, seeded via `ChainConfig`); kept at zero for a consistent read.
+            gatherer_food_buffer: 0,
+            gatherer_wood_buffer: 0,
+            consumer_food_buffer: 0,
+            consumer_wood_endowment: 0,
+            // Patient on both sides (a low time preference) so colonists keep offering
+            // their surplus rather than hoarding it — the sustained supply the medium
+            // circulates against, and the savings want the role-choice appraisal targets.
+            gatherer_time_preference_base_bps: 400,
+            consumer_time_preference_base_bps: 400,
+            leisure_weight_base_bps: 3_000,
+            // Hunger-resilient (like `barter_camp`): hunger never reaches the critical
+            // ceiling, so the camp survives the emergence window and the only deaths are
+            // old age (the demographic selection signal), not a mid-emergence die-off.
+            dynamics: {
+                let mut d = NeedDynamics::lab_default();
+                d.hunger_critical = d.need_max + 1;
+                d
+            },
+            resident_traders: Vec::new(),
+            chain: Some(chain),
+            demography: Some(demography),
+            barter: Some(BarterConfig {
+                menger: MengerianConfig {
+                    // The candidate set the saleability tracker watches. SALT is the
+                    // durable medium; bread and WOOD are the renewable counterparts it
+                    // trades against (both vetoed by the rejection list, so if either
+                    // ever led it could not commit). SALT is the universal hub, so it
+                    // is what actually monetizes.
+                    candidate_goods: vec![WOOD, bread, SALT],
+                    ..MengerianConfig::default()
+                },
+                medium_good: SALT,
+                medium_want_qty: 6,
+                gatherer_medium_endowment: 0,
+                consumer_medium_endowment: 80,
+            }),
+        }
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).
@@ -1073,18 +1257,22 @@ pub struct Settlement {
     /// The commodity-money **promotion rejection list**: goods a settlement's own
     /// substrate keeps regenerating, so econ's `winner` rule must not be allowed to
     /// commit one as money. `GoodId`-ordered. A promotion to one of these is
-    /// unsupported because future regeneration would mint physical units of the
-    /// money good *after* econ has removed it from the money-priced market, breaking
-    /// the conserved promotion. In the G5a slice the only renewable source is the
-    /// spatial resource node, so this is exactly the (non-GOLD) node goods.
+    /// unsupported because future minting would create physical units of the money
+    /// good *after* econ has removed it from the money-priced market, breaking the
+    /// conserved promotion. It covers every **renewable** source a settlement runs:
     ///
-    /// The G4b **demography** provision (the renewable household hearth) is the other
-    /// non-conserved source, but it is deliberately absent here: barter (emergent V2)
-    /// composed with demography is rejected at generation (the G5b composition is
-    /// deferred), and a demography settlement runs designated GOLD money — it never
-    /// promotes, so this list is never consulted for it. A future G5b that lifts that
-    /// generation guard MUST extend this list to cover demography-provisioned goods.
-    node_goods: Vec<GoodId>,
+    /// - the spatial **resource nodes** (the (non-GOLD) node goods) — the world
+    ///   regenerates them (the G5a slice's only renewable source);
+    /// - the production-chain **recipe outputs** (flour, bread) — a producer keeps
+    ///   minting them every tick (G3a/G3b);
+    /// - the G4b **demography** provision goods (the hunger staple + WOOD) — the
+    ///   renewable household hearth keeps minting them.
+    ///
+    /// The G5b frontier composes all three, so the list finally bites: the durable
+    /// emergent **medium** (e.g. SALT) is the only candidate that is none of these, so
+    /// it is the only good the camp can monetize. A designated-money settlement never
+    /// consults this list (it runs `step`, not `step_rejecting_v2_money_goods`).
+    money_rejection_goods: Vec<GoodId>,
     /// Attribution for exchange-stockpile units that were delivered by a
     /// gatherer but have not yet crossed into econ stock. This is not a goods
     /// ledger: the units are counted only in the world stockpile until transfer
@@ -1182,67 +1370,26 @@ impl Settlement {
             "a resource node cannot harvest the money good (GOLD); money is not a \
              physical good and never crosses the world→econ transfer seam"
         );
-        // The G5a barter overlay is the MECHANISM slice: a plain gatherer/consumer
-        // camp. Composition with production (a chain) or demography is G5b, and the
-        // emergent medium must not be a gathered node good (the world would
-        // regenerate the money good, fouling the conserved promotion). Reject the
-        // unsupported combinations loudly at generation rather than ship a config
-        // that silently breaks emergence or conservation.
-        if let Some(barter) = &config.barter {
-            assert!(
-                config.chain.is_none() && config.demography.is_none(),
-                "G5a barter emergence is a plain gatherer/consumer camp; composition \
-                 with production or demography is G5b"
-            );
-            assert!(
-                config
-                    .nodes
-                    .iter()
-                    .all(|spec| spec.good != barter.medium_good),
-                "the emergent medium must not be a gathered node good (the world would \
-                 regenerate the money good, breaking the conserved promotion)"
-            );
-            // The emergent medium is a PHYSICAL good that circulates as barter stock
-            // before promotion, so it must not be GOLD: GOLD is the money ledger, not
-            // a physical good — it never enters `self.goods`, the deposit attribution,
-            // the transfer, or the conservation report. A GOLD medium endowment would
-            // mint stock the digest and whole-system ledger never track (a silent
-            // money leak), and the promotion's good→money conversion is meaningless
-            // when the "good" is already money. Reject it at the seam.
-            assert!(
-                barter.medium_good != GOLD,
-                "the emergent medium cannot be GOLD; GOLD is the money ledger, not a \
-                 physical good, so an endowed GOLD medium would create untracked stock \
-                 the conservation report and digest never see"
-            );
-            assert!(
-                config.starting_gold_gatherer == 0 && config.starting_gold_consumer == 0,
-                "a barter-start camp holds no money before promotion (econ's V2 path \
-                 requires zero initial money balances)"
-            );
-        }
-        if let Some(chain) = &config.chain {
-            assert!(
-                chain.operating_cost >= 1,
-                "chain operating_cost must be at least 1"
-            );
-            // A producer's throughput becomes that many input wants on its value scale
-            // each regeneration; bound it so a config cannot drive the scale (and the
-            // market that iterates it) to an unbounded size. See [`MAX_CHAIN_THROUGHPUT`].
-            assert!(
-                chain.throughput <= MAX_CHAIN_THROUGHPUT,
-                "chain throughput {} exceeds the sanity bound {MAX_CHAIN_THROUGHPUT}",
-                chain.throughput
-            );
-        }
         let dynamics = config.dynamics;
         // The need→good mapping. A plain settlement uses the lab default
         // (hunger ↔ FOOD). The G3a chain and the G3b emergent config make **bread
         // the staple** (hunger ↔ bread) so the chain's final good is what colonists
         // eat to live, and that demand prices bread. The G3b no-spread control sets
         // `bread_is_staple = false`, keeping hunger ↔ FOOD so bread is never demanded
-        // (and so never prices, and so no role forms). Warmth stays WOOD, savings GOLD.
+        // (and so never prices, and so no role forms). Warmth stays WOOD.
         let known = match (&config.chain, &config.barter) {
+            // G5b **frontier**: a bread-staple chain composed with the barter-start
+            // medium. Hunger ↔ bread (the chain's demand pulls the chain into being),
+            // warmth WOOD, and savings is the **emergent medium** (e.g. SALT) — the
+            // good that monetizes. Post-promotion the money market provisions that
+            // store-of-value want with the emerged money exactly like the plain barter
+            // camp, and the role-choice appraisal targets that same future-money want
+            // (threaded with the current money good, not assumed to be GOLD).
+            (Some(chain), Some(barter)) if chain.bread_is_staple => KnownGoods {
+                hunger: chain.content.bread(),
+                warmth: WOOD,
+                savings: barter.medium_good,
+            },
             (Some(chain), _) if chain.bread_is_staple => KnownGoods {
                 hunger: chain.content.bread(),
                 warmth: WOOD,
@@ -1263,23 +1410,129 @@ impl Settlement {
                 warmth: WOOD,
                 savings: barter.medium_good,
             },
+            // A barter-start chain whose bread is NOT the staple (hunger stays FOOD,
+            // the no-spread control's shape) still circulates and is endowed the
+            // emergent medium: `build_agent` always adds `barter.medium_good` under a
+            // barter overlay and the post-promotion market runs `step_rejecting_v2_*`,
+            // so the savings want MUST be that medium too. Falling through to
+            // `lab_default` (savings GOLD) would save GOLD while the agent holds and
+            // the market clears a non-GOLD medium, and `run_role_choice`'s
+            // `soonest_savings_horizon(money_good)` would then find no matching want and
+            // never adopt a role. No shipped config reaches this arm today (the
+            // frontier is bread-staple; the no-spread control has no barter), but every
+            // barter-start chain must keep its savings coherent with its medium.
+            (Some(_), Some(barter)) => KnownGoods {
+                hunger: FOOD,
+                warmth: WOOD,
+                savings: barter.medium_good,
+            },
             // The control (chain present, bread not the staple) eats seeded FOOD;
             // every plain settlement eats gathered FOOD, warms with WOOD, saves GOLD.
-            (Some(_), _) | (None, None) => KnownGoods::lab_default(),
+            (Some(_), None) | (None, None) => KnownGoods::lab_default(),
         };
-        // The G4b demography overlay provisions FOOD as the household hunger staple
-        // (`deliver_demography_provisions`, the birth FOOD gate, and the newborn
-        // endowment all use FOOD). A non-FOOD staple (a `bread_is_staple` chain maps
-        // hunger ↔ bread) would leave members provisioned in a good they never eat —
-        // they would starve and the birth security gate would never clear despite a
-        // nonzero provision. The curated `lineages()` config has no chain (hunger ↔
-        // FOOD), so this holds by construction; reject the unsupported combination
-        // loudly rather than ship the silent-starvation config.
-        assert!(
-            config.demography.is_none() || known.hunger == FOOD,
-            "G4b demography provisions FOOD as the household hunger staple; a non-FOOD \
-             staple (e.g. a bread_is_staple chain) is not supported by the demography overlay"
-        );
+        // The G5a barter overlay was the MECHANISM slice: a plain gatherer/consumer
+        // camp. G5b **composes** it with production (a chain) and demography (the
+        // `frontier` config), so that mutual-exclusion is lifted. What still holds is
+        // that the emergent medium must be **non-renewable**: a good the settlement's
+        // own substrate keeps minting (a gathered node good, a recipe output, or a
+        // demography-provisioned staple) cannot be the money good, because future
+        // minting would create physical units of it *after* econ removed it from the
+        // money-priced market, breaking the conserved promotion. The promotion
+        // rejection list (`money_rejection_goods`) enforces that at the step boundary;
+        // these asserts reject the unsupportable medium loudly at generation.
+        if let Some(barter) = &config.barter {
+            assert!(
+                config
+                    .nodes
+                    .iter()
+                    .all(|spec| spec.good != barter.medium_good),
+                "the emergent medium must not be a gathered node good (the world would \
+                 regenerate the money good, breaking the conserved promotion)"
+            );
+            // A chain's goods (the gathered raw, the recipe outputs, the durable tools)
+            // are all renewable or capital — none can be the money good. Reject a medium
+            // that names one rather than ship a config whose chain would re-mint the
+            // money good after promotion.
+            assert!(
+                config
+                    .chain
+                    .as_ref()
+                    .is_none_or(|chain| !chain.content.goods().contains(&barter.medium_good)),
+                "the emergent medium must not be a production-chain good (a recipe output \
+                 or raw input the chain keeps producing, breaking the conserved promotion)"
+            );
+            // The demography household hearth provisions the hunger staple and WOOD every
+            // tick — both renewable sources. The medium must be neither, or the promotion
+            // would convert a stock the provision keeps refilling.
+            assert!(
+                config.demography.is_none()
+                    || (barter.medium_good != WOOD && barter.medium_good != known.hunger),
+                "the emergent medium must not be a demography-provisioned good (the \
+                 household hearth would keep minting the money good after promotion)"
+            );
+            // The emergent medium is a PHYSICAL good that circulates as barter stock
+            // before promotion, so it must not be GOLD: GOLD is the money ledger, not
+            // a physical good — it never enters `self.goods`, the deposit attribution,
+            // the transfer, or the conservation report. A GOLD medium endowment would
+            // mint stock the digest and whole-system ledger never track (a silent
+            // money leak), and the promotion's good→money conversion is meaningless
+            // when the "good" is already money. Reject it at the seam.
+            assert!(
+                barter.medium_good != GOLD,
+                "the emergent medium cannot be GOLD; GOLD is the money ledger, not a \
+                 physical good, so an endowed GOLD medium would create untracked stock \
+                 the conservation report and digest never see"
+            );
+            assert!(
+                config.starting_gold_gatherer == 0 && config.starting_gold_consumer == 0,
+                "a barter-start camp holds no money before promotion (econ's V2 path \
+                 requires zero initial money balances)"
+            );
+            // The G5b frontier composes the camp with a production chain and demography,
+            // each of which has its OWN gold endowment knob. The V2 promotion converts
+            // each agent's medium stock to gold and refuses to commit if ANY agent
+            // already holds gold (`NonZeroMoneyBalance`), so every gold source — the
+            // producers' working capital, the household founders' starting gold, and the
+            // newborn gift — must also be zero before promotion. Reject a composed config
+            // that seeds money loudly here rather than silently never-promote.
+            assert!(
+                config
+                    .chain
+                    .as_ref()
+                    .is_none_or(|chain| chain.producer_gold == 0),
+                "a barter-start frontier holds no money before promotion: a chain's \
+                 producer_gold must be 0 under a barter overlay"
+            );
+            assert!(
+                config.demography.as_ref().is_none_or(|demo| {
+                    demo.child_gold_endowment == 0
+                        && demo.households.iter().all(|h| h.starting_gold == 0)
+                }),
+                "a barter-start frontier holds no money before promotion: demography \
+                 starting_gold and child_gold_endowment must be 0 under a barter overlay"
+            );
+        }
+        if let Some(chain) = &config.chain {
+            assert!(
+                chain.operating_cost >= 1,
+                "chain operating_cost must be at least 1"
+            );
+            // A producer's throughput becomes that many input wants on its value scale
+            // each regeneration; bound it so a config cannot drive the scale (and the
+            // market that iterates it) to an unbounded size. See [`MAX_CHAIN_THROUGHPUT`].
+            assert!(
+                chain.throughput <= MAX_CHAIN_THROUGHPUT,
+                "chain throughput {} exceeds the sanity bound {MAX_CHAIN_THROUGHPUT}",
+                chain.throughput
+            );
+        }
+        // The G4b demography overlay provisions the **hunger staple** as the household
+        // hearth (`deliver_demography_provisions`, the birth food gate, and the newborn
+        // endowment all use [`KnownGoods::hunger`]). A plain/`lineages` settlement maps
+        // hunger ↔ FOOD, so it provisions FOOD exactly as G4b did (byte-identical); the
+        // G5b frontier maps hunger ↔ bread, so the same path provisions bread — members
+        // are always fed the good they eat, so the pre-G5b "non-FOOD staple starves the
+        // household" hazard cannot arise and needs no generation guard.
         let mut rng = Rng::new(seed);
 
         // ---- world: grid, exchange stockpile, resource nodes ----
@@ -1483,17 +1736,37 @@ impl Settlement {
             }
         }
 
-        // The promotion rejection list (see the `node_goods` field doc). The G5a
-        // slice's only renewable money-good source is the spatial node, so the list
-        // is exactly the distinct non-GOLD node goods; demography provisions are
-        // out of scope (barter + demography is rejected at generation).
-        let mut node_goods: Vec<GoodId> = Vec::new();
+        // The promotion rejection list (see the `money_rejection_goods` field doc):
+        // every renewable source the settlement runs, so econ's `winner` rule can
+        // never commit a good the substrate keeps minting. The G5a slice had only the
+        // spatial nodes; the G5b frontier adds the chain's recipe outputs and the
+        // demography hearth, so the list finally bites and the durable medium (e.g.
+        // SALT) is the only candidate left that the camp can monetize.
+        let mut money_rejection_goods: Vec<GoodId> = Vec::new();
+        let reject = |good: GoodId, list: &mut Vec<GoodId>| {
+            if good != GOLD && !list.contains(&good) {
+                list.push(good);
+            }
+        };
+        // The spatial resource nodes (the world regenerates them).
         for spec in &config.nodes {
-            if spec.good != GOLD && !node_goods.contains(&spec.good) {
-                node_goods.push(spec.good);
+            reject(spec.good, &mut money_rejection_goods);
+        }
+        // The production-chain recipe outputs (a producer keeps minting them). Tools
+        // are durable capital, never an emergent-money candidate, but rejecting them
+        // too is harmless and keeps the list "no chain good can be money".
+        if let Some(chain) = &config.chain {
+            for good in chain.content.goods() {
+                reject(good, &mut money_rejection_goods);
             }
         }
-        node_goods.sort();
+        // The demography household hearth (the renewable provision): the hunger staple
+        // and WOOD. Empty without a demography overlay.
+        if config.demography.is_some() {
+            reject(known.hunger, &mut money_rejection_goods);
+            reject(WOOD, &mut money_rejection_goods);
+        }
+        money_rejection_goods.sort();
 
         // The goods tracked for conservation: node goods plus anything a colonist
         // or resident trader starts holding (FOOD via nodes/buffers, WOOD via
@@ -1504,11 +1777,13 @@ impl Settlement {
                 goods.push(g);
             }
         };
-        // A demography settlement trades FOOD (the staple) and WOOD (warmth) even if
+        // A demography settlement trades the hunger staple and WOOD (warmth) even if
         // a household starts a buffer at zero, and the per-member provision mints both
-        // into econ stock — so both join the conservation ledger up front.
+        // into econ stock — so both join the conservation ledger up front. The staple
+        // is FOOD on a plain `lineages` colony and bread on the G5b frontier; both are
+        // tracked here through [`KnownGoods::hunger`].
         if config.demography.is_some() {
-            push_good(FOOD, &mut goods);
+            push_good(known.hunger, &mut goods);
             push_good(WOOD, &mut goods);
         }
         for spec in &config.nodes {
@@ -1620,7 +1895,7 @@ impl Settlement {
             exchange,
             carry_cap: config.carry_cap,
             goods,
-            node_goods,
+            money_rejection_goods,
             pending_deposits: BTreeMap::new(),
             trader_ids,
             chain,
@@ -1730,7 +2005,7 @@ impl Settlement {
         }
 
         // ---- 4c. PROVISION (G4b): deliver each living householder its household's
-        // renewable FOOD/WOOD hearth into econ stock, recorded as a conserved source
+        // renewable hunger-staple/WOOD hearth into econ stock, recorded as a source
         // (`report.endowment`). Mirrors `life::Camp`'s harvest delivery — after the
         // scale regeneration (the stock add does not change the scale, so no resting
         // quote goes stale), before the market clears. A no-op without a demography
@@ -1752,7 +2027,8 @@ impl Settlement {
         let money_good_before = self.society.current_money_good();
         let society_gold_before = self.society.total_gold();
         if self.barter.is_some() {
-            self.society.step_rejecting_v2_money_goods(&self.node_goods);
+            self.society
+                .step_rejecting_v2_money_goods(&self.money_rejection_goods);
         } else {
             self.society.step();
         }
@@ -1790,8 +2066,8 @@ impl Settlement {
         // Conservation receipt: consumed (the eating sink) is this tick's
         // consumption log; the whole-system after-totals (taken AFTER production and
         // births) must balance against before + regen + endowment + produced −
-        // consumed_as_input − consumed for every good (births/deaths move goods
-        // within the whole system, so they need no term).
+        // consumed_as_input − consumed − promoted for every good (births/deaths move
+        // goods within the whole system, so they need no term).
         for &(_, good, qty) in self.society.consumption_log_last_tick() {
             *report.consumed.entry(good).or_insert(0) += u64::from(qty);
         }
@@ -2222,8 +2498,9 @@ impl Settlement {
         });
         match destination {
             Some(EstateDestination::Household { heir, .. }) => {
-                if gold > Gold::ZERO && !self.society.credit_gold(heir, gold) {
-                    // Defensive: an overflow at the heir routes the gold to the commons.
+                if !self.credit_estate_gold_to_heir(heir, gold) {
+                    // Defensive: an overflow at the heir, stale heir id, or future
+                    // ledger-money estate routes the gold to the commons.
                     self.commons_gold = self.commons_gold.saturating_add(gold);
                 }
                 for (good, qty) in stock {
@@ -2264,6 +2541,30 @@ impl Settlement {
             }
         }
         self.record_estate_destination(id, destination.unwrap_or(EstateDestination::Commons));
+        true
+    }
+
+    /// Credit already-collected estate gold to a live heir. This is deliberately
+    /// settlement-local: [`Society::credit_gold`] is the external half-move accessor
+    /// for closed-GOLD region transfers and correctly rejects emergent-money
+    /// societies. Frontier inheritance is different — [`Society::remove_agent`] has
+    /// already removed the dead colonist's post-promotion `Agent.gold` from this same
+    /// society, so restoring it to a live household heir is a conserved in-settlement
+    /// estate move. Ledger-money estates remain deferred, so do not mutate an M3 cache.
+    fn credit_estate_gold_to_heir(&mut self, heir: AgentId, gold: Gold) -> bool {
+        if gold == Gold::ZERO {
+            return true;
+        }
+        if self.society.money_system.is_some() {
+            return false;
+        }
+        let Some(agent) = self.society.agents.get_mut(heir) else {
+            return false;
+        };
+        let Some(updated) = agent.gold.checked_add(gold) else {
+            return false;
+        };
+        agent.gold = updated;
         true
     }
 
@@ -2341,15 +2642,18 @@ impl Settlement {
     }
 
     /// PROVISION phase (G4b): deliver each living householder its household's
-    /// renewable FOOD/WOOD hearth into econ stock, recording the total as a conserved
+    /// renewable staple/WOOD hearth into econ stock, recording the total as a conserved
     /// source in `report.endowment`. A no-op without a demography overlay.
     /// Deterministic: slot order, no RNG. The provision keeps members fed (so deaths
     /// are old age, not starvation) and supplies the wood-surplus household its
-    /// tradeable surplus.
+    /// tradeable surplus. The staple is the settlement's hunger good
+    /// ([`KnownGoods::hunger`]) — FOOD on a `lineages` colony, bread on the G5b
+    /// frontier — so members are always provisioned the very good they eat.
     fn deliver_demography_provisions(&mut self, report: &mut EconTickReport) {
         let Some(demo) = self.demography.clone() else {
             return;
         };
+        let staple = self.known.hunger;
         // Collect (id, household) first so the colonists borrow is released before the
         // society is mutated.
         let members: Vec<(AgentId, usize)> = self
@@ -2362,7 +2666,7 @@ impl Settlement {
             .collect();
         for (id, h) in members {
             let spec = &demo.households[h];
-            self.deliver_demography_provision_unit(id, FOOD, spec.food_provision, report);
+            self.deliver_demography_provision_unit(id, staple, spec.food_provision, report);
             self.deliver_demography_provision_unit(id, WOOD, spec.wood_provision, report);
         }
     }
@@ -2439,17 +2743,19 @@ impl Settlement {
                 continue;
             }
 
-            // Choose the parent: a member that can endow the child's FOOD buffer,
+            // Choose the parent: a member that can endow the child's staple buffer,
             // preferring the wealthiest (most gold), ties broken to the lowest slot —
-            // a fully deterministic choice. None can endow → skip (poverty of FOOD,
-            // which the provision makes rare).
+            // a fully deterministic choice. None can endow → skip (poverty of the
+            // staple, which the provision makes rare). The staple is the hunger good
+            // ([`KnownGoods::hunger`]): FOOD on `lineages`, bread on the frontier.
+            let staple = self.known.hunger;
             let parent_slot = member_slots
                 .iter()
                 .copied()
                 .filter(|&slot| {
                     let pid = self.colonists[slot].id;
                     self.society.agents.get(pid).is_some_and(|_| {
-                        self.society.free_stock_after_all_reserves(pid, FOOD)
+                        self.society.free_stock_after_all_reserves(pid, staple)
                             >= demo.child_food_endowment
                     })
                 })
@@ -2466,12 +2772,12 @@ impl Settlement {
             let parent_culture = self.colonists[parent_slot].culture;
             let parent_seed = self.colonists[parent_slot].seed;
 
-            // The endowment: conserved TRANSFERS from the parent — the FOOD buffer
+            // The endowment: conserved TRANSFERS from the parent — the staple buffer
             // (required, already verified free after reservations) plus a best-effort
             // gold gift clamped to the parent's unreserved balance.
             if !self
                 .society
-                .debit_stock(parent_id, FOOD, demo.child_food_endowment)
+                .debit_stock(parent_id, staple, demo.child_food_endowment)
             {
                 continue; // guarded above; defensive
             }
@@ -2630,18 +2936,38 @@ impl Settlement {
     /// every colonist whose `latent` is `None` (gatherers, consumers, and the
     /// **seeded** G3a producers — so the G3a config and digest are unchanged).
     ///
+    /// **G5b gating — role-choice follows money.** The appraisal weighs a recipe's
+    /// realized *money* spread, which exists only once a money good is priced. On a
+    /// designated-money settlement (G3a/G3b) that holds from tick 0 (the money good is
+    /// GOLD), so this is unchanged. On a G5b barter-start frontier there is no money
+    /// good — and so no money spread — until promotion, so role-choice is **gated on
+    /// the post-promotion money phase**: pre-promotion (barter) no producer role is
+    /// ever adopted, and a division of labor emerges only AFTER a medium of exchange
+    /// does (the load-bearing economic ordering; the spread is also `None` during
+    /// barter, but the gate makes the ordering explicit rather than incidental).
+    ///
     /// The decision is **ordinal**: it routes entirely through
-    /// [`recipe_adoption_pays`] (econ's M2.5 [`appraise_project_bundle_for_money`]),
-    /// which asks whether running the recipe — selling its output at the realized
-    /// output price for a future receivable, costing the realized input price plus
-    /// the operating cost — newly provisions a future-gold want on the colonist's
-    /// *own* scale without breaking a higher want. There is no scalar profit number
-    /// and no argmax across colonists: each decides for itself, in id order (the
-    /// §pillar-1 "colonists act" rule applied to occupation). Re-running it every
-    /// tick is what makes a role sticky while the spread holds and revert when it
-    /// collapses. Deterministic: integer state, no RNG, id-ordered.
+    /// [`recipe_adoption_pays_for_money`] (econ's M2.5
+    /// [`appraise_project_bundle_for_money`]), which asks whether running the recipe —
+    /// selling its output at the realized output price for a future receivable, costing
+    /// the realized input price plus the operating cost — newly provisions a
+    /// future-**money** want on the colonist's *own* scale without breaking a higher
+    /// want. The money good is the settlement's *current* one (GOLD when designated,
+    /// the emerged medium post-promotion), so the appraisal and the market agree on
+    /// what "money" is. There is no scalar profit number and no argmax across
+    /// colonists: each decides for itself, in id order (the §pillar-1 "colonists act"
+    /// rule applied to occupation). Re-running it every tick is what makes a role
+    /// sticky while the spread holds and revert when it collapses. Deterministic:
+    /// integer state, no RNG, id-ordered.
     fn run_role_choice(&mut self) -> bool {
         let Some(chain) = &self.chain else {
+            return false;
+        };
+        // Gate on the money phase: a producer appraises a realized money spread, which
+        // exists only once a money good is priced. Designated-money settlements always
+        // pass here (current_money_good is GOLD from tick 0, so G3a/G3b are unchanged);
+        // a barter-start frontier stays in the no-role barter phase until promotion.
+        let Some(money_good) = self.current_money_good() else {
             return false;
         };
         // Pull the content data into owned locals so the `&self.chain` borrow is
@@ -2686,13 +3012,14 @@ impl Settlement {
                     .agents
                     .get(id)
                     .expect("living colonist resolves in the arena");
-                recipe_adoption_pays(
+                recipe_adoption_pays_for_money(
                     agent,
                     recipe,
                     output_price,
                     input_price,
                     tick,
                     operating_cost,
+                    money_good,
                 )
             };
             let next = if pays { adopted } else { Vocation::Unassigned };
@@ -3389,13 +3716,16 @@ fn build_agent(
                 FOOD
             };
             // Consumers carry a smaller staple buffer (so they buy early, pricing
-            // the staple); everyone else carries the surplus buffer.
-            let staple_buffer = match vocation {
-                Vocation::Consumer => chain.consumer_staple_buffer,
-                _ => chain.bread_buffer,
+            // the staple) and — on the frontier — a smaller WOOD buffer (so they buy
+            // WOOD with the medium); everyone else carries the surplus buffers. In
+            // G3a/G3b both consumer buffers equal the surplus, so those configs are
+            // byte-identical.
+            let (staple_buffer, wood) = match vocation {
+                Vocation::Consumer => (chain.consumer_staple_buffer, chain.consumer_wood_buffer),
+                _ => (chain.bread_buffer, chain.wood_buffer),
             };
             stock.add(staple, staple_buffer);
-            stock.add(WOOD, chain.wood_buffer);
+            stock.add(WOOD, wood);
             match vocation {
                 Vocation::Consumer => config.starting_gold_consumer,
                 Vocation::Gatherer => config.starting_gold_gatherer,
@@ -3450,21 +3780,25 @@ fn build_agent(
             };
             stock.add(FOOD, food);
             stock.add(WOOD, wood);
-            // G5a: endow the emergent medium so it has an initial supply to
-            // circulate (the camp). Gatherers earn most of it by selling their
-            // haul, so they hold a small seed; consumers hold the bulk and spend
-            // it down. Zero on both sides in the control (no medium to monetize).
-            if let Some(barter) = &config.barter {
-                let medium = match vocation {
-                    Vocation::Gatherer => barter.gatherer_medium_endowment,
-                    Vocation::Consumer => barter.consumer_medium_endowment,
-                    _ => 0,
-                };
-                stock.add(barter.medium_good, medium);
-            }
             gold
         }
     };
+    // G5a/G5b: endow the emergent **medium** so it has an initial supply to circulate.
+    // Gatherers earn most of it by selling their haul, so they hold a small seed;
+    // consumers hold the bulk and spend it down. This is shared by the plain barter
+    // camp (G5a, `None` chain) and the G5b frontier (a chain *and* a barter overlay) —
+    // a chain colonist demands and barters for the medium exactly like a camp colonist,
+    // so the endowment must land on the chain path too (it did not in the G5a-only
+    // code, which only reached the `None` branch). Zero in the no-medium control and
+    // for producers (they earn the medium by selling surplus, never a seed).
+    if let Some(barter) = &config.barter {
+        let medium = match vocation {
+            Vocation::Gatherer => barter.gatherer_medium_endowment,
+            Vocation::Consumer => barter.consumer_medium_endowment,
+            _ => 0,
+        };
+        stock.add(barter.medium_good, medium);
+    }
     Agent {
         id,
         scale: regenerate_scale(need, culture, known),
@@ -3478,10 +3812,13 @@ fn build_agent(
 }
 
 /// Build a G4b household member's econ agent (a founder or a newborn): a
-/// non-spatial householder endowed from its household's `spec` (gold + a FOOD/WOOD
+/// non-spatial householder endowed from its household's `spec` (gold + a staple/WOOD
 /// buffer), with a value scale generated from its need state and (inherited)
-/// culture. Like every other colonist it is a `Household`-role agent with neutral
-/// price beliefs; it has no labor capacity and no world agent (it never hauls).
+/// culture. The staple buffer (`spec.starting_food`) is held in the hunger good
+/// ([`KnownGoods::hunger`]) — FOOD on a `lineages` colony, bread on the frontier —
+/// so the founder starts with a buffer of the good it eats. Like every other colonist
+/// it is a `Household`-role agent with neutral price beliefs; it has no labor capacity
+/// and no world agent (it never hauls).
 fn build_demography_agent(
     id: AgentId,
     need: &NeedState,
@@ -3490,7 +3827,7 @@ fn build_demography_agent(
     spec: &crate::demography::HouseholdSpec,
 ) -> Agent {
     let mut stock = Stock::new(NET.0);
-    stock.add(FOOD, spec.starting_food);
+    stock.add(known.hunger, spec.starting_food);
     stock.add(WOOD, spec.starting_wood);
     Agent {
         id,
@@ -3505,10 +3842,12 @@ fn build_demography_agent(
 }
 
 /// Build a newborn householder's econ agent (G4b): a non-spatial `Household`-role
-/// agent endowed only with the **conserved transfer** its parent gave it (a FOOD
+/// agent endowed only with the **conserved transfer** its parent gave it (a staple
 /// buffer plus, on closed-GOLD M1, any gold gift already represented in `gold`),
 /// its value scale generated from a newborn-rested need state and its
-/// inherited+mutated culture. Its `id` is overwritten by [`Society::add_agent`].
+/// inherited+mutated culture. The `food` buffer is held in the hunger good
+/// ([`KnownGoods::hunger`]) — FOOD on `lineages`, bread on the frontier — the good
+/// the newborn eats. Its `id` is overwritten by [`Society::add_agent`].
 /// It carries no wood — the household provision supplies that from its first tick.
 /// M3 callers install the newborn with zero ledger money and move any gold gift
 /// afterward through [`Society::transfer_gold`], so this mints nothing.
@@ -3520,7 +3859,7 @@ fn build_newborn_agent(
     food: u32,
 ) -> Agent {
     let mut stock = Stock::new(NET.0);
-    stock.add(FOOD, food);
+    stock.add(known.hunger, food);
     Agent {
         id: AgentId(0), // overwritten by the arena on insert
         scale: regenerate_scale(need, culture, known),
@@ -3558,9 +3897,15 @@ fn build_newborn_agent(
 /// spread.
 ///
 /// `appraise_project_bundle_for_money` then returns `Some` iff that revenue−cost
-/// spread newly provisions a future-gold (savings) want on the agent's own value
+/// spread newly provisions a future-money (savings) want on the agent's own value
 /// scale without breaking a higher-ranked want — a strictly ordinal test, decided
 /// on the agent's scale, never by a profit threshold. `true` here means *adopt*.
+///
+/// This wrapper appraises against **GOLD** as the money good — the designated money a
+/// G3a/G3b chain runs on. The G5b frontier's money good is the *emergent* medium
+/// (e.g. SALT), so its role-choice phase calls [`recipe_adoption_pays_for_money`]
+/// directly with the settlement's current money good (so the appraisal and the market
+/// agree on what "money" — and the future savings want — is).
 ///
 /// Pure and deterministic (no RNG, integer state); the role-choice phase calls it
 /// once per latent colonist per tick, and the acceptance suite calls it directly to
@@ -3572,6 +3917,33 @@ pub fn recipe_adoption_pays(
     input_price: Option<Gold>,
     tick: u64,
     operating_cost: u64,
+) -> bool {
+    recipe_adoption_pays_for_money(
+        agent,
+        recipe,
+        output_price,
+        input_price,
+        tick,
+        operating_cost,
+        GOLD,
+    )
+}
+
+/// [`recipe_adoption_pays`] generalized over the money good — the role-choice
+/// appraisal weighed against `money_good` instead of assuming GOLD. A designated-money
+/// chain (G3a/G3b) passes `GOLD` (via the wrapper); the G5b frontier passes its
+/// *current* emergent money good (e.g. SALT) so the future-money savings want the
+/// appraisal must provision is the same good the post-promotion market clears in. The
+/// `output_price`/`input_price` are realized money prices either way (`Gold`-valued),
+/// so only the identity of the future want changes, not the spread arithmetic.
+pub fn recipe_adoption_pays_for_money(
+    agent: &Agent,
+    recipe: &Recipe,
+    output_price: Option<Gold>,
+    input_price: Option<Gold>,
+    tick: u64,
+    operating_cost: u64,
+    money_good: GoodId,
 ) -> bool {
     assert!(operating_cost >= 1, "operating_cost must be at least 1");
     // No observable sale price for the output → no spread to appraise → decline.
@@ -3596,10 +3968,10 @@ pub fn recipe_adoption_pays(
     // is never zero and a flat output price cannot clear it on yield alone.
     let present_advance = input_cost.saturating_add(operating_cost);
 
-    // The future-gold want the project must provision sits at the agent's own
+    // The future-money want the project must provision sits at the agent's own
     // savings horizon; target the soonest such horizon so the want qualifies
     // (`later >= loan_horizon`). No savings want → nothing to provision → decline.
-    let Some(loan_horizon) = soonest_savings_horizon(&agent.scale) else {
+    let Some(loan_horizon) = soonest_savings_horizon(&agent.scale, money_good) else {
         return false;
     };
     // `econ` rejects `candidate.owner == AgentId(0)` as an invalid project-candidate
@@ -3640,27 +4012,33 @@ pub fn recipe_adoption_pays(
         payables: &[],
         tick: Tick(tick),
     };
-    appraise_project_bundle_for_money(&endowment, &candidate, ProjectPlanId(0), GOLD).is_some()
+    appraise_project_bundle_for_money(&endowment, &candidate, ProjectPlanId(0), money_good)
+        .is_some()
 }
 
-/// The soonest `Later` horizon at which `scale` holds a savings (GOLD) want — the
-/// loan horizon the role-choice appraisal targets so that want qualifies as the
-/// future-gold want the project bundle must newly provision. `None` if the colonist
-/// has no savings want (a present-biased colonist that never appraises a vocation).
+/// The soonest `Later` horizon at which `scale` holds a savings want for `money_good`
+/// — the loan horizon the role-choice appraisal targets so that want qualifies as the
+/// future-money want the project bundle must newly provision. `None` if the colonist
+/// has no such savings want (a present-biased colonist that never appraises a
+/// vocation). `money_good` is GOLD on a designated-money chain and the emergent medium
+/// (e.g. SALT) on the G5b frontier, matching the good the colonist's scale actually
+/// saves in ([`KnownGoods::savings`]).
 ///
 /// Only `Horizon::Later` wants are considered, and that is the appraisal's own
 /// requirement, not an incidental coupling to how scales are generated:
 /// `appraise_project_bundle_for_money` can ONLY ever provision a future-money want at
 /// `Horizon::Later(later)` with `later >= loan_horizon` (bundle.rs). A `Now`/`Next`
-/// GOLD want is immediate liquidity, never the future provisioning a project bundle
+/// money want is immediate liquidity, never the future provisioning a project bundle
 /// targets — so even if a scale ever carried one, this appraisal could not satisfy it,
 /// and targeting it would only produce a guaranteed decline. Filtering to `Later` is
 /// therefore correct by construction.
-fn soonest_savings_horizon(scale: &[Want]) -> Option<u32> {
+fn soonest_savings_horizon(scale: &[Want], money_good: GoodId) -> Option<u32> {
     scale
         .iter()
         .filter_map(|want| match (want.kind, want.horizon) {
-            (WantKind::Good(GOLD), Horizon::Later(later)) => Some(u32::from(later)),
+            (WantKind::Good(good), Horizon::Later(later)) if good == money_good => {
+                Some(u32::from(later))
+            }
             _ => None,
         })
         .min()
@@ -4235,6 +4613,93 @@ mod tests {
     }
 
     #[test]
+    fn frontier_estate_gold_inherits_after_emergent_promotion() {
+        // After G5a promotion the frontier's money balances live in `Agent.gold` even
+        // though the money regime is still `Emergent(SALT)`. The public econ
+        // `credit_gold` half-move correctly rejects that regime, but household
+        // inheritance must still route an already-collected estate to the heir instead
+        // of diverting it to the commons.
+        let mut s = Settlement::generate(2_026, &SettlementConfig::frontier());
+
+        let mut victim_slot = None;
+        for tick in 0..120 {
+            let report = s.econ_tick();
+            assert!(report.conserves(), "frontier ledger broke at tick {tick}");
+            if s.current_money_good() != Some(SALT) {
+                continue;
+            }
+            victim_slot = s.live_colonist_slots.iter().copied().find(|&slot| {
+                let colonist = &s.colonists[slot];
+                let Some(household) = colonist.household else {
+                    return false;
+                };
+                let has_gold = s
+                    .society
+                    .agents
+                    .get(colonist.id)
+                    .is_some_and(|agent| agent.gold > Gold::ZERO);
+                let has_heir = s
+                    .live_colonist_slots
+                    .iter()
+                    .any(|&other| other != slot && s.colonists[other].household == Some(household));
+                has_gold && has_heir
+            });
+            if victim_slot.is_some() {
+                break;
+            }
+        }
+
+        let slot = victim_slot.expect("a promoted frontier household member holds money");
+        let victim = s.colonists[slot].id;
+        let household = s.colonists[slot].household.expect("household member");
+        let estate_gold = s.society.agents.get(victim).expect("live victim").gold;
+        assert!(
+            estate_gold > Gold::ZERO,
+            "the estate must exercise gold routing"
+        );
+        assert_eq!(
+            s.current_money_good(),
+            Some(SALT),
+            "the test must run in the post-promotion emergent-money phase"
+        );
+
+        s.mark_colonist_dead(slot);
+        let heir = s.heir_for(victim).expect("same-household heir");
+        let heir_gold_before = s.society.agents.get(heir).expect("live heir").gold;
+        let total_gold_before = s.total_gold();
+        let commons_gold_before = s.commons_gold();
+
+        assert!(
+            !s.society.credit_gold(heir, estate_gold),
+            "the external gold accessor must still reject emergent-money societies"
+        );
+        assert!(s.settle_estate_to_heirs(victim));
+
+        let heir_gold_after = s.society.agents.get(heir).expect("live heir").gold;
+        assert_eq!(
+            heir_gold_after,
+            heir_gold_before
+                .checked_add(estate_gold)
+                .expect("small frontier estate fits"),
+            "the heir must inherit the post-promotion money balance"
+        );
+        assert_eq!(
+            s.commons_gold(),
+            commons_gold_before,
+            "household-routed money must not be diverted to commons"
+        );
+        assert_eq!(
+            s.total_gold(),
+            total_gold_before,
+            "estate settlement must conserve total money"
+        );
+        assert_eq!(
+            s.estate_destination_of(slot),
+            Some(EstateDestination::Household { household, heir })
+        );
+    }
+
+    #[test]
     fn birth_gold_endowment_uses_only_unreserved_parent_balance() {
         let mut config = SettlementConfig::lineages();
         config.demography = Some(DemographyConfig {
@@ -4445,16 +4910,102 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "non-FOOD staple")]
-    fn generate_rejects_demography_with_a_non_food_staple() {
-        // The demography overlay provisions FOOD as the hunger staple. Pairing it with
-        // a `bread_is_staple` chain (hunger ↔ bread) would leave householders fed a
-        // good they never eat — `generate` rejects the combination loudly rather than
-        // ship a silent-starvation config. `grain_flour_bread()` defaults the staple to
-        // bread, so the guard trips before any colonist is placed.
+    fn demography_provisions_the_hunger_staple_not_just_food() {
+        // G5b generalizes the G4b household hearth to provision the settlement's hunger
+        // staple ([`KnownGoods::hunger`]). On a `lineages` colony that is FOOD (byte-
+        // identical to G4b); composed with a `bread_is_staple` chain it becomes bread,
+        // so householders are endowed and provisioned in the very good they eat. The
+        // composition the pre-G5b FOOD-only guard used to reject is now supported.
         let mut config = SettlementConfig::lineages();
-        config.chain = Some(ChainConfig::grain_flour_bread());
-        let _ = Settlement::generate(1, &config);
+        let mut chain = ChainConfig::grain_flour_bread();
+        // No spatial producers — just the demography colony plus the chain's staple
+        // mapping (bread), so the test isolates the provision good.
+        chain.millers = 0;
+        chain.bakers = 0;
+        config.chain = Some(chain);
+        let mut s = Settlement::generate(1, &config);
+        let bread = s.content().expect("chain content").bread();
+
+        // A founder starts with its staple buffer in bread, never FOOD.
+        let founder = s.colonist_id(0).expect("a founder");
+        let stock = &s
+            .society
+            .agents
+            .get(founder)
+            .expect("founder resolves")
+            .stock;
+        assert!(
+            stock.get(bread) > 0,
+            "the founder holds a bread staple buffer"
+        );
+        assert_eq!(stock.get(FOOD), 0, "FOOD is no longer the household staple");
+
+        // The provision phase mints bread (the staple), recorded as a conserved source.
+        let mut report = EconTickReport::default();
+        s.deliver_demography_provisions(&mut report);
+        assert!(
+            report.endowment_of(bread) > 0,
+            "the staple bread is provisioned"
+        );
+        assert_eq!(
+            report.endowment_of(FOOD),
+            0,
+            "FOOD is no longer the provisioned staple"
+        );
+    }
+
+    #[test]
+    fn barter_chain_without_bread_staple_saves_the_medium() {
+        // A barter overlay composed with a chain whose bread is NOT the staple is a
+        // coherent (if unshipped) camp: hunger stays FOOD, yet the emergent medium is
+        // still endowed and circulated (`build_agent` always adds `medium_good` under a
+        // barter overlay; the post-promotion market runs `step_rejecting_v2_*`). The
+        // savings want must therefore name the medium, not the lab-default GOLD —
+        // otherwise colonists would save GOLD while the market clears SALT, and
+        // `run_role_choice`'s `soonest_savings_horizon(money_good)` would find no
+        // matching want and never adopt a role. Guards the generation arm.
+        let mut config = SettlementConfig::frontier();
+        config
+            .chain
+            .as_mut()
+            .expect("frontier ships a chain")
+            .bread_is_staple = false;
+        let s = Settlement::generate(7, &config);
+
+        assert_eq!(
+            s.known.savings, SALT,
+            "a barter-start chain saves the emergent medium even when bread is not staple"
+        );
+        assert_eq!(
+            s.known.hunger, FOOD,
+            "with bread not the staple, hunger stays FOOD"
+        );
+
+        // The retargeted savings want is exactly what role-choice looks for: at least
+        // one (patient) colonist carries a future `Good(SALT)` savings want, and no
+        // colonist saves GOLD (the lab-default fallthrough the fix removes).
+        let mut saw_salt_savings = false;
+        for index in 0..s.population() {
+            let id = s.colonist_id(index).expect("colonist id");
+            let scale = &s
+                .society
+                .agents
+                .get(id)
+                .expect("living colonist resolves")
+                .scale;
+            for want in scale {
+                if let WantKind::Good(good) = want.kind {
+                    assert_ne!(good, GOLD, "no colonist saves GOLD under a barter overlay");
+                    if good == SALT && matches!(want.horizon, Horizon::Later(_)) {
+                        saw_salt_savings = true;
+                    }
+                }
+            }
+        }
+        assert!(
+            saw_salt_savings,
+            "a patient colonist carries a future SALT savings want the appraisal can target"
+        );
     }
 
     #[test]

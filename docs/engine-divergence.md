@@ -1358,3 +1358,127 @@ realized spatial barter.
   every econ edit is additive (read accessors + the opt-in, default-off consumption log +
   the opt-in spatial promotion rejection boundary).
 - No `HashMap` in logic; nothing drawn in the loops; no money moves in the fast loop.
+
+## G5b — emergence composed with the full stack, the `frontier` (`docs/impl-g5b.md`)
+
+G5a/G3b/G4b each proved one emergent phenomenon in isolation. **G5b composes all three in
+ONE settlement.** `SettlementConfig::frontier()` is a barter camp where money **emerges**
+(G5a), then producers take up milling/baking from the resulting **money** price spreads
+(G3b), while **births and deaths** run demographic selection (G4b) — all conserving and
+deterministic. It proves the simulation composes: the whole economic foundation
+(G1 needs → G2 space/trade → G3 production → G4 demography → G5a money) runs as one
+coherent society, not as separate demos. G5b is **composition, not new mechanism**: G5a
+money emergence, G3b role-choice, and G4b demography are reused unchanged; the work is
+ordering them coherently in one econ tick, the combined config, and fixing the interaction
+bugs the combination surfaces. There is **no new econ edit** — G5b reuses the additive
+accessors G5a/G3b/G4b already added.
+
+### 1. The combined econ tick (one coherent phase order)
+
+`Settlement::econ_tick` already interleaves the per-overlay phases; G5b proves they coexist
+when all three overlays are active simultaneously:
+
+```
+FAST       world gather/haul (physical only; no money moves)
+TRANSFER   delivered exchange units cross world→econ (net-zero)
+NEEDS      advance needs; starvation deaths via remove_agent (G4a) — resilient hunger
+           on the frontier, so deaths are old age
+AGING      old-age deaths via remove_agent (G4b); estates to heirs
+SCALES     regenerate value scales (+ producer/medium scale extensions)
+ROLE-CHOICE  latent colonists appraise their recipe and adopt/revert — GATED on the
+             money phase (a no-op pre-promotion)
+PROVISION  the demography hearth mints the hunger staple + WOOD into econ stock (a source)
+MARKET     EXCHANGE: pre-promotion → spatial barter + saleability + promotion check (G5a);
+           post-promotion → the G2b money market. The promotion converts good→money 1-for-1
+PRODUCTION recipes transform inputs → outputs (a conserved conversion)
+BIRTHS     food-secure households bear a child via add_agent; a conserved endowment transfer
+MEASURE    whole-system conservation over every pool + every flow
+```
+
+The no-overlay paths are structurally unchanged, so the six econ goldens and every
+G1/G2*/G3*/G4*/G5a test stay byte-identical.
+
+### 2. The load-bearing economic ordering — roles follow money
+
+Appraising a flour−grain spread needs realized **money** prices, which exist only after a
+money good is priced. So **production roles emerge only AFTER money does**: `run_role_choice`
+returns early while `current_money_good()` is `None` (the barter phase), so no producer role
+is ever adopted before promotion — a division of labor presupposes a medium of exchange.
+On a designated-money chain (G3a/G3b) the money good is GOLD from tick 0, so the gate is
+always open and those configs are unchanged.
+
+The appraisal is **threaded with the current money good**, not a hard-coded GOLD:
+`recipe_adoption_pays_for_money(.., money_good)` (and `soonest_savings_horizon(.., money_good)`)
+target the colonist's `Good(money_good)` future-savings want. On the frontier the emergent
+money is **SALT** (the durable medium the camp saves in), so the appraisal reads the
+`Good(SALT)` savings want and the post-promotion money market provisions it — the appraisal
+and the market agree on what "money" is. The 6-arg `recipe_adoption_pays` wrapper keeps
+passing GOLD, so the G3b acceptance tests are unchanged.
+
+### 3. Conservation with ALL flows active at once
+
+A single frontier econ tick can run, simultaneously: a barter swap (a relocation, net 0),
+the promotion conversion (good→money, exact, recorded in `report.promoted`), a recipe
+transformation (`report.produced` / `report.consumed_as_input`), a birth endowment + a death
+estate (transfers that move goods *within* the whole system, so they cancel in
+before/after), harvest/regen (`report.regen`), the demography provision (`report.endowment`,
+a source), and consumption (`report.consumed`, a sink). The whole-system identity
+
+```
+after(X) == before(X) + regen + endowment + produced − consumed_as_input − consumed − promoted
+```
+
+balances every tick — including the awkward coincidence of a **birth on the promotion tick**
+(test 4's witness run lands one). Money is a closed balance except the 1-for-1 promotion mint.
+
+### 4. The promotion-rejection list finally bites
+
+A commodity-money good must be **non-renewable**: a good the settlement's own substrate keeps
+minting would create physical units of the money good *after* econ removed it from the
+money-priced market, breaking the conserved promotion. The rejection list passed to
+`step_rejecting_v2_money_goods` (`money_rejection_goods`, renamed from `node_goods`) now
+covers every renewable source the frontier runs:
+
+- the spatial **resource nodes** (the world regenerates them — the only G5a source);
+- the production-chain **recipe outputs** (a producer keeps minting flour/bread);
+- the G4b **demography** provision goods (the hunger staple + WOOD — the household hearth
+  keeps minting them).
+
+So a **demography-provisioned staple cannot monetize** (test 5: forced as the sole candidate
+it leads the saleability race yet econ records an `UnsupportedMoneyGood` veto every tick),
+and money emerges on the durable, non-renewable **SALT** medium — or not at all. Generation
+also rejects a medium that names a node good, a chain good, or a demography-provisioned good.
+
+### 5. Interaction fixes the combination surfaced
+
+- **Generation guard lifted.** The G5a mutual-exclusion (`barter` ⊥ `chain`/`demography`) is
+  removed. New guards enforce the composed invariant that **every** gold source is zero
+  before promotion — the producers' `producer_gold`, the household founders' `starting_gold`,
+  and the newborn `child_gold_endowment` — because econ's V2 promotion refuses to commit when
+  any agent already holds gold (`NonZeroMoneyBalance`).
+- **The emergent medium endowment now lands on the chain path.** G5a only endowed the medium
+  in `build_agent`'s no-chain branch; the frontier (a chain *and* a barter overlay) needs the
+  consumers' SALT, so the endowment moved out of the match to apply to both paths.
+- **The demography hearth provisions the hunger staple, not hard-coded FOOD.**
+  `deliver_demography_provisions` / the birth gate / the newborn endowment now provision
+  `KnownGoods::hunger` (FOOD on a `lineages` colony — byte-identical to G4b — bread on the
+  frontier), so members are always fed the good they eat. This removes the pre-G5b
+  "non-FOOD staple starves the household" guard, which is no longer reachable.
+- **Consumers are goods-poor on the frontier.** A `ChainConfig::consumer_wood_buffer` (equal
+  to `wood_buffer` on G3a/G3b, so those stay byte-identical) keeps frontier consumers
+  WOOD-short, so the SALT-rich consumers *buy* both barter counterparts (bread and WOOD) with
+  the medium — the saleability hub (exactly `barter_camp`'s goods-poor/medium-rich consumer)
+  that lets SALT win rather than direct bread↔WOOD swaps.
+
+### Excluded from G5b (deferred)
+
+- **No multi-seed robustness STUDY.** G5b proves the mechanism composes on a curated config
+  (one seed, sign + exact conservation). The spatial robustness gate (emergence/role/sustain
+  rates across many worlds, analogous to **M18/M19**) is a deferred **G5-study**.
+- **No multi-settlement composition.** Emergence + production + demography run in a single
+  `Settlement`; the **Region** with all overlays at once (caravans linking composed
+  settlements) is later. The `frontier` is one settlement.
+- **No new mechanism, no econ behaviour change** — every piece is reused; the six goldens are
+  byte-identical and there is no econ edit (G5b reuses G5a/G3b/G4b's additive accessors).
+- No `HashMap` in logic; nothing drawn in the loops; no asserted magnitudes beyond
+  all-three-fire and exact conservation.
