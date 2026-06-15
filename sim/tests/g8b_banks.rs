@@ -34,6 +34,7 @@
 
 use econ::good::{Gold, FOOD};
 use econ::money::ReserveRatioBps;
+use econ::purpose::CreditSource;
 use sim::{Settlement, SettlementConfig, Vocation};
 
 /// The id of a living colonist of `vocation` at the lowest generation slot — the
@@ -45,6 +46,14 @@ fn first_living(s: &Settlement, vocation: Vocation) -> econ::agent::AgentId {
         }
     }
     panic!("no living colonist of vocation {vocation:?}");
+}
+
+fn bank_reserve_ratio_holds(s: &Settlement) -> bool {
+    let Some(bank) = s.bank() else {
+        return true;
+    };
+    u128::from(bank.reserves.0) * 10_000
+        >= u128::from(bank.demand_deposits.0) * u128::from(bank.reserve_ratio_bps.0)
 }
 
 /// 1. Same `(seed, config)` → a byte-identical banked run. Integer state, the econ
@@ -191,6 +200,31 @@ fn fractional_bank_lends_fiduciary() {
         recorded_bank_credit, bank.fiduciary_issued.0,
         "the M3 records expose the sim-side bank credit issuance"
     );
+    let recorded_bank_receipts: u64 = s
+        .society()
+        .cantillon_receipts
+        .iter()
+        .filter(|receipt| matches!(receipt.source, CreditSource::BankFiduciary(_)))
+        .map(|receipt| receipt.amount.0)
+        .sum();
+    assert_eq!(
+        recorded_bank_receipts, bank.fiduciary_issued.0,
+        "the Cantillon receipt tape must tag bank-credit borrowers before M3 metrics export"
+    );
+    assert!(
+        s.society()
+            .m3_records
+            .iter()
+            .filter(|record| record.bank_credit_issued > Gold::ZERO)
+            .any(|record| {
+                record.early_receiver_wealth_delta != 0 || record.late_receiver_wealth_delta != 0
+            }),
+        "bank-credit M3 rows must export receiver wealth deltas derived from those receipts"
+    );
+    assert!(
+        s.society().debts.is_empty() && s.society().loan_trades.is_empty(),
+        "G8b issues sim-side fiduciary claims without activating the debt/loan machinery"
+    );
     assert_eq!(
         composition.fiduciary.0,
         composition.demand_claims.0 - composition.bank_reserves.0,
@@ -318,6 +352,10 @@ fn m3_conserves_with_credit() {
             composition.bank_reserves <= composition.demand_claims,
             "bank reserves exceeded demand claims at econ tick {t}"
         );
+        assert!(
+            bank_reserve_ratio_holds(&s),
+            "bank fell below its configured reserve ratio at econ tick {t}"
+        );
     }
 
     // The run actually carried nonzero credit (so the conservation above spanned a
@@ -440,6 +478,83 @@ fn econ_unchanged() {
     }
 }
 
+/// 8. Regression (review round 8): a banked **depositor death is settled, not a
+///    crash**. The colony is viable only over a bounded horizon — its depositing
+///    consumers eventually starve once their finite WOOD income is gone (true with or
+///    without a bank: the bank-free `viable`/`m3` colony loses its consumers at a
+///    similar horizon). A depositor can therefore reach the starvation-death window
+///    still holding the demand claims its deposits created. G8b settles that by
+///    *withdrawing the deposit* — redeeming the claims for specie through econ's
+///    existing redemption path, then settling the G8a specie estate — with no econ
+///    change and no claim-estate routing (G8c). Run a banked settlement past its first
+///    death and pin: it does not panic, a death actually settled, the M3 ledger
+///    reconciles tick over tick across the death, specie stays conserved, and credit
+///    is still live.
+#[test]
+fn banked_depositor_death_is_settled_by_deposit_withdrawal() {
+    let mut s = Settlement::generate(6, &SettlementConfig::bank());
+    let specie_base = s.total_gold();
+    let population = s.population();
+    let mut deaths = 0u32;
+    // 400 ticks reaches the first depositor starvation death for this run.
+    for t in 0..400 {
+        let report = s.econ_tick();
+        deaths += report.deaths;
+        assert!(
+            report.conserves(),
+            "goods conservation broke at econ tick {t}"
+        );
+        // The deposit-withdrawal on death keeps both the ledger and the bank balance
+        // sheet reconciled (amendment A1's `sum(demand_deposits) == demand_claims` gate
+        // included), tick over tick, across the death.
+        assert!(
+            s.society().money_ledgers_reconcile(),
+            "the M3 ledger (with credit) must reconcile across a banked death at econ tick {t}"
+        );
+        // Specie is neither minted nor burned by the withdrawal: it moves bank reserves
+        // → the dying depositor → the commons estate, all within the conserved base.
+        assert_eq!(
+            s.total_gold(),
+            specie_base,
+            "the deposit withdrawal on death must not create or destroy specie at econ tick {t}"
+        );
+        assert!(
+            bank_reserve_ratio_holds(&s),
+            "the death withdrawal must preserve the bank's configured reserve ratio at econ tick {t}"
+        );
+    }
+    assert!(
+        deaths > 0,
+        "the run must actually exercise a banked depositor death (else it proves nothing)"
+    );
+    assert!(
+        s.living_total() < population,
+        "a starved depositor settled through the deposit withdrawal, so the colony shrank"
+    );
+    // Credit survived the death: the bank still carries fiduciary and its balance sheet
+    // still mirrors the ledger.
+    let bank = s.bank().expect("a banked settlement charters a bank");
+    assert!(
+        bank.fiduciary_issued > Gold::ZERO,
+        "fiduciary credit is still live after the settled death"
+    );
+    let composition = s
+        .money_composition()
+        .expect("a banked settlement has a composition");
+    assert!(
+        composition.fiduciary <= composition.demand_claims,
+        "fiduciary still never exceeds the demand claims after the death"
+    );
+    assert_eq!(
+        bank.reserves, composition.bank_reserves,
+        "the bank's reserves still mirror the ledger after the withdrawal"
+    );
+    assert!(
+        bank_reserve_ratio_holds(&s),
+        "the bank must stay inside its chartered reserve ratio after the settled death"
+    );
+}
+
 // ---- unit tests -------------------------------------------------------------
 
 /// A chartered bank requires the M3 ledger: a bank config without `m3` is rejected at
@@ -460,6 +575,32 @@ fn bank_rejects_demography_until_claim_estates_exist() {
     let mut config = SettlementConfig::lineages();
     config.m3 = true;
     config.bank = SettlementConfig::bank().bank;
+    let _ = Settlement::generate(1, &config);
+}
+
+/// G8b ships only its two curated bank controls (`bank` / `bank_full_reserve`);
+/// broader banked layouts — and the claim-estate routing they would exercise — are
+/// G8c. A non-curated banked composition is rejected at generation.
+#[test]
+#[should_panic(expected = "curated M3 settlement layout")]
+fn bank_rejects_non_curated_layout_until_g8c() {
+    let config = SettlementConfig::bank().with_food_node_distance(24);
+    let _ = Settlement::generate(1, &config);
+}
+
+/// G8b supports only the shipped fractional and full-reserve charters. A custom
+/// reserve ratio on the curated layout is rejected instead of entering an unsupported
+/// bank/death path.
+#[test]
+#[should_panic(expected = "shipped bank/full-reserve charters")]
+fn bank_rejects_custom_charters_until_g8c() {
+    let mut config = SettlementConfig::m3_settlement();
+    let mut bank = SettlementConfig::bank()
+        .bank
+        .expect("the shipped bank config has a charter");
+    bank.reserve_ratio_bps = ReserveRatioBps(1_000);
+    config.bank = Some(bank);
+
     let _ = Settlement::generate(1, &config);
 }
 

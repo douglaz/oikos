@@ -153,25 +153,99 @@ cargo run -p viewer -- run bank-full-reserve --ticks 40
 - config-chartered bank; the player-`Command` charter is G8c/UI.
 - `git add` new files; gitignore stray build artifacts.
 
-## Amendment A1 (spec-owner, 2026-06-15) — unify claim-holder death settlement
+## Amendment A1 (spec-owner, 2026-06-15) — claim-holder death settlement & the complete bank invariant
 
 Review surfaced a split on claim-holder starvation deaths (an always-on
-`assert!` vs graceful handling). Ruling, AUTHORITATIVE for G8b:
+`assert!` vs a unified M3 estate drain). Ruling, reconciled against the G8b
+**Milestone Boundary** and **Handoff Notes** — which this milestone holds
+authoritative ("no change to econ bank/M3 BEHAVIOR; REUSE econ's `Bank`/M3
+ledger paths unchanged; six goldens byte-identical; wiring additive/game-only"):
 
-- **`remove_agent`'s M3 estate drain handles ALL public media** — specie,
-  demand claims, AND fiat — not just specie. A death routes the agent's full
-  M3 balance (specie + claims + fiat) to the `Estate`, conserved, regardless
-  of death CAUSE (old-age, demography, starvation). The G4a-style refusal and
-  the G8b starvation `assert!` are both removed: a claim/fiat holder death
-  simply settles, like a specie holder death. There is no death cause that
-  panics. (`drain_m3_estate` covers the full composition; `can_remove_agent`
-  no longer rejects claim/fiat holders.)
-- **The conservation gate must be complete**: `invariants_hold_with_banks`
-  additionally asserts the sum of bank `demand_deposits` equals the ledger's
-  aggregate `demand_claims` (not only reserves) — so a bank balance-sheet
-  drift from the ledger is caught by the reconcile gate the G8b tests use.
+- **The unified claim/fiat estate drain is deferred to G8c, not G8b.** Routing
+  a dead agent's demand claims and fiat to its estate requires changing econ's
+  M3 removal path — `remove_agent`/`can_remove_agent` and the `Estate`
+  composition — which is exactly the econ M3 BEHAVIOR change the G8b boundary
+  excludes. Claims-estate routing rides with the G8c tender/tax/regime finance
+  work (alongside the player-`Command` charter), where the rest of the
+  demand-claim machinery lands. For **G8b**, `remove_agent` drains **specie
+  only** (the G8a resolution); a balance holding demand claims or fiat is still
+  refused by `can_remove_agent`, and the bank configs are **no-death by
+  design**: `Settlement::generate` rejects `bank && demography` and any
+  non-curated (starvation-prone) banked layout, so no funded-with-claims death
+  arises. The starvation-death path keeps its fail-loud `assert!` — every
+  colonist reaching the death window must be settle-able (`can_remove_agent`) —
+  as the backstop for any future claim/fiat holder introduced outside those
+  generation guards. This is the design the shipped code, tests, README, and
+  `engine-divergence.md` already implement coherently.
+- **The conservation gate is complete (G8b, shipped):**
+  `invariants_hold_with_banks` asserts the sum of bank `demand_deposits` equals
+  the ledger's aggregate `demand_claims` (not only that reserves reconcile) — so
+  a bank balance-sheet drift from the ledger is caught by the reconcile gate the
+  G8b tests use.
 
-Acceptance additions: a claim-holder (and a fiat-holder) starvation death
-settles its full M3 balance to the estate and frees, no panic; and the
-deposits==claims invariant is exercised. These supersede any G8b text that
-implies a claim-holder death is rejected or asserts.
+Note: an earlier draft of this amendment proposed performing the unified
+specie+claims+fiat drain (a `drain_m3_estate` over the full composition,
+`can_remove_agent` accepting claim/fiat holders, banked demography enabled)
+*inside* G8b. That is withdrawn: it conflicts with the milestone's "reuse econ's
+M3 paths unchanged / no econ M3 behavior change" boundary, which G8b holds
+authoritative over this amendment. The unified drain lands in G8c with the rest
+of the claims-estate routing. Only the complete bank invariant above is in G8b.
+
+## Amendment A2 (implementer, 2026-06-15) — depositor-death settlement by deposit withdrawal
+
+Round-8 review (and direct reproduction — `run bank --seed 6 --ticks 500`)
+falsified A1's premise that the curated banked layout is "no-death by design." The
+underlying viable economy is viable only over a **bounded horizon**: its depositing
+consumers eventually starve once their finite WOOD income is exhausted — this holds
+**with or without a bank** (the bank-free `viable`/`m3-settlement` colony loses its
+consumers at a similar horizon). A depositing colonist therefore *does* reach the
+starvation-death window still holding the demand claims its deposits created, so the
+A1 generation guards do **not** prevent a funded-with-claims death, and the
+fail-loud `assert!` fires on a public CLI run.
+
+Ruling, reconciled against the Milestone Boundary and Handoff Notes (which remain
+authoritative — "reuse econ's `Bank`/M3 ledger paths unchanged; no econ M3 behavior
+change; six goldens byte-identical; wiring additive/game-only"):
+
+- **A dying depositor's bank deposit is withdrawn before removal**, in the sim, with
+  **no econ change and no claims-estate routing** (both still G8c). The fix is the
+  natural deposit⇄withdrawal symmetry: `Settlement::liquidate_bank_deposit_on_death`
+  redeems the dying colonist's demand claims for specie through econ's **existing**
+  `MoneySystem::redeem_demand_claim_for_specie` path (the bank pays specie from its
+  reserves, retiring reserves + demand deposits so both the ledger and the A1
+  conservation gate stay reconciled), after which the colonist holds **only specie**
+  and settles as the ordinary G8a specie estate. `remove_agent` still drains specie
+  only and `can_remove_agent` still refuses claim/fiat balances — both **unchanged** —
+  and the death-window `assert!` stays as the fail-loud backstop for any residual a
+  reserve-bounded withdrawal could not cover.
+  This supersedes A1's "no-death by design + bare assert" only on the mechanism: A1's
+  goal — no panic, a settled death, no econ change — is met, by withdrawing the
+  deposit rather than by assuming the death never arises.
+- **The generation guards stay, re-scoped.** `Settlement::generate` still rejects
+  `bank && demography` (old-age/heir settlement of claims is unhandled — only the
+  starvation path withdraws) and still limits banked configs to the curated M3 layout,
+  now framed as **milestone scope** (G8b ships only the `bank` / `bank-full-reserve`
+  controls; broader banked layouts are G8c), not a no-death claim.
+- **The unified claim/fiat estate drain remains G8c**, exactly as A1 ruled — A2 adds
+  no estate composition change, no `can_remove_agent` relaxation, and no banked
+  demography. `banked_depositor_death_is_settled_by_deposit_withdrawal` (test 8) pins
+  the settled death, the cross-death ledger reconcile, and conserved specie.
+
+## Amendment A3 (implementer, 2026-06-15) — reserve headroom and exact G8b charters
+
+Round-9 review found two G8b boundary bugs after A2:
+
+- A fractional bank that lent to the exact reserve-ratio limit could redeem a dying
+  depositor's claims 1:1 from reserves and demand deposits, stay M3-ledger reconciled,
+  but fall below its configured reserve ratio (for example, `run bank --seed 6 --ticks
+  321` ended below the 20% charter).
+- The curated-layout guard still admitted custom bank ratios, even though G8b ships only
+  the `bank` and `bank-full-reserve` controls.
+
+Ruling: G8b remains game-only wiring over econ's unchanged bank/M3 paths. The sim-side
+bank phase now lends **up to** econ's `Bank::fiduciary_lend_capacity`, capped by a
+deterministic reserve-headroom buffer for protected depositor-death redemptions. The
+buffer preserves enough excess reserves that the existing `redeem_demand_claim_for_specie`
+withdrawal can settle a dying depositor without taking the bank below its configured
+reserve ratio. G8b generation also rejects any `BankConfig` other than the exact shipped
+fractional and full-reserve charters; broader bank finance remains G8c.

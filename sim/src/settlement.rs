@@ -64,6 +64,7 @@ use econ::bank::{Bank, BankPolicy};
 use econ::bundle::{
     appraise_project_bundle_for_money, ProjectBundleCandidate, ProjectBundleEndowment,
 };
+use econ::cantillon::CantillonReceipt;
 use econ::capital::ProjectLineId;
 use econ::expect::PriceBelief;
 use econ::good::{Gold, GoodId, Horizon, Stock, FOOD, GOLD, NET, SALT, WOOD};
@@ -73,7 +74,7 @@ use econ::money::{
     DesignatedMoney, MarketMoneyConfig, MengerianConfig, PublicSpotTender, Regime, ReserveRatioBps,
 };
 use econ::project::{Recipe, RecipeId, Tick};
-use econ::purpose::ProjectPlanId;
+use econ::purpose::{CreditSource, ProjectPlanId};
 use econ::rng::Rng;
 use econ::scenario::{EventKind, MarketScenario, ScenarioName};
 use econ::society::Society;
@@ -110,6 +111,22 @@ pub const MAX_CHAIN_THROUGHPUT: u32 = 1_024;
 /// one bank, so a fixed id keeps the bank phase, the canonical bytes, and the
 /// accessors unambiguous.
 const BANK_ID: BankId = BankId(1);
+
+const G8B_FRACTIONAL_BANK: BankConfig = BankConfig {
+    name: "fractional bank",
+    reserve_ratio_bps: ReserveRatioBps(2_000),
+    deposit_per_tick: Gold(2),
+};
+
+const G8B_FULL_RESERVE_BANK: BankConfig = BankConfig {
+    name: "full-reserve bank",
+    reserve_ratio_bps: ReserveRatioBps::FULL,
+    deposit_per_tick: Gold(2),
+};
+
+fn is_supported_g8b_bank_charter(bank: BankConfig) -> bool {
+    bank == G8B_FRACTIONAL_BANK || bank == G8B_FULL_RESERVE_BANK
+}
 
 /// A colonist's role in the settlement's minimal division of labor.
 ///
@@ -584,11 +601,15 @@ pub struct SettlementConfig {
     /// for a bank-free settlement. `None` keeps every pre-G8b config (and the six
     /// econ goldens) byte-identical by construction — the bank phase is skipped
     /// entirely. `Some` requires the M3 ledger (`m3 = true`) and is rejected with a
-    /// demography overlay until demand-claim estate routing exists; G8b's bank
-    /// configs are no-death, viable-based controls. The charter adds one econ
-    /// [`Bank`] in the society, running deposits and fiduciary lending through the
-    /// existing M3 ledger / bank paths each econ tick. See [`BankConfig`] and
-    /// [`SettlementConfig::bank`] / [`SettlementConfig::bank_full_reserve`].
+    /// demography overlay until demand-claim estate routing exists; G8b ships only the
+    /// curated `bank`/`full-reserve` controls. The charter adds one econ [`Bank`] in
+    /// the society, running deposits and fiduciary lending through the existing M3
+    /// ledger / bank paths each econ tick. A depositor that reaches the
+    /// starvation-death window (the colony is viable only over a bounded horizon) has
+    /// its deposit *withdrawn* on death — claims redeemed for specie, settled as the
+    /// G8a specie estate (see [`Settlement::liquidate_bank_deposit_on_death`]) — with
+    /// no econ change. See [`BankConfig`] and [`SettlementConfig::bank`] /
+    /// [`SettlementConfig::bank_full_reserve`].
     pub bank: Option<BankConfig>,
 }
 
@@ -686,11 +707,7 @@ impl SettlementConfig {
     /// underlying spot market is byte-identical to G8a — the bank is purely additive.
     pub fn bank() -> Self {
         Self {
-            bank: Some(BankConfig {
-                name: "fractional bank",
-                reserve_ratio_bps: ReserveRatioBps(2_000),
-                deposit_per_tick: Gold(2),
-            }),
+            bank: Some(G8B_FRACTIONAL_BANK),
             ..Self::m3_settlement()
         }
     }
@@ -705,11 +722,7 @@ impl SettlementConfig {
     /// `hundred_pct_reserve_lends_no_fiduciary` invariant, in the spatial sim.
     pub fn bank_full_reserve() -> Self {
         Self {
-            bank: Some(BankConfig {
-                name: "full-reserve bank",
-                reserve_ratio_bps: ReserveRatioBps::FULL,
-                deposit_per_tick: Gold(2),
-            }),
+            bank: Some(G8B_FULL_RESERVE_BANK),
             ..Self::m3_settlement()
         }
     }
@@ -2221,11 +2234,34 @@ impl Settlement {
             config.bank.is_none() || config.m3,
             "a chartered bank (G8b) requires the M3 ledger settlement (m3 = true)"
         );
+        // The demography guard is layered intentionally BEFORE the layout-equality
+        // guard below. `SettlementConfig::m3_settlement()` already has `demography:
+        // None`, so the stricter layout check would reject a banked+demography config
+        // regardless — but this earlier assert fires first to emit the *specific*
+        // "cannot run with demography" message (the `bank_rejects_demography_until_
+        // claim_estates_exist` test pins that wording). Keep both: this one names the
+        // demography cause precisely (old-age/heir settlement of claims is unhandled —
+        // the deposit-withdrawal-on-death below only covers the starvation path); the
+        // layout check below scopes G8b to its two shipped bank controls.
         assert!(
             config.bank.is_none() || config.demography.is_none(),
             "a chartered bank (G8b) cannot run with demography until demand-claim \
              estate routing exists"
         );
+        if let Some(bank_cfg) = config.bank {
+            let mut bank_free_config = config.clone();
+            bank_free_config.bank = None;
+            assert!(
+                bank_free_config == SettlementConfig::m3_settlement(),
+                "a chartered bank (G8b) is limited to the curated M3 settlement layout \
+                 (the shipped bank/full-reserve controls) until G8c finance"
+            );
+            assert!(
+                is_supported_g8b_bank_charter(bank_cfg),
+                "a chartered bank (G8b) is limited to the shipped bank/full-reserve \
+                 charters until G8c finance"
+            );
+        }
         let (scenario_name, money) = match (&config.barter, config.m3) {
             (Some(barter), _) => (
                 ScenarioName::MengerSaltMoney,
@@ -2277,7 +2313,11 @@ impl Settlement {
             // `SetRegime` always applies (it only sets the field); the M3 society is
             // built `SoundGold`, which forbids fiduciary, so this is the one charter-
             // time move that lets a fractional bank lend at all.
-            let _ = society.apply_command(EventKind::SetRegime(Regime::FractionalConvertible));
+            let result = society.apply_command(EventKind::SetRegime(Regime::FractionalConvertible));
+            assert!(
+                result.is_applied(),
+                "setting the G8b bank operating regime must apply"
+            );
             society.banks.push(Bank {
                 id: BANK_ID,
                 name: bank_cfg.name,
@@ -2513,10 +2553,9 @@ impl Settlement {
         }
         if bank_credit_issued > Gold::ZERO {
             // `checked_add` onto whatever econ's own loan market booked this tick. In G8b
-            // that addend is always zero — the bank loads to its reserve limit, so econ's
-            // M3 loan market has no capacity to post against (see `run_bank_phase`). When
-            // G8c activates the debt machinery both paths could issue in the same tick;
-            // adding (not overwriting) keeps the column a single credit total then too.
+            // the curated bank configs do not activate the debt cycle; when G8c
+            // broadens finance both paths could issue in the same tick, and adding (not
+            // overwriting) keeps the column a single credit total then too.
             let record = self
                 .society
                 .m3_records
@@ -2605,16 +2644,17 @@ impl Settlement {
     /// The depositor's spendable total is unchanged — specie became a claim — so the
     /// claim circulates as money in the specie's place.
     ///
-    /// **Lend fiduciary.** The bank lends its full [`Bank::fiduciary_lend_capacity`]
-    /// for the regime, split across the living gatherers (deterministically; the
-    /// remainder lands on the lowest-id borrowers). `issue_demand_claim` with
-    /// `backed_by_reserves == 0` issues claims **beyond** reserves — the ledger
-    /// tracks them as `fiduciary = demand_claims − bank_reserves` — and
-    /// [`Bank::record_fiduciary_loan`] books the loan. A 100%-reserve bank's capacity
-    /// is zero, so the control lends nothing while its deposits still circulate.
-    /// Lending the full capacity loads the bank to its reserve limit, which also
-    /// leaves econ's own M3 loan market zero capacity to post against — so no debt
-    /// contract forms and the G8c credit cycle stays out of G8b scope.
+    /// **Lend fiduciary.** The bank lends up to econ's
+    /// [`Bank::fiduciary_lend_capacity`] for the regime, capped by a sim-side
+    /// depositor-death redemption buffer, and split across the living gatherers
+    /// (deterministically; the remainder lands on the lowest-id borrowers).
+    /// `issue_demand_claim` with `backed_by_reserves == 0` issues claims **beyond**
+    /// reserves — the ledger tracks them as `fiduciary = demand_claims −
+    /// bank_reserves` — and [`Bank::record_fiduciary_loan`] books the loan. A
+    /// 100%-reserve bank's capacity is zero, so the control lends nothing while its
+    /// deposits still circulate. The buffer is game-only: it preserves enough excess
+    /// reserves that a future depositor death can redeem the protected claims without
+    /// taking the bank below its configured reserve ratio.
     ///
     /// Returns the fiduciary credit issued in this sim-side phase so the current M3
     /// record can expose it through econ's existing `bank_credit_issued` column.
@@ -2641,10 +2681,12 @@ impl Settlement {
         let live_slots = &self.live_colonist_slots;
         let colonists = &self.colonists;
         let society = &mut self.society;
+        let tick = society.tick;
         let Some(money_system) = society.money_system.as_mut() else {
             return Gold::ZERO;
         };
         let bank = &mut society.banks[bank_pos];
+        let mut bank_credit_receipts = Vec::new();
 
         // ---- Deposit: each living consumer moves specie -> reserves + a demand claim.
         for &slot in live_slots {
@@ -2672,10 +2714,23 @@ impl Settlement {
                 .expect("bank demand deposits cannot overflow for a bounded deposit");
         }
 
-        // ---- Lend fiduciary: the full reserve-gated capacity, split evenly across the
-        // living gatherers in slot order (the remainder lands on the lowest-slot
-        // borrowers). Zero for a 100%-reserve bank (the control).
-        let capacity = bank.fiduciary_lend_capacity(regime);
+        let protected_depositor_claims = live_slots
+            .iter()
+            .filter(|&&slot| colonists[slot].vocation == Vocation::Consumer)
+            .map(|&slot| money_system.demand_claim_on(colonists[slot].id, BANK_ID))
+            .try_fold(Gold::ZERO, Gold::checked_add)
+            .expect("bounded G8b depositor claims cannot overflow");
+
+        // ---- Lend fiduciary: the reserve-gated capacity that still leaves room for a
+        // future depositor-death redemption, split evenly across the living gatherers in
+        // slot order (the remainder lands on the lowest-slot borrowers). Zero for a
+        // 100%-reserve bank (the control).
+        let capacity = Self::fiduciary_lend_capacity_preserving_redemption(
+            bank,
+            regime,
+            Gold::ZERO,
+            protected_depositor_claims,
+        );
         let borrower_count = live_slots
             .iter()
             .filter(|&&slot| colonists[slot].vocation == Vocation::Gatherer)
@@ -2696,8 +2751,19 @@ impl Settlement {
                     continue;
                 }
                 let amount = Gold(share);
-                if bank.fiduciary_lend_capacity_after_tick_issuance(regime, issued_this_tick)
-                    < amount
+                // Defensive backstop, never fires for the even split above: the shares
+                // sum to exactly the pre-computed `capacity` (base*borrowers + extra),
+                // so each `amount` is within the remaining `capacity - issued_this_tick`.
+                // The check re-derives the live capacity from the *mutated* balance sheet
+                // (booking a fiduciary loan grows `demand_deposits`, shrinking the
+                // convertible deposit capacity unit-for-unit) so the bank's reserve-gated
+                // per-tick cap can never be breached even if the split logic later changes.
+                if Self::fiduciary_lend_capacity_preserving_redemption(
+                    bank,
+                    regime,
+                    issued_this_tick,
+                    protected_depositor_claims,
+                ) < amount
                 {
                     break;
                 }
@@ -2706,6 +2772,12 @@ impl Settlement {
                     .expect("a fiduciary issue within capacity must succeed");
                 bank.record_fiduciary_loan(regime, amount)
                     .expect("recording a fiduciary loan within capacity must succeed");
+                bank_credit_receipts.push(CantillonReceipt {
+                    tick,
+                    agent: colonist.id,
+                    amount,
+                    source: CreditSource::BankFiduciary(BANK_ID),
+                });
                 issued_this_tick = issued_this_tick
                     .checked_add(amount)
                     .expect("prechecked fiduciary issuance cannot overflow");
@@ -2715,7 +2787,96 @@ impl Settlement {
         // Reconcile the agents' spendable-money caches to the mutated ledger so the
         // market this tick reads the new specie/claims and the money invariant holds.
         money_system.reconcile_agent_cache(society.agents.as_mut_slice());
+        society.cantillon_receipts.extend(bank_credit_receipts);
         issued_this_tick
+    }
+
+    fn fiduciary_lend_capacity_preserving_redemption(
+        bank: &Bank,
+        regime: Regime,
+        issued_this_tick: Gold,
+        protected_redemption: Gold,
+    ) -> Gold {
+        let capacity = bank.fiduciary_lend_capacity_after_tick_issuance(regime, issued_this_tick);
+        if capacity == Gold::ZERO || protected_redemption == Gold::ZERO {
+            return capacity;
+        }
+        let ratio = u128::from(bank.reserve_ratio_bps.0);
+        if ratio == 0 || !bank.convertible || regime == Regime::SuspendedConvertibility {
+            return capacity;
+        }
+        if protected_redemption > bank.reserves {
+            return Gold::ZERO;
+        }
+
+        let reserves_after_redemption =
+            u128::from(bank.reserves.saturating_sub(protected_redemption).0);
+        let deposits_after_redemption =
+            u128::from(bank.demand_deposits.saturating_sub(protected_redemption).0);
+        let max_deposits_after_redemption =
+            reserves_after_redemption.saturating_mul(10_000) / ratio;
+        if max_deposits_after_redemption <= deposits_after_redemption {
+            return Gold::ZERO;
+        }
+
+        let protected_capacity = max_deposits_after_redemption - deposits_after_redemption;
+        capacity.min(Gold(u64::try_from(protected_capacity).unwrap_or(u64::MAX)))
+    }
+
+    /// Liquidate a dying colonist's bank **deposit** so a banked death settles through
+    /// the **unchanged** G8a specie estate. The underlying viable economy is viable
+    /// only over a bounded horizon: its consumers eventually starve once their finite
+    /// WOOD income is exhausted (true with or without a bank — even the bank-free
+    /// `viable`/`m3_settlement` colony loses its consumers at long tick counts), so a
+    /// depositing colonist can reach the starvation-death window still holding the
+    /// demand claims its deposits created. G8b settles that with **no econ change and
+    /// no claim-estate routing** (both G8c): the deposit is *withdrawn* — the dying
+    /// colonist's demand claims are redeemed for specie through econ's existing
+    /// [`MoneySystem::redeem_demand_claim_for_specie`] path (the bank pays specie out
+    /// of its reserves, the mirror image of the deposit), after which the colonist
+    /// holds only specie and [`Society::can_remove_agent`] accepts it for the G8a
+    /// specie estate — exactly as a bank-free starvation death settles.
+    ///
+    /// The withdrawal is capped by the bank's reserves; the bank phase leaves enough
+    /// reserve-ratio headroom for the shipped charters that a protected depositor claim
+    /// can be withdrawn without putting the bank below its configured reserve ratio. It
+    /// conserves both the M3 ledger and the bank balance sheet — reserves and demand
+    /// deposits each fall by the redeemed amount and the fiduciary is untouched — so the
+    /// reconcile gate (and amendment A1's `sum(bank.demand_deposits) == demand_claims`
+    /// check) stays green across the death. A no-op without a bank (every pre-G8b death
+    /// path is byte-identical) or when the dying colonist holds no claim. Deterministic:
+    /// integer amounts, no RNG.
+    fn liquidate_bank_deposit_on_death(&mut self, id: AgentId) {
+        if self.bank.is_none() {
+            return;
+        }
+        let society = &mut self.society;
+        let Some(bank_pos) = society.banks.iter().position(|bank| bank.id == BANK_ID) else {
+            return;
+        };
+        let Some(money_system) = society.money_system.as_mut() else {
+            return;
+        };
+        let bank = &mut society.banks[bank_pos];
+        // The bank can only honor a redemption out of its reserves; cap the withdrawal
+        // there. For the shipped configs the lending phase preserves enough headroom for
+        // the protected depositor claims, so the cap never bites — any residual would be
+        // refused by `can_remove_agent` and caught by the death-window assert below.
+        let amount = money_system.demand_claim_on(id, BANK_ID).min(bank.reserves);
+        if amount == Gold::ZERO {
+            return;
+        }
+        money_system
+            .redeem_demand_claim_for_specie(id, BANK_ID, amount)
+            .expect("redeeming a dying depositor's claim bounded by bank reserves must succeed");
+        bank.debit_reserves(amount)
+            .expect("debiting reserves for a reserve-bounded redemption cannot underflow");
+        bank.retire_demand_deposit(amount)
+            .expect("retiring the redeemed deposit cannot underflow the bank's demand deposits");
+        // Reconcile the spendable-money caches so the withdrawn specie lands in the
+        // dying colonist's `gold` cache, which the G8a `remove_agent` drains into the
+        // estate.
+        money_system.reconcile_agent_cache(society.agents.as_mut_slice());
     }
 
     // ---- the fast loop --------------------------------------------------
@@ -2966,23 +3127,34 @@ impl Settlement {
                 dying.push(colonist.id);
             }
         }
-        // Every colonist that reached the starvation death window must be settle-able. A
-        // dying colonist that holds demand claims or fiat has no conserved estate route yet
-        // (claim/fiat estates land with the G8c tax/regime work), so it cannot be removed.
-        // Starvation is config-independent, but no shipped config starves such a holder: the
-        // M3 and G8b bank settlements are viable, no-death by design (the bank charter even
-        // rejects a demography overlay), so this guard is inert today. The assert makes a
-        // future config that *can* starve a claim/fiat holder fail loudly here, rather than
-        // silently dropping it from the dying list and leaving an alive-but-permanently-
-        // critical colonist that never settles. It is an assertion pass, not a filter — the
-        // `dying` set is unchanged when every member is settle-able (the only shipped case).
+        // Settle each dying colonist's bank deposit before removal: redeem its demand
+        // claims for specie (the deposit's mirror image) so it holds only specie and
+        // settles through the unchanged G8a specie estate. A no-op without a bank, so
+        // every pre-G8b death path is byte-identical. The underlying economy is viable
+        // only over a bounded horizon — its consumers eventually starve once their
+        // finite WOOD income runs out (with or without a bank) — so a depositing
+        // colonist can reach the death window still holding claims; this withdraws them
+        // with no econ change and no claim-estate routing (G8c). See
+        // [`Self::liquidate_bank_deposit_on_death`].
+        for &id in &dying {
+            self.liquidate_bank_deposit_on_death(id);
+        }
+        // Every colonist that reached the starvation death window must now be settle-able.
+        // A balance still holding demand claims or fiat has no conserved estate route yet
+        // (claim/fiat estates land with the G8c tax/regime work); the deposit-withdrawal
+        // above clears the only claim a shipped config produces, so this stays a fail-loud
+        // backstop for any future claim/fiat holder the withdrawal cannot cover (e.g. a
+        // claim beyond the bank's reserves), rather than silently dropping it from the
+        // dying list and leaving an alive-but-permanently-critical colonist that never
+        // settles. It is an assertion pass, not a filter — the `dying` set is unchanged
+        // when every member is settle-able (every shipped case).
         for &id in &dying {
             assert!(
                 self.society.can_remove_agent(id),
                 "colonist {id:?} reached the starvation death window but cannot be \
-                 settled (holds demand claims or fiat with no estate route until \
-                 G8c); the dying -> settle path must stay complete for every shipped \
-                 config"
+                 settled (still holds demand claims or fiat the deposit-withdrawal \
+                 could not cover, with no estate route until G8c); the dying -> \
+                 settle path must stay complete for every shipped config"
             );
         }
         for &id in &dying {
@@ -3964,7 +4136,13 @@ impl Settlement {
     /// equals the ledger's `fiduciary` — `g8b_banks` pins both.
     pub fn bank(&self) -> Option<&Bank> {
         self.bank.as_ref()?;
-        self.society.banks.iter().find(|bank| bank.id == BANK_ID)
+        let mut matches = self.society.banks.iter().filter(|bank| bank.id == BANK_ID);
+        let bank = matches.next();
+        debug_assert!(
+            matches.next().is_none(),
+            "a G8b settlement charters at most one bank with the reserved bank id"
+        );
+        bank
     }
 
     /// The total demand claims the chartered bank's depositors and borrowers hold
@@ -5517,6 +5695,41 @@ mod tests {
     #[test]
     fn bank_phase_respects_tight_fiduciary_tick_cap() {
         let mut s = Settlement::generate(7, &SettlementConfig::bank());
+        s.run_bank_phase();
+        let borrower = s
+            .live_colonist_slots
+            .iter()
+            .find_map(|&slot| {
+                (s.colonists[slot].vocation == Vocation::Gatherer).then_some(s.colonists[slot].id)
+            })
+            .expect("banked settlement has a gatherer borrower");
+        let depositors = s
+            .live_colonist_slots
+            .iter()
+            .filter_map(|&slot| {
+                (s.colonists[slot].vocation == Vocation::Consumer).then_some(s.colonists[slot].id)
+            })
+            .collect::<Vec<_>>();
+        {
+            let money_system = s
+                .society
+                .money_system
+                .as_mut()
+                .expect("banked settlement runs on the M3 ledger");
+            for depositor in depositors {
+                let claim = money_system.demand_claim_on(depositor, BANK_ID);
+                if claim > Gold::ZERO {
+                    money_system
+                        .transfer_spendable(depositor, borrower, claim)
+                        .expect("test claim transfer is funded by the depositor's demand claim");
+                }
+            }
+            money_system.reconcile_agent_cache(s.society.agents.as_mut_slice());
+        }
+        let before = s
+            .bank()
+            .expect("banked settlement charters a bank")
+            .fiduciary_issued;
         s.society
             .banks
             .iter_mut()
@@ -5529,7 +5742,9 @@ mod tests {
 
         let bank = s.bank().expect("banked settlement charters a bank");
         assert_eq!(
-            bank.fiduciary_issued,
+            bank.fiduciary_issued
+                .checked_sub(before)
+                .expect("fiduciary issuance is monotone"),
             Gold(3),
             "direct G8b lending must stop at the bank's per-tick fiduciary cap"
         );

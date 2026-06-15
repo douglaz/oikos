@@ -959,14 +959,18 @@ impl MoneySystem {
         agents: &[Agent],
         banks: &[crate::bank::Bank],
     ) -> bool {
-        let Some(bank_reserves) = banks
-            .iter()
-            .map(|bank| bank.reserves)
-            .try_fold(Gold::ZERO, Gold::checked_add)
-        else {
+        let Some((bank_reserves, bank_demand_deposits)) = banks.iter().try_fold(
+            (Gold::ZERO, Gold::ZERO),
+            |(reserves, demand_deposits), bank| {
+                Some((
+                    reserves.checked_add(bank.reserves)?,
+                    demand_deposits.checked_add(bank.demand_deposits)?,
+                ))
+            },
+        ) else {
             return false;
         };
-        self.invariants_hold_with_bank_reserves(agents, Some(bank_reserves))
+        self.invariants_hold_with_bank_totals(agents, Some((bank_reserves, bank_demand_deposits)))
     }
 
     fn invariants_hold_with_bank_reserves(
@@ -974,11 +978,27 @@ impl MoneySystem {
         agents: &[Agent],
         bank_reserves: Option<Gold>,
     ) -> bool {
+        self.invariants_hold_with_bank_totals(
+            agents,
+            bank_reserves.map(|bank_reserves| (bank_reserves, self.claims.demand_claims)),
+        )
+    }
+
+    fn invariants_hold_with_bank_totals(
+        &self,
+        agents: &[Agent],
+        bank_totals: Option<(Gold, Gold)>,
+    ) -> bool {
         let Some(stock) = self.checked_snapshot() else {
             return false;
         };
-        if bank_reserves.is_some_and(|bank_reserves| bank_reserves != self.base.bank_reserves) {
-            return false;
+        if let Some((bank_reserves, bank_demand_deposits)) = bank_totals {
+            if bank_reserves != self.base.bank_reserves {
+                return false;
+            }
+            if bank_demand_deposits != self.claims.demand_claims {
+                return false;
+            }
         }
         let public_specie_reconciles = checked_sum3(
             stock.public_specie,
@@ -1925,6 +1945,27 @@ mod tests {
         assert_eq!(system.base.commodity_base, Gold(6));
         assert_eq!(system.spendable_total(AgentId(1)), Gold(5));
         assert!(system.invariants_hold_with_banks(&agents, &banks));
+    }
+
+    #[test]
+    fn bank_demand_deposit_drift_fails_reconciliation() {
+        let agents = [agent(1, Gold(5))];
+        let banks = [bank(1, Gold(2), Gold(3))];
+        let mut system = MoneySystem::from_agents_with_banks(&agents, &banks).unwrap();
+        let mut drifted_banks = banks.clone();
+        drifted_banks[0].demand_deposits = Gold(2);
+
+        assert!(system.invariants_hold_with_banks(&agents, &banks));
+        assert!(
+            !system.invariants_hold_with_banks(&agents, &drifted_banks),
+            "bank demand deposits must reconcile with aggregate ledger claims"
+        );
+
+        system.claims.demand_claims = Gold(2);
+        assert!(
+            !system.invariants_hold_with_banks(&agents, &drifted_banks),
+            "ledger claim drift must still fail against agent-held claims"
+        );
     }
 
     #[test]

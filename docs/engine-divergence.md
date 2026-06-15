@@ -1903,10 +1903,11 @@ conformance goldens stay byte-identical, and the spot market is byte-identical t
 
 A `SettlementConfig` gains a `bank: Option<BankConfig>` field (`None` for every pre-G8b
 config, so each is byte-identical — the bank phase is skipped entirely). `Some` requires
-the M3 ledger (`m3 = true`) and, **after** the econ society is built from the same
-`EmergedGoldSoundControl` M3 scenario G8a uses, the sim charters one econ `Bank` into
-`society.banks` with zero reserves (the deposit phase builds them) and moves the regime to
-`FractionalConvertible` via econ's existing command surface
+the M3 ledger (`m3 = true`) and rejects demography plus non-curated settlement layouts
+until demand-claim estate routing exists. **After** the econ society is built from the
+same `EmergedGoldSoundControl` M3 scenario G8a uses, the sim charters one econ `Bank`
+into `society.banks` with zero reserves (the deposit phase builds them) and moves the
+regime to `FractionalConvertible` via econ's existing command surface
 (`apply_command(EventKind::SetRegime(..))`). The ledger's `bank_reserves` is also zero at
 construction, so `sum(bank.reserves) == bank_reserves` and the money invariant reconciles
 from tick zero. Because the econ scenario, the spot market, and the `Bank` machinery are
@@ -1929,7 +1930,8 @@ without a charter:
   gives the depositor an equal demand claim; `Bank::credit_reserves` + `demand_deposits`
   mirror it on the balance sheet. The depositor's spendable total is unchanged (specie
   became a claim), so the claim circulates as money in its place.
-- **Lend fiduciary.** The bank lends its full `Bank::fiduciary_lend_capacity(regime)`,
+- **Lend fiduciary.** The bank lends up to `Bank::fiduciary_lend_capacity(regime)`,
+  capped by a deterministic reserve-headroom buffer for depositor-death withdrawals, and
   split deterministically across the gatherers. `issue_demand_claim(.., backed_by_reserves
   = 0)` issues claims **beyond** reserves — the ledger derives `fiduciary = demand_claims −
   reserves` — and `Bank::record_fiduciary_loan` books the loan on the balance sheet. A
@@ -1937,14 +1939,13 @@ without a charter:
 
 The phase is deterministic: integer amounts, slot-ordered rosters, **nothing drawn**.
 
-### 3. Lending the full capacity loads the bank to its reserve limit (no debt cycle)
+### 3. Direct bank credit stays a mechanism, not the debt cycle
 
-Issuing the full `fiduciary_lend_capacity` brings the bank's `demand_deposits` up to its
-reserve-ratio limit, which leaves econ's own M3 loan market with **zero** capacity to post
-bank lend orders against — so no `DebtContract` forms and the loan/labor passes stay inert
-(verified: `society.debts` and `society.loan_trades` are empty). This is deliberate: G8b
-issues fiduciary **credit** as an expansion of spendable claims (the lending mechanism),
-without activating the full debt/repayment machinery — the boom/bust cycle needs the G8c
+G8b issues fiduciary **credit** as an expansion of spendable claims (the lending mechanism),
+but the curated bank configs do not activate the full debt/repayment machinery (verified:
+`society.debts` and `society.loan_trades` are empty). The sim-side lender also leaves reserve
+headroom for protected depositor-death withdrawals, so redeeming a dying depositor's claims
+does not push the bank below its configured reserve ratio. The boom/bust cycle needs the G8c
 regime ladder to enable-then-stop credit and is out of G8b scope.
 
 ### 4. Conservation spans the M3 ledger with credit
@@ -1981,16 +1982,30 @@ view of the reused econ `Bank`. Both appear only for a banked settlement.
   `FractionalConvertible` regime; there is no regime ladder, no tender lever, no tax.
 - **No full ABCT boom/bust DEMONSTRATION** (G8c) — the cycle needs the regime ladder to
   enable-then-stop credit; G8b proves the lending **mechanism** + the reserve control. No
-  `DebtContract` / repayment machinery is activated (the bank loads to its reserve limit,
-  starving econ's loan market).
+  `DebtContract` / repayment machinery is activated in the curated bank configs.
 - **No player-`Command` bank charter** — config-chartered here; the `Command`/UI is G8c/G9.
-- **No claims-estate routing** — `Settlement::generate` rejects `bank && demography`.
-  The bank configs are no-death (`viable`-based), so a funded-with-claims death never
-  arises; routing a claims estate is deferred (G8c). The precondition is **enforced**, not
-  just argued: the starvation-death path `assert!`s (always-on, release included) that every
-  colonist reaching the death window is settle-able (`Society::can_remove_agent`), so a future
-  banked config that *could* starve a claim/fiat holder fails loudly there instead of silently
-  leaving an alive-but-permanently-critical colonist that never settles.
+- **No claims-estate routing** — the dead-agent `Estate` still carries **specie only**:
+  `Society::can_remove_agent` still refuses a balance holding demand claims or fiat, and
+  `remove_agent` still drains specie only (claims/fiat estates are G8c). The colony is
+  viable only over a **bounded horizon** — its depositing consumers eventually starve once
+  their finite WOOD income runs out, true with or without a bank (the bank-free
+  `viable`/`m3-settlement` colony loses its consumers at a similar horizon) — so a
+  depositor can reach the starvation-death window still holding the demand claims its
+  deposits created. G8b settles that with **no econ change and no claims-estate routing**:
+  `Settlement::liquidate_bank_deposit_on_death` *withdraws the deposit* before removal —
+  redeeming the claims for specie through econ's existing
+  `MoneySystem::redeem_demand_claim_for_specie` path (the bank pays specie from its
+  reserves, the mirror image of the deposit, retiring reserves + demand deposits so the
+  ledger and balance sheet stay reconciled) — after which the colonist holds only specie
+  and settles as the ordinary G8a specie estate. The withdrawal is reserve-bounded, and the
+  bank phase preserves enough reserve-ratio headroom for the shipped charters that the
+  protected depositor claims are covered without taking the bank below its configured
+  reserve ratio; the death-window `assert!` stays as a fail-loud backstop for any residual
+  claim a withdrawal could not cover. `generate` still
+  rejects `bank && demography` (old-age/heir settlement of claims is unhandled — only the
+  starvation path withdraws) and scopes banked configs to the curated M3 layout (G8b ships
+  only the `bank` / `bank-full-reserve` controls) and to those exact bank charters; broader
+  banked layouts and custom charters are G8c.
 - **No Credit/Modern era rungs** — those unlock with the finance machinery in G8c.
 - **No change to econ bank/M3 BEHAVIOR** — the six goldens are byte-identical; all bank
   wiring is additive/game-only (the bank phase is skipped without a charter).

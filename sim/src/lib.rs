@@ -70,6 +70,17 @@
 //! observed by a detector is byte-identical to one that is not, and the six econ
 //! goldens are untouched. The Credit/Modern rungs are deferred to G8 (finance). See
 //! [`mod@era`] and `sim/tests/g6a_eras.rs`.
+//!
+//! ## G8a/G8b — M3 ledger money and banks
+//!
+//! [`SettlementConfig::m3_settlement`] runs the same viable settlement on econ's M3
+//! ledger with pure specie; [`SettlementConfig::bank`] and
+//! [`SettlementConfig::bank_full_reserve`] add one config-chartered bank on that
+//! ledger. Deposits move specie into reserves and give colonists demand claims they
+//! spend, while fractional-reserve lending issues fiduciary claims through econ's
+//! existing `MoneySystem`/`Bank` paths. The full-reserve twin lends zero fiduciary,
+//! isolating credit creation to the reserve ratio. Fiat, tender/tax policy, the
+//! regime ladder, and the Credit/Modern era rungs remain deferred.
 
 pub mod content;
 pub mod demography;

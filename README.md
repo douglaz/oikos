@@ -1076,9 +1076,10 @@ The `bank` scenario is the `m3-settlement` economy with one chartered fractional
   depositor an equal demand claim, and `Bank::credit_reserves` mirrors it on the balance sheet. The
   depositor's spendable total is unchanged (specie became a claim), so **claims circulate as money**
   in the specie's place — the colony keeps trading and stays fed on a claim-dominated money supply.
-- **Fiduciary lending creates credit beyond reserves.** The bank lends its full
-  `Bank::fiduciary_lend_capacity(regime)` (issued with zero reserve backing, so the ledger tracks it
-  as `fiduciary = demand_claims − reserves`) to the gatherers, who spend it into the economy. The
+- **Fiduciary lending creates credit beyond reserves.** The bank lends up to
+  `Bank::fiduciary_lend_capacity(regime)`, with a sim-side reserve headroom buffer for depositor
+  death withdrawals, as claims issued with zero reserve backing (so the ledger tracks
+  `fiduciary = demand_claims − reserves`) to the gatherers, who spend them into the economy. The
   chartered bank runs the `FractionalConvertible` regime (set once via econ's existing
   `apply_command(SetRegime)` — its fixed operating regime, **not** the G8c regime *ladder*).
 - **The 100%-reserve control lends ZERO fiduciary.** A `ReserveRatioBps::FULL` bank's lend capacity
@@ -1097,8 +1098,18 @@ The `bank` scenario is the `m3-settlement` economy with one chartered fractional
 - **Goldens byte-identical by construction.** The bank phase is skipped entirely without a charter
   (a `SettlementConfig::bank` of `None`, the default for every pre-G8b config), so the six econ
   goldens and every G1–G8a test stay green.
-- **Claims estates are deferred.** Banked demography is rejected for G8b: demand-claim estate
-  routing lands with the later finance/UI work, so the bank configs remain no-death controls.
+- **Claims estates are deferred — depositor deaths settle by deposit withdrawal.** The dead-agent
+  estate carries **specie only** (claim/fiat estates land with the G8c finance work). The colony is
+  viable only over a **bounded horizon** — its depositing consumers eventually starve once their
+  finite WOOD income runs out, true with or without a bank — so a depositor can reach the
+  starvation-death window still holding the claims its deposits created. G8b settles that with **no
+  econ change**: `Settlement::liquidate_bank_deposit_on_death` *withdraws the deposit* (the dying
+  colonist's claims are redeemed for specie through econ's existing `redeem_demand_claim_for_specie`
+  path — the bank paying specie from reserves, the mirror of the deposit), after which the colonist
+  holds only specie and settles as the ordinary G8a specie estate. The direct lending buffer keeps
+  the bank inside its configured reserve ratio across that withdrawal. Banked demography,
+  non-curated banked layouts, and custom bank charters are still rejected (heir/old-age claim
+  settlement and broader finance are G8c).
 
 G8b:
 
@@ -1108,8 +1119,8 @@ G8b:
       `issue_demand_claim` / `credit_reserves` / `record_fiduciary_loan` — no bank logic added to econ)
 - [x] viewer surfacing — the `bank` / `bank-full-reserve` scenarios, the M3 fiduciary composition, and
       the bank balance-sheet banner
-- [x] acceptance suite (`sim/tests/g8b_banks.rs`: the seven acceptance tests + unit tests) + README +
-      divergence-log updates
+- [x] acceptance suite (`sim/tests/g8b_banks.rs`: the seven acceptance tests + a depositor-death
+      settlement regression + unit tests) + README + divergence-log updates
 
 **Fiat, the regime ladder, tender policies, and taxation (G8c); the full ABCT boom/bust
 demonstration (it needs the regime ladder to enable-then-stop credit, G8c); the player-`Command` bank
