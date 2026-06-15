@@ -93,6 +93,18 @@ const SCENARIOS: &[Scenario] = &[
             "G5b: emergence composed — money emerges, then producer roles adopt from the spread, while births/deaths run (one settlement)",
         build: SettlementConfig::frontier,
     },
+    Scenario {
+        name: "research",
+        description:
+            "G6b: research & tech tiers — scholars accumulate Knowledge, which unlocks the gated tier-2 recipe (pastry)",
+        build: SettlementConfig::research,
+    },
+    Scenario {
+        name: "research-control",
+        description:
+            "G6b no-scholars control: no Knowledge accrues, so tier 2 never unlocks and pastry is never produced",
+        build: SettlementConfig::research_control,
+    },
 ];
 
 fn build_near() -> SettlementConfig {

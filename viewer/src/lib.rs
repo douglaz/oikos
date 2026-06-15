@@ -189,6 +189,11 @@ pub fn run_dashboard(scenario: &str, ticks: u64, seed: u64) -> Result<String, St
             money_good: money_label,
             promoted_this_tick,
             era,
+            // G6b research surfacing: the accumulated Knowledge (after this tick), the
+            // Knowledge produced this tick (the non-conserved line), and the tier.
+            knowledge: settlement.knowledge(),
+            knowledge_produced: report.knowledge_produced(),
+            tier: settlement.current_tier(),
         });
     }
 
@@ -202,13 +207,25 @@ pub fn run_dashboard(scenario: &str, ticks: u64, seed: u64) -> Result<String, St
             .collect(),
     });
 
+    // G6b research banner: the earned Knowledge, the current tier, and the unlock tick.
+    let research_summary = settlement.is_research().then(|| render::ResearchSummary {
+        knowledge: settlement.knowledge(),
+        threshold: settlement.tier2_threshold(),
+        tier: settlement.current_tier(),
+        unlocked_at: settlement.tier2_unlocked_at(),
+    });
+
+    let banners = render::DashboardBanners {
+        era: era_summary.as_ref(),
+        research: research_summary.as_ref(),
+    };
     Ok(render::format_dashboard(
         &settlement,
         scenario,
         seed,
         ticks,
         &population_label(&settlement),
-        era_summary.as_ref(),
+        &banners,
         &rows,
     ))
 }
@@ -251,6 +268,15 @@ fn population_label(settlement: &Settlement) -> String {
     let unassigned = settlement.living_count(Vocation::Unassigned);
     if unassigned > 0 {
         parts.push(format!("{unassigned} unassigned"));
+    }
+    // G6b: scholars (research) and confectioners (tier-2 production).
+    let scholars = settlement.living_count(Vocation::Scholar);
+    if scholars > 0 {
+        parts.push(format!("{scholars} scholars"));
+    }
+    let confectioners = settlement.living_count(Vocation::Confectioner);
+    if confectioners > 0 {
+        parts.push(format!("{confectioners} confectioners"));
     }
     format!("{} ({})", settlement.living_total(), parts.join(", "))
 }

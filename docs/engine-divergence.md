@@ -1566,3 +1566,102 @@ non-emergent settlement surfaces no era (the ladder classifies the emergent path
 - **No econ/sim behaviour change** — the six goldens are byte-identical; no `HashMap` in logic,
   nothing drawn, no asserted magnitudes beyond the ordered-progression and hysteresis-sign
   claims.
+
+## G6b — research & tech tiers: capabilities are earned, not timed (`docs/impl-g6b.md`)
+
+G6a *names* the era a society has earned; **G6b lets it advance its capabilities**: a
+**scholar** vocation produces **Knowledge** from labor, and crossing a Knowledge threshold
+**unlocks a higher tech tier** — a recipe gated until then. Progression is research-driven
+(Knowledge accumulated by actual scholar labor), not a timer — the tech analogue of the
+*"earned, not timed"* pillar. G6b proves the **mechanism** for ONE tier unlock (tier 1 →
+tier 2) with **seeded** scholars, plus a **control** (no scholars → no unlock). The only
+`econ` touch is one **additive accessor** (`Society::set_recipe_enabled`); recipe-execution
+behaviour is unchanged, so the six conformance goldens are byte-identical by construction.
+
+### 1. Tier gating reuses `Recipe.enabled` — no new econ recipe machinery
+
+A tier-2 recipe is interned (G3a `ContentSet`) with `enabled: false`. The existing direct-recipe
+executor already refuses a disabled recipe (`recipe_can_run_base_for` returns `None` when
+`!recipe.enabled`), so a tier-gated recipe **cannot run before the unlock even if a producer
+holds its inputs** — exactly the gate G6b needs, for free. The unlock flips the flag through the
+sole new `econ` accessor:
+
+```rust
+// econ::Society — additive; called by no engine path, so the goldens are byte-identical.
+pub fn set_recipe_enabled(&mut self, recipe_id: RecipeId, enabled: bool) -> bool { … }
+```
+
+`sim` calls it once, per settlement, when Knowledge crosses the threshold (and keeps the
+content's own recipe copy consistent so the digest/viewer agree). No new gating concept, no new
+project/recipe lifecycle — the milestone is a thin `sim` overlay on the G3a production path.
+
+### 2. Knowledge is an ACCUMULATOR, not a tradeable good (the conservation seam)
+
+A scholar's Knowledge output runs through the **existing** production path
+(`execute_direct_recipe_for_agent_checked`), but `sim` immediately **drains** the produced
+units back out of the scholar's econ stock into a per-settlement counter:
+
+```text
+after(X) == before(X) + regen(X) + endowment(X) + produced(X)
+                      − consumed_as_input(X) − consumed(X) − promoted(X)     [X ∈ tracked goods]
+```
+
+Knowledge is **not** a tracked good (it is interned so the recipe can name it, but deliberately
+excluded from `ContentSet::goods` / `Settlement::tracked_goods`), so it never appears in this
+identity. It is monotonic, never traded or consumed, and reported on its own **non-conserved
+line**, `EconTickReport::knowledge_produced`. The good **inputs** to research (grain) ARE
+conserved-consumed and accounted in `consumed_as_input` — exactly like ordinary consumption — so
+whole-system goods conservation still holds every tick. (`research_inputs_conserve` is the
+tripwire: grain consumed-as-input > 0, conservation OK every tick, Knowledge never in the
+`produced` ledger, and the per-tick `knowledge_produced` line sums to the accumulator.) The
+tier-2 good (pastry) IS a conserved, tracked good — only its recipe is gated.
+
+### 3. The unlock is per-settlement, deterministic, and one-way
+
+After the research phase each tick, `maybe_unlock_tier_two` checks `knowledge ≥ threshold`; on
+the first crossing it stamps `tier2_unlocked_at = Some(tick)` and flips the recipe enabled. It is
+guarded `if self.tier2_unlocked_at.is_some() { return }`, so the unlock is **one-way** — never
+re-checked, never re-disabled, no flapping. A **zero** threshold means "no tech tiers" (a
+non-research chain never unlocks from time alone). State is integer-only, the `Rng` is drawn only
+at generation, nothing is drawn in the loops, and storage is `BTreeMap`/`Vec` — so the same
+`(seed, config)` is byte-identical down to the unlock tick (the Knowledge counter and unlock tick
+join `canonical_bytes`, gated on a research chain so every pre-G6b digest is unchanged).
+
+### 4. The `research` mechanism + the `research-control` falsification twin
+
+`research` seeds the grain→flour→bread chain plus two **scholars** (library + grain → Knowledge)
+and a **confectioner** (atelier + flour → pastry, gated). `research-control` is identical with
+`scholars = 0`. The control keeps the confectioner — the would-be producer holding its flour
+input throughout — so the *only* difference is the research. With no scholars Knowledge stays
+zero, the tier-2 recipe stays disabled, and pastry is never produced: the unlock is driven by
+research, not by time or anything else. (`no_scholars_control_never_unlocks` asserts the
+invariants every tick; `tier_gate_blocks_pre_unlock` shows the confectioner produces nothing
+while gated despite holding flour.)
+
+The scholar/confectioner reuse the chain's producer-scale machinery (a tool anchor + reserved
+input wants via `production_specialty` / `producer_scale_extension`), so they reserve their tool
+and input like a miller/baker — no new scale concept. They are **seeded** (id-banded after the
+G3b latent pool); a non-research config seeds zero of each, so its population, ids, and digest
+are byte-identical.
+
+### 5. Viewer surfacing
+
+The `research` dashboard gains a **research banner** (`research: knowledge K · tier T · tier 2
+unlocked at tick U`) and per-tick `know` (accumulated Knowledge), `k.tick` (the non-conserved
+Knowledge-produced line), and `tier` columns. The `pastry.made` column shows the tier-2 good
+appearing only after the unlock tick.
+
+### Excluded from G6b (deferred)
+
+- **No multi-tier tech tree.** G6b is ONE unlock (tier 1 → tier 2). A general tier/tech graph is
+  later.
+- **No knowledge diffusion via trade (game-spec §5.7).** Knowledge is a per-settlement
+  accumulator; it does not spread between settlements.
+- **No building-defs.** Tiers gate **recipe**-defs (the existing `ContentSet` recipes), not a new
+  building-definition concept.
+- **No emergence of the scholar role.** Scholars are **seeded** (like G3a producers before the
+  G3b spread-driven adoption); entrepreneurial *choice* to become a scholar is later.
+- **No econ recipe-execution change** — the six goldens are byte-identical (scholars/Knowledge/
+  tiers are game-only); the only econ edit is the additive `set_recipe_enabled` accessor. No
+  `HashMap` in logic, nothing drawn in the loops, no asserted magnitudes beyond
+  unlock-happens / control-doesn't and conserved inputs.

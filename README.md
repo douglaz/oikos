@@ -871,6 +871,70 @@ need finance machinery that does not exist in the game yet, and G6a does not inv
 placeholder finance to reach them. Era detection is also **not** research/tech-tier unlocking
 (G6b). See `sim/tests/g6a_eras.rs` and `docs/engine-divergence.md` (the G6a entry).
 
+## Status: G6b (research & tech tiers — capabilities are earned, not timed) — complete
+
+G6a *names* the era a society has earned; **G6b lets it advance its capabilities**: a
+**scholar** vocation produces **Knowledge** from labor, and crossing a Knowledge threshold
+**unlocks a higher tech tier** — a recipe that was gated until then. Progression is
+research-driven (Knowledge accumulated by actual scholar labor), not a timer — the tech
+analogue of the *"earned, not timed"* pillar. G6b proves the **mechanism** for ONE tier
+unlock (tier 1 → tier 2) with **seeded** scholars, plus a **control** (no scholars → no
+unlock).
+
+The `research` scenario is the seeded grain→flour→bread chain (G3a) plus scholars and a
+confectioner:
+
+```text
+scholar    holds a library; runs grain + labor → Knowledge (the research recipe)
+Knowledge  a per-settlement ACCUMULATOR — monotonic, never traded or consumed
+tier 2     the confect recipe (flour + labor + atelier → pastry) starts enabled:false
+unlock     Knowledge ≥ threshold → the confect recipe flips enabled:true (one-way)
+pastry     the higher-order good produced only AFTER the unlock (impossible before)
+```
+
+It reuses the existing machinery — no new recipe gating in `econ`:
+
+- **Tier gating reuses `Recipe.enabled`.** A tier-2 recipe starts `enabled: false`; crossing
+  the threshold flips it `true` via one additive `econ` accessor (`Society::set_recipe_enabled`)
+  called by no engine path. The direct-recipe executor already refuses a disabled recipe, so a
+  confectioner produces **nothing while gated even while holding its flour input** — the tier
+  gate, proven by the `tier_gate_blocks_pre_unlock` test.
+- **Knowledge is an ACCUMULATOR, not a tradeable good.** Scholar Knowledge output runs through
+  the existing production path, but `sim` immediately drains it into a per-settlement counter:
+  it is monotonic, never traded or consumed, and lives **OUTSIDE the goods-conservation
+  ledger** (reported on its own non-conserved line, `knowledge_produced`). The good **inputs**
+  to research (grain) ARE conserved-consumed and accounted exactly like consumption — so
+  whole-system goods conservation still holds every tick (`research_inputs_conserve`, the
+  tripwire).
+- **The no-scholars control is the proof.** With the scholars removed, Knowledge never
+  accumulates, so the tier-2 recipe stays disabled and pastry is never produced — even though
+  the confectioner is present and holds its inputs the whole time. If the tier unlocked there,
+  the gate would be reading time (or anything other than research).
+- **The unlock is per-settlement, deterministic, and one-way.** Integer state, the `Rng` drawn
+  only at generation, nothing drawn in the loops, no `HashMap` — so the same `(seed, config)`
+  is byte-identical down to the unlock tick. Once unlocked, the tier never re-disables (no
+  flapping).
+- **econ recipe-execution behaviour is unchanged.** Scholars, Knowledge, and tiers are
+  game-only (`sim`); the lab uses none of them, so the six econ conformance goldens are
+  byte-identical by construction and every prior G1–G6a test stays green.
+
+G6b:
+
+- [x] a `Knowledge` accumulator + `Scholar`/`Confectioner` vocations + per-recipe tier
+      metadata + the per-settlement unlock in `sim`
+- [x] `ContentSet::research_tiers` — the chain extended with the research and gated tier-2
+      recipes (and the Knowledge / pastry / library / atelier goods)
+- [x] `research` config (unlocks tier 2) + `research-control` (no scholars → never unlocks)
+- [x] viewer surfacing — a research **banner** (Knowledge / tier / unlock tick) and per-tick
+      `know` / `k.tick` / `tier` columns
+- [x] acceptance suite (`sim/tests/g6b_research.rs`: the seven acceptance tests plus unit
+      tests) + README + divergence-log updates
+
+**Multi-tier tech trees, knowledge diffusion via trade (game-spec §5.7), building-defs (vs
+recipe-defs), and emergence of the scholar role** are **deferred** — G6b proves one unlock with
+seeded scholars. See `sim/tests/g6b_research.rs` and `docs/engine-divergence.md` (the G6b
+entry).
+
 ## Build and test
 
 ```bash
@@ -899,4 +963,6 @@ cargo run -p viewer -- run barter-camp-control --ticks 40     # G5a: no saleabil
 cargo run -p viewer -- run frontier --ticks 80                # G5b: money emerges, then roles adopt, with demography
 #                                                              # G6a: the frontier/barter-camp dashboards show an era
 #                                                              #      banner + per-tick era column (forager → … → capital)
+cargo run -p viewer -- run research --ticks 60                # G6b: Knowledge accrues, tier 2 unlocks, pastry is produced
+cargo run -p viewer -- run research-control --ticks 60        # G6b: no scholars → no Knowledge → tier 2 never unlocks
 ```

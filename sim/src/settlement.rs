@@ -139,6 +139,18 @@ pub enum Vocation {
     /// when the spread collapses. The latent specialty (which recipe) is the
     /// colonist's [`latent`](Colonist::latent) recipe.
     Unassigned,
+    /// G6b: a **scholar** holds a `library` (durable tool) and, in the research
+    /// phase, turns grain it holds into **Knowledge** (the research recipe). Knowledge
+    /// is an accumulator, not a tradeable good — the settlement drains the recipe's
+    /// output into a per-settlement counter, never into circulation. Seeded (like the
+    /// G3a producers); the emergence of the scholar role is deferred (G6b scope).
+    Scholar,
+    /// G6b: a **confectioner** holds an `atelier` (durable tool) and, once the
+    /// settlement's Knowledge unlocks tier 2, runs the tier-2 (gated) recipe — flour
+    /// it holds into **pastry**, the higher-order good impossible before the unlock.
+    /// Before the unlock the recipe is `enabled: false`, so it produces nothing even
+    /// while holding its inputs (the tier gate). Seeded.
+    Confectioner,
 }
 
 impl Vocation {
@@ -153,6 +165,10 @@ impl Vocation {
             Vocation::Miller => 2,
             Vocation::Baker => 3,
             Vocation::Unassigned => 4,
+            // G6b extends the space; pre-G6b configs never emit 5/6, so their
+            // digests stay byte-identical.
+            Vocation::Scholar => 5,
+            Vocation::Confectioner => 6,
         }
     }
 }
@@ -270,6 +286,29 @@ pub struct ChainConfig {
     /// Working gold a producer (miller/baker) starts with — capital to buy its
     /// input while it sells its output.
     pub producer_gold: u64,
+    /// G6b: seeded **scholars** (hold a `library`, run grain → Knowledge). `0` for a
+    /// non-research chain (the G3a/G3b/G5b chains), so those configs are
+    /// byte-identical. The `no-scholars` control sets this `0`: Knowledge never
+    /// accumulates, so tier 2 never unlocks (the falsification twin).
+    pub scholars: u16,
+    /// G6b: seeded **confectioners** (hold an `atelier`, run the tier-2 recipe flour →
+    /// pastry once unlocked). Present in BOTH the research config and its control, so
+    /// the control proves a would-be producer holding its inputs still produces
+    /// nothing while the tier is gated. `0` for a non-research chain.
+    pub confectioners: u16,
+    /// G6b: the Knowledge counter a settlement must accumulate to unlock tier 2.
+    /// `0` means "no tech tiers" (a non-research chain never unlocks). The research
+    /// config sets a positive threshold; deterministic — the unlock tick is a pure
+    /// function of seed + config.
+    pub tier2_threshold: u64,
+    /// G6b: grain a scholar is seeded holding — its research input buffer (and the
+    /// size of its grain reservation, so it neither dumps the buffer nor starves the
+    /// chain's millers of grain). `0` for a non-research chain.
+    pub scholar_grain_buffer: u32,
+    /// G6b: flour a confectioner is seeded holding — its tier-2 input buffer (held
+    /// from tick 0 so the control's "would-be producer holds its inputs" claim is
+    /// real, yet produces nothing while gated). `0` for a non-research chain.
+    pub confectioner_flour_buffer: u32,
 }
 
 impl ChainConfig {
@@ -309,6 +348,63 @@ impl ChainConfig {
             // those configs stay byte-identical; the G5b frontier overrides it.
             consumer_wood_buffer: 48,
             producer_gold: 24,
+            // No research/tiers by default — the G3a/G3b/G5b chains carry no scholars
+            // or confectioners and a zero threshold (no unlock), so every existing
+            // config and its digest is byte-identical. The G6b `research` config opts
+            // in via `ChainConfig::research_tiers`.
+            scholars: 0,
+            confectioners: 0,
+            tier2_threshold: 0,
+            scholar_grain_buffer: 0,
+            confectioner_flour_buffer: 0,
+        }
+    }
+
+    /// The G6b **research-tiers** chain: the seeded grain→flour→bread chain plus
+    /// seeded scholars (grain → Knowledge) and a confectioner that runs the
+    /// tier-2 recipe (flour → pastry) ONCE Knowledge crosses [`Self::tier2_threshold`].
+    /// Built on the [`ContentSet::research_tiers`] content (so it carries the research
+    /// and gated tier-2 recipes). Pass `scholars = 0` (via
+    /// [`SettlementConfig::research_control`]) for the falsification control.
+    pub fn research_tiers() -> Self {
+        Self {
+            content: ContentSet::research_tiers(),
+            // Enough seeded millers/bakers to keep bread flowing while scholars and a
+            // confectioner run alongside. Seeded roles (no emergence — G6b scope).
+            millers: 3,
+            bakers: 5,
+            latent_millers: 0,
+            latent_bakers: 0,
+            operating_cost: 1,
+            bread_is_staple: true,
+            throughput: 2,
+            miller_grain_buffer: 16,
+            baker_flour_buffer: 16,
+            latent_flour_seed: 0,
+            // Generous staple/warmth/gold buffers (mechanism knobs, not balance): the
+            // research config adds scholars and a confectioner that BUY inputs and sell
+            // nothing tradeable (Knowledge and the seeded pastry never circulate), so
+            // they are gold/bread sinks. Large buffers bridge the smoke horizon so the
+            // chain stays collapse-free while the tech progression is demonstrated.
+            bread_buffer: 80,
+            consumer_staple_buffer: 80,
+            wood_buffer: 80,
+            consumer_wood_buffer: 80,
+            producer_gold: 64,
+            // Two scholars accumulate Knowledge from labor; one confectioner stands
+            // ready to run the tier-2 recipe the moment it unlocks. The threshold is a
+            // mechanism knob (not a magnitude): low enough to unlock well inside the
+            // smoke horizon, high enough that the unlock is several ticks of real
+            // research, not tick 0.
+            scholars: 2,
+            confectioners: 1,
+            tier2_threshold: 20,
+            // Modest input buffers (also the per-tick bid ceiling): large enough that
+            // research runs from seeded stock through the unlock and tier-2 production
+            // has flour on hand, small enough that the scholars do not hoard grain and
+            // starve the millers (the chain stays collapse-free over the smoke horizon).
+            scholar_grain_buffer: 12,
+            confectioner_flour_buffer: 24,
         }
     }
 }
@@ -535,6 +631,76 @@ impl SettlementConfig {
             consumer_wood_endowment: 0,
             // Patient on both sides so surplus keeps being offered and the chain's
             // intermediate goods keep clearing (the same discipline as viable()).
+            gatherer_time_preference_base_bps: 500,
+            consumer_time_preference_base_bps: 500,
+            leisure_weight_base_bps: 3_000,
+            dynamics: NeedDynamics::lab_default(),
+            resident_traders: Vec::new(),
+            chain: Some(chain),
+            demography: None,
+            barter: None,
+        }
+    }
+
+    /// The G6b **research** settlement: the seeded grain→flour→bread chain plus
+    /// seeded scholars who accumulate **Knowledge** from labor and a confectioner who
+    /// runs the **tier-2** (gated) recipe — flour → pastry — only after Knowledge
+    /// crosses the unlock threshold. Designated-GOLD market (no barter), so the proof
+    /// is purely about research-driven tech progression: Knowledge accrues, tier 2
+    /// unlocks at a definite tick, and the higher-order good (pastry) appears that was
+    /// impossible before. Paired with [`Self::research_control`] (the same world with
+    /// the scholars removed), this is the milestone's mechanism + falsification twin.
+    pub fn research() -> Self {
+        Self::research_with_scholars(true)
+    }
+
+    /// The G6b **no-scholars control**: the same research settlement with the scholars
+    /// removed (`scholars = 0`). With no scholar labor, Knowledge never accumulates,
+    /// so the tier-2 recipe stays disabled and pastry is never produced — even though
+    /// the confectioner is present and holds its flour input throughout. Paired with
+    /// [`Self::research`] this isolates the cause: identical world and producers, the
+    /// scholars (and so the research) the only difference. If the tier unlocked here,
+    /// the gate would be reading time (or anything other than research).
+    pub fn research_control() -> Self {
+        Self::research_with_scholars(false)
+    }
+
+    /// Shared builder for the research settlement and its control. `with_scholars`
+    /// toggles the scholar count: present (the research config, Knowledge accrues and
+    /// tier 2 unlocks) or absent (the control, no Knowledge, no unlock). Everything
+    /// else — the chain, the confectioner, the grain node, the rosters — is identical,
+    /// so the pair is a clean falsification twin.
+    fn research_with_scholars(with_scholars: bool) -> Self {
+        let mut chain = ChainConfig::research_tiers();
+        if !with_scholars {
+            chain.scholars = 0;
+        }
+        let exchange = Pos::new(0, 0);
+        Self {
+            width: 64,
+            height: 1,
+            exchange,
+            exchange_cap: 1_000_000,
+            // A single rich, close grain node: grain feeds the millers AND the
+            // scholars' research, so keep supply loose (more gatherers + regen than the
+            // plain chain, since research adds a second class of grain consumer).
+            nodes: vec![NodeSpec {
+                good: chain.content.grain(),
+                pos: Pos::new(4, 0),
+                stock: 16_000,
+                regen: 80,
+                cap: 16_000,
+            }],
+            gatherers: 5,
+            consumers: 1,
+            carry_cap: 2,
+            move_speed: 1,
+            starting_gold_gatherer: 12,
+            starting_gold_consumer: 64,
+            gatherer_food_buffer: 0,
+            gatherer_wood_buffer: 0,
+            consumer_food_buffer: 0,
+            consumer_wood_endowment: 0,
             gatherer_time_preference_base_bps: 500,
             consumer_time_preference_base_bps: 500,
             leisure_weight_base_bps: 3_000,
@@ -1103,6 +1269,13 @@ pub struct EconTickReport {
     pub deaths: u32,
     /// Births this tick (G4b). Zero for a non-demography settlement.
     pub births: u32,
+    /// G6b: **Knowledge** produced by scholar labor this tick — the accumulator's
+    /// increment, reported on its OWN non-conserved line (NOT in the goods ledger).
+    /// Knowledge is monotonic, never traded or consumed, so it is deliberately
+    /// excluded from [`Self::conserves`]; the conserved good *inputs* to research
+    /// (e.g. grain) ARE accounted in `consumed_as_input`. Zero for a non-research
+    /// settlement.
+    pub knowledge_produced: u64,
 }
 
 impl EconTickReport {
@@ -1131,6 +1304,11 @@ impl EconTickReport {
     /// for the physical good, matched 1-for-1 by the gold the promotion mints).
     pub fn promoted_of(&self, good: GoodId) -> u64 {
         self.promoted.get(&good).copied().unwrap_or(0)
+    }
+    /// G6b: Knowledge produced this tick — the non-conserved accumulator line. It is
+    /// NOT part of the goods-conservation identity (see [`Self::conserves`]).
+    pub fn knowledge_produced(&self) -> u64 {
+        self.knowledge_produced
     }
     pub fn whole_system_before_of(&self, good: GoodId) -> u64 {
         self.whole_system_before.get(&good).copied().unwrap_or(0)
@@ -1161,6 +1339,13 @@ impl EconTickReport {
     /// dead→heir/commons) so they cancel in `before`/`after` and need no term here.
     /// Tools are durable — they appear in neither production term, so a recipe that
     /// needs a tool never moves the tool's ledger.
+    ///
+    /// G6b: **Knowledge** is deliberately absent from this identity. It is not a good
+    /// (not in [`Settlement::tracked_goods`], so not a key of `whole_system_before`),
+    /// it is monotonic and never traded or consumed, and `sim` reports it on its own
+    /// non-conserved line ([`Self::knowledge_produced`]). The conserved good *inputs*
+    /// to research (e.g. grain) DO appear here, in `consumed_as_input` — so research
+    /// consumption is accounted exactly like ordinary consumption.
     pub fn conserves(&self) -> bool {
         self.whole_system_before.keys().all(|good| {
             let before = self.whole_system_before_of(*good) as i128;
@@ -1329,6 +1514,16 @@ pub struct Settlement {
     /// medium). Dropped once a money good has emerged — the post-promotion scale
     /// is pure need-driven (the money market clears in GOLD like G2b).
     barter_medium: Option<(GoodId, u32)>,
+    /// G6b: the settlement's accumulated **Knowledge** — produced by scholar labor,
+    /// monotonic, never traded or consumed. It is OUTSIDE the goods-conservation
+    /// ledger (it is not a good, not in [`Settlement::goods`]); the per-tick
+    /// [`EconTickReport::knowledge_produced`] reports the increment on its own
+    /// non-conserved line. `0` and untouched for a non-research settlement.
+    knowledge: u64,
+    /// G6b: the econ tick at which Knowledge first crossed the tier-2 threshold and
+    /// the gated recipe was enabled, or `None` if it has not (yet) unlocked. The
+    /// unlock is **one-way** — once set, never cleared, so the tier never flaps.
+    tier2_unlocked_at: Option<u64>,
 }
 
 /// Per-household birth-cadence runtime (G4b), index-parallel to a
@@ -1348,6 +1543,18 @@ struct ChainRuntime {
     /// The per-operation cost (labor + tool) the G3b role-choice appraisal charges
     /// against a recipe's realized output spread (see [`ChainConfig::operating_cost`]).
     operating_cost: u64,
+    /// G6b: the Knowledge threshold that unlocks tier 2. `0` (no tech tiers) for a
+    /// non-research chain — the unlock check is then a no-op.
+    tier2_threshold: u64,
+    /// G6b: the tier-2 recipe id to flip `enabled` on unlock, or `None` for a
+    /// non-research chain.
+    tier2_recipe_id: Option<RecipeId>,
+    /// G6b: the grain a scholar holds/reserves (its research input buffer + bid
+    /// ceiling). `0` for a non-research chain.
+    scholar_grain_buffer: u32,
+    /// G6b: the flour a confectioner holds/reserves (its tier-2 input buffer + bid
+    /// ceiling). `0` for a non-research chain.
+    confectioner_flour_buffer: u32,
 }
 
 impl Settlement {
@@ -1567,7 +1774,24 @@ impl Settlement {
             ),
             None => (0, 0, 0, 0),
         };
-        let population = consumers + gatherers + millers + bakers + latent_millers + latent_bakers;
+        // G6b seeded scholars + confectioners: both zero without a research chain, so
+        // every pre-G6b config's population, ids, and digest are byte-identical. They
+        // follow the latent pool in id order (the highest colonist ids).
+        let (scholars, confectioners) = match &config.chain {
+            Some(chain) => (
+                usize::from(chain.scholars),
+                usize::from(chain.confectioners),
+            ),
+            None => (0, 0),
+        };
+        let population = consumers
+            + gatherers
+            + millers
+            + bakers
+            + latent_millers
+            + latent_bakers
+            + scholars
+            + confectioners;
 
         // Resident traders (G2c caravans) take the LOWEST ids, *before* the
         // colonists, so they are processed first in the id-ordered market and their
@@ -1620,6 +1844,8 @@ impl Settlement {
             // time-preference base so they keep offering their output and carry a
             // savings want the entrepreneurial appraisal can target.
             let seeded_end = consumers + gatherers + millers + bakers;
+            let latent_end = seeded_end + latent_millers + latent_bakers;
+            let scholar_end = latent_end + scholars;
             let (vocation, node, tp_base, latent) = if index < consumers {
                 (
                     Vocation::Consumer,
@@ -1656,12 +1882,30 @@ impl Settlement {
                     config.consumer_time_preference_base_bps,
                     Some(RecipeId::Mill),
                 )
-            } else {
+            } else if index < latent_end {
                 (
                     Vocation::Unassigned,
                     None,
                     config.consumer_time_preference_base_bps,
                     Some(RecipeId::Bake),
+                )
+            } else if index < scholar_end {
+                // G6b: a seeded scholar — patient (so it carries a savings want and
+                // keeps offering nothing it needs), holding a library + grain buffer.
+                (
+                    Vocation::Scholar,
+                    None,
+                    config.consumer_time_preference_base_bps,
+                    None,
+                )
+            } else {
+                // G6b: a seeded confectioner — holds an atelier + flour buffer, runs
+                // the tier-2 recipe once unlocked.
+                (
+                    Vocation::Confectioner,
+                    None,
+                    config.consumer_time_preference_base_bps,
+                    None,
                 )
             };
             let culture = draw_culture(&mut rng, tp_base, config.leisure_weight_base_bps);
@@ -1874,6 +2118,10 @@ impl Settlement {
                 content: chain.content.clone(),
                 throughput: chain.throughput,
                 operating_cost: chain.operating_cost,
+                tier2_threshold: chain.tier2_threshold,
+                tier2_recipe_id: chain.content.tier2_recipe_id(),
+                scholar_grain_buffer: chain.scholar_grain_buffer,
+                confectioner_flour_buffer: chain.confectioner_flour_buffer,
             }
         });
 
@@ -1920,6 +2168,11 @@ impl Settlement {
                     barter.gatherer_medium_endowment > 0 || barter.consumer_medium_endowment > 0;
                 supplied.then_some((barter.medium_good, barter.medium_want_qty))
             }),
+            // G6b: Knowledge starts at zero and tier 2 starts locked. A non-research
+            // settlement never touches either (no scholar runs, the threshold is 0),
+            // so its digest is byte-identical.
+            knowledge: 0,
+            tier2_unlocked_at: None,
         }
     }
 
@@ -2857,8 +3110,19 @@ impl Settlement {
                 if let Some((tool, input)) =
                     production_specialty(colonist.vocation, colonist.latent, &chain.content)
                 {
-                    let active = matches!(colonist.vocation, Vocation::Miller | Vocation::Baker);
-                    let input_wants = if active { chain.throughput.max(1) } else { 0 };
+                    let input_wants = match colonist.vocation {
+                        // Active producers (G3a seeded, G3b adopted) bid `throughput`
+                        // units of input each tick.
+                        Vocation::Miller | Vocation::Baker => chain.throughput.max(1),
+                        // G6b: a scholar/confectioner reserves (and tops up) its FULL
+                        // input buffer, so research / tier-2 production runs from seeded
+                        // stock and the buffer is neither dumped nor eaten.
+                        Vocation::Scholar => chain.scholar_grain_buffer.max(1),
+                        Vocation::Confectioner => chain.confectioner_flour_buffer.max(1),
+                        // A latent producer (Unassigned) posts NO input bid — load-bearing
+                        // for the G3b control (it must not price the intermediate good).
+                        _ => 0,
+                    };
                     producer_scale_extension(&mut scale, tool, input, input_wants);
                 }
             }
@@ -2897,34 +3161,102 @@ impl Settlement {
         let throughput = chain.throughput;
         let mill_recipe = chain.content.mill_recipe().id;
         let bake_recipe = chain.content.bake_recipe().id;
+        // G6b content recipes (`None` for a plain G3a/G3b/G5b chain).
+        let research_recipe = chain.content.research_recipe().map(|recipe| recipe.id);
+        let confect_recipe = chain.content.tier2_recipe().map(|recipe| recipe.id);
         // `chain`/`colonists` (immutable) and `society` (mutable) are disjoint
         // fields, so id-ordered iteration here borrows them side by side. The
         // recipe ids are content data; mutation delegates to econ's existing
         // direct-recipe executor through an additive `Society` accessor.
         for &slot in &self.live_colonist_slots {
-            let colonist = &self.colonists[slot];
-            let recipe_id = match colonist.vocation {
-                Vocation::Miller => mill_recipe,
-                Vocation::Baker => bake_recipe,
+            let id = self.colonists[slot].id;
+            let (recipe_id, is_research) = match self.colonists[slot].vocation {
+                Vocation::Miller => (mill_recipe, false),
+                Vocation::Baker => (bake_recipe, false),
+                // G6b: a scholar runs research → Knowledge (drained to the counter); a
+                // confectioner runs the tier-2 recipe → pastry. Skip if the content
+                // carries no such recipe (a non-research chain).
+                Vocation::Scholar => match research_recipe {
+                    Some(recipe) => (recipe, true),
+                    None => continue,
+                },
+                Vocation::Confectioner => match confect_recipe {
+                    Some(recipe) => (recipe, false),
+                    None => continue,
+                },
                 // A latent (Unassigned) colonist holds a tool but has not adopted
                 // production, so it mills/bakes nothing until the spread makes it a
                 // Miller/Baker (the role-choice phase sets that before production).
                 Vocation::Gatherer | Vocation::Consumer | Vocation::Unassigned => continue,
             };
             for _ in 0..throughput {
+                // The tier gate: `execute_direct_recipe_for_agent_checked` returns
+                // `None` for a DISABLED recipe (the executor honors `Recipe.enabled`),
+                // so a confectioner produces nothing while tier 2 is locked even while
+                // holding its flour input — the G6b tier-gate test.
                 let Some(applied) = self
                     .society
-                    .execute_direct_recipe_for_agent_checked(colonist.id, recipe_id)
+                    .execute_direct_recipe_for_agent_checked(id, recipe_id)
                 else {
-                    // Out of input (or missing tool): nothing more to mill/bake.
+                    // Out of input, missing tool, or a gated recipe: nothing more.
                     break;
                 };
                 let (out_good, out_qty) = applied.output;
-                *report.produced.entry(out_good).or_insert(0) += u64::from(out_qty);
+                if is_research {
+                    // G6b: Knowledge is an ACCUMULATOR, not a tradeable good. Drain the
+                    // produced units straight back out of the scholar's econ stock (so
+                    // they never enter circulation, the digest, or the goods-conservation
+                    // ledger) and add them to the per-settlement counter — reported on
+                    // its own non-conserved line.
+                    let drained = self.society.debit_stock(id, out_good, out_qty);
+                    debug_assert!(drained, "the scholar holds the Knowledge it just produced");
+                    let amount = u64::from(out_qty);
+                    report.knowledge_produced = report.knowledge_produced.saturating_add(amount);
+                    self.knowledge = self.knowledge.saturating_add(amount);
+                } else {
+                    *report.produced.entry(out_good).or_insert(0) += u64::from(out_qty);
+                }
+                // Conserved good INPUTS to any recipe — research included — are accounted
+                // exactly like consumption (the conservation ledger sees every consumed
+                // unit). Tools are durable and never appear here.
                 if let Some((in_good, in_qty)) = applied.input {
                     *report.consumed_as_input.entry(in_good).or_insert(0) += u64::from(in_qty);
                 }
             }
+        }
+
+        // G6b: having added this tick's Knowledge, check the tier-2 unlock. After the
+        // research phase so the just-produced Knowledge counts toward the threshold.
+        self.maybe_unlock_tier_two();
+    }
+
+    /// G6b TIER-2 UNLOCK: if accumulated Knowledge has crossed the threshold, enable
+    /// the tier-2 (gated) recipe for this settlement and stamp the unlock tick. The
+    /// unlock is **per-settlement, deterministic, and one-way** — once unlocked it is
+    /// never re-checked, so the tier cannot flap. A no-op for a non-research chain (a
+    /// zero threshold / no tier-2 recipe) and once already unlocked.
+    fn maybe_unlock_tier_two(&mut self) {
+        if self.tier2_unlocked_at.is_some() {
+            return;
+        }
+        let Some(chain) = &self.chain else {
+            return;
+        };
+        let Some(recipe_id) = chain.tier2_recipe_id else {
+            return;
+        };
+        let threshold = chain.tier2_threshold;
+        // A zero threshold means "no tech tiers" — the tier never unlocks from time or
+        // anything else; only accumulated research crosses a positive threshold.
+        if threshold == 0 || self.knowledge < threshold {
+            return;
+        }
+        self.tier2_unlocked_at = Some(self.econ_tick);
+        // Flip the gate on the society's LIVE recipe set (what the executor runs) and
+        // keep the content's own copy consistent (what the digest and viewer read).
+        self.society.set_recipe_enabled(recipe_id, true);
+        if let Some(chain) = self.chain.as_mut() {
+            chain.content.set_recipe_enabled(recipe_id, true);
         }
     }
 
@@ -3089,6 +3421,59 @@ impl Settlement {
     /// chain's good ids and recipes through it.
     pub fn content(&self) -> Option<&ContentSet> {
         self.chain.as_ref().map(|chain| &chain.content)
+    }
+
+    // ---- G6b research / tech-tier surface --------------------------------
+
+    /// Whether this settlement runs the G6b research overlay (its content carries the
+    /// research + tier-2 recipes and the Knowledge accumulator).
+    pub fn is_research(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(|chain| chain.content.has_research())
+    }
+
+    /// The settlement's accumulated **Knowledge** — produced by scholar labor,
+    /// monotonic, never traded or consumed (outside the goods-conservation ledger).
+    /// `0` for a non-research settlement.
+    pub fn knowledge(&self) -> u64 {
+        self.knowledge
+    }
+
+    /// The Knowledge threshold that unlocks tier 2, or `0` (no tech tiers) for a
+    /// non-research settlement.
+    pub fn tier2_threshold(&self) -> u64 {
+        self.chain.as_ref().map_or(0, |chain| chain.tier2_threshold)
+    }
+
+    /// The current tech tier: `2` once the Knowledge unlock has fired, else `1`. A
+    /// non-research settlement is always tier `1`.
+    pub fn current_tier(&self) -> u8 {
+        if self.tier2_unlocked_at.is_some() {
+            2
+        } else {
+            1
+        }
+    }
+
+    /// The econ tick at which tier 2 unlocked (the gated recipe was enabled), or
+    /// `None` if it has not (yet) unlocked. Once `Some`, never cleared — the unlock is
+    /// one-way.
+    pub fn tier2_unlocked_at(&self) -> Option<u64> {
+        self.tier2_unlocked_at
+    }
+
+    /// Whether the tier-2 (gated) recipe is currently enabled in the live society —
+    /// the gate the production phase honors. `false` before the unlock (and for a
+    /// non-research settlement), `true` after.
+    pub fn tier2_recipe_enabled(&self) -> bool {
+        let Some(chain) = &self.chain else {
+            return false;
+        };
+        chain
+            .content
+            .tier2_recipe()
+            .is_some_and(|recipe| recipe.enabled)
     }
 
     /// The most recent realized spot price for `good` (the last trade), or `None`
@@ -3439,6 +3824,26 @@ impl Settlement {
             for recipe in chain.content.recipes() {
                 push_recipe_bytes(&mut out, recipe);
             }
+            // G6b research/tech-tier dynamic state. Gated on a research chain, so every
+            // pre-G6b chain config (no research recipes) is byte-identical. The
+            // tier-2 threshold steers when future ticks unlock, and the Knowledge
+            // counter plus unlock tick are independent state two
+            // otherwise-equal runs can differ in, so all three belong in the
+            // "byte-identical iff future behaviour identical" identity — the tick the
+            // tier unlocks is part of the determinism contract (G6b test 1). (The
+            // tier-2 recipe's `enabled` flip is already captured by the recipe bytes
+            // above, since the unlock keeps `content` consistent with the society.)
+            if chain.content.has_research() {
+                out.extend_from_slice(&chain.tier2_threshold.to_le_bytes());
+                out.extend_from_slice(&self.knowledge.to_le_bytes());
+                match self.tier2_unlocked_at {
+                    Some(tick) => {
+                        out.push(1);
+                        out.extend_from_slice(&tick.to_le_bytes());
+                    }
+                    None => out.push(0),
+                }
+            }
         }
 
         // The G5a emergent-money config + runtime. The config fields steer future
@@ -3759,6 +4164,32 @@ fn build_agent(
                     }
                     chain.producer_gold
                 }
+                // G6b: a scholar holds a `library` (durable) and a grain buffer it
+                // researches into Knowledge. A confectioner holds an `atelier` and a
+                // flour buffer it confects into pastry once tier 2 unlocks. Both reserve
+                // their input via the scale extension (see `regenerate_scales`), so the
+                // buffer is neither dumped nor eaten.
+                Vocation::Scholar => {
+                    stock.add(
+                        chain
+                            .content
+                            .library()
+                            .expect("a scholar requires research-tiers content (a library tool)"),
+                        1,
+                    );
+                    stock.add(chain.content.grain(), chain.scholar_grain_buffer);
+                    chain.producer_gold
+                }
+                Vocation::Confectioner => {
+                    stock.add(
+                        chain.content.atelier().expect(
+                            "a confectioner requires research-tiers content (an atelier tool)",
+                        ),
+                        1,
+                    );
+                    stock.add(chain.content.flour(), chain.confectioner_flour_buffer);
+                    chain.producer_gold
+                }
             }
         }
         // ---- G2b endowments (unchanged; chain vocations never occur without a chain).
@@ -3774,7 +4205,11 @@ fn build_agent(
                     config.consumer_food_buffer,
                     config.consumer_wood_endowment,
                 ),
-                Vocation::Miller | Vocation::Baker | Vocation::Unassigned => {
+                Vocation::Miller
+                | Vocation::Baker
+                | Vocation::Unassigned
+                | Vocation::Scholar
+                | Vocation::Confectioner => {
                     unreachable!("chain vocations require a production chain config")
                 }
             };
@@ -4046,7 +4481,8 @@ fn soonest_savings_horizon(scale: &[Want], money_good: GoodId) -> Option<u32> {
 
 /// The `(tool, input_good)` a chain vocation produces with, if any: a Miller (or a
 /// latent miller) runs the mill (grain → flour); a Baker (or latent baker) the oven
-/// (flour → bread). `None` for a gatherer/consumer. This keys
+/// (flour → bread); a G6b Scholar the library (grain → Knowledge); a Confectioner the
+/// atelier (flour → pastry). `None` for a gatherer/consumer. This keys
 /// [`producer_scale_extension`] so a latent G3b producer reserves its capital just
 /// like a seeded/adopted one — the only difference between latent and active is
 /// whether [`Settlement::run_production`] runs its recipe.
@@ -4058,12 +4494,18 @@ fn production_specialty(
     let recipe = match vocation {
         Vocation::Miller => Some(RecipeId::Mill),
         Vocation::Baker => Some(RecipeId::Bake),
+        // G6b: a scholar runs research (grain → Knowledge); a confectioner the tier-2
+        // recipe (flour → pastry). Both reserve their tool + input like a chain producer.
+        Vocation::Scholar => Some(RecipeId::Research),
+        Vocation::Confectioner => Some(RecipeId::Confect),
         Vocation::Unassigned => latent,
         Vocation::Gatherer | Vocation::Consumer => None,
     }?;
     match recipe {
         RecipeId::Mill => Some((content.mill(), content.grain())),
         RecipeId::Bake => Some((content.oven(), content.flour())),
+        RecipeId::Research => Some((content.library()?, content.grain())),
+        RecipeId::Confect => Some((content.atelier()?, content.flour())),
         _ => None,
     }
 }
@@ -4372,6 +4814,10 @@ fn push_recipe_id_bytes(out: &mut Vec<u8>, id: RecipeId) {
         RecipeId::FishWithNet => 2,
         RecipeId::Mill => 3,
         RecipeId::Bake => 4,
+        // G6b content recipes; pre-G6b configs never serialize these, so existing
+        // digests are byte-identical.
+        RecipeId::Research => 5,
+        RecipeId::Confect => 6,
     });
 }
 

@@ -5403,6 +5403,28 @@ impl Society {
         })
     }
 
+    /// Set the `enabled` flag of the recipe with `recipe_id`, returning `true` if a
+    /// matching recipe was found (and `false` if not). The additive seam for `sim`'s
+    /// G6b **tech-tier unlock**: a tier-gated recipe starts `enabled: false`, and
+    /// crossing the Knowledge threshold flips it `true` for that settlement — reusing
+    /// the existing `Recipe::enabled` gate the direct-recipe executor already honors
+    /// (a disabled recipe never runs), rather than adding new gating machinery. It
+    /// mutates only the recipe's
+    /// flag (touches no scale, quote, money, or market state) and is called by no
+    /// engine path, so the conformance goldens are byte-identical.
+    pub fn set_recipe_enabled(&mut self, recipe_id: RecipeId, enabled: bool) -> bool {
+        if let Some(recipe) = self
+            .recipes
+            .iter_mut()
+            .find(|recipe| recipe.id == recipe_id)
+        {
+            recipe.enabled = enabled;
+            true
+        } else {
+            false
+        }
+    }
+
     fn reserved_gold_all(&self, agent: AgentId) -> Gold {
         self.reservations
             .reserved_gold(agent)

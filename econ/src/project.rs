@@ -12,6 +12,15 @@ pub enum RecipeId {
     Mill,
     /// G3a production-chain: bake flour into bread (a content recipe).
     Bake,
+    /// G6b research: a scholar turns a conserved good input + labor into
+    /// **Knowledge** (a content recipe, applied by the `sim` scholar phase, never
+    /// by the lab planner). Knowledge is an accumulator, not a tradeable good —
+    /// `sim` drains the recipe's output into a per-settlement counter.
+    Research,
+    /// G6b tech tier 2: a tier-gated higher-order recipe (starts `enabled: false`,
+    /// flipped `true` by the `sim` unlock once Knowledge crosses the threshold). A
+    /// content recipe, applied by the `sim` producer phase, never by the lab planner.
+    Confect,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -173,6 +173,32 @@ pub struct DashboardRow {
     /// era at this tick (`forager`/`barter`/`money`/`specialist`/`capital`). Empty for
     /// a non-emergent settlement (the era ladder measures the emergent path).
     pub era: String,
+    /// G6b research surfacing (rendered behind `show_research`): the accumulated
+    /// Knowledge this tick, the current tech tier, and the Knowledge produced this
+    /// tick (the non-conserved accumulator line). Zero for a non-research settlement.
+    pub knowledge: u64,
+    pub knowledge_produced: u64,
+    pub tier: u8,
+}
+
+/// G6b research-banner summary: the settlement's final Knowledge level, current tech
+/// tier, and the tick tier 2 unlocked (or that it is still locked). A read-only digest
+/// rendered above the dashboard for a research settlement. `None` for any other.
+pub struct ResearchSummary {
+    pub knowledge: u64,
+    pub threshold: u64,
+    pub tier: u8,
+    pub unlocked_at: Option<u64>,
+}
+
+/// The optional milestone banners rendered above the dashboard table: the G6a era
+/// summary and the G6b research summary. Each is `None` unless its overlay is present
+/// (era for an emergent settlement, research for a research settlement). Grouped so the
+/// renderer takes one banner argument rather than many.
+#[derive(Default)]
+pub struct DashboardBanners<'a> {
+    pub era: Option<&'a EraSummary>,
+    pub research: Option<&'a ResearchSummary>,
 }
 
 /// G6a era-banner summary: the current institutional era and the timeline of the
@@ -203,7 +229,7 @@ pub fn format_dashboard(
     seed: u64,
     ticks: u64,
     population_label: &str,
-    era: Option<&EraSummary>,
+    banners: &DashboardBanners,
     rows: &[DashboardRow],
 ) -> String {
     let goods = settlement.tracked_goods();
@@ -226,7 +252,7 @@ pub fn format_dashboard(
     // G6a era banner: the measured era reached and the tick each rung was earned —
     // "eras are earned, not timed". Shown only for an emergent settlement (the ladder
     // classifies the barter→money→specialist→capital path).
-    if let Some(era) = era {
+    if let Some(era) = banners.era {
         let timeline: Vec<String> = era
             .timeline
             .iter()
@@ -238,6 +264,22 @@ pub fn format_dashboard(
             format!(" — {}", timeline.join(" → "))
         };
         let _ = writeln!(out, "era: {}{trail}", era.current);
+    }
+    // G6b research banner: the earned Knowledge, the current tech tier, and the tick
+    // tier 2 unlocked — "capabilities are earned by research, not unlocked by a timer".
+    if let Some(research) = banners.research {
+        let unlock = match research.unlocked_at {
+            Some(tick) => format!("tier 2 unlocked at tick {tick}"),
+            None => format!(
+                "tier 2 locked ({}/{} knowledge)",
+                research.knowledge, research.threshold
+            ),
+        };
+        let _ = writeln!(
+            out,
+            "research: knowledge {} · tier {} · {unlock}",
+            research.knowledge, research.tier
+        );
     }
     out.push('\n');
 
@@ -257,6 +299,18 @@ pub fn format_dashboard(
         aligns.push(Align::Right);
         aligns.push(Align::Right);
     }
+    // G6b research columns: the accumulated Knowledge, the Knowledge produced this tick
+    // (the non-conserved accumulator line), and the current tech tier. Shown only for a
+    // research settlement.
+    let show_research = banners.research.is_some();
+    if show_research {
+        headers.push("know".to_string());
+        headers.push("k.tick".to_string());
+        headers.push("tier".to_string());
+        aligns.push(Align::Right);
+        aligns.push(Align::Right);
+        aligns.push(Align::Right);
+    }
     // G5a emergence columns: the barter/money phase, the saleability leader the
     // barter routes through, and the emerged money good (with the promotion tick
     // marked `*`). Shown only for a barter-start (emergent-money) settlement.
@@ -272,7 +326,7 @@ pub fn format_dashboard(
     // G6a era column: the measured institutional era this tick — the headline
     // surfacing alongside the banner. Shown when an era summary is provided (an
     // emergent settlement).
-    let show_era = era.is_some();
+    let show_era = banners.era.is_some();
     if show_era {
         headers.push("era".to_string());
         aligns.push(Align::Left);
@@ -342,6 +396,11 @@ pub fn format_dashboard(
             cells.push(row.living_millers.to_string());
             cells.push(row.living_bakers.to_string());
             cells.push(row.living_unassigned.to_string());
+        }
+        if show_research {
+            cells.push(row.knowledge.to_string());
+            cells.push(row.knowledge_produced.to_string());
+            cells.push(row.tier.to_string());
         }
         if show_emergence {
             cells.push(row.phase.clone());
@@ -612,6 +671,9 @@ pub fn format_colonist(
         Some(sim::Vocation::Baker) => "baker",
         // G3b: a latent producer that has not (yet) adopted from the spread.
         Some(sim::Vocation::Unassigned) => "unassigned",
+        // G6b: a scholar (research → Knowledge) / a confectioner (tier-2 producer).
+        Some(sim::Vocation::Scholar) => "scholar",
+        Some(sim::Vocation::Confectioner) => "confectioner",
         None => "unknown",
     };
     let alive = settlement.is_alive(index);

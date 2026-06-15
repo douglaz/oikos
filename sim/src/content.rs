@@ -36,6 +36,17 @@ pub const BREAD: &str = "bread";
 pub const MILL: &str = "mill";
 pub const OVEN: &str = "oven";
 
+/// G6b research goods. `KNOWLEDGE` is the research recipe's output — but it is an
+/// **accumulator, not a tradeable good**: `sim` drains it into a per-settlement
+/// counter every tick, so it never enters the goods-conservation ledger. `PASTRY`
+/// is the tier-2 (higher-order) good the gated recipe produces. `LIBRARY` and
+/// `ATELIER` are the durable tools that gate research and the tier-2 recipe (held,
+/// never consumed) — the same capital-gate pattern as `MILL`/`OVEN`.
+pub const KNOWLEDGE: &str = "knowledge";
+pub const PASTRY: &str = "pastry";
+pub const LIBRARY: &str = "library";
+pub const ATELIER: &str = "atelier";
+
 /// Grain consumed per mill application (the conserved conversion's input ratio).
 pub const GRAIN_PER_MILL: u32 = 1;
 /// Flour produced per mill application — the mill's yield. A recipe is a conserved
@@ -49,6 +60,20 @@ pub const FLOUR_PER_BAKE: u32 = 1;
 /// Bread produced per bake application — the oven's yield (see [`FLOUR_PER_MILL`]).
 pub const BREAD_PER_BAKE: u32 = 3;
 
+/// Grain a scholar consumes per research application — a **conserved** good input
+/// (accounted as research consumption, like ordinary consumption). G6b test 4 is
+/// the tripwire: research's good inputs conserve even though its Knowledge output
+/// does not.
+pub const GRAIN_PER_RESEARCH: u32 = 1;
+/// Knowledge produced per research application — the accumulator's increment. Not a
+/// conserved good (drained into the per-settlement counter), so it has no
+/// mass-balance relationship to the grain consumed.
+pub const KNOWLEDGE_PER_RESEARCH: u32 = 1;
+/// Flour consumed per tier-2 (confect) application — a conserved good input.
+pub const FLOUR_PER_CONFECT: u32 = 1;
+/// Pastry produced per confect application — the tier-2 good's yield.
+pub const PASTRY_PER_CONFECT: u32 = 2;
+
 /// A code-level content definition: the interned chain goods plus the recipes
 /// that transform them. Built once at generation and then read-only.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,7 +84,18 @@ pub struct ContentSet {
     bread: GoodId,
     mill: GoodId,
     oven: GoodId,
-    /// `[mill, bake]` — the two single-input chain recipes, in chain order.
+    /// G6b research goods, `Some` only for a [`Self::research_tiers`] set (`None`
+    /// for the plain G3a chain, so that set is byte-identical). `knowledge` is the
+    /// accumulator (interned so the research recipe can name it, but **kept out of
+    /// [`Self::goods`]** — it is never conserved); `pastry` is the tier-2 good;
+    /// `library`/`atelier` are the durable research/tier-2 tools.
+    knowledge: Option<GoodId>,
+    pastry: Option<GoodId>,
+    library: Option<GoodId>,
+    atelier: Option<GoodId>,
+    /// `[mill, bake]` for the plain chain, or `[mill, bake, research, confect]` for
+    /// a research-tiers set, in chain order. The `confect` (tier-2) recipe starts
+    /// `enabled: false` and is flipped by the `sim` unlock.
     recipes: Vec<Recipe>,
 }
 
@@ -108,6 +144,90 @@ impl ContentSet {
             bread,
             mill,
             oven,
+            knowledge: None,
+            pastry: None,
+            library: None,
+            atelier: None,
+            recipes,
+        }
+    }
+
+    /// The G6b **research-tiers** chain: the grain→flour→bread chain (unchanged)
+    /// plus the research recipe (grain + labor, gated by a held `library`, →
+    /// Knowledge) and the tier-2 `confect` recipe (flour + labor, gated by a held
+    /// `atelier`, → pastry) which starts **`enabled: false`** until the Knowledge
+    /// unlock flips it. Interns the four extra goods over the G3a chain (so
+    /// `knowledge = base+5 … atelier = base+8`); `knowledge` is interned (the
+    /// research recipe names it) but is the lone good kept OUT of [`Self::goods`] —
+    /// it is the accumulator, never conserved.
+    pub fn research_tiers() -> Self {
+        let mut registry = GoodRegistry::lab_default();
+        let grain = registry.intern(GRAIN);
+        let flour = registry.intern(FLOUR);
+        let bread = registry.intern(BREAD);
+        let mill = registry.intern(MILL);
+        let oven = registry.intern(OVEN);
+        let knowledge = registry.intern(KNOWLEDGE);
+        let pastry = registry.intern(PASTRY);
+        let library = registry.intern(LIBRARY);
+        let atelier = registry.intern(ATELIER);
+
+        let recipes = vec![
+            Recipe {
+                id: RecipeId::Mill,
+                name: "Mill",
+                labor: 1,
+                input_good: Some((grain, GRAIN_PER_MILL)),
+                required_tool: Some(mill),
+                output_good: flour,
+                output_qty: FLOUR_PER_MILL,
+                enabled: true,
+            },
+            Recipe {
+                id: RecipeId::Bake,
+                name: "Bake",
+                labor: 1,
+                input_good: Some((flour, FLOUR_PER_BAKE)),
+                required_tool: Some(oven),
+                output_good: bread,
+                output_qty: BREAD_PER_BAKE,
+                enabled: true,
+            },
+            Recipe {
+                id: RecipeId::Research,
+                name: "Research",
+                labor: 1,
+                input_good: Some((grain, GRAIN_PER_RESEARCH)),
+                required_tool: Some(library),
+                output_good: knowledge,
+                output_qty: KNOWLEDGE_PER_RESEARCH,
+                enabled: true,
+            },
+            Recipe {
+                id: RecipeId::Confect,
+                name: "Confect",
+                labor: 1,
+                input_good: Some((flour, FLOUR_PER_CONFECT)),
+                required_tool: Some(atelier),
+                output_good: pastry,
+                output_qty: PASTRY_PER_CONFECT,
+                // Tier-gated: disabled until Knowledge crosses the unlock threshold,
+                // then flipped `true` for the settlement (reusing `Recipe.enabled`).
+                enabled: false,
+            },
+        ];
+
+        Self {
+            registry,
+            grain,
+            flour,
+            bread,
+            mill,
+            oven,
+            knowledge: Some(knowledge),
+            pastry: Some(pastry),
+            library: Some(library),
+            atelier: Some(atelier),
             recipes,
         }
     }
@@ -135,6 +255,67 @@ impl ContentSet {
     /// The durable oven tool that gates the bake recipe.
     pub fn oven(&self) -> GoodId {
         self.oven
+    }
+
+    /// The G6b **Knowledge** accumulator good — the research recipe's output —, or
+    /// `None` for the plain G3a chain. It is interned (so the recipe names it) but is
+    /// NOT a conserved good: `sim` drains every produced unit into a per-settlement
+    /// counter, so it never appears in [`Self::goods`] or the conservation ledger.
+    pub fn knowledge(&self) -> Option<GoodId> {
+        self.knowledge
+    }
+
+    /// The G6b tier-2 (higher-order) good `pastry`, produced by the gated recipe once
+    /// unlocked, or `None` for the plain chain. A conserved good (tracked).
+    pub fn pastry(&self) -> Option<GoodId> {
+        self.pastry
+    }
+
+    /// The durable `library` tool that gates the research recipe, or `None`.
+    pub fn library(&self) -> Option<GoodId> {
+        self.library
+    }
+
+    /// The durable `atelier` tool that gates the tier-2 recipe, or `None`.
+    pub fn atelier(&self) -> Option<GoodId> {
+        self.atelier
+    }
+
+    /// Whether this is a research-tiers content set (the research/tier-2 recipes and
+    /// the Knowledge accumulator are present).
+    pub fn has_research(&self) -> bool {
+        self.knowledge.is_some()
+    }
+
+    /// The research recipe (grain + labor + library → Knowledge), or `None` for the
+    /// plain chain. Resolved by [`RecipeId`], like [`Self::mill_recipe`].
+    pub fn research_recipe(&self) -> Option<&Recipe> {
+        self.recipes
+            .iter()
+            .find(|recipe| recipe.id == RecipeId::Research)
+    }
+
+    /// The tier-2 recipe (flour + labor + atelier → pastry), or `None`. Starts
+    /// `enabled: false`; the `sim` unlock flips it `true`. Resolved by [`RecipeId`].
+    pub fn tier2_recipe(&self) -> Option<&Recipe> {
+        self.recipes
+            .iter()
+            .find(|recipe| recipe.id == RecipeId::Confect)
+    }
+
+    /// The tier-2 recipe's [`RecipeId`], or `None` for the plain chain — the handle
+    /// the settlement flips on unlock.
+    pub fn tier2_recipe_id(&self) -> Option<RecipeId> {
+        self.tier2_recipe().map(|recipe| recipe.id)
+    }
+
+    /// Set the `enabled` flag of the recipe with `id` (the tier-2 unlock keeps the
+    /// content's own recipe copy consistent with the society's live one). A no-op if
+    /// no recipe matches.
+    pub fn set_recipe_enabled(&mut self, id: RecipeId, enabled: bool) {
+        if let Some(recipe) = self.recipes.iter_mut().find(|recipe| recipe.id == id) {
+            recipe.enabled = enabled;
+        }
     }
 
     /// The mill recipe (grain + labor + mill → flour). Resolved by [`RecipeId`]
@@ -167,25 +348,52 @@ impl ContentSet {
         &self.recipes
     }
 
-    /// Every chain good (grain, flour, bread, mill, oven), in id order. These are
-    /// the goods a chain settlement must track for whole-system conservation.
+    /// Every **conserved** chain good (grain, flour, bread, mill, oven, plus the
+    /// G6b pastry/library/atelier when present), in id order. These are the goods a
+    /// chain settlement must track for whole-system conservation. The G6b
+    /// **Knowledge** accumulator is deliberately EXCLUDED: it is monotonic, never
+    /// traded or consumed, so it lives outside the goods-conservation ledger (its own
+    /// reported `knowledge_produced` line). Tools (mill/oven/library/atelier) are
+    /// durable and never move, but tracking them keeps "every chain good is
+    /// accounted" total.
     pub fn goods(&self) -> Vec<GoodId> {
-        vec![self.grain, self.flour, self.bread, self.mill, self.oven]
+        let mut goods = vec![self.grain, self.flour, self.bread, self.mill, self.oven];
+        // The research-tiers extras, minus Knowledge (the non-conserved accumulator).
+        goods.extend(self.pastry);
+        goods.extend(self.library);
+        goods.extend(self.atelier);
+        goods
     }
 
-    /// The `(name, id)` of every chain good, in interning (id) order — the
+    /// The `(name, id)` of every interned content good, in interning (id) order — the
     /// catalog a driver replays into [`econ::society::Society::intern_good`] so
     /// the engine resolves the content names. The ids must match what `Society`
     /// returns, which holds because both intern over the same lab catalog in the
-    /// same order (a `Settlement` asserts it at generation).
-    pub fn good_entries(&self) -> [(&'static str, GoodId); 5] {
-        [
+    /// same order (a `Settlement` asserts it at generation). Unlike [`Self::goods`]
+    /// this DOES include the G6b Knowledge good (the research recipe names it, so the
+    /// society must intern it) — interning is name resolution, not conservation
+    /// tracking.
+    pub fn good_entries(&self) -> Vec<(&'static str, GoodId)> {
+        let mut entries = vec![
             (GRAIN, self.grain),
             (FLOUR, self.flour),
             (BREAD, self.bread),
             (MILL, self.mill),
             (OVEN, self.oven),
-        ]
+        ];
+        if let Some(knowledge) = self.knowledge {
+            entries.push((KNOWLEDGE, knowledge));
+        }
+        if let Some(pastry) = self.pastry {
+            entries.push((PASTRY, pastry));
+        }
+        if let Some(library) = self.library {
+            entries.push((LIBRARY, library));
+        }
+        if let Some(atelier) = self.atelier {
+            entries.push((ATELIER, atelier));
+        }
+        entries
     }
 
     /// The content's own good registry (names ↔ ids), for inspection.
@@ -264,5 +472,88 @@ mod tests {
             ContentSet::grain_flour_bread(),
             ContentSet::grain_flour_bread()
         );
+        assert_eq!(ContentSet::research_tiers(), ContentSet::research_tiers());
+    }
+
+    #[test]
+    fn plain_chain_has_no_research() {
+        let content = ContentSet::grain_flour_bread();
+        assert!(!content.has_research());
+        assert_eq!(content.knowledge(), None);
+        assert_eq!(content.research_recipe(), None);
+        assert_eq!(content.tier2_recipe(), None);
+        assert_eq!(content.tier2_recipe_id(), None);
+        // The plain chain's good catalog is exactly the five G3a goods (byte-identical
+        // serialization surface) and excludes any research good.
+        assert_eq!(content.good_entries().len(), 5);
+        assert_eq!(content.goods().len(), 5);
+    }
+
+    #[test]
+    fn research_tiers_interns_extra_goods_after_the_chain() {
+        let content = ContentSet::research_tiers();
+        let base = u16::try_from(GoodRegistry::lab_default().len())
+            .expect("the lab catalog fits in GoodId width");
+        // The chain goods keep their ids; the research goods follow contiguously.
+        assert_eq!(content.grain().0, base);
+        assert_eq!(content.oven().0, base + 4);
+        assert_eq!(content.knowledge(), Some(GoodId(base + 5)));
+        assert_eq!(content.pastry(), Some(GoodId(base + 6)));
+        assert_eq!(content.library(), Some(GoodId(base + 7)));
+        assert_eq!(content.atelier(), Some(GoodId(base + 8)));
+    }
+
+    #[test]
+    fn knowledge_is_interned_but_not_a_conserved_good() {
+        let content = ContentSet::research_tiers();
+        let knowledge = content.knowledge().expect("research content has knowledge");
+        // good_entries (name resolution) includes Knowledge; goods (the conservation
+        // ledger) does NOT — the accumulator lives outside the goods invariant.
+        assert!(content
+            .good_entries()
+            .iter()
+            .any(|&(_, id)| id == knowledge));
+        assert!(
+            !content.goods().contains(&knowledge),
+            "Knowledge must be excluded from the conserved goods ledger"
+        );
+        // The conserved goods are the chain five plus pastry + the two tools.
+        assert_eq!(content.goods().len(), 8);
+        assert!(content.goods().contains(&content.pastry().unwrap()));
+        assert!(content.goods().contains(&content.library().unwrap()));
+        assert!(content.goods().contains(&content.atelier().unwrap()));
+    }
+
+    #[test]
+    fn research_recipe_makes_knowledge_and_tier2_starts_gated() {
+        let content = ContentSet::research_tiers();
+        let research = content.research_recipe().expect("has a research recipe");
+        assert_eq!(
+            research.input_good,
+            Some((content.grain(), GRAIN_PER_RESEARCH))
+        );
+        assert_eq!(research.required_tool, content.library());
+        assert_eq!(research.output_good, content.knowledge().unwrap());
+        assert!(research.enabled, "research itself is never gated");
+
+        let confect = content.tier2_recipe().expect("has a tier-2 recipe");
+        assert_eq!(
+            confect.input_good,
+            Some((content.flour(), FLOUR_PER_CONFECT))
+        );
+        assert_eq!(confect.required_tool, content.atelier());
+        assert_eq!(confect.output_good, content.pastry().unwrap());
+        assert!(
+            !confect.enabled,
+            "the tier-2 recipe must start disabled (unlocked by research)"
+        );
+    }
+
+    #[test]
+    fn set_recipe_enabled_flips_the_tier2_gate() {
+        let mut content = ContentSet::research_tiers();
+        assert!(!content.tier2_recipe().unwrap().enabled);
+        content.set_recipe_enabled(RecipeId::Confect, true);
+        assert!(content.tier2_recipe().unwrap().enabled);
     }
 }
