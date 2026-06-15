@@ -68,7 +68,11 @@
 use std::collections::BTreeMap;
 
 use econ::agent::{AgentId, Want, WantKind};
-use econ::good::{Gold, GoodId, Horizon, FOOD, GOLD};
+use econ::good::{Gold, GoodId, Horizon, Stock, FOOD, GOLD, WOOD};
+use econ::project::{
+    advance_project_by, build_road_template, complete_project_if_ready, start_project, Project,
+    ProjectId, ProjectState, ProjectTemplate, Tick,
+};
 
 use crate::settlement::{Settlement, SettlementConfig, TraderEndowment};
 
@@ -81,6 +85,42 @@ pub struct Route {
     /// Econ ticks a caravan is in transit on a leg (each way). Zero means a leg
     /// completes the same tick it departs.
     pub transit_ticks: u32,
+}
+
+/// A G7 **road** to build on the region's one route (game milestone G7).
+///
+/// A road is **public works built from community labor** — the §5.9 funding ladder
+/// before state taxation exists (G8): colonists contribute labor to the road
+/// project each econ tick, reusing the G3 project-labor lifecycle
+/// ([`econ::project`]). When the contributed labor meets [`Self::labor_cost`] the
+/// route's [`Route::transit_ticks`] is cut to [`Self::transit_after`], so completed
+/// caravans cycle faster and the realized-price gap converges faster than the
+/// no-road control. The build is a **conserved expenditure**: it consumes the
+/// (optional) community materials it declares and creates **no** good — it merely
+/// changes the abstract route's transit cost. The road is **one-way** (once built it
+/// stays) and deterministic (no randomness; the completion tick is a pure function
+/// of seed + config). Scope is ONE road on the ONE route — no networks, no
+/// grid-pathable roads, no state-funded works (all deferred; see
+/// `docs/engine-divergence.md`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RoadPlan {
+    /// Total labor units the community must contribute before the road is built.
+    pub labor_cost: u32,
+    /// Labor each living colonist contributes to the public works per econ tick —
+    /// the community's daily public-works effort. Gated on a living population, so
+    /// an emptied colony stalls the road (it is community labor, never a timer).
+    pub labor_per_colonist: u32,
+    /// The route's [`Route::transit_ticks`] AFTER the road completes (the built-road
+    /// transit). Must be strictly below the unbuilt route's, so completed caravans
+    /// cycle faster — the convergence acceleration the milestone proves.
+    pub transit_after: u32,
+    /// The conserved good the build consumes as community **materials** (e.g. WOOD).
+    /// Drawn incrementally from the region road fund as labor is contributed, and
+    /// accounted as a conserved input (never re-created).
+    pub material: GoodId,
+    /// Units of [`Self::material`] consumed per labor unit. `0` is a labor-only road
+    /// (no good cost) — the materials are then optional, exactly as the spec allows.
+    pub material_per_labor: u32,
 }
 
 /// How a region of two settlements is generated: the two settlement recipes, the
@@ -115,6 +155,12 @@ pub struct RegionConfig {
     /// falsification twin): the trader pair still exists (agent counts match) but
     /// stays idle, so the settlements never interact and the price gap is kept.
     pub caravans_enabled: bool,
+    /// The G7 **road** to build on this route, or `None` for a region with no road
+    /// (the **no-road control**). A road is community-labor public works that cuts
+    /// the route's transit cost on completion, so caravans cycle faster and the
+    /// price gap converges faster than the control. `None` leaves every G2c config
+    /// byte-identical (the road is purely additive region state).
+    pub road: Option<RoadPlan>,
 }
 
 impl RegionConfig {
@@ -153,6 +199,7 @@ impl RegionConfig {
             buy_ticks: 6,
             sell_ticks: 10,
             caravans_enabled: true,
+            road: None,
         }
     }
 
@@ -164,6 +211,49 @@ impl RegionConfig {
         Self {
             caravans_enabled: false,
             ..Self::two_settlements()
+        }
+    }
+
+    /// The G7 **roads** region: the two-settlement caravan region on a **longer**
+    /// route (so the road's transit cut bites), plus a road public-works project the
+    /// community builds from labor. Once enough labor is contributed the route's
+    /// transit cost is cut (`20 → 8`, a defined amount well below the unbuilt route),
+    /// so caravans cycle faster and the FOOD price gap converges faster than the
+    /// [`Self::roads_control`] twin (same region, no road). The caravan is enabled in
+    /// BOTH (the control is the no-**road** twin, not the no-caravan one), so the road
+    /// — not the caravan, which G2c already had — is the only difference, and it is the
+    /// cause of the faster convergence.
+    ///
+    /// The build consumes a modest WOOD material per labor unit (a conserved
+    /// expenditure, accounted) and creates no good. Mechanism knobs, not balance
+    /// targets; the proof is sign only (the gap is tighter with the road).
+    pub fn roads() -> Self {
+        Self {
+            route: Route { transit_ticks: 20 },
+            road: Some(RoadPlan {
+                // ~18 living colonists each contribute one labor unit per econ tick,
+                // so the road completes early (tick 9) and most of the horizon runs on
+                // the cut transit. A pure function of seed + config (deterministic).
+                labor_cost: 180,
+                labor_per_colonist: 1,
+                transit_after: 8,
+                material: WOOD,
+                material_per_labor: 1,
+            }),
+            ..Self::two_settlements()
+        }
+    }
+
+    /// The G7 **no-road control** twin of [`Self::roads`]: the SAME region and
+    /// caravan on the SAME longer route, but with **no road** — the route's transit
+    /// cost is never cut, so caravans stay slow and the price gap converges slower /
+    /// to a wider final gap. Paired with [`Self::roads`], it is the proof that the
+    /// road (not time or the caravan alone) is what accelerates convergence: if both
+    /// converged identically the road would not be cutting transit.
+    pub fn roads_control() -> Self {
+        Self {
+            road: None,
+            ..Self::roads()
         }
     }
 
@@ -223,6 +313,13 @@ pub struct RegionTickReport {
     pub gold_after: u64,
     /// In-transit route escrow gold at the end of this tick.
     pub escrow_gold: u64,
+    /// G7: labor the community contributed to the road public-works project this
+    /// tick — a conserved **expenditure** reported on its OWN line, NOT a good (labor
+    /// is abstract in this engine, as in G3/G6b, so it is deliberately outside the
+    /// goods-conservation identity; the road's conserved good *materials* ARE
+    /// accounted, in [`Self::consumed_as_input`]). Zero on a region with no road, on
+    /// every tick after the road completes, and whenever no labor is contributed.
+    pub road_labor: u64,
 }
 
 impl RegionTickReport {
@@ -312,6 +409,35 @@ struct Caravan {
     escrow_gold: u64,
 }
 
+/// The G7 **road** public-works project on the region's route: the reused
+/// project-labor lifecycle (an [`econ::project::Project`] + its template), a road
+/// **fund** of conserved community materials, and the route transit the build cuts
+/// to on completion. The `Region` runs it as a parallel to the caravan operator —
+/// community labor in, a transit cut out — never touching the settlements'
+/// economies, so the road config and its no-road control share byte-identical
+/// settlements until the cut fires.
+struct RoadProject {
+    /// The labor-only public-works template (no good output). The labor cost is
+    /// `template.required_labor`.
+    template: ProjectTemplate,
+    /// The reused project state: accumulated labor and the Forming→Complete lifecycle.
+    project: Project,
+    /// Conserved community materials the build draws down (so they stay in the
+    /// region-wide total until spent, and their consumption is accounted). Holds only
+    /// [`Self::material`]; never gold.
+    fund: Stock,
+    /// The conserved good consumed as materials, and the amount per labor unit.
+    material: GoodId,
+    material_per_labor: u32,
+    /// Labor each living colonist contributes to the road per econ tick.
+    labor_per_colonist: u32,
+    /// The route transit the road cuts to on completion.
+    transit_after: u32,
+    /// The econ tick the road completed (its transit cut fired), or `None` while
+    /// still building — the one-way completion stamp.
+    completed_at: Option<u64>,
+}
+
 /// A region of two composed settlements linked by one caravan over one route.
 pub struct Region {
     settlements: Vec<Settlement>,
@@ -319,6 +445,8 @@ pub struct Region {
     route: Route,
     good: GoodId,
     caravans_enabled: bool,
+    /// The G7 road public works on the route, or `None` for a no-road region.
+    road: Option<RoadProject>,
     buy_ticks: u32,
     sell_ticks: u32,
     /// The goods tracked for region-wide conservation (union of the settlements'
@@ -401,7 +529,23 @@ impl Region {
                 goods.push(g);
             }
         }
+        // G7: the road's material is conserved community stock held in the road fund,
+        // so it joins the region ledger even if a settlement does not otherwise track
+        // it — its draw-down during the build is then snapshotted and accounted.
+        if let Some(plan) = &config.road {
+            if plan.material_per_labor > 0 && !goods.contains(&plan.material) {
+                goods.push(plan.material);
+            }
+        }
         goods.sort();
+
+        // G7: build the road public-works project (the reused project-labor lifecycle
+        // plus its fund of conserved community materials). `None` for a no-road region
+        // — every G2c region is byte-identical there.
+        let road = config
+            .road
+            .as_ref()
+            .map(|plan| build_road(plan, &config.route));
 
         // The caravan opens by buying at A (A is configured the cheaper side), so
         // its buyer scale is active on tick 0. At generation no trade has cleared,
@@ -440,6 +584,7 @@ impl Region {
             route: config.route,
             good: config.good,
             caravans_enabled: config.caravans_enabled,
+            road,
             buy_ticks: config.buy_ticks,
             sell_ticks: config.sell_ticks,
             goods,
@@ -491,6 +636,14 @@ impl Region {
         if self.caravans_enabled {
             self.caravan_step();
         }
+
+        // ---- road public works (G7): the community contributes labor to the road
+        // until its cost is met; on completion the route's transit cost is cut. The
+        // build consumes conserved materials from the road fund (accounted in
+        // `consumed_as_input`) and creates no good. A no-op for a region with no road
+        // and after the road completes (one-way). Runs after the caravan, so this
+        // tick's haul used the old transit and the cut applies from the next departure.
+        self.road_step(&mut report);
 
         // ---- after: regional totals + escrow snapshot.
         for &good in &self.goods {
@@ -672,10 +825,91 @@ impl Region {
         )
     }
 
+    // ---- the road operator (G7 public works) ---------------------------
+
+    /// One road step, run after the caravan step this tick. The community contributes
+    /// labor to the road project (gated on a living population — it is community
+    /// labor, not a timer), the build draws down its conserved materials from the road
+    /// fund (accounted as a conserved input), and on completion the route's transit
+    /// cost is cut to the built-road transit. **One-way**: once `Complete`, the
+    /// project is never advanced again, so the transit cut never flaps. A no-op for a
+    /// region with no road. Deterministic — integer state, nothing drawn.
+    fn road_step(&mut self, report: &mut RegionTickReport) {
+        if self.road.is_none() {
+            return;
+        }
+        // Community labor available this tick: every living colonist across the
+        // settlements contributes (resident traders are not colonists, so they do
+        // not). Computed before the road borrow (disjoint fields, but the borrow
+        // checker needs the immutable settlement read released first).
+        let living: u64 = self
+            .settlements
+            .iter()
+            .map(|s| s.living_total() as u64)
+            .sum();
+        let tick = self.econ_tick;
+        let mut completed_transit: Option<u32> = None;
+        {
+            let road = self.road.as_mut().expect("road is Some (checked above)");
+            // One-way: a built (or abandoned) road never builds again.
+            if road.project.state != ProjectState::Forming {
+                return;
+            }
+            // Community labor only: with no living colonists nothing is contributed.
+            if living == 0 {
+                return;
+            }
+            let want = living.saturating_mul(u64::from(road.labor_per_colonist));
+            let remaining = u64::from(
+                road.template
+                    .required_labor
+                    .saturating_sub(road.project.labor_advanced),
+            );
+            let mut labor = want.min(remaining);
+            // Cap by the materials on hand — the build cannot outrun its conserved
+            // inputs (a labor-only road, `material_per_labor == 0`, is never capped).
+            if road.material_per_labor > 0 {
+                let affordable =
+                    u64::from(road.fund.get(road.material)) / u64::from(road.material_per_labor);
+                labor = labor.min(affordable);
+            }
+            if labor == 0 {
+                return;
+            }
+            let labor = u32::try_from(labor).expect("per-tick road labor fits in u32");
+            // Consume the conserved community materials (a conserved expenditure,
+            // accounted as a recipe-style input; the build creates no good).
+            if road.material_per_labor > 0 {
+                let used = labor
+                    .checked_mul(road.material_per_labor)
+                    .expect("validated road material use fits in u32");
+                let ok = road.fund.remove(road.material, used);
+                debug_assert!(ok, "the road fund holds the materials it consumes");
+                *report.consumed_as_input.entry(road.material).or_insert(0) += u64::from(used);
+            }
+            // Contribute the whole tick's pooled community labor through the reused
+            // project-labor lifecycle in ONE bulk step. Equivalent to looping the unit
+            // advance `labor` times (the completion tick and digest are unchanged), but
+            // O(1) — a large accepted config (e.g. a huge `labor_per_colonist`) cannot
+            // spin the per-unit loop for billions of iterations within a single tick.
+            advance_project_by(&mut road.project, labor);
+            report.road_labor = u64::from(labor);
+            // On completion, stamp the tick and cut the route transit.
+            if complete_project_if_ready(&mut road.project, &road.template, &mut road.fund) {
+                road.completed_at = Some(tick);
+                completed_transit = Some(road.transit_after);
+            }
+        }
+        if let Some(transit) = completed_transit {
+            self.route.transit_ticks = transit;
+        }
+    }
+
     // ---- conservation roll-up helpers ----------------------------------
 
     /// The regional total of `good`: Σ over settlements of their whole-system
-    /// total, plus any units in route escrow. The conserved regional quantity.
+    /// total, plus any units in route escrow, plus any held in the road fund. The
+    /// conserved regional quantity.
     fn regional_total(&self, good: GoodId) -> u64 {
         let in_settlements: u64 = self
             .settlements
@@ -687,7 +921,11 @@ impl Region {
         } else {
             0
         };
-        in_settlements + in_escrow
+        let in_road_fund = self
+            .road
+            .as_ref()
+            .map_or(0, |road| u64::from(road.fund.get(good)));
+        in_settlements + in_escrow + in_road_fund
     }
 
     /// The regional gold total: Σ over settlements of their (closed) gold balance,
@@ -733,6 +971,54 @@ impl Region {
     /// Gold currently in route escrow (mid-transit).
     pub fn escrow_gold(&self) -> u64 {
         self.caravan.escrow_gold
+    }
+
+    // ---- G7 road / public-works surface --------------------------------
+
+    /// Whether this region has a road public-works project (built or building). The
+    /// no-road control has `false`.
+    pub fn has_road(&self) -> bool {
+        self.road.is_some()
+    }
+
+    /// The route's CURRENT transit cost (econ ticks per leg). The road's effect cuts
+    /// this on completion; the convergence observable surfaces it alongside the gap.
+    pub fn route_transit_ticks(&self) -> u32 {
+        self.route.transit_ticks
+    }
+
+    /// Total labor the road requires before it is built, or `None` for a no-road
+    /// region — the denominator of the build-progress surface.
+    pub fn road_labor_cost(&self) -> Option<u32> {
+        self.road.as_ref().map(|road| road.template.required_labor)
+    }
+
+    /// Labor the community has contributed to the road so far (clamped to the cost),
+    /// or `None` for a no-road region — the build-progress numerator.
+    pub fn road_labor_advanced(&self) -> Option<u32> {
+        self.road.as_ref().map(|road| road.project.labor_advanced)
+    }
+
+    /// Whether the road is built (its transit cut has fired). `false` while building
+    /// and for a no-road region.
+    pub fn road_complete(&self) -> bool {
+        self.road
+            .as_ref()
+            .is_some_and(|road| road.project.state == ProjectState::Complete)
+    }
+
+    /// The econ tick the road completed (its transit cut fired), or `None` if it has
+    /// not (yet) — and for a no-road region. The one-way completion stamp.
+    pub fn road_completed_at(&self) -> Option<u64> {
+        self.road.as_ref().and_then(|road| road.completed_at)
+    }
+
+    /// Conserved community materials of `good` remaining in the road fund (drawn down
+    /// as the road is built). `0` for a no-road region or an untracked good.
+    pub fn road_fund_of(&self, good: GoodId) -> u64 {
+        self.road
+            .as_ref()
+            .map_or(0, |road| u64::from(road.fund.get(good)))
     }
 
     /// Read-only access to a settlement by index.
@@ -809,6 +1095,29 @@ impl Region {
         out.extend_from_slice(&self.caravan.counter.to_le_bytes());
         out.extend_from_slice(&self.caravan.escrow_good.to_le_bytes());
         out.extend_from_slice(&self.caravan.escrow_gold.to_le_bytes());
+
+        // G7 road public-works state that steers future ticks. The transit cut itself
+        // already shows through `route.transit_ticks` above; this captures the build
+        // progress, the one-way completion, and the fund draw-down so a building road
+        // never digests equal to its no-road control. `None` emits nothing: every G2c
+        // no-road region keeps its pre-G7 serialization byte-for-byte.
+        if let Some(road) = &self.road {
+            out.push(1);
+            out.extend_from_slice(&road.project.labor_advanced.to_le_bytes());
+            out.extend_from_slice(&road.template.required_labor.to_le_bytes());
+            out.push(match road.project.state {
+                ProjectState::Forming => 0,
+                ProjectState::Complete => 1,
+                ProjectState::Abandoned => 2,
+            });
+            out.extend_from_slice(&road.material.0.to_le_bytes());
+            out.extend_from_slice(&road.material_per_labor.to_le_bytes());
+            out.extend_from_slice(&road.labor_per_colonist.to_le_bytes());
+            out.extend_from_slice(&road.transit_after.to_le_bytes());
+            out.extend_from_slice(&road.fund.get(road.material).to_le_bytes());
+            // Completion tick: `u64::MAX` sentinel while still building.
+            out.extend_from_slice(&road.completed_at.unwrap_or(u64::MAX).to_le_bytes());
+        }
         out
     }
 
@@ -821,6 +1130,51 @@ impl Region {
             hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
         }
         hash
+    }
+}
+
+/// Build the G7 [`RoadProject`] from a [`RoadPlan`] and the unbuilt [`Route`]: the
+/// reused project-labor lifecycle (an `econ` [`Project`] over a labor-only
+/// [`ProjectTemplate`]) plus a fund pre-stocked with the conserved community
+/// materials the build will draw down. Deterministic; draws no randomness.
+fn build_road(plan: &RoadPlan, route: &Route) -> RoadProject {
+    assert!(
+        plan.labor_cost > 0,
+        "a road needs a positive labor cost to be built from"
+    );
+    assert!(
+        plan.transit_after < route.transit_ticks,
+        "a road must REDUCE the route transit (transit_after {} is not below the \
+         unbuilt route transit {})",
+        plan.transit_after,
+        route.transit_ticks
+    );
+    assert_ne!(
+        plan.material, GOLD,
+        "a road material cannot be GOLD; money is not a physical road input"
+    );
+    // The fund holds exactly the materials the whole build consumes (a labor-only
+    // road, `material_per_labor == 0`, funds nothing). Sized to the material id.
+    let mut fund = Stock::new(plan.material.0);
+    if plan.material_per_labor > 0 {
+        let total = plan
+            .labor_cost
+            .checked_mul(plan.material_per_labor)
+            .expect("road material total must fit in u32");
+        fund.add(plan.material, total);
+    }
+    let template = build_road_template(plan.material, plan.labor_cost);
+    let project = start_project(&template, &mut fund, ProjectId(0), Tick(0))
+        .expect("a road template commits no inputs at start, so start_project succeeds");
+    RoadProject {
+        template,
+        project,
+        fund,
+        material: plan.material,
+        material_per_labor: plan.material_per_labor,
+        labor_per_colonist: plan.labor_per_colonist,
+        transit_after: plan.transit_after,
+        completed_at: None,
     }
 }
 

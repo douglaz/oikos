@@ -935,6 +935,70 @@ recipe-defs), and emergence of the scholar role** are **deferred** — G6b prove
 seeded scholars. See `sim/tests/g6b_research.rs` and `docs/engine-divergence.md` (the G6b
 entry).
 
+## Status: G7 (roads — infrastructure cuts trip cost) — complete
+
+G2c proved a **caravan** converges two settlements' prices; **G7 adds a road** — the one
+genuinely-new trade mechanic the game-spec reserved for this slot. A road is a **public-works
+project built from community labor** that, once complete, **cuts the route's transit cost**, so
+caravans cycle faster and the realized-price gap converges faster — infrastructure investment with
+a measurable return, and the first **public works** in the game. Per the §5.9 funding ladder, state
+taxation does not exist yet (G8), so a G7 road is **community-funded by labor**, not a state
+treasury. Scope is ONE road on the ONE G2c route, with a **no-road control** proving the road is
+what speeds convergence.
+
+The `roads` scenario is the two-settlement caravan region on a longer route, plus a road the
+community builds from labor:
+
+```text
+road       a public-works Project on the route, built from contributed labor
+labor      every living colonist contributes each tick (community labor, gated on a living pop)
+materials  conserved community stock (WOOD) drawn from a region road fund as the road is built
+complete   labor ≥ cost → the route transit drops (20 → 8 here), one-way (never flaps)
+effect     fewer transit ticks → faster caravan cycles → the price gap converges faster
+```
+
+It reuses the existing machinery — no new project/labor system in `econ`:
+
+- **The road is COMMUNITY LABOR, reusing the G3 project-labor path.** Colonists contribute labor
+  to the road `Project` each tick (the reused `econ::project` `start`/`advance`/`complete`
+  lifecycle), gated on a living population — it is community labor, not a timer, and **not** a
+  state-treasury expenditure (taxation-funded works are G8). The only `econ` edit is an additive
+  `ProjectTemplateId::BuildRoad` variant + a `build_road_template` constructor kept **out of**
+  `builtin_project_templates`, so the lab planner never sees it and the goldens are byte-identical.
+- **The build is a conserved expenditure that creates no good.** A road changes an abstract route's
+  transit cost, not the physical ledger: the template's `output_qty` is `0`. Its optional conserved
+  materials are drawn from a region road fund and accounted as `consumed_as_input` **every tick
+  across the build**, so whole-system conservation holds throughout; the labor itself is abstract
+  (as in G3/G6b) and reported on its own non-conserved line. Building creates no good and destroys
+  none beyond the labor/inputs spent (`road_build_conserves`, the tripwire).
+- **The effect is a one-way route `transit_ticks` cut.** On completion the route's `transit_ticks`
+  (the G2c field, reused) drops to a defined amount below the unbuilt route; the caravan /
+  convergence machinery is otherwise unchanged. Once built the reduction **stays** — the road step
+  returns early forever, so it never flaps (`road_is_one_way`).
+- **The no-road control is the proof.** `roads-control` is the same region and caravan on the same
+  route with no road, so the road — not the caravan, which G2c already had — is the only difference.
+  With the road the gap is tighter at a fixed horizon than the control's, which keeps a wider gap.
+  If both converged identically the road would not be cutting transit. Sign only — no magnitude is
+  pinned.
+- **econ behaviour is unchanged.** The `Region` and the road are game-only (`sim`); the lab uses
+  neither, so the six econ conformance goldens are byte-identical by construction and every prior
+  G1–G6b test stays green.
+
+G7:
+
+- [x] a road public-works `Project` on a `Region` route (community labor + a conserved materials
+      fund) and the transit cut on completion, in `sim::region` (`RoadPlan`, `Region` road state)
+- [x] `roads` config (the road builds, convergence accelerates) + `roads-control` (no road →
+      slower convergence)
+- [x] viewer surfacing — the region dashboard's `transit` and `road` (build-progress) columns
+      alongside the convergence gap
+- [x] acceptance suite (`sim/tests/g7_roads.rs`: the seven acceptance tests plus unit tests) +
+      README + divergence-log updates
+
+**State-funded public works / taxation (G8), road networks, grid-pathable roads, and >2
+settlements / multi-route topology** are **deferred** — G7 is one community-labor road on the one
+abstract route. See `sim/tests/g7_roads.rs` and `docs/engine-divergence.md` (the G7 entry).
+
 ## Build and test
 
 ```bash
@@ -965,4 +1029,6 @@ cargo run -p viewer -- run frontier --ticks 80                # G5b: money emerg
 #                                                              #      banner + per-tick era column (forager → … → capital)
 cargo run -p viewer -- run research --ticks 60                # G6b: Knowledge accrues, tier 2 unlocks, pastry is produced
 cargo run -p viewer -- run research-control --ticks 60        # G6b: no scholars → no Knowledge → tier 2 never unlocks
+cargo run -p viewer -- run roads --ticks 60                   # G7: a road is built from labor, transit drops, the gap converges faster
+cargo run -p viewer -- run roads-control --ticks 60           # G7: no road → transit stays high → the gap converges slower
 ```

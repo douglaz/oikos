@@ -466,6 +466,7 @@ fn region_rolls_up_demography_endowment() {
         buy_ticks: 4,
         sell_ticks: 4,
         caravans_enabled: true,
+        road: None,
     };
     let mut region = Region::generate(7, &config);
 

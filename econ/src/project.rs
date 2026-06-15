@@ -52,6 +52,14 @@ pub fn recipe_reach(recipe: &Recipe) -> Reach {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProjectTemplateId {
     BuildNet,
+    /// G7 roads: a **public-works** project — community labor contributed to an
+    /// inter-settlement road until a labor cost is met, at which point the `sim`
+    /// `Region` cuts the route's transit cost. Reuses the existing project-labor
+    /// lifecycle ([`start_project`]/[`advance_project`]/[`complete_project_if_ready`]);
+    /// it is built only by the game (`sim`), never by the lab planner, so it is kept
+    /// out of [`builtin_project_templates`] and the conformance goldens are
+    /// byte-identical.
+    BuildRoad,
 }
 
 #[derive(Clone, Debug)]
@@ -144,6 +152,36 @@ pub fn build_net_template() -> ProjectTemplate {
     }
 }
 
+/// The G7 **road** public-works project template: a pure-labor project of
+/// `required_labor` units and no created good.
+///
+/// A road is **community labor** that, once enough has been contributed, cuts a
+/// route's transit cost — it does not *produce a good*, so `output_qty` is `0`
+/// (the completion `stock.add(_, 0)` is a no-op; `output_good` is therefore a
+/// don't-care placeholder, kept as a real `GoodId` only because the field is not
+/// optional). The optional **conserved material cost** is NOT modelled here as
+/// committed `input_goods` (which `start_project` would consume all at once from a
+/// single stock); the `sim` `Region` consumes road materials *incrementally* from
+/// its own road fund as labor is contributed, and accounts them as
+/// `consumed_as_input`, so the build conserves across its whole duration rather
+/// than only at the start tick. This template therefore drives just the labor
+/// lifecycle (the reused project-labor path); materials are the `Region`'s concern.
+///
+/// Game-only: built by `sim`, never by the lab planner, and absent from
+/// [`builtin_project_templates`] — so adding it leaves every conformance golden
+/// byte-identical.
+pub fn build_road_template(output_good: GoodId, required_labor: u32) -> ProjectTemplate {
+    ProjectTemplate {
+        id: ProjectTemplateId::BuildRoad,
+        name: "BuildRoad",
+        input_goods: Vec::new(),
+        required_labor,
+        output_good,
+        output_qty: 0,
+        salvage_bps: 0,
+    }
+}
+
 pub fn builtin_project_templates() -> Vec<ProjectTemplate> {
     vec![build_net_template()]
 }
@@ -199,10 +237,23 @@ pub fn start_project(
 }
 
 pub fn advance_project(project: &mut Project) -> bool {
+    advance_project_by(project, 1)
+}
+
+/// Contribute `labor` units to a forming project in one step — the bulk equivalent
+/// of calling [`advance_project`] `labor` times, for callers that pool a whole
+/// tick's labor at once (the `sim` G7 road public works contributes the community's
+/// per-tick labor in a single call instead of looping unit-by-unit, which a large
+/// accepted config could otherwise spin for billions of iterations). Adds the labor
+/// and returns `true` iff the project is `Forming`; a no-op returning `false` on a
+/// finished project, exactly like [`advance_project`]. Saturating, so an oversized
+/// contribution clamps rather than wraps. Additive: the lab planner only ever
+/// advances one unit at a time, so the conformance goldens are byte-identical.
+pub fn advance_project_by(project: &mut Project, labor: u32) -> bool {
     if project.state != ProjectState::Forming {
         return false;
     }
-    project.labor_advanced += 1;
+    project.labor_advanced = project.labor_advanced.saturating_add(labor);
     true
 }
 
@@ -256,8 +307,89 @@ pub fn abandon_project(project: &mut Project, stock: &mut Stock) -> CapitalLoss 
 
 #[cfg(test)]
 mod tests {
-    use super::{abandon_project, build_net_template, start_project, CapitalLoss, ProjectId, Tick};
+    use super::{
+        abandon_project, advance_project, advance_project_by, build_net_template,
+        build_road_template, builtin_project_templates, complete_project_if_ready, start_project,
+        CapitalLoss, ProjectId, ProjectState, ProjectTemplateId, Tick,
+    };
     use crate::good::{Stock, WOOD};
+
+    #[test]
+    fn advance_project_by_equals_looping_advance_project() {
+        // The bulk contribution must end in exactly the same state as looping the
+        // unit advance, so a caller can pool a whole tick's labor in one call (the
+        // G7 road) without changing the deterministic completion tick.
+        let template = build_road_template(WOOD, 100);
+        let mut fund_loop = Stock::new(8);
+        let mut fund_bulk = Stock::new(8);
+        let mut looped = start_project(&template, &mut fund_loop, ProjectId(1), Tick(0)).unwrap();
+        let mut bulk = start_project(&template, &mut fund_bulk, ProjectId(1), Tick(0)).unwrap();
+
+        for _ in 0..37 {
+            advance_project(&mut looped);
+        }
+        assert!(advance_project_by(&mut bulk, 37));
+        assert_eq!(looped.labor_advanced, bulk.labor_advanced);
+        assert_eq!(looped.state, bulk.state);
+
+        // One-way: a finished project rejects a bulk contribution, like the unit form.
+        bulk.state = ProjectState::Complete;
+        assert!(!advance_project_by(&mut bulk, 5));
+        assert_eq!(bulk.labor_advanced, 37, "a finished project gained labor");
+
+        // Saturating: an oversized contribution clamps rather than wraps.
+        let mut huge = start_project(&template, &mut Stock::new(8), ProjectId(2), Tick(0)).unwrap();
+        huge.labor_advanced = u32::MAX - 1;
+        assert!(advance_project_by(&mut huge, u32::MAX));
+        assert_eq!(huge.labor_advanced, u32::MAX);
+    }
+
+    #[test]
+    fn road_template_drives_the_labor_lifecycle_and_creates_no_good() {
+        // A pure-labor public-works project: it accumulates contributed labor and
+        // completes at the cost, producing NO good (output_qty 0 → completion adds
+        // nothing). The reused project-labor path the G7 road runs on.
+        let template = build_road_template(WOOD, 3);
+        assert_eq!(template.id, ProjectTemplateId::BuildRoad);
+        let mut fund = Stock::new(8);
+        let mut project = start_project(&template, &mut fund, ProjectId(1), Tick(0))
+            .expect("no inputs to commit");
+        assert_eq!(project.state, ProjectState::Forming);
+
+        // Under the cost the project does not complete...
+        for _ in 0..2 {
+            assert!(advance_project(&mut project));
+            assert!(!complete_project_if_ready(
+                &mut project,
+                &template,
+                &mut fund
+            ));
+        }
+        assert_eq!(project.labor_advanced, 2);
+        assert_eq!(project.state, ProjectState::Forming);
+
+        // ...the labor unit that meets the cost completes it, and no good is created.
+        assert!(advance_project(&mut project));
+        assert!(complete_project_if_ready(
+            &mut project,
+            &template,
+            &mut fund
+        ));
+        assert_eq!(project.state, ProjectState::Complete);
+        assert_eq!(fund.get(WOOD), 0, "a road creates no good on completion");
+
+        // One-way: a completed project never advances again.
+        assert!(!advance_project(&mut project));
+    }
+
+    #[test]
+    fn road_template_is_game_only_not_a_builtin() {
+        // The lab planner only ever sees BuildNet; the road template is `sim`-only,
+        // so the conformance goldens stay byte-identical.
+        assert!(builtin_project_templates()
+            .iter()
+            .all(|t| t.id == ProjectTemplateId::BuildNet));
+    }
 
     #[test]
     fn capital_project_requires_saved_inputs() {

@@ -82,7 +82,7 @@ pub use demography::{DemographyConfig, HouseholdSpec};
 pub use era::{
     Era, EraDetector, DEFAULT_ERA_WINDOW, DEFAULT_MIN_BARTER_VOLUME, DEFAULT_MIN_PRODUCER_SHARE_BPS,
 };
-pub use region::{Region, RegionConfig, RegionTickReport, Route};
+pub use region::{Region, RegionConfig, RegionTickReport, RoadPlan, Route};
 pub use settlement::{
     recipe_adoption_pays, recipe_adoption_pays_for_money, BarterConfig, ChainConfig,
     EconTickReport, EstateDestination, LineageStats, NodeSpec, Settlement, SettlementConfig,

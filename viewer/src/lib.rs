@@ -76,8 +76,10 @@ pub fn help_text() -> String {
     out.push_str(
         "\nThe `region` and `region-control` scenarios (run only) advance a two-settlement\n\
          Region with / without a caravan and render the per-settlement prices and the\n\
-         convergence gap over time (G2c). The price/colonist inspectors apply to the\n\
-         single-settlement scenarios only.\n",
+         convergence gap over time (G2c). The `roads` and `roads-control` scenarios (run\n\
+         only) add a road built from community labor: it cuts the route transit on\n\
+         completion, so the gap converges faster than the no-road control (G7). The\n\
+         price/colonist inspectors apply to the single-settlement scenarios only.\n",
     );
     out.push_str(
         "\nThe viewer is deterministic: the same (scenario, ticks, seed) prints byte-\n\
@@ -95,6 +97,10 @@ fn region_config_for(name: &str) -> Option<RegionConfig> {
     match name {
         "region" => Some(RegionConfig::two_settlements()),
         "region-control" => Some(RegionConfig::two_settlements_control()),
+        // G7: the road region and its no-road control (both run a caravan; the road
+        // is the only difference). Run-only, like the other region scenarios.
+        "roads" => Some(RegionConfig::roads()),
+        "roads-control" => Some(RegionConfig::roads_control()),
         _ => None,
     }
 }
@@ -298,6 +304,22 @@ fn run_region_dashboard(scenario: &str, config: &RegionConfig, ticks: u64, seed:
     let mut rows = Vec::with_capacity(ticks as usize);
     for _ in 0..ticks {
         let report = region.econ_tick();
+        // G7 road surfacing: build progress (labor/cost while building, built@tick
+        // once complete) and the current route transit (which the road cuts).
+        let road = if !region.has_road() {
+            "—".to_string()
+        } else if region.road_complete() {
+            format!(
+                "built@{}",
+                region.road_completed_at().unwrap_or(report.econ_tick)
+            )
+        } else {
+            format!(
+                "{}/{}",
+                region.road_labor_advanced().unwrap_or(0),
+                region.road_labor_cost().unwrap_or(0)
+            )
+        };
         rows.push(render::RegionDashboardRow {
             econ_tick: report.econ_tick,
             price_a: region.realized_price(0, good),
@@ -306,6 +328,8 @@ fn run_region_dashboard(scenario: &str, config: &RegionConfig, ticks: u64, seed:
             conserves: report.conserves(),
             escrow_good: u64::from(region.escrow_good()),
             escrow_gold: region.escrow_gold(),
+            transit_ticks: region.route_transit_ticks(),
+            road,
         });
     }
 

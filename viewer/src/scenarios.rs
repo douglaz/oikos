@@ -185,6 +185,18 @@ pub fn scenarios_text() -> String {
         "the no-caravan twin (run only): the gap is kept",
         width = name_width
     ));
+    out.push_str(&format!(
+        "    {:<width$}  {}\n",
+        "roads",
+        "G7: a road built from community labor cuts the route transit, so the gap converges faster (run only)",
+        width = name_width
+    ));
+    out.push_str(&format!(
+        "    {:<width$}  {}\n",
+        "roads-control",
+        "G7 no-road twin (run only): same caravan, no road — the gap converges slower",
+        width = name_width
+    ));
     out.push_str("\nAliases: near-node = near, far-node = far\n");
     out
 }

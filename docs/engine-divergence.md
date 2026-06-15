@@ -1665,3 +1665,90 @@ appearing only after the unlock tick.
   tiers are game-only); the only econ edit is the additive `set_recipe_enabled` accessor. No
   `HashMap` in logic, nothing drawn in the loops, no asserted magnitudes beyond
   unlock-happens / control-doesn't and conserved inputs.
+
+---
+
+## G7 — roads: infrastructure cuts trip cost (`docs/impl-g7.md`)
+
+G2c proved a **caravan** converges two settlements' prices; **G7 adds a road** — the one
+genuinely-new trade mechanic the game-spec reserved for this slot. A road is a **public-works
+project built from community labor** that, once complete, **cuts the route's transit cost**, so
+caravans cycle faster and the realized-price gap converges faster. Per the §5.9 funding ladder,
+state taxation does not exist yet (G8), so a G7 road is **community-funded by labor** — colonists
+contribute labor to the road, not a state treasury. Scope is ONE road on the ONE G2c route, with a
+**no-road control** proving the road is what accelerates convergence. It lives entirely in
+`sim::region` (`RoadPlan`/`RegionConfig::roads`/`roads_control`); the econ lab has no
+`Region`/road, so the six econ goldens are byte-identical by construction.
+
+### 1. The road is COMMUNITY LABOR, reusing the G3 project-labor path
+
+A road is **not** a state-treasury expenditure (taxation-funded works are G8). It is a
+public-works `Project` the community builds by contributing labor each econ tick — reusing the
+existing `econ::project` lifecycle (`start_project` / `advance_project` /
+`complete_project_if_ready`), **not** new econ machinery. Each tick every living colonist across
+the settlements contributes `labor_per_colonist` labor (gated on a living population, so an emptied
+colony stalls the road — it is community labor, never a timer). The only econ edit is an additive
+`ProjectTemplateId::BuildRoad` variant plus a `build_road_template` constructor that is **absent
+from `builtin_project_templates`** (the lab planner only ever sees `BuildNet`), so adding it leaves
+every conformance golden byte-identical — the same additive-variant discipline G6b used for
+`RecipeId::Research`/`Confect`.
+
+### 2. The build is a conserved expenditure that creates no good
+
+A road **creates no good** — it changes an abstract route's transit cost, not the physical ledger.
+The reused project template carries `output_qty: 0` (its completion `stock.add(_, 0)` is a no-op).
+The **optional conserved material cost** is community stock pre-set-aside in a region-level **road
+fund** and drawn down incrementally as labor is contributed; each draw is accounted as a conserved
+`consumed_as_input` in the `RegionTickReport`, so the whole-system ledger balances **every tick
+across the build** (not only at the start). The fund joins the region-wide conservation total
+(`regional_total`), so its draw-down is snapshotted and never leaks. Labor itself is abstract
+accounting in this engine (as in G3/G6b — `Recipe.labor` constrains nothing), so it is reported on
+its **own non-conserved line** (`RegionTickReport::road_labor`), deliberately outside the goods
+identity; only the road's good *materials* enter the conservation ledger. A labor-only road
+(`material_per_labor == 0`) consumes nothing at all and still builds — the optional-materials path
+the spec allows.
+
+### 3. The effect is a one-way route `transit_ticks` cut
+
+On completion the route's `transit_ticks` (the G2c field, reused) drops to `transit_after` — a
+defined amount strictly below the unbuilt route (the canonical `roads` config cuts `20 → 8`;
+a real reduction is asserted at generation). The caravan / convergence machinery is otherwise
+**unchanged**: fewer transit ticks → faster cycles → more trade per horizon → faster convergence
+(the G2c mechanism, accelerated). The cut is **one-way**: once the project is `Complete` the road
+step returns early forever, so the reduced transit never flaps and no further labor is contributed.
+The road state (build progress, completion stamp, fund, the cut transit) joins
+`Region::canonical_bytes`, gated so a no-road region emits a single `0` byte and every G2c region's
+serialization is unchanged.
+
+### 4. The `roads` mechanism + the `roads-control` falsification twin
+
+`RegionConfig::roads` builds the road; `RegionConfig::roads_control` is the **same region and
+caravan on the same longer route with no road** (`road: None`). Both run the caravan — the control
+is the no-**road** twin, not the no-caravan one — so the road, not the caravan (which G2c already
+had), is the only difference. With the road the FOOD-price gap is tighter at a fixed late horizon
+than the control's (which keeps a wider gap, its slow caravan barely closing it); the proof is
+**sign only** (no magnitude pinned), robust across 40 seeds. If both converged identically the road
+would not be cutting transit — the control is the tripwire.
+
+### 5. Viewer surfacing
+
+The `oikos run roads` / `roads-control` region dashboards add a `transit` column (the route cost,
+which drops when the road completes) and a `road` column (the build progress `<labor>/<cost>`, then
+`built@<tick>`) alongside the existing convergence-gap column. The columns appear only for a region
+that has a road, so the G2c `region`/`region-control` dashboards are byte-identical. Read-only and
+deterministic, like every other viewer surface.
+
+### Excluded from G7 (deferred)
+
+- **No state-funded public works / taxation.** A road is community labor; state-treasury-funded
+  works (and the taxation that funds them) are **G8** (finance), which does not exist in the game
+  yet.
+- **No road networks, no grid-pathable roads.** Routes stay **abstract** (a transit-tick count,
+  per G2c) — one road on one route. A road graph, or roads laid on the intra-settlement movement
+  grid, is later.
+- **No >2 settlements / multi-route topology.** One road on the one G2c route; multi-settlement,
+  multi-route road planning is later.
+- **No econ behavior change** — the six goldens are byte-identical (`Region`/roads are game-only);
+  the only econ edit is the additive `ProjectTemplateId::BuildRoad` variant + its (non-builtin)
+  template constructor. No `HashMap` in logic, nothing drawn in the loops, no asserted magnitudes
+  beyond road-speeds-convergence (sign vs the control) and conserved labor/materials.

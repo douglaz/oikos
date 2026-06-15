@@ -667,6 +667,67 @@ fn region_dashboard_shows_convergence_versus_the_control() {
     );
 }
 
+/// G7: the `roads` dashboard surfaces the road build progress and the route transit,
+/// and the transit drops on completion — the mechanism behind the faster convergence.
+#[test]
+fn roads_dashboard_surfaces_build_progress_and_transit_cut() {
+    let ticks = 30u64;
+    let roads = viewer::run_dashboard("roads", ticks, 1).expect("roads dashboard");
+    let control =
+        viewer::run_dashboard("roads-control", ticks, 1).expect("roads-control dashboard");
+
+    // Deterministic and conserving every tick.
+    assert_eq!(
+        roads,
+        viewer::run_dashboard("roads", ticks, 1).unwrap(),
+        "the roads dashboard is not byte-identical across runs"
+    );
+    assert!(
+        !roads.contains("VIOLATED"),
+        "the roads run broke conservation"
+    );
+    assert!(
+        !control.contains("VIOLATED"),
+        "the roads-control run broke conservation"
+    );
+
+    // The road header + columns are present (and the no-road control still runs a
+    // caravan — it is the no-ROAD twin, not the no-caravan one).
+    assert!(roads.contains("road public works"));
+    assert!(roads.contains("transit") && roads.contains("road"));
+    assert!(
+        roads.contains("built@"),
+        "the road never reported completion"
+    );
+
+    // The route transit (column index 7) starts high and ends low — the road cut it.
+    let rows = table_rows(&roads);
+    assert_eq!(rows.len() as u64, ticks, "one row per econ tick");
+    let transit = |r: &[String]| {
+        r.get(7)
+            .and_then(|c| c.parse::<u32>().ok())
+            .expect("transit cell")
+    };
+    assert!(
+        transit(rows.last().unwrap()) < transit(&rows[0]),
+        "the route transit did not drop: first={} last={}",
+        transit(&rows[0]),
+        transit(rows.last().unwrap())
+    );
+
+    // The no-road control has no road to build, so it never reports completion and
+    // renders without the road columns (a plain no-road region) — it is still a
+    // caravan run, not the no-caravan twin.
+    assert!(
+        !control.contains("built@"),
+        "the no-road control reported a road completion"
+    );
+    assert!(
+        !control.contains("road public works"),
+        "the no-road control announced a road"
+    );
+}
+
 /// The price / colonist inspectors reject the region scenarios: those advance a
 /// two-settlement Region, not a single Settlement, so they are `run`-only.
 #[test]

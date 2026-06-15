@@ -459,6 +459,12 @@ pub struct RegionDashboardRow {
     /// Units of the traded good / gold in route escrow (mid-transit) this tick.
     pub escrow_good: u64,
     pub escrow_gold: u64,
+    /// G7: the route's CURRENT transit cost (econ ticks per leg) — drops when the
+    /// road completes, the mechanism behind the faster convergence.
+    pub transit_ticks: u32,
+    /// G7: the road's build progress this tick — `"—"` for a no-road region,
+    /// `"<labor>/<cost>"` while building, or `"built@<tick>"` once complete.
+    pub road: String,
 }
 
 /// Render the `region` dashboard (G2c): a header block then one table row per econ
@@ -474,10 +480,13 @@ pub fn format_region_dashboard(
     rows: &[RegionDashboardRow],
 ) -> String {
     let mut out = String::new();
-    let mode = if caravans_enabled {
-        "caravan active (buys cheap at A, sells at B)"
-    } else {
+    let has_road = rows.iter().any(|row| row.road != "—");
+    let mode = if !caravans_enabled {
         "no-caravan control (the falsification twin)"
+    } else if has_road {
+        "caravan + road public works (community labor cuts the route transit)"
+    } else {
+        "caravan active (buys cheap at A, sells at B)"
     };
     let _ = writeln!(
         out,
@@ -487,13 +496,24 @@ pub fn format_region_dashboard(
         out,
         "seed {seed} · {ticks} econ ticks · traded good {good_label:?} · A = cheap/near, B = dear/far"
     );
-    let _ = writeln!(
-        out,
-        "the {good_label} price gap |A−B| narrows over time only with the caravan (sign only)"
-    );
+    if has_road {
+        let _ = writeln!(
+            out,
+            "the road is built from contributed labor; once built the route transit drops, so caravans cycle faster and the {good_label} gap |A−B| converges faster than the no-road control (sign only)"
+        );
+    } else {
+        let _ = writeln!(
+            out,
+            "the {good_label} price gap |A−B| narrows over time only with the caravan (sign only)"
+        );
+    }
     out.push('\n');
 
-    let headers = [
+    // The road columns are shown only for a region that actually has a road (the G7
+    // `roads` scenario); the G2c `region`/`region-control` dashboards omit them, so
+    // their output is unchanged. A region "has a road" iff any captured row reports a
+    // non-`—` road cell (`has_road`, computed once above).
+    let mut headers = vec![
         "tick".to_string(),
         format!("{good_label}@A"),
         format!("{good_label}@B"),
@@ -502,7 +522,7 @@ pub fn format_region_dashboard(
         format!("esc.{good_label}"),
         "esc.gold".to_string(),
     ];
-    let aligns = [
+    let mut aligns = vec![
         Align::Right,
         Align::Right,
         Align::Right,
@@ -511,6 +531,12 @@ pub fn format_region_dashboard(
         Align::Right,
         Align::Right,
     ];
+    if has_road {
+        headers.push("transit".to_string());
+        headers.push("road".to_string());
+        aligns.push(Align::Right);
+        aligns.push(Align::Left);
+    }
     let table_rows: Vec<Vec<String>> = rows
         .iter()
         .map(|row| {
@@ -518,7 +544,7 @@ pub fn format_region_dashboard(
                 Some(g) => g.to_string(),
                 None => "—".to_string(),
             };
-            vec![
+            let mut cells = vec![
                 row.econ_tick.to_string(),
                 price_cell(row.price_a),
                 price_cell(row.price_b),
@@ -526,7 +552,12 @@ pub fn format_region_dashboard(
                 if row.conserves { "OK" } else { "VIOLATED" }.to_string(),
                 row.escrow_good.to_string(),
                 row.escrow_gold.to_string(),
-            ]
+            ];
+            if has_road {
+                cells.push(row.transit_ticks.to_string());
+                cells.push(row.road.clone());
+            }
+            cells
         })
         .collect();
 

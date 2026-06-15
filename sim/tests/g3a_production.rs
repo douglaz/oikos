@@ -322,6 +322,7 @@ fn region_conserves_with_a_composed_chain_settlement() {
         buy_ticks: 4,
         sell_ticks: 6,
         caravans_enabled: true,
+        road: None,
     };
 
     let mut region = Region::generate(7, &config);
