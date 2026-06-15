@@ -212,6 +212,7 @@ pub struct DashboardBanners<'a> {
     pub money: Option<&'a MoneySummary>,
     pub bank: Option<&'a BankSummary>,
     pub cycle: Option<&'a CycleSummary>,
+    pub tender: Option<&'a TenderSummary>,
 }
 
 /// G8c-1 credit-cycle summary: the demonstration kind, the final regime rung, and the
@@ -228,6 +229,47 @@ pub struct CycleSummary {
     pub bust_abandoned: u32,
     pub capital_consumed: u64,
     pub fiat_base: u64,
+    /// G8c-2: the active labor-wage tender — the cycle's transmission valve. Under
+    /// `fiat-and-specie`/`par-all` the fiat credit reaches workers and the cycle
+    /// fires; under `specie-only` the same credit is inert.
+    pub wage_tender: &'static str,
+    /// G8c-2: the cycle outcome under the active wage tender — `"fired"` (boom→bust
+    /// transmitted), `"transmitting"` (boom active before the bust), `"pending"` (the
+    /// credit cycle has not reached the real economy yet), `"inert"` (credit issued but
+    /// refused at wages), or `"no-credit"` (the sound-money control).
+    pub outcome: &'static str,
+}
+
+/// G8c-2 tender-policy summary: the active media-acceptance levers on a finance
+/// settlement, and — for a tender bench — which surface it demonstrates and the
+/// fiat/claim/specie split that surface settled in. A read-only digest rendered above
+/// the dashboard for a finance settlement (the cycle and the tender benches). `None`
+/// for a non-finance settlement. Tender gates *composition* (which medium settles a
+/// surface), never creates money; repayment benches additionally surface the credit
+/// retired by the accepted repayment medium.
+pub struct TenderSummary {
+    /// The active public-spot tender label (e.g. `specie-only`, `fiat-and-specie`).
+    pub spot: &'static str,
+    /// The active labor-wage tender label.
+    pub wage: &'static str,
+    /// The active public-debt tender label.
+    pub debt: &'static str,
+    /// The active bank-repayment tender label.
+    pub bank_repayment: &'static str,
+    /// The active issuer-repayment tender label.
+    pub issuer_repayment: &'static str,
+    /// Which bench surface, or `None` for the cycle.
+    pub bench_surface: Option<&'static str>,
+    /// Fiat that settled the bench's surface (the demonstrated composition split).
+    pub bench_fiat_settled: u64,
+    /// Demand claims that settled the bench's surface.
+    pub bench_claims_settled: u64,
+    /// Specie that settled the bench's surface.
+    pub bench_specie_settled: u64,
+    /// Credit retired by the bench's repayment surface.
+    pub bench_credit_retired: u64,
+    /// The settlement's total broad money after the run.
+    pub broad_money: u64,
 }
 
 /// G8a/G8b M3 money-composition summary: the settlement's M3 ledger money broken into
@@ -388,7 +430,7 @@ pub fn format_dashboard(
         let _ = writeln!(
             out,
             "cycle: {} — regime {} · shadow gap(max) {} bps · boom {} · bust {} · \
-             capital consumed {} · fiat base {}",
+             capital consumed {} · fiat base {} · wages {} · {}",
             cycle.kind,
             cycle.regime,
             cycle.max_gap_bps,
@@ -396,7 +438,41 @@ pub fn format_dashboard(
             cycle.bust_abandoned,
             cycle.capital_consumed,
             cycle.fiat_base,
+            cycle.wage_tender,
+            cycle.outcome,
         );
+    }
+    // G8c-2 tender banner: the active media-acceptance levers and, for a tender bench,
+    // the demonstrated surface's fiat/claim/specie settlement split. Repayment benches
+    // also show the credit retired by the accepted repayment medium.
+    // Shown for any finance settlement.
+    if let Some(tender) = banners.tender {
+        let _ = write!(
+            out,
+            "tender: spot {} · wage {} · debt {} · bank-repayment {} · issuer-repayment {}",
+            tender.spot, tender.wage, tender.debt, tender.bank_repayment, tender.issuer_repayment,
+        );
+        if let Some(surface) = tender.bench_surface {
+            if tender.bench_claims_settled > 0 || surface == "bank-repayment" {
+                let _ = write!(
+                    out,
+                    " · {surface} settled fiat {} / claims {} / specie {}",
+                    tender.bench_fiat_settled,
+                    tender.bench_claims_settled,
+                    tender.bench_specie_settled,
+                );
+            } else {
+                let _ = write!(
+                    out,
+                    " · {surface} settled fiat {} / specie {}",
+                    tender.bench_fiat_settled, tender.bench_specie_settled,
+                );
+            }
+            if tender.bench_credit_retired > 0 || surface.ends_with("repayment") {
+                let _ = write!(out, " · credit retired {}", tender.bench_credit_retired);
+            }
+        }
+        let _ = writeln!(out, " · broad money {}", tender.broad_money);
     }
     out.push('\n');
 

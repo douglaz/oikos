@@ -277,7 +277,73 @@ pub fn run_dashboard(scenario: &str, ticks: u64, seed: u64) -> Result<String, St
         bust_abandoned: settlement.bust_abandoned_projects(),
         capital_consumed: settlement.capital_consumed(),
         fiat_base: settlement.fiat_base().0,
+        // G8c-2: the wage tender is the cycle's transmission valve; the outcome is
+        // whether the cycle fired, is still transmitting before the bust, is pending
+        // before credit reaches the real economy, or is truly inert under wage refusal.
+        wage_tender: sim::labor_wage_tender_name(settlement.labor_wage_tender()),
+        outcome: cycle_outcome_label(&settlement, kind),
     });
+
+    // G8c-2 tender banner: the active media-acceptance levers and (for a bench) the
+    // demonstrated surface's settled fiat/specie split. Shown for any finance
+    // settlement (the cycle and the spot/debt benches); `None` otherwise, so every
+    // non-finance dashboard is unchanged.
+    let tender_summary = if settlement.is_cycle() || settlement.is_tender_bench() {
+        let (
+            bench_surface,
+            bench_fiat_settled,
+            bench_claims_settled,
+            bench_specie_settled,
+            bench_credit_retired,
+        ) = match settlement.bench_surface() {
+            Some(sim::BenchSurface::Spot) => (
+                Some("spot"),
+                settlement.spot_fiat_settled().0,
+                0,
+                settlement.spot_specie_settled().0,
+                0,
+            ),
+            Some(sim::BenchSurface::Debt) => (
+                Some("debt"),
+                settlement.debt_fiat_settled().0,
+                0,
+                settlement.debt_specie_settled().0,
+                0,
+            ),
+            Some(sim::BenchSurface::BankRepayment) => (
+                Some("bank-repayment"),
+                settlement.bank_repayment_fiat_settled().0,
+                settlement.bank_repayment_claims_settled().0,
+                settlement.bank_repayment_specie_settled().0,
+                settlement.bank_repayment_credit_retired().0,
+            ),
+            Some(sim::BenchSurface::IssuerRepayment) => (
+                Some("issuer-repayment"),
+                settlement.issuer_repayment_fiat_settled().0,
+                0,
+                settlement.issuer_repayment_specie_settled().0,
+                settlement.issuer_repayment_credit_retired().0,
+            ),
+            None => (None, 0, 0, 0, 0),
+        };
+        Some(render::TenderSummary {
+            spot: sim::public_spot_tender_name(settlement.public_spot_tender()),
+            wage: sim::labor_wage_tender_name(settlement.labor_wage_tender()),
+            debt: sim::public_debt_tender_name(settlement.public_debt_tender()),
+            bank_repayment: sim::bank_repayment_tender_name(settlement.bank_repayment_tender()),
+            issuer_repayment: sim::issuer_repayment_tender_name(
+                settlement.issuer_repayment_tender(),
+            ),
+            bench_surface,
+            bench_fiat_settled,
+            bench_claims_settled,
+            bench_specie_settled,
+            bench_credit_retired,
+            broad_money: settlement.total_broad_money().0,
+        })
+    } else {
+        None
+    };
 
     let banners = render::DashboardBanners {
         era: era_summary.as_ref(),
@@ -285,6 +351,7 @@ pub fn run_dashboard(scenario: &str, ticks: u64, seed: u64) -> Result<String, St
         money: money_summary.as_ref(),
         bank: bank_summary.as_ref(),
         cycle: cycle_summary.as_ref(),
+        tender: tender_summary.as_ref(),
     };
     Ok(render::format_dashboard(
         &settlement,
@@ -295,6 +362,28 @@ pub fn run_dashboard(scenario: &str, ticks: u64, seed: u64) -> Result<String, St
         &banners,
         &rows,
     ))
+}
+
+fn cycle_outcome_label(settlement: &Settlement, kind: sim::CycleKind) -> &'static str {
+    if settlement.cycle_fired() {
+        return "fired";
+    }
+    if settlement.boom_projects_started() > 0 || settlement.structure_rose_above_shadow() {
+        return "transmitting";
+    }
+    // G8c-2: `inert` is the wage-refusal outcome (the M17 control) — credit was issued
+    // but the wage surface refuses fiat, so it can never reach the real economy. A
+    // legal/par wage tender whose boom simply hasn't started yet (a short-horizon
+    // dashboard, before any project breaks ground) is `pending`, not inert; gating on
+    // the wage tender's accepted media keeps fiat-legal cycles from being mislabeled.
+    let wage_refuses_fiat = !settlement.labor_wage_tender().accepted_media().fiat;
+    if wage_refuses_fiat && settlement.credit_ever_circulated() {
+        return "inert";
+    }
+    match kind {
+        sim::CycleKind::CreditCycle => "pending",
+        sim::CycleKind::SoundMoney => "no-credit",
+    }
 }
 
 /// The dashboard's population line: the **living** total plus the living

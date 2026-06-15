@@ -95,9 +95,10 @@ pub use era::{
 };
 pub use region::{Region, RegionConfig, RegionTickReport, RoadPlan, Route};
 pub use settlement::{
-    recipe_adoption_pays, recipe_adoption_pays_for_money, BankConfig, BarterConfig, ChainConfig,
-    CycleConfig, CycleKind, EconTickReport, EstateDestination, LineageStats, NodeSpec, Settlement,
-    SettlementConfig, TraderEndowment, Vocation, ECON_TICKS_PER_YEAR, FAST_TICKS_PER_ECON_TICK,
+    recipe_adoption_pays, recipe_adoption_pays_for_money, BankConfig, BarterConfig, BenchSurface,
+    ChainConfig, CycleConfig, CycleKind, EconTickReport, EstateDestination, LineageStats, NodeSpec,
+    Settlement, SettlementConfig, TenderBench, TenderPolicy, TraderEndowment, Vocation,
+    ECON_TICKS_PER_YEAR, FAST_TICKS_PER_ECON_TICK,
 };
 
 /// Read-only re-exports of the `econ`/`life` types that make up the settlement's
@@ -118,3 +119,15 @@ pub use econ::ledger::MoneyStock;
 pub use econ::market::Trade;
 pub use econ::society::Society;
 pub use life::NeedState;
+
+/// Re-exports of the econ **tender** enums and their stable lowercase labels — the
+/// G8c-2 tender-policy levers and the names the viewer renders. Pure re-exports of
+/// econ's *unchanged* tender machinery (G8c-2 adds no tender logic to econ): the sim
+/// routes each settlement surface through these, and the viewer/tests name them
+/// through `sim` alone (the thin-binary-over-one-crate rule). See
+/// [`settlement::TenderPolicy`].
+pub use econ::money::{
+    bank_repayment_tender_name, issuer_repayment_tender_name, labor_wage_tender_name,
+    public_debt_tender_name, public_spot_tender_name, BankRepaymentTender, IssuerRepaymentTender,
+    LaborWageTender, PublicDebtTender, PublicSpotTender,
+};

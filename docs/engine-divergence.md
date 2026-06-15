@@ -2121,3 +2121,101 @@ read-only function of the run, so observing the gap never perturbs it. No `HashM
   cycle wiring is additive/game-only (the finance path is skipped without a `cycle` config).
 - No asserted magnitudes beyond the signs: a positive gap vs ≈ 0, abandonments and
   capital-consumed positive vs zero, and exact M3 (fiat-base) conservation.
+
+## G8c-2 — tender policies (the acceptance levers) (`docs/impl-g8c2.md`)
+
+G8c-1 gave the game the credit cycle. **G8c-2** adds the **tender policies** the lab built
+across M11–M17 — explicit rules for *which media must be accepted* on each settlement surface
+(spot exchange, public debt, bank-loan repayment, issuer repayment, and **labor wages**) — as sim
+policy levers. The headline ties straight back to G8c-1: **wage tender gates the credit cycle.**
+When fiat wages must be accepted, fiat credit transmits into the boom; when wages are specie-only,
+the same credit issuance is *inert* — no boom, no bust. This is the lab's **M17** result, now in
+the spatial cycle, as a player-facing policy choice.
+
+### The divergence: a tender LEVER routed into econ's unchanged tender machinery
+
+Tender enforcement already lives in econ: each surface settles through its policy's
+`accepted_media()` (a refused medium cannot settle there even if held), and the
+`SetXTender` events set the live policy on the `Society`. The lab's tender scenarios are
+literally a base scenario **plus** a `SetXTender` event (e.g. the M17 wage scenarios are
+`EmergedGoldFiatCreditExpansion + SetLaborWageTender(...)`; the M11-M16 spot/debt/repayment
+scenarios are the matching proof setup plus their `SetXTender`). So G8c-2 adds a **config
+lever**, not new economics:
+
+- A sim `TenderPolicy` carries the five surface knobs (`spot`, `wage`, `debt`,
+  `bank_repayment`, `issuer_repayment`). Its `Default` equals econ's per-surface defaults
+  (`ParAll` ×4, `FiatOnly` for the issuer), and `tender_events()` emits a `SetXTender` event
+  **only** for a knob that differs from the default — so a default policy contributes **zero**
+  events and the G8c-1 finance bytes are byte-identical by construction. No tender logic is
+  added to econ; it only authors the lever.
+- `CycleConfig` gains a `tender: TenderPolicy`; `cycle_scenario(kind, tender)` appends the
+  policy's events at `Tick(0)` (before any surface settles). `wage_tender_cycle`
+  (`wage = FiatAndSpecie`) and `wage_refusal_cycle` (`wage = SpecieOnly`) are the headline twin.
+- A `SettlementConfig` gains `tender_bench: Option<TenderBench>` (mutually exclusive with
+  `cycle`; both route through `generate_finance`). A bench is a finance settlement on econ's
+  tender proof scenarios (M11 spot, M12 debt, M15 bank-loan repayment, M16 issuer repayment) with
+  the surface's tender swapped in for the lab's baked default — so the **same** `SetXTender`
+  mechanism demonstrates every non-wage surface. `spot_tender_bench`, `debt_tender_bench`,
+  `bank_repayment_tender_bench`, and `issuer_repayment_tender_bench` set it.
+
+### The headline: wage tender is the transmission valve (M17, in the cycle)
+
+In the credit cycle the fiat-credit borrowers (would-be employers) hold the fiat the issuer
+extended, and the boom transmits **through wages**. So the wage tender decides whether the
+cycle fires:
+
+- **`wage-tender-cycle`** (`LaborWageTender::FiatAndSpecie`): fiat wages settle → fiat reaches
+  workers → demand → the boom→stop→bust transmits exactly as G8c-1 (`cycle_fired() == true`:
+  `boom_projects_started`, `bust_abandoned_projects`, `capital_consumed` all positive, and
+  `wage_fiat_settled() > 0`).
+- **`wage-refusal-cycle`** (`LaborWageTender::SpecieOnly`): fiat wages are refused → the
+  employers cannot hire → the credit never enters the real economy → **no boom, no bust**
+  (`cycle_fired() == false`, `wage_fiat_settled() == 0`). The **same** issuance still happens
+  (`credit_ever_circulated() == true`) and the printed fiat round-trips back to the issuer
+  (conserved) — it is just inert. The control is the proof the wage surface is the transmission
+  valve; *if the cycle fired here, the wage gate would not be routing settlement.*
+
+The fiat credit is issued under both wage policies (the gap can still open), but the boom in
+the **structure of production** only forms when the credit reaches the real economy through
+wages — so test 3 asserts on boom/bust/structure, not on the gap.
+
+### Composition, never totals (M11-M16 on the benches)
+
+Tender gates *which medium settles a surface*, never the money stock. On the spot bench the
+issuer prints fiat the first receivers hold; under `SpecieOnly` **none** of that held fiat
+settles the spot market (`spot_fiat_settled() == 0`, specie settles instead), under
+`FiatAndSpecie` it does (`spot_fiat_settled() > 0`) — and the **broad money is identical**
+across the twin (specie base 16 + printed fiat 8 = 24), only the settled split flips. The debt
+bench mirrors it on debt discharge. The repayment benches use econ's M15/M16 audit tapes: a
+specie-only bank-repayment tender refuses the held bank claim, while `BankClaimsAndSpecie` accepts it
+and retires bank credit; `FiatRefused` issuer repayment refuses the held fiat, while `FiatOnly`
+accepts it and retires issuer credit. `total_broad_money()` is the displacement-bench conservation
+anchor; the per-surface `*_settled` accessors read econ's existing payment/wage/debt/repayment
+audits.
+
+### Conservation
+
+The M3 ledger reconciles every tick under **every** tender policy. The displacement benches
+hold the specie base (16) and the broad money (24) fixed whichever medium settles; repayment
+benches route through econ's normal credit-retirement accounting; the cycle holds the specie base
+fixed (fiat is credit, not minted specie) with the fiat base an exact `issued − retired` identity.
+Tender chooses the accepted medium for a surface; it does not mint or leak money.
+
+### Determinism
+
+Integer state; the econ `Rng` is consumed only at generation; nothing is drawn in the loop.
+The canonical bytes carry the finance state plus the active tender timeline (the bench encodes
+its surface + scenario events; the cycle's scenario events already carry the `SetXTender`
+levers), so `tender_run_is_deterministic` is byte-identical for the cycle and the benches
+alike. No `HashMap` in logic.
+
+### Excluded from G8c-2 (deferred)
+
+- **No tax receivability** (the state's counter-lever, M21 — G8c-3).
+- **No player-`Command`/UI tender setting** — tenders are config-set here; the command route
+  is G9.
+- **No change to econ tender BEHAVIOR** — the six goldens are byte-identical; all tender wiring
+  is additive/game-only (a default `TenderPolicy` emits no events, so the plain `credit-cycle` /
+  `sound-money` and every spatial settlement are unchanged).
+- **No multi-seed study.** Magnitudes are SIGN only (the cycle fires vs is inert) plus exact
+  conservation.

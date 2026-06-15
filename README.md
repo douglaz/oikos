@@ -1209,6 +1209,77 @@ G8c-1:
 robustness study of the cycle (deferred)** are **not** here — G8c-1 is fiat + the regime ladder + the
 cycle + the control. See `sim/tests/g8c1_cycle.rs` and `docs/engine-divergence.md` (the G8c-1 entry).
 
+## Status: G8c-2 (tender policies — the acceptance levers) — complete
+
+G8c-1 gave the game the credit cycle. **G8c-2** adds the **tender policies** the lab built across
+M11–M17 — explicit rules for *which media must be accepted* on each settlement surface (spot exchange,
+public debt, bank-loan repayment, issuer repayment, and **labor wages**) — as sim policy levers. The reuse is **total**: econ's
+`PublicSpotTender` / `LaborWageTender` / `PublicDebtTender` (and the bank/issuer-repayment tenders),
+their `accepted_media()`, and the `SetXTender` events are all **unchanged**; G8c-2 only **routes** each
+settlement surface through its tender policy (config-set; the player-`Command` route is G9). It adds
+**no** tender logic to econ, so the six conformance goldens stay byte-identical by construction.
+
+- **The headline: wage tender gates the credit cycle.** This is the lab's **M17** result, now in the
+  spatial cycle. In the G8c-1 credit cycle the fiat-credit borrowers (would-be employers) hold fiat,
+  and the boom transmits **through wages**:
+  - **`wage-tender-cycle`** (`SettlementConfig::wage_tender_cycle`, fiat wages legal tender): the
+    fiat-credit employers can pay fiat wages → the fiat credit reaches workers → demand follows → the
+    boom→stop→bust **transmits**. The cycle **fires** (`cycle_fired() == true`: gap > 0, boom, bust,
+    capital consumed).
+  - **`wage-refusal-cycle`** (`SettlementConfig::wage_refusal_cycle`, specie-only wages): the **same**
+    fiat-credit issuance (`credit_ever_circulated() == true`) is **inert** — the employers cannot pay
+    fiat wages, the credit never enters the real economy, and **no boom and no bust** form. The control
+    is the proof the **wage surface is the transmission valve**: the *only* difference is the wage
+    tender. *If the cycle fired under specie-only wages, the wage gate would not be routing
+    settlement.*
+- **Tender gates composition, never totals.** A refused medium **cannot** settle its surface even if
+  *held*, and the active medium does — but no money is created or destroyed. The fiat-displacement
+  **benches** make this exact: under `spot-tender-refusal` (`SpecieOnly`) the printed fiat is still
+  held (`public_fiat` unchanged) yet **none** of it settles the spot market (`spot_fiat_settled() ==
+  0`, specie settles instead); under `spot-tender-legal` (`FiatAndSpecie`) the held fiat settles
+  (`spot_fiat_settled() > 0`). The **broad money is identical** across the twin — only which medium
+  settled flipped. The debt benches mirror it on debt discharge (M12).
+- **The other surfaces wire as the same lever.** `PublicSpotTender` / `PublicDebtTender` and the
+  bank/issuer-repayment tenders each enforce their refusal-vs-acceptance on their surface — the lab's
+  M11-M16 results, reachable as sim config levers (`SettlementConfig::spot_tender_bench`,
+  `debt_tender_bench`, `bank_repayment_tender_bench`, `issuer_repayment_tender_bench`) routed through
+  the *same* `SetXTender` mechanism as the wage×cycle headline.
+- **Conservation holds under every policy.** Tender changes the **medium**, not the stock: the
+  displacement benches hold the specie base (16) and the broad money (24) fixed whichever medium
+  settles, repayment benches route through econ's normal credit-retirement accounting, and the cycle
+  conserves the specie base with the fiat base an exact `issued − retired` identity — the M3 ledger
+  reconciles every tick under every tender policy.
+- **A default tender is byte-identical to G8c-1.** `TenderPolicy::default()` equals econ's per-surface
+  defaults (`ParAll` for spot/wage/debt/bank-repayment, `FiatOnly` for issuer-repayment), so it emits
+  **no** `SetXTender` event — the plain `credit-cycle` / `sound-money` settlements (and every spatial
+  settlement) are unchanged. The `wage-tender-cycle` makes the legal-tender choice **explicit** (and
+  the plain cycle's `ParAll` wages already accept fiat, so both transmit).
+- **Viewer surfacing.** The finance dashboards add a `tender:` banner — `tender: spot S · wage W · debt
+  D · bank-repayment B · issuer-repayment I [· SURFACE settled fiat F / claims C / specie P] · broad
+  money M` — and the cycle banner gains `· wages W · fired|transmitting|pending|inert|no-credit`, so
+  the transmission valve, active tender policies, and settlement composition proof are visible.
+
+G8c-2:
+
+- [x] the tender policies as sim config levers (`sim::TenderPolicy` + the `SetXTender` routing in
+      `cycle_scenario` / `tender_bench_scenario` — no tender logic added to econ; a default policy
+      emits no events, keeping the G8c-1 finance bytes byte-identical)
+- [x] the headline — `wage_tender_cycle` (fiat wages → the cycle fires) and `wage_refusal_cycle`
+      (specie-only wages → the same credit is inert), with the `cycle_fired()` outcome accessor and the
+      `wage_fiat_settled` / `wage_specie_settled` composition reads
+- [x] the spot/debt/repayment benches (`spot_tender_bench`, `debt_tender_bench`,
+      `bank_repayment_tender_bench`, `issuer_repayment_tender_bench`, the M11-M16 surfaces) with the
+      `spot_*_settled`, `debt_*_settled`, `bank_repayment_*`, and `issuer_repayment_*` composition
+      reads
+- [x] viewer surfacing — the `wage-tender-cycle` / `wage-refusal-cycle` and `spot-tender-*` /
+      `debt-tender-*` / repayment-tender scenarios, the `tender:` banner, and the cycle outcome
+- [x] acceptance suite (`sim/tests/g8c2_tender.rs`: the seven acceptance tests + unit tests) + viewer
+      dashboard tests + README + divergence-log updates
+
+**Tax receivability (the state's counter-lever, M21 — G8c-3), the player-`Command` tender route (G9),
+and the multi-seed robustness study (deferred)** are **not** here — G8c-2 is the tender surfaces + the
+wage×cycle headline. See `sim/tests/g8c2_tender.rs` and `docs/engine-divergence.md` (the G8c-2 entry).
+
 ## Build and test
 
 ```bash
@@ -1246,4 +1317,14 @@ cargo run -p viewer -- run bank --ticks 40                    # G8b: a fractiona
 cargo run -p viewer -- run bank-full-reserve --ticks 40       # G8b: the 100%-reserve control — deposits circulate, zero fiduciary
 cargo run -p viewer -- run credit-cycle --ticks 80           # G8c-1: the Austrian cycle — regime descends to Fiat, gap opens, boom, stop, bust, capital consumed
 cargo run -p viewer -- run sound-money --ticks 80            # G8c-1: the sound-money control — SoundGold, no fiat, no gap, no cycle
+cargo run -p viewer -- run wage-tender-cycle --ticks 80      # G8c-2: fiat wages legal tender → the credit transmits to the boom/bust (the cycle fires)
+cargo run -p viewer -- run wage-refusal-cycle --ticks 80     # G8c-2: specie-only wages → the same fiat credit is inert (no boom, no bust)
+cargo run -p viewer -- run spot-tender-legal --ticks 12      # G8c-2: spot tender (M11) — fiat is legal tender, the held fiat settles goods trades
+cargo run -p viewer -- run spot-tender-refusal --ticks 12    # G8c-2: spot tender control — fiat refused, specie settles the same trades (broad money unchanged)
+cargo run -p viewer -- run debt-tender-legal --ticks 12      # G8c-2: debt tender (M12) — fiat is legal tender, the debt is discharged in fiat
+cargo run -p viewer -- run debt-tender-refusal --ticks 12    # G8c-2: debt tender control — fiat refused, the debt is discharged in specie (broad money unchanged)
+cargo run -p viewer -- run bank-repayment-tender-legal --ticks 5      # G8c-2: bank repayment (M15) — bank claim accepted, credit retired
+cargo run -p viewer -- run bank-repayment-tender-refusal --ticks 5    # G8c-2: bank repayment control — held claim refused
+cargo run -p viewer -- run issuer-repayment-tender-legal --ticks 14   # G8c-2: issuer repayment (M16) — fiat accepted, credit retired
+cargo run -p viewer -- run issuer-repayment-tender-refusal --ticks 14 # G8c-2: issuer repayment control — held fiat refused
 ```

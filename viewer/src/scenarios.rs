@@ -135,6 +135,66 @@ const SCENARIOS: &[Scenario] = &[
             "G8c-1 sound-money control: SoundGold, no fiat, no credit expansion — gap ≈ 0, no boom, no bust, no capital consumed (the cycle is credit-driven)",
         build: SettlementConfig::sound_money,
     },
+    Scenario {
+        name: "wage-tender-cycle",
+        description:
+            "G8c-2 headline: the credit cycle with fiat wages as legal tender — fiat credit reaches workers, so the boom→bust transmits (the cycle fires)",
+        build: SettlementConfig::wage_tender_cycle,
+    },
+    Scenario {
+        name: "wage-refusal-cycle",
+        description:
+            "G8c-2 control: the same credit cycle with specie-only wages — the fiat credit cannot pay wages, so it never transmits (inert: no boom, no bust)",
+        build: SettlementConfig::wage_refusal_cycle,
+    },
+    Scenario {
+        name: "spot-tender-legal",
+        description:
+            "G8c-2 spot bench (M11): fiat is legal tender on the spot market, so the printed fiat settles goods trades (composition flips, totals do not)",
+        build: build_spot_tender_legal,
+    },
+    Scenario {
+        name: "spot-tender-refusal",
+        description:
+            "G8c-2 spot bench control: specie-only spot tender refuses the held fiat, so specie settles the same trades (broad money unchanged)",
+        build: build_spot_tender_refusal,
+    },
+    Scenario {
+        name: "debt-tender-legal",
+        description:
+            "G8c-2 debt bench (M12): fiat is legal tender for public debt, so the seeded debt is discharged in fiat (composition flips, totals do not)",
+        build: build_debt_tender_legal,
+    },
+    Scenario {
+        name: "debt-tender-refusal",
+        description:
+            "G8c-2 debt bench control: specie-only debt tender refuses fiat, so the same debt is discharged in specie (broad money unchanged)",
+        build: build_debt_tender_refusal,
+    },
+    Scenario {
+        name: "bank-repayment-tender-legal",
+        description:
+            "G8c-2 bank-repayment bench (M15): bank claims are legal tender for bank-loan repayment, so the claim settles and retires credit",
+        build: build_bank_repayment_tender_legal,
+    },
+    Scenario {
+        name: "bank-repayment-tender-refusal",
+        description:
+            "G8c-2 bank-repayment bench control: specie-only bank repayment refuses the held claim, so the repayment defaults",
+        build: build_bank_repayment_tender_refusal,
+    },
+    Scenario {
+        name: "issuer-repayment-tender-legal",
+        description:
+            "G8c-2 issuer-repayment bench (M16): fiat is accepted for issuer-credit repayment, so the returned fiat retires credit",
+        build: build_issuer_repayment_tender_legal,
+    },
+    Scenario {
+        name: "issuer-repayment-tender-refusal",
+        description:
+            "G8c-2 issuer-repayment bench control: fiat-refused issuer repayment leaves the held fiat unable to retire the credit",
+        build: build_issuer_repayment_tender_refusal,
+    },
 ];
 
 fn build_near() -> SettlementConfig {
@@ -143,6 +203,38 @@ fn build_near() -> SettlementConfig {
 
 fn build_far() -> SettlementConfig {
     SettlementConfig::price_probe().with_food_node_distance(FAR_DISTANCE)
+}
+
+fn build_spot_tender_legal() -> SettlementConfig {
+    SettlementConfig::spot_tender_bench(sim::PublicSpotTender::FiatAndSpecie)
+}
+
+fn build_spot_tender_refusal() -> SettlementConfig {
+    SettlementConfig::spot_tender_bench(sim::PublicSpotTender::SpecieOnly)
+}
+
+fn build_debt_tender_legal() -> SettlementConfig {
+    SettlementConfig::debt_tender_bench(sim::PublicDebtTender::FiatAndSpecie)
+}
+
+fn build_debt_tender_refusal() -> SettlementConfig {
+    SettlementConfig::debt_tender_bench(sim::PublicDebtTender::SpecieOnly)
+}
+
+fn build_bank_repayment_tender_legal() -> SettlementConfig {
+    SettlementConfig::bank_repayment_tender_bench(sim::BankRepaymentTender::BankClaimsAndSpecie)
+}
+
+fn build_bank_repayment_tender_refusal() -> SettlementConfig {
+    SettlementConfig::bank_repayment_tender_bench(sim::BankRepaymentTender::SpecieOnly)
+}
+
+fn build_issuer_repayment_tender_legal() -> SettlementConfig {
+    SettlementConfig::issuer_repayment_tender_bench(sim::IssuerRepaymentTender::FiatOnly)
+}
+
+fn build_issuer_repayment_tender_refusal() -> SettlementConfig {
+    SettlementConfig::issuer_repayment_tender_bench(sim::IssuerRepaymentTender::FiatRefused)
 }
 
 /// Resolve a scenario name (including the `near-node`/`far-node` aliases) to its

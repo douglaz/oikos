@@ -385,6 +385,174 @@ fn sound_money_dashboard_shows_no_cycle() {
     );
 }
 
+/// G8c-2: the wage-tender cycle and its wage-refusal control surface the active wage
+/// tender + the cycle outcome — `fired` under fiat-legal wages, `inert` under
+/// specie-only wages — the headline transmission-valve demonstration in the viewer.
+#[test]
+fn wage_tender_cycle_dashboard_surfaces_the_transmission_valve() {
+    let transmit = viewer::run_dashboard("wage-tender-cycle", 80, 0xC0FFEE)
+        .expect("wage-tender-cycle dashboard");
+    let cycle = transmit
+        .lines()
+        .find(|line| line.starts_with("cycle: "))
+        .expect("the wage-tender-cycle dashboard prints a cycle banner");
+    assert!(
+        cycle.contains("wages fiat-and-specie") && cycle.contains("fired"),
+        "fiat-legal wages must transmit the cycle (fired): {cycle:?}"
+    );
+    assert!(
+        !cycle.contains("boom 0") && !cycle.contains("bust 0"),
+        "the transmitting cycle must show a nonzero boom/bust: {cycle:?}"
+    );
+    let tender = transmit
+        .lines()
+        .find(|line| line.starts_with("tender: "))
+        .expect("the dashboard prints a tender banner");
+    assert!(
+        tender.contains("wage fiat-and-specie")
+            && tender.contains("bank-repayment par-all")
+            && tender.contains("issuer-repayment fiat-only"),
+        "the tender banner surfaces the active tender policies: {tender:?}"
+    );
+
+    let refusal = viewer::run_dashboard("wage-refusal-cycle", 80, 0xC0FFEE)
+        .expect("wage-refusal-cycle dashboard");
+    let cycle = refusal
+        .lines()
+        .find(|line| line.starts_with("cycle: "))
+        .expect("the wage-refusal-cycle dashboard prints a cycle banner");
+    assert!(
+        cycle.contains("wages specie-only") && cycle.contains("inert"),
+        "specie-only wages must render the credit inert: {cycle:?}"
+    );
+    assert!(
+        cycle.contains("boom 0")
+            && cycle.contains("bust 0")
+            && cycle.contains("capital consumed 0"),
+        "the inert control must show no boom/bust/capital: {cycle:?}"
+    );
+}
+
+/// Short-horizon cycle dashboards must not call an already-booming run `inert`: the
+/// G8c-2 inert label is reserved for issued credit that fails to transmit through the
+/// wage surface.
+#[test]
+fn short_horizon_cycle_dashboard_distinguishes_transmitting_from_inert() {
+    // Sweep the pre-bust horizons, including the ticks 3-4 window where fiat credit has
+    // already circulated but no boom project has broken ground yet: a fiat-legal wage
+    // tender accepts the fiat, so those runs are `pending`/`transmitting`, never `inert`
+    // (which is reserved for the specie-only wage-refusal control).
+    for ticks in [3, 4, 5] {
+        let output = viewer::run_dashboard("wage-tender-cycle", ticks, 0xC0FFEE)
+            .expect("short wage-tender-cycle dashboard");
+        let cycle = output
+            .lines()
+            .find(|line| line.starts_with("cycle: "))
+            .expect("the cycle dashboard prints a cycle banner");
+        assert!(
+            !cycle.contains("inert"),
+            "an active fiat-legal cycle must not be mislabeled inert at ticks {ticks}: {cycle:?}"
+        );
+        assert!(
+            cycle.contains("transmitting") || cycle.contains("pending"),
+            "a short active cycle should be marked transmitting or pending at ticks {ticks}: {cycle:?}"
+        );
+    }
+
+    let sound =
+        viewer::run_dashboard("sound-money", 5, 0xC0FFEE).expect("short sound-money dashboard");
+    let cycle = sound
+        .lines()
+        .find(|line| line.starts_with("cycle: "))
+        .expect("the sound-money dashboard prints a cycle banner");
+    assert!(
+        cycle.contains("no-credit"),
+        "the sound-money control has no credit, not inert credit: {cycle:?}"
+    );
+}
+
+/// G8c-2: the spot and debt tender benches surface their per-surface settlement split,
+/// and the policy flips the medium (fiat vs specie) while the broad money is unchanged —
+/// the composition-not-totals proof, in the viewer. The repayment benches surface the
+/// same active-policy mechanism and the accepted/refused repayment medium.
+#[test]
+fn tender_bench_dashboards_show_composition_not_totals() {
+    let spot_legal =
+        viewer::run_dashboard("spot-tender-legal", 12, 0xC0FFEE).expect("spot-tender-legal");
+    let spot_refusal =
+        viewer::run_dashboard("spot-tender-refusal", 12, 0xC0FFEE).expect("spot-tender-refusal");
+
+    let tender_of = |output: &str| -> String {
+        output
+            .lines()
+            .find(|line| line.starts_with("tender: "))
+            .expect("a finance dashboard prints a tender banner")
+            .to_string()
+    };
+    let legal = tender_of(&spot_legal);
+    let refusal = tender_of(&spot_refusal);
+    // Acceptance settles the held fiat on the spot surface; refusal settles specie.
+    assert!(
+        legal.contains("spot settled fiat 7 / specie 0"),
+        "legal-tender spot must settle in fiat: {legal:?}"
+    );
+    assert!(
+        refusal.contains("spot settled fiat 0 / specie 7"),
+        "specie-only spot must refuse the fiat and settle in specie: {refusal:?}"
+    );
+    // The broad money is identical — only the composition flipped.
+    assert!(
+        legal.contains("broad money 24") && refusal.contains("broad money 24"),
+        "the spot tender changes composition, never the broad money: {legal:?} / {refusal:?}"
+    );
+
+    // The debt surface mirrors it.
+    let debt_legal =
+        viewer::run_dashboard("debt-tender-legal", 12, 0xC0FFEE).expect("debt-tender-legal");
+    let debt_refusal =
+        viewer::run_dashboard("debt-tender-refusal", 12, 0xC0FFEE).expect("debt-tender-refusal");
+    assert!(tender_of(&debt_legal).contains("debt settled fiat 4 / specie 0"));
+    assert!(tender_of(&debt_refusal).contains("debt settled fiat 0 / specie 4"));
+
+    let bank_legal = viewer::run_dashboard("bank-repayment-tender-legal", 5, 0xC0FFEE)
+        .expect("bank-repayment-tender-legal");
+    let bank_refusal = viewer::run_dashboard("bank-repayment-tender-refusal", 5, 0xC0FFEE)
+        .expect("bank-repayment-tender-refusal");
+    let legal = tender_of(&bank_legal);
+    let refusal = tender_of(&bank_refusal);
+    assert!(
+        legal.contains("bank-repayment bank-claims-and-specie")
+            && legal.contains("bank-repayment settled fiat 0 / claims 1 / specie 0")
+            && legal.contains("credit retired 1"),
+        "bank-claim repayment tender must accept claims and retire credit: {legal:?}"
+    );
+    assert!(
+        refusal.contains("bank-repayment specie-only")
+            && refusal.contains("bank-repayment settled fiat 0 / claims 0 / specie 0")
+            && refusal.contains("credit retired 0"),
+        "specie-only bank repayment must refuse the held claim: {refusal:?}"
+    );
+
+    let issuer_legal = viewer::run_dashboard("issuer-repayment-tender-legal", 14, 0xC0FFEE)
+        .expect("issuer-repayment-tender-legal");
+    let issuer_refusal = viewer::run_dashboard("issuer-repayment-tender-refusal", 14, 0xC0FFEE)
+        .expect("issuer-repayment-tender-refusal");
+    let legal = tender_of(&issuer_legal);
+    let refusal = tender_of(&issuer_refusal);
+    assert!(
+        legal.contains("issuer-repayment fiat-only")
+            && legal.contains("issuer-repayment settled fiat 1 / specie 0")
+            && legal.contains("credit retired 1"),
+        "issuer repayment tender must accept returned fiat and retire credit: {legal:?}"
+    );
+    assert!(
+        refusal.contains("issuer-repayment fiat-refused")
+            && refusal.contains("issuer-repayment settled fiat 0 / specie 0")
+            && refusal.contains("credit retired 0"),
+        "fiat-refused issuer repayment must refuse the held fiat: {refusal:?}"
+    );
+}
+
 #[test]
 fn lineages_dashboard_surfaces_demography() {
     // The G4b demography dashboard surfaces population, births/deaths, and per-lineage

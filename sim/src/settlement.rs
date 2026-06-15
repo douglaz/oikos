@@ -187,6 +187,139 @@ pub enum CycleKind {
 pub struct CycleConfig {
     /// Which demonstration: the credit cycle or its sound-money control.
     pub kind: CycleKind,
+    /// The G8c-2 **tender policy** layered onto the cycle's settlement surfaces. The
+    /// *headline* knob is [`TenderPolicy::wage`]: under
+    /// [`LaborWageTender::FiatAndSpecie`] (or [`ParAll`](LaborWageTender::ParAll)) the
+    /// fiat-credit employers can pay fiat wages, so the fiat credit reaches workers and
+    /// the boom→bust transmits; under [`LaborWageTender::SpecieOnly`] fiat wages are
+    /// **refused**, the credit never enters the real economy, and the same issuance is
+    /// inert (no boom, no bust). [`TenderPolicy::default`] equals econ's defaults, so a
+    /// default cycle emits no tender events and is byte-identical to the G8c-1 cycle.
+    pub tender: TenderPolicy,
+}
+
+/// The G8c-2 **tender policy** — the set of media-acceptance levers, one per
+/// settlement surface, routed through econ's *unchanged* tender machinery (each
+/// surface settles through its policy's
+/// [`accepted_media`](econ::money::PublicSpotTender::accepted_media): a refused
+/// medium cannot settle there even if held; the active medium does). Tender gates
+/// **composition** (which medium settles a surface), never **totals** (no money is
+/// created or destroyed by the policy). Set by config here; the player-`Command`
+/// route is G9.
+///
+/// [`Default`] equals econ's per-surface defaults
+/// ([`ParAll`](PublicSpotTender::ParAll) for spot/wage/debt/bank-repayment,
+/// [`FiatOnly`](IssuerRepaymentTender::FiatOnly) for issuer-repayment); a config that
+/// leaves a knob at its default emits **no** `SetXTender` event for it, so a
+/// default-tender finance settlement is byte-identical to its G8c-1 form.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TenderPolicy {
+    /// Which media settle the **public spot** market (M11). Active on the spot bench.
+    pub spot: PublicSpotTender,
+    /// Which media settle **labor wages** (M17). The cycle's transmission valve.
+    pub wage: LaborWageTender,
+    /// Which media discharge **public debt** (M12). Active on the debt bench.
+    pub debt: PublicDebtTender,
+    /// Which media repay a **bank loan** (M15).
+    pub bank_repayment: BankRepaymentTender,
+    /// Which media the **issuer** accepts to repay fiat credit (M16).
+    pub issuer_repayment: IssuerRepaymentTender,
+}
+
+impl Default for TenderPolicy {
+    fn default() -> Self {
+        Self {
+            spot: PublicSpotTender::ParAll,
+            wage: LaborWageTender::ParAll,
+            debt: PublicDebtTender::ParAll,
+            bank_repayment: BankRepaymentTender::ParAll,
+            issuer_repayment: IssuerRepaymentTender::FiatOnly,
+        }
+    }
+}
+
+impl TenderPolicy {
+    /// The `SetXTender` events this policy layers onto a finance scenario — **one per
+    /// knob that differs from econ's default**, all at `Tick(0)` (set before any
+    /// surface settles), in a fixed surface order (spot, debt, bank-repayment,
+    /// issuer-repayment, wage). A knob left at its default emits nothing, so a
+    /// default `TenderPolicy` contributes zero events and the scenario is byte-identical
+    /// to the policy-free G8c-1 form. Reuses econ's `EventKind::SetXTender` unchanged.
+    fn tender_events(self) -> Vec<Event> {
+        let default = Self::default();
+        let mut events = Vec::new();
+        if self.spot != default.spot {
+            events.push(Event {
+                tick: Tick(0),
+                kind: EventKind::SetPublicSpotTender(self.spot),
+            });
+        }
+        if self.debt != default.debt {
+            events.push(Event {
+                tick: Tick(0),
+                kind: EventKind::SetPublicDebtTender(self.debt),
+            });
+        }
+        if self.bank_repayment != default.bank_repayment {
+            events.push(Event {
+                tick: Tick(0),
+                kind: EventKind::SetBankRepaymentTender(self.bank_repayment),
+            });
+        }
+        if self.issuer_repayment != default.issuer_repayment {
+            events.push(Event {
+                tick: Tick(0),
+                kind: EventKind::SetIssuerRepaymentTender(self.issuer_repayment),
+            });
+        }
+        if self.wage != default.wage {
+            events.push(Event {
+                tick: Tick(0),
+                kind: EventKind::SetLaborWageTender(self.wage),
+            });
+        }
+        events
+    }
+}
+
+/// Which settlement surface a [`TenderBench`] demonstrates — the G8c-2 tender
+/// **bench** wires the spot, debt, and repayment tenders as the same config-lever
+/// mechanism the wage×cycle headline uses, on econ's unchanged M11-M16 scenarios. A
+/// bench is a **finance** settlement with no spatial colony: econ sets up the held
+/// medium for the demonstrated surface, and that surface's tender decides whether it
+/// may settle there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BenchSurface {
+    /// The **public spot** market (M11): under `FiatAndSpecie` the held fiat settles
+    /// goods trades; under `SpecieOnly` it is refused and specie settles instead.
+    Spot,
+    /// **Public debt** discharge (M12): under `FiatAndSpecie` the seeded commodity
+    /// debt is paid in fiat; under `SpecieOnly` fiat is refused and it is paid in
+    /// specie. (The spot tender stays `SpecieOnly` so the debtor must hold its fiat
+    /// for the debt surface — the lab's M12 construction, reused.)
+    Debt,
+    /// **Bank-loan repayment** (M15): under `BankClaimsAndSpecie` the borrower's
+    /// unredeemable claim repays and retires bank credit; under `SpecieOnly` that
+    /// claim is refused and the debt defaults.
+    BankRepayment,
+    /// **Issuer-credit repayment** (M16): under `FiatOnly` the returned fiat retires
+    /// issuer credit; under `FiatRefused` the fiat is refused and the credit overhang
+    /// remains.
+    IssuerRepayment,
+}
+
+/// The G8c-2 **tender bench** overlay: a finance settlement that runs econ's
+/// unchanged tender scenarios (M11-M16) to demonstrate one tender surface's
+/// refusal-vs-acceptance. Paired refusal/acceptance benches show the policy gates
+/// **composition** (which medium settles), never **totals**. Reuses the same
+/// `SetXTender` lever as the cycle; only the base scenario (which exercises that
+/// surface) differs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TenderBench {
+    /// Which surface this bench demonstrates.
+    pub surface: BenchSurface,
+    /// The tender policy in force; the bench reads the knob for its surface.
+    pub tender: TenderPolicy,
 }
 
 /// Build the econ [`MarketScenario`] a [`CycleConfig`] runs. Both kinds share the
@@ -203,9 +336,15 @@ pub struct CycleConfig {
 ///
 /// Nothing here adds ABCT/regime/shadow logic to econ; it only authors the policy
 /// timeline (`SetRegime`/`SetIssuerPolicy`/`StopIssuerCredit`) the sim routes in.
-fn cycle_scenario(kind: CycleKind) -> MarketScenario {
+///
+/// G8c-2 layers the [`TenderPolicy`]'s non-default `SetXTender` events on top (at
+/// `Tick(0)`, before any surface settles). A default policy adds nothing, so a
+/// default cycle is byte-identical to the G8c-1 form; the wage knob is the headline
+/// (`SpecieOnly` wages refuse the fiat the cycle would otherwise transmit, rendering
+/// the same issuance inert).
+fn cycle_scenario(kind: CycleKind, tender: TenderPolicy) -> MarketScenario {
     let base = builtin_market_scenario(ScenarioName::EmergedGoldFiatCreditExpansion);
-    match kind {
+    let mut scenario = match kind {
         CycleKind::CreditCycle => {
             // Walk the regime ladder over time —
             // `SoundGold → FractionalConvertible → SuspendedConvertibility → Fiat` —
@@ -248,6 +387,85 @@ fn cycle_scenario(kind: CycleKind) -> MarketScenario {
                 events: Vec::new(),
                 ..base
             }
+        }
+    };
+    // G8c-2: layer the tender policy's non-default `SetXTender` events. A default
+    // policy adds nothing (so the G8c-1 cycle/control bytes are unchanged); the wage
+    // knob is the headline transmission valve.
+    scenario.events.extend(tender.tender_events());
+    scenario
+}
+
+/// Build the econ [`MarketScenario`] a [`TenderBench`] runs — econ's *unchanged*
+/// M11-M16 tender scenarios, with the bench's surface tender swapped in for the lab's
+/// baked default. Because each base scenario exercises the chosen surface with the
+/// refused/accepted medium already held, swapping the surface tender flips settlement
+/// composition: spot/debt benches leave totals fixed, while repayment benches route
+/// through econ's normal credit-retirement accounting. Reuses `builtin_market_scenario`
+/// + `SetXTender` unchanged; the sim only authors the lever.
+fn tender_bench_scenario(bench: TenderBench) -> MarketScenario {
+    match bench.surface {
+        BenchSurface::Spot => {
+            // The M11 base (fiat displacement + a spot tender). Replace its baked spot
+            // tender with the configured one so the bench is the config lever, not a
+            // fixed scenario.
+            let mut scenario = builtin_market_scenario(ScenarioName::EmergedGoldFiatLegalTender);
+            scenario
+                .events
+                .retain(|event| !matches!(event.kind, EventKind::SetPublicSpotTender(_)));
+            scenario.events.push(Event {
+                tick: Tick(0),
+                kind: EventKind::SetPublicSpotTender(bench.tender.spot),
+            });
+            scenario
+        }
+        BenchSurface::Debt => {
+            // The M12 base (fiat displacement + spot SpecieOnly + a seeded commodity
+            // debt + a debt tender). Replace the baked debt tender with the configured
+            // one; the spot-SpecieOnly and the SeedCommodityDebt events stay (they set
+            // up the surface), so the debtor must hold its fiat for the debt surface.
+            let mut scenario =
+                builtin_market_scenario(ScenarioName::EmergedGoldFiatDebtLegalTender);
+            scenario
+                .events
+                .retain(|event| !matches!(event.kind, EventKind::SetPublicDebtTender(_)));
+            scenario.events.push(Event {
+                tick: Tick(0),
+                kind: EventKind::SetPublicDebtTender(bench.tender.debt),
+            });
+            scenario
+        }
+        BenchSurface::BankRepayment => {
+            // The M15 base: a suspended bank borrower holds an unredeemable bank claim
+            // and a bank-loan repayment comes due. Replace the baked bank-repayment
+            // tender with the configured one; the due-tick event stays to exercise the
+            // repayment surface.
+            let mut scenario =
+                builtin_market_scenario(ScenarioName::EmergedGoldBankLoanRepaymentClaimTender);
+            scenario
+                .events
+                .retain(|event| !matches!(event.kind, EventKind::SetBankRepaymentTender(_)));
+            scenario.events.push(Event {
+                tick: Tick(4),
+                kind: EventKind::SetBankRepaymentTender(bench.tender.bank_repayment),
+            });
+            scenario
+        }
+        BenchSurface::IssuerRepayment => {
+            // The M16 base: an issuer-credit borrower holds fiat and a fiat-credit
+            // repayment comes due. Replace the baked issuer-repayment tender with the
+            // configured one; later reset events from the refusal proof are stripped so
+            // the bench's active policy remains the configured one for viewer readback.
+            let mut scenario =
+                builtin_market_scenario(ScenarioName::EmergedGoldIssuerRepaymentFiatTender);
+            scenario
+                .events
+                .retain(|event| !matches!(event.kind, EventKind::SetIssuerRepaymentTender(_)));
+            scenario.events.push(Event {
+                tick: Tick(13),
+                kind: EventKind::SetIssuerRepaymentTender(bench.tender.issuer_repayment),
+            });
+            scenario
         }
     }
 }
@@ -746,6 +964,22 @@ pub struct SettlementConfig {
     /// ledger. See [`CycleConfig`], [`SettlementConfig::credit_cycle`], and
     /// [`SettlementConfig::sound_money`].
     pub cycle: Option<CycleConfig>,
+    /// The G8c-2 **tender bench** overlay (one of the spot / debt / bank-repayment /
+    /// issuer-repayment tender surfaces, M11/M12/M15/M16), or `None` for every config
+    /// that is not a bench — which keeps them all byte-identical by construction (the
+    /// bench path is skipped entirely). When `Some`, the settlement is a **finance**
+    /// settlement (like the cycle): no spatial colony, its [`Society`] built from the
+    /// unchanged econ scenario that exercises that surface (M11/M12 from the
+    /// fiat-displacement scenarios, M15 from the suspended bank-loan-repayment scenario,
+    /// M16 from the fiat-credit issuer-repayment scenario) with the surface's tender
+    /// swapped in. Mutually exclusive with every spatial overlay and with [`Self::cycle`],
+    /// and requires the M3 ledger. See [`TenderBench`], [`BenchSurface`], and the
+    /// [`spot_tender_bench`](SettlementConfig::spot_tender_bench) /
+    /// [`debt_tender_bench`](SettlementConfig::debt_tender_bench) /
+    /// [`bank_repayment_tender_bench`](SettlementConfig::bank_repayment_tender_bench) /
+    /// [`issuer_repayment_tender_bench`](SettlementConfig::issuer_repayment_tender_bench)
+    /// constructors.
+    pub tender_bench: Option<TenderBench>,
 }
 
 impl SettlementConfig {
@@ -811,6 +1045,7 @@ impl SettlementConfig {
             m3: false,
             bank: None,
             cycle: None,
+            tender_bench: None,
         }
     }
 
@@ -878,6 +1113,10 @@ impl SettlementConfig {
             m3: true,
             cycle: Some(CycleConfig {
                 kind: CycleKind::CreditCycle,
+                // Default (econ-default) tender: the fiat-credit employers pay fiat
+                // wages under `ParAll`, so the cycle transmits exactly as G8c-1. A
+                // default policy emits no tender events, keeping these bytes identical.
+                tender: TenderPolicy::default(),
             }),
             ..Self::finance_base()
         }
@@ -896,6 +1135,131 @@ impl SettlementConfig {
             m3: true,
             cycle: Some(CycleConfig {
                 kind: CycleKind::SoundMoney,
+                tender: TenderPolicy::default(),
+            }),
+            ..Self::finance_base()
+        }
+    }
+
+    /// The G8c-2 **wage-tender cycle** — the headline. The G8c-1 credit cycle with
+    /// fiat wages as **legal tender** ([`LaborWageTender::FiatAndSpecie`]): the
+    /// fiat-credit employers can pay fiat wages, so the fiat credit reaches workers,
+    /// demand follows, and the boom→stop→bust transmits exactly as the cycle proved.
+    /// Paired with [`Self::wage_refusal_cycle`] it is the milestone's falsification
+    /// twin: the *only* difference is whether fiat wages are accepted, isolating the
+    /// wage surface as the transmission valve from credit to the structure of
+    /// production (the lab's M17 result, now in the spatial cycle).
+    pub fn wage_tender_cycle() -> Self {
+        Self {
+            m3: true,
+            cycle: Some(CycleConfig {
+                kind: CycleKind::CreditCycle,
+                tender: TenderPolicy {
+                    wage: LaborWageTender::FiatAndSpecie,
+                    ..TenderPolicy::default()
+                },
+            }),
+            ..Self::finance_base()
+        }
+    }
+
+    /// The G8c-2 **wage-refusal cycle** — the control. The same credit cycle and the
+    /// same fiat-credit issuance, but wages are **specie-only**
+    /// ([`LaborWageTender::SpecieOnly`]): the fiat-credit employers cannot pay fiat
+    /// wages, the credit never enters the real economy, and the same issuance is
+    /// **inert** — no boom, no bust, no capital consumed. Paired with
+    /// [`Self::wage_tender_cycle`] this is the proof the wage surface is the
+    /// transmission valve: if the cycle fired here, the wage gate would not be routing
+    /// settlement. (The printed fiat still round-trips back to the issuer — conserved,
+    /// never leaked.)
+    pub fn wage_refusal_cycle() -> Self {
+        Self {
+            m3: true,
+            cycle: Some(CycleConfig {
+                kind: CycleKind::CreditCycle,
+                tender: TenderPolicy {
+                    wage: LaborWageTender::SpecieOnly,
+                    ..TenderPolicy::default()
+                },
+            }),
+            ..Self::finance_base()
+        }
+    }
+
+    /// The G8c-2 **spot-tender bench** — the public spot market (M11) wired as the
+    /// same config lever. A finance settlement on econ's fiat-displacement scenario:
+    /// the issuer prints fiat the first receivers then try to spend on goods.
+    /// `FiatAndSpecie` lets the held fiat settle those spot trades; `SpecieOnly`
+    /// refuses it and specie settles instead — composition changes, the printed fiat
+    /// and the specie base do not. Pass the spot tender to demonstrate either side.
+    pub fn spot_tender_bench(spot: PublicSpotTender) -> Self {
+        Self {
+            m3: true,
+            tender_bench: Some(TenderBench {
+                surface: BenchSurface::Spot,
+                tender: TenderPolicy {
+                    spot,
+                    ..TenderPolicy::default()
+                },
+            }),
+            ..Self::finance_base()
+        }
+    }
+
+    /// The G8c-2 **debt-tender bench** — public debt discharge (M12) wired as the same
+    /// config lever. A finance settlement on econ's fiat-displacement scenario with a
+    /// seeded commodity debt (spot stays specie-only, so the debtor must hold its fiat
+    /// for the debt surface). `FiatAndSpecie` lets the debt be paid in fiat;
+    /// `SpecieOnly` refuses it and it is paid in specie — composition changes, totals
+    /// do not. Pass the debt tender to demonstrate either side.
+    pub fn debt_tender_bench(debt: PublicDebtTender) -> Self {
+        Self {
+            m3: true,
+            tender_bench: Some(TenderBench {
+                surface: BenchSurface::Debt,
+                tender: TenderPolicy {
+                    debt,
+                    ..TenderPolicy::default()
+                },
+            }),
+            ..Self::finance_base()
+        }
+    }
+
+    /// The G8c-2 **bank-repayment tender bench** — bank-loan repayment (M15) wired as
+    /// the same config lever. A finance settlement on econ's suspended-redemption
+    /// repayment proof: the borrower holds a bank claim. `BankClaimsAndSpecie` lets
+    /// that claim repay and retire bank credit; `SpecieOnly` refuses it, so the debt
+    /// defaults with the claim still held. Pass the bank-repayment tender to
+    /// demonstrate either side.
+    pub fn bank_repayment_tender_bench(bank_repayment: BankRepaymentTender) -> Self {
+        Self {
+            m3: true,
+            tender_bench: Some(TenderBench {
+                surface: BenchSurface::BankRepayment,
+                tender: TenderPolicy {
+                    bank_repayment,
+                    ..TenderPolicy::default()
+                },
+            }),
+            ..Self::finance_base()
+        }
+    }
+
+    /// The G8c-2 **issuer-repayment tender bench** — issuer-credit repayment (M16)
+    /// wired as the same config lever. A finance settlement on econ's fiat-credit
+    /// repayment proof: the borrower holds fiat from issuer credit. `FiatOnly` retires
+    /// the returned fiat; `FiatRefused` refuses it, so the debt defaults and the credit
+    /// overhang remains. Pass the issuer-repayment tender to demonstrate either side.
+    pub fn issuer_repayment_tender_bench(issuer_repayment: IssuerRepaymentTender) -> Self {
+        Self {
+            m3: true,
+            tender_bench: Some(TenderBench {
+                surface: BenchSurface::IssuerRepayment,
+                tender: TenderPolicy {
+                    issuer_repayment,
+                    ..TenderPolicy::default()
+                },
             }),
             ..Self::finance_base()
         }
@@ -965,6 +1329,7 @@ impl SettlementConfig {
             m3: false,
             bank: None,
             cycle: None,
+            tender_bench: None,
         }
     }
 
@@ -1038,6 +1403,7 @@ impl SettlementConfig {
             m3: false,
             bank: None,
             cycle: None,
+            tender_bench: None,
         }
     }
 
@@ -1151,6 +1517,7 @@ impl SettlementConfig {
             m3: false,
             bank: None,
             cycle: None,
+            tender_bench: None,
         }
     }
 
@@ -1286,6 +1653,7 @@ impl SettlementConfig {
             }),
             bank: None,
             cycle: None,
+            tender_bench: None,
         }
     }
 
@@ -1529,6 +1897,7 @@ impl SettlementConfig {
             }),
             bank: None,
             cycle: None,
+            tender_bench: None,
         }
     }
 
@@ -1882,6 +2251,14 @@ pub struct Settlement {
     /// live M3 records, kept only so repeated viewer/test reads do not rerun the same
     /// credit-disabled replay.
     shadow_cycle_cache: RefCell<Option<ShadowCycleMetrics>>,
+    /// The G8c-2 **tender bench** runtime, or `None` for every non-bench settlement
+    /// (the bench path is then skipped, so the run is byte-identical to G8c-1). When
+    /// `Some`, the settlement is a finance settlement (like the cycle) whose `society`
+    /// runs the unchanged econ scenario for its surface (the M11/M12 fiat-displacement,
+    /// M15 bank-loan-repayment, or M16 issuer-repayment scenario) to demonstrate that
+    /// surface's refusal-vs-acceptance. Mutually exclusive with [`Self::cycle`]. Retains
+    /// the surface + base scenario for the canonical-bytes determinism surface.
+    bench: Option<BenchRuntime>,
 }
 
 /// The G8c-1 credit-cycle runtime (held on a finance [`Settlement`]). Reused econ
@@ -1893,6 +2270,21 @@ struct CycleRuntime {
     /// The econ scenario the society was built from — cloned and run credit-disabled
     /// to get the shadow natural-rate baseline (`gap = shadow − market`). Cloned per
     /// shadow query (a read-only replay), so the live run is never perturbed.
+    scenario: MarketScenario,
+}
+
+/// The G8c-2 tender-bench runtime (held on a finance [`Settlement`]). Reused econ
+/// machinery enforces the tender; this only retains what the sim needs to **measure**
+/// the surface's settlement: which surface, and the base scenario (for the canonical
+/// determinism surface + the run length).
+struct BenchRuntime {
+    /// Which surface this bench demonstrates.
+    surface: BenchSurface,
+    /// The unchanged econ scenario the society was built from for this surface (the
+    /// M11/M12 fiat-displacement, M15 bank-loan-repayment, or M16 issuer-repayment
+    /// scenario), with the surface's tender swapped in. Retained so the canonical bytes
+    /// distinguish the benches from one another and carry the policy that steers
+    /// settlement.
     scenario: MarketScenario,
 }
 
@@ -1944,11 +2336,11 @@ impl Settlement {
     /// randomness (per-colonist culture) is drawn here; neither loop draws any.
     /// Deterministic: same `(seed, config)` → byte-identical settlement.
     pub fn generate(seed: u64, config: &SettlementConfig) -> Self {
-        // G8c-1: a credit-cycle (finance) settlement is built from econ's unchanged
-        // credit-ladder scenario, not a spatial colony — branch before the spatial
-        // setup. The guards live in `generate_finance`.
-        if let Some(cycle) = config.cycle {
-            return Self::generate_finance(seed, config, cycle);
+        // G8c-1/G8c-2: a finance settlement (the credit cycle or a tender bench) is
+        // built from econ's unchanged scenario, not a spatial colony — branch before
+        // the spatial setup. The guards live in `generate_finance`.
+        if config.cycle.is_some() || config.tender_bench.is_some() {
+            return Self::generate_finance(seed, config);
         }
         assert!(
             config.gatherers == 0 || !config.nodes.is_empty(),
@@ -2663,10 +3055,12 @@ impl Settlement {
             // G8b: the chartered-bank config (or `None`). A detached copy — the bank
             // entity itself lives in `society.banks`; this drives `run_bank_phase`.
             bank: config.bank,
-            // G8c-1: a spatial settlement runs no credit cycle (the finance path
-            // returns early from `generate`), so this is always `None` here.
+            // G8c-1/G8c-2: a spatial settlement runs no credit cycle and no tender
+            // bench (the finance path returns early from `generate`), so these are
+            // always `None` here.
             cycle: None,
             shadow_cycle_cache: RefCell::new(None),
+            bench: None,
         }
     }
 
@@ -2675,13 +3069,17 @@ impl Settlement {
     /// spatial colony — the society IS the cycle, and [`Settlement::econ_tick`] just
     /// steps it. The shadow scenario is retained so the natural-rate baseline can be
     /// replayed on demand.
-    fn generate_finance(seed: u64, config: &SettlementConfig, cycle: CycleConfig) -> Self {
-        // Scope: G8c-1 ships only the curated credit-cycle / sound-money finance
-        // settlements. A finance settlement requires the M3 ledger and is mutually
-        // exclusive with every spatial overlay — its colony is empty by construction.
+    fn generate_finance(seed: u64, config: &SettlementConfig) -> Self {
+        // Scope: a finance settlement is either the G8c-1 credit cycle/control or a
+        // G8c-2 tender bench. It requires the M3 ledger and is mutually exclusive with
+        // every spatial overlay — its colony is empty by construction.
         assert!(
             config.m3,
-            "a credit-cycle (G8c-1) settlement requires the M3 ledger (m3 = true)"
+            "a finance (G8c-1/G8c-2) settlement requires the M3 ledger (m3 = true)"
+        );
+        assert!(
+            !(config.cycle.is_some() && config.tender_bench.is_some()),
+            "a finance settlement is either the credit cycle or a tender bench, not both"
         );
         assert!(
             config.chain.is_none()
@@ -2689,20 +3087,34 @@ impl Settlement {
                 && config.barter.is_none()
                 && config.bank.is_none()
                 && config.resident_traders.is_empty(),
-            "a credit-cycle (G8c-1) settlement is a finance settlement with no spatial \
-             overlay (chain/demography/barter/bank/resident_traders); the cycle runs in \
+            "a finance (G8c-1/G8c-2) settlement has no spatial overlay \
+             (chain/demography/barter/bank/resident_traders); the demonstration runs in \
              the econ society"
         );
         assert!(
             config.gatherers == 0 && config.consumers == 0 && config.nodes.is_empty(),
-            "a credit-cycle (G8c-1) settlement has no spatial colony (no \
-             gatherers/consumers/nodes); use SettlementConfig::credit_cycle / sound_money"
+            "a finance (G8c-1/G8c-2) settlement has no spatial colony (no \
+             gatherers/consumers/nodes); use the credit_cycle / sound_money / \
+             *_tender_* constructors"
         );
 
-        // Build the society from econ's credit-ladder scenario. The same scenario is
-        // stamped with this run's seed so the cycle is reproducible per `(seed,
-        // config)`, and retained (credit-disabled) for the shadow replay.
-        let mut scenario = cycle_scenario(cycle.kind);
+        // Build the society from econ's unchanged scenario — the credit-ladder cycle
+        // (with its tender policy layered in) or a fiat-displacement tender bench. The
+        // scenario is stamped with this run's seed so the demonstration is reproducible
+        // per `(seed, config)`; the cycle additionally retains it (credit-disabled) for
+        // the shadow replay.
+        let (mut scenario, cycle_runtime, bench_runtime) = match (config.cycle, config.tender_bench)
+        {
+            (Some(cycle), None) => {
+                let scenario = cycle_scenario(cycle.kind, cycle.tender);
+                (scenario, Some(cycle.kind), None)
+            }
+            (None, Some(bench)) => {
+                let scenario = tender_bench_scenario(bench);
+                (scenario, None, Some(bench.surface))
+            }
+            _ => unreachable!("the finance branch is taken only with a cycle or a bench"),
+        };
         scenario.seed = seed;
         let mut society = Society::from_scenario(scenario.clone());
         society.enable_consumption_log();
@@ -2729,10 +3141,11 @@ impl Settlement {
             },
             exchange,
             carry_cap: config.carry_cap,
-            // No spatial goods are tracked: the cycle's goods live inside econ's own
-            // (conserving) market + project machinery, and the finance settlement's
-            // conservation is the M3 ledger reconcile + the fiat base identity. An
-            // empty set makes the per-tick whole-system receipt vacuously hold.
+            // No spatial goods are tracked: the demonstration's goods live inside
+            // econ's own (conserving) market + project machinery, and the finance
+            // settlement's conservation is the M3 ledger reconcile + the fiat base
+            // identity. An empty set makes the per-tick whole-system receipt vacuously
+            // hold.
             goods: Vec::new(),
             money_rejection_goods: Vec::new(),
             pending_deposits: BTreeMap::new(),
@@ -2752,11 +3165,12 @@ impl Settlement {
             knowledge: 0,
             tier2_unlocked_at: None,
             bank: None,
-            cycle: Some(CycleRuntime {
-                kind: cycle.kind,
-                scenario,
+            cycle: cycle_runtime.map(|kind| CycleRuntime {
+                kind,
+                scenario: scenario.clone(),
             }),
             shadow_cycle_cache: RefCell::new(None),
+            bench: bench_runtime.map(|surface| BenchRuntime { surface, scenario }),
         }
     }
 
@@ -4663,6 +5077,193 @@ impl Settlement {
             .is_some_and(|metrics| metrics.structure_rose_above_shadow)
     }
 
+    /// Whether the credit cycle actually **fired** — a boom started *and* the bust
+    /// abandoned a malinvested project. The headline outcome: `true` under fiat-legal
+    /// wages (the credit transmits), `false` under specie-only wages (the same credit
+    /// is inert). `false` for the sound-money control and every non-cycle settlement.
+    pub fn cycle_fired(&self) -> bool {
+        self.boom_projects_started() > 0 && self.bust_abandoned_projects() > 0
+    }
+
+    // ---- G8c-2 tender-policy surface -------------------------------------
+
+    /// Whether this settlement runs the G8c-2 **tender bench** overlay (a finance
+    /// settlement demonstrating one tender surface's refusal-vs-acceptance). `false`
+    /// for the cycle and every spatial settlement.
+    pub fn is_tender_bench(&self) -> bool {
+        self.bench.is_some()
+    }
+
+    /// Which tender surface the bench demonstrates ([`BenchSurface`]), or `None` for a
+    /// non-bench settlement.
+    pub fn bench_surface(&self) -> Option<BenchSurface> {
+        self.bench.as_ref().map(|bench| bench.surface)
+    }
+
+    /// The **active** public-spot tender — which media may settle the spot market
+    /// (reused from econ's society state; the viewer surfaces it). Reads the live
+    /// policy, so a config that set it, or a scenario event that changed it, both show.
+    pub fn public_spot_tender(&self) -> PublicSpotTender {
+        self.society.public_spot_tender
+    }
+
+    /// The **active** labor-wage tender — which media may pay wages. The cycle's
+    /// transmission valve: `SpecieOnly` refuses the fiat the cycle would transmit.
+    pub fn labor_wage_tender(&self) -> LaborWageTender {
+        self.society.labor_wage_tender
+    }
+
+    /// The **active** public-debt tender — which media may discharge public debt.
+    pub fn public_debt_tender(&self) -> PublicDebtTender {
+        self.society.public_debt_tender
+    }
+
+    /// The **active** bank-repayment tender — which media may repay a bank loan.
+    pub fn bank_repayment_tender(&self) -> BankRepaymentTender {
+        self.society.bank_repayment_tender
+    }
+
+    /// The **active** issuer-repayment tender — which media the issuer accepts to
+    /// repay fiat credit.
+    pub fn issuer_repayment_tender(&self) -> IssuerRepaymentTender {
+        self.society.issuer_repayment_tender
+    }
+
+    /// Total **fiat** paid out as wages over the run (summed from econ's wage-payment
+    /// audit). Positive when fiat wages are legal tender and the employers hold fiat;
+    /// `Gold::ZERO` when wages are specie-only (the fiat is refused, so no wage trade
+    /// settles in fiat). The wage surface's composition signal — gating, not totals.
+    pub fn wage_fiat_settled(&self) -> Gold {
+        self.society
+            .wage_payment_audit
+            .iter()
+            .fold(Gold::ZERO, |sum, row| sum.saturating_add(row.public_fiat))
+    }
+
+    /// Total **specie** paid out as wages over the run (summed from the wage-payment
+    /// audit).
+    pub fn wage_specie_settled(&self) -> Gold {
+        self.society
+            .wage_payment_audit
+            .iter()
+            .fold(Gold::ZERO, |sum, row| sum.saturating_add(row.public_specie))
+    }
+
+    /// Total **fiat** that settled the **spot** market over the run (summed from
+    /// econ's spot-payment audit). Positive when the spot tender accepts fiat and the
+    /// buyers hold it; `Gold::ZERO` when the spot tender refuses fiat (specie settles
+    /// instead). The spot surface's composition signal.
+    pub fn spot_fiat_settled(&self) -> Gold {
+        self.society
+            .payment_audit
+            .iter()
+            .fold(Gold::ZERO, |sum, row| sum.saturating_add(row.public_fiat))
+    }
+
+    /// Total **specie** that settled the **spot** market over the run (summed from the
+    /// spot-payment audit).
+    pub fn spot_specie_settled(&self) -> Gold {
+        self.society
+            .payment_audit
+            .iter()
+            .fold(Gold::ZERO, |sum, row| sum.saturating_add(row.public_specie))
+    }
+
+    /// Total **fiat** that discharged **public debt** over the run (summed from econ's
+    /// debt-payment audit). Positive when the debt tender accepts fiat and the debtor
+    /// holds it; `Gold::ZERO` when the debt tender refuses fiat (specie settles).
+    pub fn debt_fiat_settled(&self) -> Gold {
+        self.society
+            .debt_payment_audit
+            .iter()
+            .fold(Gold::ZERO, |sum, row| sum.saturating_add(row.public_fiat))
+    }
+
+    /// Total **specie** that discharged **public debt** over the run (summed from the
+    /// debt-payment audit).
+    pub fn debt_specie_settled(&self) -> Gold {
+        self.society
+            .debt_payment_audit
+            .iter()
+            .fold(Gold::ZERO, |sum, row| sum.saturating_add(row.public_specie))
+    }
+
+    /// Total **fiat** that repaid **bank loans** over the run (summed from econ's
+    /// bank-repayment audit). Usually zero in the M15 claim-tender bench; exposed so
+    /// the repayment surface has the same read-only composition signal as spot/debt.
+    pub fn bank_repayment_fiat_settled(&self) -> Gold {
+        self.society
+            .bank_repayment_audit
+            .iter()
+            .fold(Gold::ZERO, |sum, row| sum.saturating_add(row.public_fiat))
+    }
+
+    /// Total **bank claims** accepted in **bank-loan repayment** over the run. Positive
+    /// when the bank-repayment tender accepts claims; zero when that medium is refused.
+    pub fn bank_repayment_claims_settled(&self) -> Gold {
+        self.society
+            .bank_repayment_audit
+            .iter()
+            .fold(Gold::ZERO, |sum, row| sum.saturating_add(row.demand_claims))
+    }
+
+    /// Total **specie** that repaid **bank loans** over the run.
+    pub fn bank_repayment_specie_settled(&self) -> Gold {
+        self.society
+            .bank_repayment_audit
+            .iter()
+            .fold(Gold::ZERO, |sum, row| sum.saturating_add(row.public_specie))
+    }
+
+    /// Total bank credit retired by bank-loan repayment over the run.
+    pub fn bank_repayment_credit_retired(&self) -> Gold {
+        self.society
+            .bank_repayment_audit
+            .iter()
+            .fold(Gold::ZERO, |sum, row| {
+                sum.saturating_add(row.credit_retired)
+            })
+    }
+
+    /// Total **fiat** that repaid **issuer credit** over the run. Positive when the
+    /// issuer-repayment tender accepts fiat; zero under `FiatRefused`.
+    pub fn issuer_repayment_fiat_settled(&self) -> Gold {
+        self.society
+            .issuer_repayment_audit
+            .iter()
+            .fold(Gold::ZERO, |sum, row| sum.saturating_add(row.public_fiat))
+    }
+
+    /// Total **specie** that repaid **issuer credit** over the run. Econ's issuer
+    /// repayment surface never accepts specie for credit retirement, so this remains
+    /// zero; it is exposed for viewer symmetry with the other surfaces.
+    pub fn issuer_repayment_specie_settled(&self) -> Gold {
+        self.society
+            .issuer_repayment_audit
+            .iter()
+            .fold(Gold::ZERO, |sum, row| sum.saturating_add(row.public_specie))
+    }
+
+    /// Total issuer credit retired by issuer-credit repayment over the run.
+    pub fn issuer_repayment_credit_retired(&self) -> Gold {
+        self.society
+            .issuer_repayment_audit
+            .iter()
+            .fold(Gold::ZERO, |sum, row| {
+                sum.saturating_add(row.credit_retired)
+            })
+    }
+
+    /// The settlement's **total broad money** (the TMS: specie + fiat + claims), or
+    /// `Gold::ZERO` without an M3 ledger. Tender gates *composition* (which medium
+    /// settles a surface); the spot/debt displacement twins hold this total equal
+    /// while the per-surface fiat/specie split flips (G8c-2 tests 4, 6).
+    pub fn total_broad_money(&self) -> Gold {
+        self.money_composition()
+            .map(|composition| composition.tms())
+            .unwrap_or(Gold::ZERO)
+    }
+
     fn shadow_cycle_metrics(&self) -> Option<ShadowCycleMetrics> {
         let cycle = self.cycle.as_ref()?;
 
@@ -5117,6 +5718,26 @@ impl Settlement {
             }
         }
 
+        // The G8c-2 tender-bench state. Omitted entirely for a non-bench settlement
+        // (so every pre-G8c-2 canonical layout is byte-identical); present for a bench
+        // so the surface + the tender-policy timeline its scenario carries are part of
+        // the "byte-identical iff future behaviour identical" identity (a spot bench
+        // and a debt bench, or two benches differing only in the surface tender, must
+        // never collide). The agent/money blocks above already carry the live ledger +
+        // balances; this adds the bench-specific policy steering.
+        if let Some(bench) = &self.bench {
+            out.push(bench_surface_tag(bench.surface));
+            push_cycle_runtime_bytes_for_scenario(&mut out, &bench.scenario);
+            out.push(public_spot_tender_tag(self.society.public_spot_tender));
+            out.push(public_debt_tender_tag(self.society.public_debt_tender));
+            out.push(bank_repayment_tender_tag(
+                self.society.bank_repayment_tender,
+            ));
+            out.push(issuer_repayment_tender_tag(
+                self.society.issuer_repayment_tender,
+            ));
+        }
+
         // Delivered exchange-stockpile units that are still awaiting econ credit
         // affect future transfers, so attribution belongs in the canonical state.
         out.extend_from_slice(&(self.pending_deposits.len() as u32).to_le_bytes());
@@ -5193,17 +5814,17 @@ impl Settlement {
                 out.push(u8::from(want.satisfied));
             }
 
-            // A finance (credit-cycle) settlement tracks no spatial goods (its goods
-            // live inside econ's own conserving market/project machinery), yet its
-            // agents hold and trade goods that DO steer the run — so serialize each
-            // agent's full (GoodId-sorted) stock directly, with GOLD excluded (it is
-            // money, already serialized as `agent.gold` + the money-system block). A
-            // spatial settlement keeps the original path: every physical good an agent
-            // can hold is already in the sorted `self.goods` (node goods ∪ starting
-            // goods; trade only relocates them and no recipe mints a new one here), so
-            // serialize against it directly, the debug check pinning that "complete and
-            // sorted" assumption.
-            if self.cycle.is_some() {
+            // A finance settlement (the G8c-1 credit cycle or a G8c-2 tender bench)
+            // tracks no spatial goods (its goods live inside econ's own conserving
+            // market/project machinery), yet its agents hold and trade goods that DO
+            // steer the run — so serialize each agent's full (GoodId-sorted) stock
+            // directly, with GOLD excluded (it is money, already serialized as
+            // `agent.gold` + the money-system block). A spatial settlement keeps the
+            // original path: every physical good an agent can hold is already in the
+            // sorted `self.goods` (node goods ∪ starting goods; trade only relocates
+            // them and no recipe mints a new one here), so serialize against it
+            // directly, the debug check pinning that "complete and sorted" assumption.
+            if self.cycle.is_some() || self.bench.is_some() {
                 let mut held: Vec<(GoodId, u32)> = agent
                     .stock
                     .positive_goods()
@@ -5969,14 +6590,32 @@ fn push_bank_bytes(out: &mut Vec<u8>, bank: &Bank) {
 
 fn push_cycle_runtime_bytes(out: &mut Vec<u8>, cycle: &CycleRuntime) {
     out.push(cycle_kind_tag(cycle.kind));
-    out.push(scenario_name_tag(cycle.scenario.scenario));
-    out.extend_from_slice(&cycle.scenario.seed.to_le_bytes());
-    out.extend_from_slice(&cycle.scenario.periods.to_le_bytes());
-    push_market_money_config_bytes(out, &cycle.scenario.money);
-    out.extend_from_slice(&(cycle.scenario.events.len() as u32).to_le_bytes());
-    for event in &cycle.scenario.events {
+    push_cycle_runtime_bytes_for_scenario(out, &cycle.scenario);
+}
+
+/// Encode a finance scenario's identity (name, seed, periods, money config, and the
+/// full event timeline — including the G8c-2 `SetXTender` levers). Shared by the
+/// cycle and the tender bench so a settlement's future behaviour is pinned by the
+/// policy timeline it carries.
+fn push_cycle_runtime_bytes_for_scenario(out: &mut Vec<u8>, scenario: &MarketScenario) {
+    out.push(scenario_name_tag(scenario.scenario));
+    out.extend_from_slice(&scenario.seed.to_le_bytes());
+    out.extend_from_slice(&scenario.periods.to_le_bytes());
+    push_market_money_config_bytes(out, &scenario.money);
+    out.extend_from_slice(&(scenario.events.len() as u32).to_le_bytes());
+    for event in &scenario.events {
         out.extend_from_slice(&event.tick.0.to_le_bytes());
         push_event_kind_bytes(out, &event.kind);
+    }
+}
+
+/// A stable serialization tag for a [`BenchSurface`] in [`Settlement::canonical_bytes`].
+fn bench_surface_tag(surface: BenchSurface) -> u8 {
+    match surface {
+        BenchSurface::Spot => 0,
+        BenchSurface::Debt => 1,
+        BenchSurface::BankRepayment => 2,
+        BenchSurface::IssuerRepayment => 3,
     }
 }
 
@@ -6762,6 +7401,64 @@ mod tests {
             public_spot_tender_tag(PublicSpotTender::BankClaimsAndSpecie),
             3
         );
+
+        assert_eq!(bench_surface_tag(BenchSurface::Spot), 0);
+        assert_eq!(bench_surface_tag(BenchSurface::Debt), 1);
+        assert_eq!(bench_surface_tag(BenchSurface::BankRepayment), 2);
+        assert_eq!(bench_surface_tag(BenchSurface::IssuerRepayment), 3);
+    }
+
+    /// The G8c-2 tender policy emits a `SetXTender` event **only** for a knob that
+    /// differs from econ's default — so a default policy contributes zero events
+    /// (keeping the G8c-1 finance bytes byte-identical), and each non-default knob
+    /// emits exactly its surface's event at `Tick(0)`.
+    #[test]
+    fn tender_events_emit_only_non_default_knobs() {
+        // The default policy is inert: no events at all.
+        assert!(TenderPolicy::default().tender_events().is_empty());
+
+        // A single non-default knob (the wage refusal) emits exactly one wage event.
+        let wage_only = TenderPolicy {
+            wage: LaborWageTender::SpecieOnly,
+            ..TenderPolicy::default()
+        };
+        let events = wage_only.tender_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].tick, Tick(0));
+        assert!(matches!(
+            events[0].kind,
+            EventKind::SetLaborWageTender(LaborWageTender::SpecieOnly)
+        ));
+
+        // Every surface set to a non-default emits one event per surface, in the fixed
+        // order spot, debt, bank-repayment, issuer-repayment, wage.
+        let all = TenderPolicy {
+            spot: PublicSpotTender::SpecieOnly,
+            wage: LaborWageTender::FiatAndSpecie,
+            debt: PublicDebtTender::SpecieOnly,
+            bank_repayment: BankRepaymentTender::SpecieOnly,
+            issuer_repayment: IssuerRepaymentTender::FiatRefused,
+        };
+        let kinds: Vec<_> = all.tender_events().into_iter().map(|e| e.kind).collect();
+        assert!(matches!(kinds[0], EventKind::SetPublicSpotTender(_)));
+        assert!(matches!(kinds[1], EventKind::SetPublicDebtTender(_)));
+        assert!(matches!(kinds[2], EventKind::SetBankRepaymentTender(_)));
+        assert!(matches!(kinds[3], EventKind::SetIssuerRepaymentTender(_)));
+        assert!(matches!(kinds[4], EventKind::SetLaborWageTender(_)));
+        assert_eq!(kinds.len(), 5);
+    }
+
+    /// The default `TenderPolicy` equals econ's per-surface defaults, so a default
+    /// cycle is byte-identical to the policy-free G8c-1 cycle (the finance-bytes
+    /// tripwire).
+    #[test]
+    fn default_tender_policy_matches_econ_defaults() {
+        let default = TenderPolicy::default();
+        assert_eq!(default.spot, PublicSpotTender::ParAll);
+        assert_eq!(default.wage, LaborWageTender::ParAll);
+        assert_eq!(default.debt, PublicDebtTender::ParAll);
+        assert_eq!(default.bank_repayment, BankRepaymentTender::ParAll);
+        assert_eq!(default.issuer_repayment, IssuerRepaymentTender::FiatOnly);
     }
 
     #[test]
