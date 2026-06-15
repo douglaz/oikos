@@ -197,8 +197,9 @@ fn frontier_progresses_through_eras() {
 ///    confirm the measured signals never make the era flap (it is monotonic).
 #[test]
 fn eras_do_not_flap() {
-    // Trigger arrays indexed by Era::rank: [Forager, Barter, Money, Specialist, Capital].
-    let all_on = [true, true, true, true, false];
+    // Trigger arrays indexed by Era::rank:
+    // [Forager, Barter, Money, Specialist, Capital, Credit, Modern].
+    let all_on = [true, true, true, true, false, false, false];
     let mut d = EraDetector::with_window(3);
 
     // Climb Forager → Barter → Money → Specialist over 9 sustained ticks (3 per rung).
@@ -213,7 +214,7 @@ fn eras_do_not_flap() {
     let specialist_onset = d.first_tick(Era::Specialist).expect("reached Specialist");
 
     // A SINGLE-TICK dip below the Specialist trigger — does not regress.
-    let specialist_off = [true, true, true, false, false];
+    let specialist_off = [true, true, true, false, false, false, false];
     d.apply_triggers(9, specialist_off);
     assert_eq!(
         d.current_era(),
@@ -449,9 +450,11 @@ fn era_labels_are_stable() {
     assert_eq!(Era::Money.label(), "money");
     assert_eq!(Era::Specialist.label(), "specialist");
     assert_eq!(Era::Capital.label(), "capital");
+    assert_eq!(Era::Credit.label(), "credit");
+    assert_eq!(Era::Modern.label(), "modern");
     // Strictly increasing ranks — the ladder order.
     let ranks: Vec<usize> = Era::ALL.iter().map(|e| e.rank()).collect();
-    assert_eq!(ranks, vec![0, 1, 2, 3, 4]);
+    assert_eq!(ranks, vec![0, 1, 2, 3, 4, 5, 6]);
 }
 
 /// Unit: the barter-volume floor is a real gate — a camp just below the floor stays
@@ -462,14 +465,14 @@ fn barter_volume_floor_gates_the_barter_rung() {
     // With the Barter trigger never set, the detector never leaves Forager.
     let mut below = EraDetector::with_window(2);
     for tick in 0..10 {
-        below.apply_triggers(tick, [true, false, false, false, false]);
+        below.apply_triggers(tick, [true, false, false, false, false, false, false]);
     }
     assert_eq!(below.current_era(), Era::Forager);
 
     // With it set and sustained over the window, it reaches Barter.
     let mut at = EraDetector::with_window(2);
     for tick in 0..10 {
-        at.apply_triggers(tick, [true, true, false, false, false]);
+        at.apply_triggers(tick, [true, true, false, false, false, false, false]);
     }
     assert_eq!(at.current_era(), Era::Barter);
 }

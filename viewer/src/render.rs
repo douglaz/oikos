@@ -169,9 +169,11 @@ pub struct DashboardRow {
     pub saleability_leader: String,
     pub money_good: String,
     pub promoted_this_tick: bool,
-    /// G6a era surfacing (rendered behind the era banner): the measured institutional
-    /// era at this tick (`forager`/`barter`/`money`/`specialist`/`capital`). Empty for
-    /// a non-emergent settlement (the era ladder measures the emergent path).
+    /// G6a/G8c-1 era surfacing (rendered behind the era banner): the measured
+    /// institutional era at this tick
+    /// (`forager`/`barter`/`money`/`specialist`/`capital`/`credit`/`modern`). Empty for
+    /// a settlement whose path the era ladder does not classify (a designated-money
+    /// non-finance settlement).
     pub era: String,
     /// G6b research surfacing (rendered behind `show_research`): the accumulated
     /// Knowledge this tick, the current tech tier, and the Knowledge produced this
@@ -179,6 +181,12 @@ pub struct DashboardRow {
     pub knowledge: u64,
     pub knowledge_produced: u64,
     pub tier: u8,
+    /// G8c-1 cycle surfacing (rendered behind `show_cycle`): the regime rung this tick
+    /// (the ladder descent — `sound-gold`/`fractional`/`suspended`/`fiat`) and the
+    /// measured shadow gap (shadow natural rate − market rate, bps; `None` if no rate
+    /// cleared on one side). Empty/`None` for a non-cycle settlement.
+    pub regime: String,
+    pub gap_bps: Option<i64>,
 }
 
 /// G6b research-banner summary: the settlement's final Knowledge level, current tech
@@ -203,6 +211,23 @@ pub struct DashboardBanners<'a> {
     pub research: Option<&'a ResearchSummary>,
     pub money: Option<&'a MoneySummary>,
     pub bank: Option<&'a BankSummary>,
+    pub cycle: Option<&'a CycleSummary>,
+}
+
+/// G8c-1 credit-cycle summary: the demonstration kind, the final regime rung, and the
+/// MEASURED cycle signals — the largest positive shadow gap, the boom project starts,
+/// the bust abandonments, the capital consumed, and the fiat base (issued − retired). A
+/// read-only digest rendered above the dashboard for a finance (cycle) settlement.
+/// `None` for any other. The credit cycle shows a positive gap and nonzero
+/// boom/bust/capital; the sound-money control shows all zeros (the falsification twin).
+pub struct CycleSummary {
+    pub kind: &'static str,
+    pub regime: &'static str,
+    pub max_gap_bps: i64,
+    pub boom_projects: u32,
+    pub bust_abandoned: u32,
+    pub capital_consumed: u64,
+    pub fiat_base: u64,
 }
 
 /// G8a/G8b M3 money-composition summary: the settlement's M3 ledger money broken into
@@ -355,6 +380,24 @@ pub fn format_dashboard(
             format_reserve_ratio(bank.reserve_ratio_bps),
         );
     }
+    // G8c-1 cycle banner: the regime rung, the measured shadow gap, and the boom/bust /
+    // capital-consumed / fiat-base signals. The credit cycle shows a positive gap and
+    // nonzero boom/bust/capital; the sound-money control shows all zeros. Shown only for
+    // a finance (cycle) settlement.
+    if let Some(cycle) = banners.cycle {
+        let _ = writeln!(
+            out,
+            "cycle: {} — regime {} · shadow gap(max) {} bps · boom {} · bust {} · \
+             capital consumed {} · fiat base {}",
+            cycle.kind,
+            cycle.regime,
+            cycle.max_gap_bps,
+            cycle.boom_projects,
+            cycle.bust_abandoned,
+            cycle.capital_consumed,
+            cycle.fiat_base,
+        );
+    }
     out.push('\n');
 
     // Headers: the per-tick fixed columns, then price/volume columns per tracked
@@ -404,6 +447,16 @@ pub fn format_dashboard(
     if show_era {
         headers.push("era".to_string());
         aligns.push(Align::Left);
+    }
+    // G8c-1 cycle columns: the regime rung this tick (the ladder descent) and the
+    // measured shadow gap (shadow natural rate − market rate, bps). Shown only for a
+    // finance (cycle) settlement.
+    let show_cycle = banners.cycle.is_some();
+    if show_cycle {
+        headers.push("regime".to_string());
+        headers.push("gap.bps".to_string());
+        aligns.push(Align::Left);
+        aligns.push(Align::Right);
     }
     headers.push("consv".to_string());
     headers.push("hung.max".to_string());
@@ -488,6 +541,13 @@ pub fn format_dashboard(
         }
         if show_era {
             cells.push(row.era.clone());
+        }
+        if show_cycle {
+            cells.push(row.regime.clone());
+            cells.push(match row.gap_bps {
+                Some(gap) => gap.to_string(),
+                None => "-".to_string(),
+            });
         }
         cells.push(consv);
         cells.push(hunger_max);

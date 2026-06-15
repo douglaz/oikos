@@ -272,6 +272,119 @@ fn m3_dashboard_surfaces_money_composition() {
     );
 }
 
+/// G8c-1: the credit-cycle dashboard surfaces the regime ladder descent, the measured
+/// shadow gap, the boom/bust indicators and capital consumed, and climbs the era ladder
+/// to Modern. The headline of the milestone, rendered.
+#[test]
+fn credit_cycle_dashboard_surfaces_the_cycle() {
+    let output = viewer::run_dashboard("credit-cycle", 60, 1).expect("credit-cycle dashboard");
+
+    // The cycle banner reports a positive shadow gap and a nonzero boom/bust/capital.
+    let cycle = output
+        .lines()
+        .find(|line| line.starts_with("cycle: "))
+        .expect("the credit-cycle dashboard prints a cycle banner");
+    assert!(
+        cycle.contains("credit-cycle") && cycle.contains("regime fiat"),
+        "the cycle banner omits the kind / Fiat regime: {cycle:?}"
+    );
+    assert!(
+        !cycle.contains("shadow gap(max) 0 bps"),
+        "the credit cycle must open a positive shadow gap: {cycle:?}"
+    );
+    assert!(
+        !cycle.contains("boom 0") && !cycle.contains("bust 0") && !cycle.contains("consumed 0"),
+        "the credit cycle must show a nonzero boom/bust/capital consumed: {cycle:?}"
+    );
+
+    // The era banner climbs to Modern through Credit.
+    let era = output
+        .lines()
+        .find(|line| line.starts_with("era: "))
+        .expect("the credit-cycle dashboard prints an era banner");
+    assert!(
+        era.contains("credit@") && era.contains("modern"),
+        "the credit-cycle era banner omits the credit→modern progression: {era:?}"
+    );
+
+    // The per-tick regime column descends the ladder
+    // (fractional → suspended → fiat) and the gap column opens positive then closes.
+    let headers = table_headers(&output);
+    let regime_col = headers
+        .iter()
+        .position(|header| header == "regime")
+        .expect("the credit-cycle dashboard includes a regime column");
+    let gap_col = headers
+        .iter()
+        .position(|header| header == "gap.bps")
+        .expect("the credit-cycle dashboard includes a gap column");
+    let rows = table_rows(&output);
+    assert_eq!(
+        rows[0][regime_col], "fractional",
+        "the ladder starts at fractional"
+    );
+    assert!(
+        rows.iter().any(|row| row[regime_col] == "suspended"),
+        "the regime column omits the SuspendedConvertibility rung"
+    );
+    assert!(
+        rows.iter().any(|row| row[regime_col] == "fiat"),
+        "the regime column never reaches Fiat"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row[gap_col].parse::<i64>().unwrap_or(0) > 0),
+        "the gap column never opens a positive gap"
+    );
+}
+
+/// G8c-1: the sound-money control dashboard shows no cycle — SoundGold throughout, a
+/// zero gap, and zero boom/bust/capital — and never reaches the finance eras. The
+/// falsification twin, rendered.
+#[test]
+fn sound_money_dashboard_shows_no_cycle() {
+    let output = viewer::run_dashboard("sound-money", 60, 1).expect("sound-money dashboard");
+
+    let cycle = output
+        .lines()
+        .find(|line| line.starts_with("cycle: "))
+        .expect("the sound-money dashboard prints a cycle banner");
+    assert!(
+        cycle.contains("sound-money") && cycle.contains("regime sound-gold"),
+        "the control banner omits the kind / SoundGold regime: {cycle:?}"
+    );
+    assert!(
+        cycle.contains("shadow gap(max) 0 bps")
+            && cycle.contains("boom 0")
+            && cycle.contains("bust 0")
+            && cycle.contains("capital consumed 0")
+            && cycle.contains("fiat base 0"),
+        "the control must show no cycle (gap 0, boom/bust/capital 0, no fiat): {cycle:?}"
+    );
+
+    // The era never reaches Credit/Modern (no credit, no fiat).
+    let era = output
+        .lines()
+        .find(|line| line.starts_with("era: "))
+        .expect("the sound-money dashboard prints an era banner");
+    assert!(
+        !era.contains("credit@") && !era.contains("modern@"),
+        "the control must not reach the finance eras: {era:?}"
+    );
+
+    // Every per-tick regime cell is sound-gold.
+    let headers = table_headers(&output);
+    let regime_col = headers
+        .iter()
+        .position(|header| header == "regime")
+        .expect("the sound-money dashboard includes a regime column");
+    let rows = table_rows(&output);
+    assert!(
+        rows.iter().all(|row| row[regime_col] == "sound-gold"),
+        "the control must stay SoundGold every tick"
+    );
+}
+
 #[test]
 fn lineages_dashboard_surfaces_demography() {
     // The G4b demography dashboard surfaces population, births/deaths, and per-lineage

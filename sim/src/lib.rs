@@ -96,8 +96,8 @@ pub use era::{
 pub use region::{Region, RegionConfig, RegionTickReport, RoadPlan, Route};
 pub use settlement::{
     recipe_adoption_pays, recipe_adoption_pays_for_money, BankConfig, BarterConfig, ChainConfig,
-    EconTickReport, EstateDestination, LineageStats, NodeSpec, Settlement, SettlementConfig,
-    TraderEndowment, Vocation, ECON_TICKS_PER_YEAR, FAST_TICKS_PER_ECON_TICK,
+    CycleConfig, CycleKind, EconTickReport, EstateDestination, LineageStats, NodeSpec, Settlement,
+    SettlementConfig, TraderEndowment, Vocation, ECON_TICKS_PER_YEAR, FAST_TICKS_PER_ECON_TICK,
 };
 
 /// Read-only re-exports of the `econ`/`life` types that make up the settlement's

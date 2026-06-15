@@ -123,6 +123,18 @@ const SCENARIOS: &[Scenario] = &[
             "G8b 100%-reserve control: the same bank at a full reserve ratio lends ZERO fiduciary, while deposits still circulate as claims",
         build: SettlementConfig::bank_full_reserve,
     },
+    Scenario {
+        name: "credit-cycle",
+        description:
+            "G8c-1: the Austrian business cycle — the regime descends to Fiat, cheap credit opens a shadow gap, the boom over-invests, credit stops, the bust abandons the malinvestment and consumes capital",
+        build: SettlementConfig::credit_cycle,
+    },
+    Scenario {
+        name: "sound-money",
+        description:
+            "G8c-1 sound-money control: SoundGold, no fiat, no credit expansion — gap ≈ 0, no boom, no bust, no capital consumed (the cycle is credit-driven)",
+        build: SettlementConfig::sound_money,
+    },
 ];
 
 fn build_near() -> SettlementConfig {

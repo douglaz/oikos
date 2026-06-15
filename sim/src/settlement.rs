@@ -57,6 +57,7 @@
 //! conserved total between colonists (the §4.3 rule; the report's gold
 //! checkpoints are the proof).
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use econ::agent::{Agent, AgentId, Role, Want, WantKind};
@@ -64,20 +65,28 @@ use econ::bank::{Bank, BankPolicy};
 use econ::bundle::{
     appraise_project_bundle_for_money, ProjectBundleCandidate, ProjectBundleEndowment,
 };
-use econ::cantillon::CantillonReceipt;
-use econ::capital::ProjectLineId;
+use econ::cantillon::{CantillonReceipt, CantillonRoute, CantillonSector};
+use econ::capital::{
+    M2Project, M2ProjectState, ProjectFundingPlan, ProjectLineId, ProjectOutputLot,
+};
 use econ::expect::PriceBelief;
 use econ::good::{Gold, GoodId, Horizon, Stock, FOOD, GOLD, NET, SALT, WOOD};
 use econ::ledger::BankId;
 use econ::menger::MengerianEmergence;
 use econ::money::{
-    DesignatedMoney, MarketMoneyConfig, MengerianConfig, PublicSpotTender, Regime, ReserveRatioBps,
+    BankRepaymentTender, DesignatedMoney, IssuerRepaymentTender, LaborWageTender,
+    MarketMoneyConfig, MengerianConfig, PublicDebtTender, PublicSpotTender, Regime,
+    ReserveRatioBps, TaxReceivability,
 };
 use econ::project::{Recipe, RecipeId, Tick};
-use econ::purpose::{CreditSource, ProjectPlanId};
+use econ::purpose::{CreditLender, CreditSource, DebtPurpose, ProjectPlanId};
 use econ::rng::Rng;
-use econ::scenario::{EventKind, MarketScenario, ScenarioName};
+use econ::scenario::{
+    builtin_market_scenario, Event, EventKind, MarketScenario, RedemptionRoute, ScenarioName,
+};
+use econ::shadow::run_credit_disabled_shadow;
 use econ::society::Society;
+use econ::timemarket::{DebtContract, DebtState};
 
 use life::{regenerate_scale, CultureParams, KnownGoods, NeedDynamics, NeedIntake, NeedState};
 
@@ -126,6 +135,121 @@ const G8B_FULL_RESERVE_BANK: BankConfig = BankConfig {
 
 fn is_supported_g8b_bank_charter(bank: BankConfig) -> bool {
     bank == G8B_FRACTIONAL_BANK || bank == G8B_FULL_RESERVE_BANK
+}
+
+/// The econ id of the (single) issuer the G8c-1 credit cycle routes through — the
+/// state that prints fiat / extends fiat-credit under the [`Regime::Fiat`] rung.
+/// The lab's `EmergedGoldFiatCreditExpansion` scenario seeds exactly this issuer.
+const ISSUER_ID: econ::ledger::IssuerId = econ::ledger::IssuerId(1);
+
+/// Which G8c-1 **finance demonstration** a [`SettlementConfig::cycle`] runs.
+///
+/// This is the climax slice (the Austrian business cycle in the colony game): the
+/// settlement routes the **regime ladder + fiat issuance** into econ's *unchanged*
+/// ABCT machinery and runs the **credit-disabled shadow** replay to measure the
+/// natural-rate gap. The two kinds are a falsification twin — same agents, same
+/// roundabout project line, the *only* difference is whether credit expands:
+///
+/// - [`CreditCycle`](CycleKind::CreditCycle): the regime descends to
+///   [`Regime::Fiat`], the issuer extends fiat-credit, the market rate falls below
+///   the shadow natural rate (a measured **gap**), capitalists over-invest in the
+///   long roundabout project (the **boom**), credit **stops**, the rate reasserts,
+///   the malinvested project is abandoned and capital is consumed (the **bust**).
+/// - [`SoundMoney`](CycleKind::SoundMoney): the **control** — `SoundGold`, no fiat,
+///   no credit expansion — so the gap stays ≈ 0, no boom forms, nothing is
+///   abandoned, and no capital is consumed. The proof the cycle is *credit*-driven,
+///   not an artifact of the production/spatial dynamics.
+///
+/// Reuses econ's `Regime` ladder, `SetRegime`/`SetIssuerPolicy`/`StopIssuerCredit`
+/// events, the boom/bust/abandonment/capital-consumption records, and the
+/// `run_credit_disabled_shadow` counterfactual — all UNCHANGED. G8c-1 only routes
+/// the sim's policy into them and reads the measured signals back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CycleKind {
+    /// Fiat-credit expansion → boom → stop → bust → capital consumed.
+    CreditCycle,
+    /// The sound-money control: `SoundGold`, no fiat, no credit, no cycle.
+    SoundMoney,
+}
+
+/// The G8c-1 **credit-cycle** overlay: the settlement runs the Austrian
+/// business-cycle demonstration (or its sound-money control) on econ's unchanged
+/// ABCT/regime/shadow machinery instead of a spatial colony.
+///
+/// A `cycle` settlement is a **finance** settlement: it has no gatherers/consumers
+/// and no spatial production. Its [`Society`] is built from econ's credit-ladder
+/// scenario (the lab's `EmergedGoldFiatCreditExpansion`), so the issuer, the
+/// roundabout project line, the regime ladder, and the credit-ladder agents are all
+/// reused unchanged; each econ tick the sim steps the society (the cycle runs
+/// endogenously) and reads the boom/bust/gap/capital-consumed signals back from the
+/// M3 records, with the credit-disabled shadow supplying the natural-rate baseline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CycleConfig {
+    /// Which demonstration: the credit cycle or its sound-money control.
+    pub kind: CycleKind,
+}
+
+/// Build the econ [`MarketScenario`] a [`CycleConfig`] runs. Both kinds share the
+/// lab's `EmergedGoldFiatCreditExpansion` agents, roundabout project line, and
+/// issuer (so they are a true falsification twin); they differ only in the **regime
+/// ladder + issuer policy** events:
+///
+/// - [`CycleKind::CreditCycle`] walks the full ladder
+///   `SoundGold → FractionalConvertible → SuspendedConvertibility → Fiat` and keeps
+///   the lab's `SetIssuerPolicy` (credit on) + `StopIssuerCredit` (the boom→stop),
+///   so the cycle fires exactly as the lab proved.
+/// - [`CycleKind::SoundMoney`] drops every regime/issuer event, so the society stays
+///   `SoundGold` with the issuer's default (disabled) policy — no fiat, no credit.
+///
+/// Nothing here adds ABCT/regime/shadow logic to econ; it only authors the policy
+/// timeline (`SetRegime`/`SetIssuerPolicy`/`StopIssuerCredit`) the sim routes in.
+fn cycle_scenario(kind: CycleKind) -> MarketScenario {
+    let base = builtin_market_scenario(ScenarioName::EmergedGoldFiatCreditExpansion);
+    match kind {
+        CycleKind::CreditCycle => {
+            // Walk the regime ladder over time —
+            // `SoundGold → FractionalConvertible → SuspendedConvertibility → Fiat` —
+            // so the descent is a visible, measured sequence (not an instantaneous
+            // jump). The lab's credit machinery is reused verbatim, only re-timed so
+            // the issuer is enabled the tick the regime reaches Fiat and stops a fixed
+            // window later — preserving the proven boom→stop→bust shape, shifted by the
+            // 2-tick ladder descent (`LADDER_SHIFT`).
+            const LADDER_SHIFT: u64 = 2;
+            let mut events = vec![
+                Event {
+                    tick: Tick(0),
+                    kind: EventKind::SetRegime(Regime::FractionalConvertible),
+                },
+                Event {
+                    tick: Tick(1),
+                    kind: EventKind::SetRegime(Regime::SuspendedConvertibility),
+                },
+            ];
+            // Re-time the lab's own events past the ladder descent: the regime reaches
+            // Fiat and the issuer's credit policy turns on at `LADDER_SHIFT`, and the
+            // stop slides by the same amount (keeping the lab's credit window length).
+            for event in &base.events {
+                events.push(Event {
+                    tick: Tick(event.tick.0 + LADDER_SHIFT),
+                    kind: event.kind.clone(),
+                });
+            }
+            MarketScenario {
+                periods: base.periods + LADDER_SHIFT,
+                events,
+                ..base
+            }
+        }
+        CycleKind::SoundMoney => {
+            // The control: strip every regime-descent / issuer-credit / fiat-print
+            // event, leaving a SoundGold specie economy with the same agents and the
+            // same (now never-funded) roundabout project line.
+            MarketScenario {
+                events: Vec::new(),
+                ..base
+            }
+        }
+    }
 }
 
 /// A colonist's role in the settlement's minimal division of labor.
@@ -611,6 +735,17 @@ pub struct SettlementConfig {
     /// no econ change. See [`BankConfig`] and [`SettlementConfig::bank`] /
     /// [`SettlementConfig::bank_full_reserve`].
     pub bank: Option<BankConfig>,
+    /// The G8c-1 **credit-cycle** overlay (the Austrian business cycle + regime
+    /// ladder + fiat), or `None` for every pre-G8c-1 config — which keeps them all
+    /// byte-identical by construction (the finance path is skipped entirely). When
+    /// `Some`, the settlement is a **finance** settlement: it has no spatial colony
+    /// (gatherers/consumers/chain), its [`Society`] is built from econ's unchanged
+    /// credit-ladder scenario, and each econ tick steps that society so the cycle
+    /// (or its sound-money control) runs endogenously. Mutually exclusive with every
+    /// spatial overlay (`chain`/`demography`/`barter`/`bank`) and requires the M3
+    /// ledger. See [`CycleConfig`], [`SettlementConfig::credit_cycle`], and
+    /// [`SettlementConfig::sound_money`].
+    pub cycle: Option<CycleConfig>,
 }
 
 impl SettlementConfig {
@@ -675,6 +810,7 @@ impl SettlementConfig {
             // `m3_settlement`, so every golden stays byte-identical.
             m3: false,
             bank: None,
+            cycle: None,
         }
     }
 
@@ -724,6 +860,57 @@ impl SettlementConfig {
         Self {
             bank: Some(G8B_FULL_RESERVE_BANK),
             ..Self::m3_settlement()
+        }
+    }
+
+    /// The G8c-1 **credit cycle** — the Austrian business cycle in the colony game.
+    /// A finance settlement (no spatial colony) whose [`Society`] runs econ's
+    /// unchanged credit-ladder scenario: the regime descends the ladder to
+    /// [`Regime::Fiat`], the issuer extends fiat-credit, the market rate falls below
+    /// the credit-disabled shadow natural rate (a measured **gap**), capitalists
+    /// over-invest in the long roundabout project (the **boom**), credit **stops**,
+    /// the rate reasserts, and the malinvested project is abandoned — consuming
+    /// capital (the **bust**). Every signal is MEASURED from the M3 records + the
+    /// shadow replay, never set. Paired with [`Self::sound_money`] it is the
+    /// milestone's headline + falsification twin. See [`CycleKind::CreditCycle`].
+    pub fn credit_cycle() -> Self {
+        Self {
+            m3: true,
+            cycle: Some(CycleConfig {
+                kind: CycleKind::CreditCycle,
+            }),
+            ..Self::finance_base()
+        }
+    }
+
+    /// The G8c-1 **sound-money control** — the falsification twin of
+    /// [`Self::credit_cycle`]. Same agents and the same roundabout project line, but
+    /// the regime stays [`Regime::SoundGold`] and the issuer never extends credit, so
+    /// there is no fiat and no credit expansion: the gap stays ≈ 0, no boom forms,
+    /// nothing is abandoned, and no capital is consumed. The proof the cycle is
+    /// *credit*-driven, not an artifact of the production/spatial dynamics — if the
+    /// control busts, the cycle is not coming from credit. See
+    /// [`CycleKind::SoundMoney`].
+    pub fn sound_money() -> Self {
+        Self {
+            m3: true,
+            cycle: Some(CycleConfig {
+                kind: CycleKind::SoundMoney,
+            }),
+            ..Self::finance_base()
+        }
+    }
+
+    /// The shared spatial shell of a finance (`cycle`) settlement: an empty colony
+    /// (no gatherers/consumers/nodes/chain/demography/barter). The cycle runs in the
+    /// econ society the finance branch of [`Settlement::generate`] installs, so the
+    /// spatial knobs are inert; this just gives the config a valid, colony-free base.
+    fn finance_base() -> Self {
+        Self {
+            gatherers: 0,
+            consumers: 0,
+            nodes: Vec::new(),
+            ..Self::viable()
         }
     }
 
@@ -777,6 +964,7 @@ impl SettlementConfig {
             barter: None,
             m3: false,
             bank: None,
+            cycle: None,
         }
     }
 
@@ -849,6 +1037,7 @@ impl SettlementConfig {
             barter: None,
             m3: false,
             bank: None,
+            cycle: None,
         }
     }
 
@@ -961,6 +1150,7 @@ impl SettlementConfig {
             barter: None,
             m3: false,
             bank: None,
+            cycle: None,
         }
     }
 
@@ -1095,6 +1285,7 @@ impl SettlementConfig {
                 consumer_medium_endowment: consumer_salt,
             }),
             bank: None,
+            cycle: None,
         }
     }
 
@@ -1337,6 +1528,7 @@ impl SettlementConfig {
                 consumer_medium_endowment: 80,
             }),
             bank: None,
+            cycle: None,
         }
     }
 
@@ -1677,6 +1869,43 @@ pub struct Settlement {
     /// tick. Held as a detached `Copy` of the config so the bank phase needs no
     /// borrow of the original config.
     bank: Option<BankConfig>,
+    /// The G8c-1 **credit-cycle** runtime, or `None` for every non-finance
+    /// settlement (the cycle path is then skipped entirely, so the run is
+    /// byte-identical to G8b). When `Some`, the settlement is a finance settlement:
+    /// `society` runs econ's credit-ladder scenario, every spatial phase is a no-op
+    /// (the colonist roster is empty), and each econ tick simply steps the society
+    /// so the cycle runs endogenously. Holds the base [`MarketScenario`] so the
+    /// credit-disabled **shadow** can be replayed for the natural-rate baseline.
+    cycle: Option<CycleRuntime>,
+    /// Cached, read-only shadow replay metrics for the current finance run length.
+    /// This is not canonical state: it is a pure function of `cycle.scenario` and the
+    /// live M3 records, kept only so repeated viewer/test reads do not rerun the same
+    /// credit-disabled replay.
+    shadow_cycle_cache: RefCell<Option<ShadowCycleMetrics>>,
+}
+
+/// The G8c-1 credit-cycle runtime (held on a finance [`Settlement`]). Reused econ
+/// machinery does all the work; this only retains what the sim needs to **measure**
+/// the cycle: the kind (cycle vs control) and the base scenario the shadow replays.
+struct CycleRuntime {
+    /// Which demonstration this settlement runs.
+    kind: CycleKind,
+    /// The econ scenario the society was built from — cloned and run credit-disabled
+    /// to get the shadow natural-rate baseline (`gap = shadow − market`). Cloned per
+    /// shadow query (a read-only replay), so the live run is never perturbed.
+    scenario: MarketScenario,
+}
+
+/// Derived metrics from the credit-disabled shadow replay at a specific live run
+/// length. All fields are MEASURED from the shadow + live M3 records; this is a
+/// cache of observations, not ABCT state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ShadowCycleMetrics {
+    ticks: usize,
+    natural_rate_bps: Vec<Option<i64>>,
+    gap_bps: Vec<Option<i64>>,
+    max_gap_bps: i64,
+    structure_rose_above_shadow: bool,
 }
 
 /// Per-household birth-cadence runtime (G4b), index-parallel to a
@@ -1715,6 +1944,12 @@ impl Settlement {
     /// randomness (per-colonist culture) is drawn here; neither loop draws any.
     /// Deterministic: same `(seed, config)` → byte-identical settlement.
     pub fn generate(seed: u64, config: &SettlementConfig) -> Self {
+        // G8c-1: a credit-cycle (finance) settlement is built from econ's unchanged
+        // credit-ladder scenario, not a spatial colony — branch before the spatial
+        // setup. The guards live in `generate_finance`.
+        if let Some(cycle) = config.cycle {
+            return Self::generate_finance(seed, config, cycle);
+        }
         assert!(
             config.gatherers == 0 || !config.nodes.is_empty(),
             "a config with gatherers must define at least one resource node to harvest"
@@ -2428,6 +2663,100 @@ impl Settlement {
             // G8b: the chartered-bank config (or `None`). A detached copy — the bank
             // entity itself lives in `society.banks`; this drives `run_bank_phase`.
             bank: config.bank,
+            // G8c-1: a spatial settlement runs no credit cycle (the finance path
+            // returns early from `generate`), so this is always `None` here.
+            cycle: None,
+            shadow_cycle_cache: RefCell::new(None),
+        }
+    }
+
+    /// Generate a G8c-1 **finance** settlement: the Austrian business cycle (or its
+    /// sound-money control) on econ's unchanged credit-ladder scenario. There is no
+    /// spatial colony — the society IS the cycle, and [`Settlement::econ_tick`] just
+    /// steps it. The shadow scenario is retained so the natural-rate baseline can be
+    /// replayed on demand.
+    fn generate_finance(seed: u64, config: &SettlementConfig, cycle: CycleConfig) -> Self {
+        // Scope: G8c-1 ships only the curated credit-cycle / sound-money finance
+        // settlements. A finance settlement requires the M3 ledger and is mutually
+        // exclusive with every spatial overlay — its colony is empty by construction.
+        assert!(
+            config.m3,
+            "a credit-cycle (G8c-1) settlement requires the M3 ledger (m3 = true)"
+        );
+        assert!(
+            config.chain.is_none()
+                && config.demography.is_none()
+                && config.barter.is_none()
+                && config.bank.is_none()
+                && config.resident_traders.is_empty(),
+            "a credit-cycle (G8c-1) settlement is a finance settlement with no spatial \
+             overlay (chain/demography/barter/bank/resident_traders); the cycle runs in \
+             the econ society"
+        );
+        assert!(
+            config.gatherers == 0 && config.consumers == 0 && config.nodes.is_empty(),
+            "a credit-cycle (G8c-1) settlement has no spatial colony (no \
+             gatherers/consumers/nodes); use SettlementConfig::credit_cycle / sound_money"
+        );
+
+        // Build the society from econ's credit-ladder scenario. The same scenario is
+        // stamped with this run's seed so the cycle is reproducible per `(seed,
+        // config)`, and retained (credit-disabled) for the shadow replay.
+        let mut scenario = cycle_scenario(cycle.kind);
+        scenario.seed = seed;
+        let mut society = Society::from_scenario(scenario.clone());
+        society.enable_consumption_log();
+
+        // A minimal spatial shell: an empty grid + an exchange stockpile so the
+        // (no-op) world phases and the exchange accessor have a valid world to read.
+        let grid = Grid::new(config.width.max(1), config.height.max(1));
+        let mut world = World::new(grid);
+        let exchange = world
+            .add_stockpile(Stockpile::new(config.exchange, config.exchange_cap))
+            .expect("exchange lands on a passable tile");
+
+        Self {
+            world,
+            society,
+            colonists: Vec::new(),
+            live_colonist_slots: Vec::new(),
+            colonist_slot_by_id: BTreeMap::new(),
+            dynamics: config.dynamics,
+            known: KnownGoods {
+                hunger: FOOD,
+                warmth: WOOD,
+                savings: GOLD,
+            },
+            exchange,
+            carry_cap: config.carry_cap,
+            // No spatial goods are tracked: the cycle's goods live inside econ's own
+            // (conserving) market + project machinery, and the finance settlement's
+            // conservation is the M3 ledger reconcile + the fiat base identity. An
+            // empty set makes the per-tick whole-system receipt vacuously hold.
+            goods: Vec::new(),
+            money_rejection_goods: Vec::new(),
+            pending_deposits: BTreeMap::new(),
+            trader_ids: Vec::new(),
+            chain: None,
+            econ_tick: 0,
+            last_report: EconTickReport::default(),
+            commons_gold: Gold::ZERO,
+            commons_stock: BTreeMap::new(),
+            demography: None,
+            households: Vec::new(),
+            birth_seq: 0,
+            births_total: 0,
+            old_age_deaths_total: 0,
+            barter: None,
+            barter_medium: None,
+            knowledge: 0,
+            tier2_unlocked_at: None,
+            bank: None,
+            cycle: Some(CycleRuntime {
+                kind: cycle.kind,
+                scenario,
+            }),
+            shadow_cycle_cache: RefCell::new(None),
         }
     }
 
@@ -2435,6 +2764,7 @@ impl Settlement {
     /// phase order). Returns — and stores — the conservation + flow
     /// [`EconTickReport`].
     pub fn econ_tick(&mut self) -> EconTickReport {
+        self.shadow_cycle_cache.get_mut().take();
         let mut report = EconTickReport {
             econ_tick: self.econ_tick,
             fast_ticks: FAST_TICKS_PER_ECON_TICK,
@@ -4166,6 +4496,229 @@ impl Settlement {
         money_system.demand_claim_on(agent, BANK_ID)
     }
 
+    // ---- G8c-1 credit-cycle surface --------------------------------------
+
+    /// Whether this settlement runs the G8c-1 **credit-cycle** (finance) overlay (the
+    /// Austrian business cycle or its sound-money control). `false` for every spatial
+    /// settlement.
+    pub fn is_cycle(&self) -> bool {
+        self.cycle.is_some()
+    }
+
+    /// Which finance demonstration this settlement runs ([`CycleKind`]), or `None`
+    /// for a spatial settlement.
+    pub fn cycle_kind(&self) -> Option<CycleKind> {
+        self.cycle.as_ref().map(|cycle| cycle.kind)
+    }
+
+    /// The current money **regime** — the rung of the ladder (`SoundGold →
+    /// FractionalConvertible → SuspendedConvertibility → Fiat`), reused from econ.
+    pub fn regime(&self) -> Regime {
+        self.society.regime()
+    }
+
+    /// A stable lowercase label for the current regime rung (the viewer renders it).
+    pub fn regime_label(&self) -> &'static str {
+        match self.society.regime() {
+            Regime::SoundGold => "sound-gold",
+            Regime::FractionalConvertible => "fractional",
+            Regime::SuspendedConvertibility => "suspended",
+            Regime::Fiat => "fiat",
+        }
+    }
+
+    /// The state issuer's cumulative **fiat issued** (`Gold::ZERO` without an issuer).
+    pub fn fiat_issued(&self) -> Gold {
+        self.issuer()
+            .map_or(Gold::ZERO, |issuer| issuer.fiat_issued)
+    }
+
+    /// The state issuer's cumulative **fiat retired** (repaid credit principal).
+    pub fn fiat_retired(&self) -> Gold {
+        self.issuer()
+            .map_or(Gold::ZERO, |issuer| issuer.fiat_retired)
+    }
+
+    /// The **fiat base** = issued − retired — the outstanding fiat the issuer has put
+    /// into circulation (`Gold::ZERO` without an issuer). Conserved by rule: a default
+    /// changes the money stock by retiring/booking, never by a leak (G8c-1 test 5).
+    pub fn fiat_base(&self) -> Gold {
+        self.fiat_issued().saturating_sub(self.fiat_retired())
+    }
+
+    /// The state issuer (id [`ISSUER_ID`]) the cycle routes through, or `None`.
+    fn issuer(&self) -> Option<&econ::issuer::Issuer> {
+        self.society
+            .issuers
+            .iter()
+            .find(|issuer| issuer.id == ISSUER_ID)
+    }
+
+    /// The lifetime count of **boom** project starts (capitalists over-investing in
+    /// the long roundabout project under cheap credit). Summed from the M3 records.
+    pub fn boom_projects_started(&self) -> u32 {
+        self.society.m3_records.iter().fold(0u32, |sum, record| {
+            sum.saturating_add(record.boom_projects_started)
+        })
+    }
+
+    /// The lifetime count of **bust** project abandonments (the malinvested projects
+    /// abandoned when credit stops and the rate reasserts). Summed from the M3 records.
+    pub fn bust_abandoned_projects(&self) -> u32 {
+        self.society.m3_records.iter().fold(0u32, |sum, record| {
+            sum.saturating_add(record.bust_abandoned_projects)
+        })
+    }
+
+    /// The total **capital consumed** by the bust — the labor + non-salvaged input
+    /// goods embodied in the abandoned projects (reusing econ's M2/M3 capital-
+    /// consumption accounting). Read from the **latest** M3 record's counters, which
+    /// are running cumulative lifetime totals (each abandonment `saturating_add`s into
+    /// them), so the run-to-date consumption is the final record's value — NOT a sum
+    /// across records (that would re-count the same lifetime total every tick). Mirrors
+    /// the lab's `final_capital_*_consumed` sweep accounting. `0` if no project was
+    /// abandoned (the sound-money control).
+    pub fn capital_consumed(&self) -> u64 {
+        self.society.m3_records.last().map_or(0u64, |record| {
+            u64::from(record.m2.capital_labor_consumed)
+                + u64::from(record.m2.capital_goods_consumed)
+        })
+    }
+
+    /// The peak **structure length** (×100 ticks) the production structure reached
+    /// over the run — the roundabout structure lengthening in the boom. `0` if no
+    /// project ever formed.
+    pub fn peak_structure_length_x100(&self) -> u64 {
+        self.society
+            .m3_records
+            .iter()
+            .map(|record| record.m2.structure_length_ticks_x100)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Whether institutionally-created **credit** (bank fiduciary or issuer
+    /// fiat-credit) has ever circulated over the run — the Credit-era signal.
+    pub fn credit_ever_circulated(&self) -> bool {
+        self.society.m3_records.iter().any(|record| {
+            record.bank_credit_issued > Gold::ZERO || record.fiat_credit_issued > Gold::ZERO
+        })
+    }
+
+    /// Whether **state fiat** has ever circulated as money over the run — `true` once
+    /// any M3 record carried outstanding `public_fiat`. The Modern-era (marginal-medium)
+    /// signal: a monotonic "ever" measure mirroring
+    /// [`credit_ever_circulated`](Self::credit_ever_circulated), so the climax rung is
+    /// earned once and never silently regresses when the bust defaults outstanding fiat
+    /// back toward zero. (Contrast [`fiat_base`](Self::fiat_base), the *current*
+    /// outstanding base the viewer banner surfaces.)
+    pub fn fiat_ever_circulated(&self) -> bool {
+        self.society
+            .m3_records
+            .iter()
+            .any(|record| record.public_fiat > Gold::ZERO)
+    }
+
+    /// The number of realized **loan trades** (the time/credit market), summed over
+    /// the run — a measure of reciprocal credit exchange.
+    pub fn loan_trade_count(&self) -> usize {
+        self.society.loan_trades.len()
+    }
+
+    /// The number of realized **spot trades** (the goods market) — reciprocal goods
+    /// exchange.
+    pub fn spot_trade_count(&self) -> usize {
+        self.society.trades.len()
+    }
+
+    /// The credit-disabled **shadow** natural-rate series (bps per tick), replayed
+    /// from the retained scenario. Read-only — clones the scenario and runs it
+    /// credit-disabled, never perturbing the live run. `None` for a non-finance
+    /// settlement.
+    pub fn shadow_natural_rate_bps(&self) -> Option<Vec<Option<i64>>> {
+        Some(self.shadow_cycle_metrics()?.natural_rate_bps)
+    }
+
+    /// The per-tick **shadow gap** = shadow natural rate − market rate (bps). The cycle
+    /// opens a **positive** gap during the boom (cheap credit pulls the market rate
+    /// below the credit-disabled natural rate); the sound-money control's gap stays
+    /// ≈ 0. `None` entries are ticks with no measured rate on one side. `None` for a
+    /// non-finance settlement. MEASURED, never set (lab doctrine).
+    pub fn shadow_gap_bps(&self) -> Option<Vec<Option<i64>>> {
+        Some(self.shadow_cycle_metrics()?.gap_bps)
+    }
+
+    /// The largest positive shadow gap over the run (`0` if the gap never opened) —
+    /// the sign-only boom signal: `> 0` for the credit cycle, `0` for the control.
+    pub fn max_shadow_gap_bps(&self) -> i64 {
+        self.shadow_cycle_metrics()
+            .map_or(0, |metrics| metrics.max_gap_bps)
+    }
+
+    /// Whether the boom's roundabout structure ever rose **above** the credit-disabled
+    /// shadow baseline — the measured boom (over-investment in longer production).
+    /// `false` for a non-finance settlement or the sound-money control.
+    pub fn structure_rose_above_shadow(&self) -> bool {
+        self.shadow_cycle_metrics()
+            .is_some_and(|metrics| metrics.structure_rose_above_shadow)
+    }
+
+    fn shadow_cycle_metrics(&self) -> Option<ShadowCycleMetrics> {
+        let cycle = self.cycle.as_ref()?;
+
+        let ticks = self.society.m3_records.len();
+        let cached = {
+            let cache = self.shadow_cycle_cache.borrow();
+            cache
+                .as_ref()
+                .filter(|metrics| metrics.ticks == ticks)
+                .cloned()
+        };
+        if cached.is_some() {
+            return cached;
+        }
+
+        let mut scenario = cycle.scenario.clone();
+        scenario.periods = ticks as u64;
+        let shadow = run_credit_disabled_shadow(&scenario);
+
+        let mut gap_bps = Vec::with_capacity(ticks);
+        let mut max_gap_bps = 0;
+        let mut structure_rose_above_shadow = false;
+        for (index, record) in self.society.m3_records.iter().enumerate() {
+            let gap = match (
+                shadow.natural_rate_bps.get(index).copied().flatten(),
+                record.m2.market_rate_bps,
+            ) {
+                (Some(shadow_rate), Some(market_rate)) => Some(shadow_rate - market_rate),
+                _ => None,
+            };
+            if let Some(gap) = gap.filter(|&gap| gap > max_gap_bps) {
+                max_gap_bps = gap;
+            }
+            if record.m2.structure_length_ticks_x100
+                > shadow
+                    .structure_length_ticks_x100
+                    .get(index)
+                    .copied()
+                    .unwrap_or(0)
+            {
+                structure_rose_above_shadow = true;
+            }
+            gap_bps.push(gap);
+        }
+
+        let metrics = ShadowCycleMetrics {
+            ticks,
+            natural_rate_bps: shadow.natural_rate_bps,
+            gap_bps,
+            max_gap_bps,
+            structure_rose_above_shadow,
+        };
+        *self.shadow_cycle_cache.borrow_mut() = Some(metrics.clone());
+        Some(metrics)
+    }
+
     /// Read-only access to the underlying world (carry/stockpile/node inspection).
     pub fn world(&self) -> &World {
         &self.world
@@ -4188,6 +4741,7 @@ impl Settlement {
     /// **between** econ ticks (outside [`Settlement::econ_tick`]), so the
     /// settlement's own per-tick conservation receipt is unaffected.
     pub fn society_mut(&mut self) -> &mut Society {
+        self.shadow_cycle_cache.get_mut().take();
         &mut self.society
     }
 
@@ -4530,6 +5084,39 @@ impl Settlement {
             }
         }
 
+        // The G8c-1 credit-cycle state. Omitted entirely for a non-finance settlement
+        // (so every pre-G8c-1 canonical layout is byte-identical); present for a
+        // finance settlement so the cycle trajectory — the regime rung, the issuer's
+        // fiat base, and the per-tick boom/bust/structure/rate the M3 records carry —
+        // is part of the "byte-identical iff future behaviour identical" identity. The
+        // money_system + agent blocks above already carry the ledger and balances; the
+        // ABCT records below are the cycle-specific state two runs through the
+        // boom→stop→bust can otherwise differ in (the test-1 determinism tripwire).
+        if let Some(cycle) = &self.cycle {
+            push_cycle_runtime_bytes(&mut out, cycle);
+            out.push(regime_tag(self.society.regime()));
+            out.extend_from_slice(&(self.society.issuers.len() as u32).to_le_bytes());
+            for issuer in &self.society.issuers {
+                out.extend_from_slice(&issuer.fiat_issued.0.to_le_bytes());
+                out.extend_from_slice(&issuer.fiat_retired.0.to_le_bytes());
+                out.extend_from_slice(&issuer.fiat_credit_outstanding.0.to_le_bytes());
+            }
+            push_cycle_live_m2_bytes(&mut out, &self.society);
+            out.extend_from_slice(&(self.society.m3_records.len() as u32).to_le_bytes());
+            for record in &self.society.m3_records {
+                out.push(regime_tag(record.regime));
+                out.extend_from_slice(&record.public_specie.0.to_le_bytes());
+                out.extend_from_slice(&record.public_fiat.0.to_le_bytes());
+                out.extend_from_slice(&record.fiduciary.0.to_le_bytes());
+                out.extend_from_slice(&record.boom_projects_started.to_le_bytes());
+                out.extend_from_slice(&record.bust_abandoned_projects.to_le_bytes());
+                out.extend_from_slice(&record.m2.structure_length_ticks_x100.to_le_bytes());
+                out.extend_from_slice(&record.m2.market_rate_bps.unwrap_or(i64::MIN).to_le_bytes());
+                out.extend_from_slice(&record.m2.capital_labor_consumed.to_le_bytes());
+                out.extend_from_slice(&record.m2.capital_goods_consumed.to_le_bytes());
+            }
+        }
+
         // Delivered exchange-stockpile units that are still awaiting econ credit
         // affect future transfers, so attribution belongs in the canonical state.
         out.extend_from_slice(&(self.pending_deposits.len() as u32).to_le_bytes());
@@ -4606,22 +5193,42 @@ impl Settlement {
                 out.push(u8::from(want.satisfied));
             }
 
-            // Every physical good an agent can hold is already in `self.goods`
-            // (node goods ∪ starting goods; trade only relocates them and no
-            // recipe mints a new one here), and `self.goods` is sorted — so
-            // serialize against it directly, with no per-agent clone/merge/re-sort.
-            // The debug check pins that "complete and sorted" assumption.
-            #[cfg(debug_assertions)]
-            for good in agent.stock.positive_goods() {
-                debug_assert!(
-                    good == GOLD || self.goods.contains(&good),
-                    "agent holds an untracked good {good:?} the digest would miss"
-                );
-            }
-            out.extend_from_slice(&(self.goods.len() as u32).to_le_bytes());
-            for &good in &self.goods {
-                out.extend_from_slice(&good.0.to_le_bytes());
-                out.extend_from_slice(&agent.stock.get(good).to_le_bytes());
+            // A finance (credit-cycle) settlement tracks no spatial goods (its goods
+            // live inside econ's own conserving market/project machinery), yet its
+            // agents hold and trade goods that DO steer the run — so serialize each
+            // agent's full (GoodId-sorted) stock directly, with GOLD excluded (it is
+            // money, already serialized as `agent.gold` + the money-system block). A
+            // spatial settlement keeps the original path: every physical good an agent
+            // can hold is already in the sorted `self.goods` (node goods ∪ starting
+            // goods; trade only relocates them and no recipe mints a new one here), so
+            // serialize against it directly, the debug check pinning that "complete and
+            // sorted" assumption.
+            if self.cycle.is_some() {
+                let mut held: Vec<(GoodId, u32)> = agent
+                    .stock
+                    .positive_goods()
+                    .filter(|&good| good != GOLD)
+                    .map(|good| (good, agent.stock.get(good)))
+                    .collect();
+                held.sort_by_key(|&(good, _)| good.0);
+                out.extend_from_slice(&(held.len() as u32).to_le_bytes());
+                for (good, qty) in held {
+                    out.extend_from_slice(&good.0.to_le_bytes());
+                    out.extend_from_slice(&qty.to_le_bytes());
+                }
+            } else {
+                #[cfg(debug_assertions)]
+                for good in agent.stock.positive_goods() {
+                    debug_assert!(
+                        good == GOLD || self.goods.contains(&good),
+                        "agent holds an untracked good {good:?} the digest would miss"
+                    );
+                }
+                out.extend_from_slice(&(self.goods.len() as u32).to_le_bytes());
+                for &good in &self.goods {
+                    out.extend_from_slice(&good.0.to_le_bytes());
+                    out.extend_from_slice(&agent.stock.get(good).to_le_bytes());
+                }
             }
 
             out.extend_from_slice(&(agent.expect.len() as u32).to_le_bytes());
@@ -5357,11 +5964,476 @@ fn push_bank_bytes(out: &mut Vec<u8>, bank: &Bank) {
     out.extend_from_slice(&bank.fiduciary_issued.0.to_le_bytes());
     out.extend_from_slice(&bank.reserve_ratio_bps.0.to_le_bytes());
     out.push(u8::from(bank.convertible));
-    out.extend_from_slice(&bank.policy.max_new_fiduciary_per_tick.0.to_le_bytes());
-    out.extend_from_slice(&bank.policy.loan_present.0.to_le_bytes());
-    out.push(bank.policy.loan_horizon);
-    out.extend_from_slice(&bank.policy.loan_future_due.0.to_le_bytes());
-    out.push(u8::from(bank.policy.enabled));
+    push_bank_policy_bytes(out, &bank.policy);
+}
+
+fn push_cycle_runtime_bytes(out: &mut Vec<u8>, cycle: &CycleRuntime) {
+    out.push(cycle_kind_tag(cycle.kind));
+    out.push(scenario_name_tag(cycle.scenario.scenario));
+    out.extend_from_slice(&cycle.scenario.seed.to_le_bytes());
+    out.extend_from_slice(&cycle.scenario.periods.to_le_bytes());
+    push_market_money_config_bytes(out, &cycle.scenario.money);
+    out.extend_from_slice(&(cycle.scenario.events.len() as u32).to_le_bytes());
+    for event in &cycle.scenario.events {
+        out.extend_from_slice(&event.tick.0.to_le_bytes());
+        push_event_kind_bytes(out, &event.kind);
+    }
+}
+
+fn push_cycle_live_m2_bytes(out: &mut Vec<u8>, society: &Society) {
+    out.extend_from_slice(&(society.m2_projects.len() as u32).to_le_bytes());
+    for project in &society.m2_projects {
+        push_m2_project_bytes(out, project);
+    }
+
+    out.extend_from_slice(&(society.debts.len() as u32).to_le_bytes());
+    for debt in &society.debts {
+        push_debt_contract_bytes(out, debt);
+    }
+
+    out.extend_from_slice(&(society.project_funding_plans.len() as u32).to_le_bytes());
+    for plan in &society.project_funding_plans {
+        push_project_funding_plan_bytes(out, plan);
+    }
+
+    out.extend_from_slice(&(society.project_output_lots.len() as u32).to_le_bytes());
+    for lot in &society.project_output_lots {
+        push_project_output_lot_bytes(out, lot);
+    }
+}
+
+fn push_m2_project_bytes(out: &mut Vec<u8>, project: &M2Project) {
+    out.extend_from_slice(&project.id.0.to_le_bytes());
+    out.extend_from_slice(&project.owner.0.to_le_bytes());
+    out.extend_from_slice(&project.line.0.to_le_bytes());
+    out.push(m2_project_state_tag(project.state));
+    out.extend_from_slice(&project.started_at.0.to_le_bytes());
+    out.extend_from_slice(&project.maturity.0.to_le_bytes());
+    out.extend_from_slice(&project.labor_advanced.to_le_bytes());
+    out.extend_from_slice(&(project.input_goods_committed.len() as u32).to_le_bytes());
+    for &(good, qty) in &project.input_goods_committed {
+        out.extend_from_slice(&good.0.to_le_bytes());
+        out.extend_from_slice(&qty.to_le_bytes());
+    }
+    out.extend_from_slice(&project.input_cost_basis.0.to_le_bytes());
+    out.extend_from_slice(&project.advanced_gold.0.to_le_bytes());
+    out.extend_from_slice(&project.expected_revenue.0.to_le_bytes());
+    out.extend_from_slice(&project.output_good.0.to_le_bytes());
+    out.extend_from_slice(&project.output_qty.to_le_bytes());
+    out.extend_from_slice(&project.salvage_bps.to_le_bytes());
+}
+
+fn push_debt_contract_bytes(out: &mut Vec<u8>, debt: &DebtContract) {
+    out.extend_from_slice(&debt.id.0.to_le_bytes());
+    push_credit_lender_bytes(out, debt.lender);
+    out.extend_from_slice(&debt.borrower.0.to_le_bytes());
+    out.extend_from_slice(&debt.opened_tick.0.to_le_bytes());
+    out.extend_from_slice(&debt.due_tick.0.to_le_bytes());
+    out.extend_from_slice(&debt.principal.0.to_le_bytes());
+    out.extend_from_slice(&debt.due.0.to_le_bytes());
+    out.extend_from_slice(&debt.paid.0.to_le_bytes());
+    out.push(debt_state_tag(debt.state));
+    push_debt_purpose_bytes(out, &debt.purpose);
+    push_credit_source_bytes(out, debt.funding);
+}
+
+fn push_project_funding_plan_bytes(out: &mut Vec<u8>, plan: &ProjectFundingPlan) {
+    out.extend_from_slice(&plan.id.0.to_le_bytes());
+    out.extend_from_slice(&plan.owner.0.to_le_bytes());
+    out.extend_from_slice(&plan.line.0.to_le_bytes());
+    out.extend_from_slice(&plan.created_tick.0.to_le_bytes());
+    out.extend_from_slice(&plan.expires_tick.0.to_le_bytes());
+    out.extend_from_slice(&plan.expected_revenue.0.to_le_bytes());
+    out.extend_from_slice(&plan.input_cost_basis.0.to_le_bytes());
+    out.extend_from_slice(&plan.required_labor.to_le_bytes());
+    out.extend_from_slice(&plan.funding_horizon.to_le_bytes());
+    out.extend_from_slice(&plan.borrowed_gold.0.to_le_bytes());
+    out.extend_from_slice(&plan.future_due_committed.0.to_le_bytes());
+    out.extend_from_slice(&plan.reserved_gold.0.to_le_bytes());
+    match plan.started_project {
+        Some(project) => {
+            out.push(1);
+            out.extend_from_slice(&project.0.to_le_bytes());
+        }
+        None => out.push(0),
+    }
+}
+
+fn push_project_output_lot_bytes(out: &mut Vec<u8>, lot: &ProjectOutputLot) {
+    out.extend_from_slice(&lot.project.0.to_le_bytes());
+    out.extend_from_slice(&lot.owner.0.to_le_bytes());
+    out.extend_from_slice(&lot.good.0.to_le_bytes());
+    out.extend_from_slice(&lot.qty_remaining.to_le_bytes());
+    out.extend_from_slice(&lot.proceeds.0.to_le_bytes());
+}
+
+fn push_market_money_config_bytes(out: &mut Vec<u8>, money: &MarketMoneyConfig) {
+    match money {
+        MarketMoneyConfig::Designated(money) => {
+            out.push(0);
+            out.extend_from_slice(&money.good.0.to_le_bytes());
+        }
+        MarketMoneyConfig::Emergent(menger) => {
+            out.push(1);
+            push_mengerian_config_bytes(out, menger);
+        }
+    }
+}
+
+fn push_event_kind_bytes(out: &mut Vec<u8>, kind: &EventKind) {
+    match kind {
+        EventKind::DisableRecipe(recipe) => {
+            out.push(0);
+            out.push(recipe_id_tag(*recipe));
+        }
+        EventKind::SetRegime(regime) => {
+            out.push(1);
+            out.push(regime_tag(*regime));
+        }
+        EventKind::SetReserveRatio { bank, ratio } => {
+            out.push(2);
+            out.extend_from_slice(&bank.0.to_le_bytes());
+            out.extend_from_slice(&ratio.0.to_le_bytes());
+        }
+        EventKind::SetBankConvertibility { bank, convertible } => {
+            out.push(3);
+            out.extend_from_slice(&bank.0.to_le_bytes());
+            out.push(u8::from(*convertible));
+        }
+        EventKind::SetBankCreditPolicy { bank, policy } => {
+            out.push(4);
+            out.extend_from_slice(&bank.0.to_le_bytes());
+            push_bank_policy_bytes(out, policy);
+        }
+        EventKind::StopBankCredit { bank } => {
+            out.push(5);
+            out.extend_from_slice(&bank.0.to_le_bytes());
+        }
+        EventKind::RedeemDemandClaims {
+            bank,
+            route,
+            max_per_agent,
+        } => {
+            out.push(6);
+            out.extend_from_slice(&bank.0.to_le_bytes());
+            push_redemption_route_bytes(out, route);
+            match max_per_agent {
+                Some(max) => {
+                    out.push(1);
+                    out.extend_from_slice(&max.0.to_le_bytes());
+                }
+                None => out.push(0),
+            }
+        }
+        EventKind::FiatPrint {
+            issuer,
+            amount,
+            route,
+        } => {
+            out.push(7);
+            out.extend_from_slice(&issuer.0.to_le_bytes());
+            out.extend_from_slice(&amount.0.to_le_bytes());
+            push_cantillon_route_bytes(out, route);
+        }
+        EventKind::ResetPublicSpotBook => out.push(8),
+        EventKind::SetPublicSpotTender(tender) => {
+            out.push(9);
+            out.push(public_spot_tender_tag(*tender));
+        }
+        EventKind::SetPublicDebtTender(tender) => {
+            out.push(10);
+            out.push(public_debt_tender_tag(*tender));
+        }
+        EventKind::SetBankRepaymentTender(tender) => {
+            out.push(11);
+            out.push(bank_repayment_tender_tag(*tender));
+        }
+        EventKind::SetIssuerRepaymentTender(tender) => {
+            out.push(12);
+            out.push(issuer_repayment_tender_tag(*tender));
+        }
+        EventKind::SetLaborWageTender(tender) => {
+            out.push(13);
+            out.push(labor_wage_tender_tag(*tender));
+        }
+        EventKind::SetTaxReceivability(receivability) => {
+            out.push(14);
+            out.push(tax_receivability_tag(*receivability));
+        }
+        EventKind::LevyTax {
+            agent,
+            amount,
+            due_tick,
+        } => {
+            out.push(15);
+            out.extend_from_slice(&agent.0.to_le_bytes());
+            out.extend_from_slice(&amount.0.to_le_bytes());
+            out.extend_from_slice(&due_tick.0.to_le_bytes());
+        }
+        EventKind::SetDebtDueTick { debt, due_tick } => {
+            out.push(16);
+            out.extend_from_slice(&debt.0.to_le_bytes());
+            out.extend_from_slice(&due_tick.0.to_le_bytes());
+        }
+        EventKind::SeedCommodityDebt {
+            lender,
+            borrower,
+            principal,
+            due,
+            due_tick,
+            purpose,
+        } => {
+            out.push(17);
+            out.extend_from_slice(&lender.0.to_le_bytes());
+            out.extend_from_slice(&borrower.0.to_le_bytes());
+            out.extend_from_slice(&principal.0.to_le_bytes());
+            out.extend_from_slice(&due.0.to_le_bytes());
+            out.extend_from_slice(&due_tick.0.to_le_bytes());
+            push_debt_purpose_bytes(out, purpose);
+        }
+        EventKind::SeedStock { agent, good, qty } => {
+            out.push(18);
+            out.extend_from_slice(&agent.0.to_le_bytes());
+            out.extend_from_slice(&good.0.to_le_bytes());
+            out.extend_from_slice(&qty.to_le_bytes());
+        }
+        EventKind::SetIssuerPolicy { issuer, policy } => {
+            out.push(19);
+            out.extend_from_slice(&issuer.0.to_le_bytes());
+            push_issuer_policy_bytes(out, policy);
+        }
+        EventKind::StopIssuerCredit { issuer } => {
+            out.push(20);
+            out.extend_from_slice(&issuer.0.to_le_bytes());
+        }
+    }
+}
+
+fn push_bank_policy_bytes(out: &mut Vec<u8>, policy: &BankPolicy) {
+    out.extend_from_slice(&policy.max_new_fiduciary_per_tick.0.to_le_bytes());
+    out.extend_from_slice(&policy.loan_present.0.to_le_bytes());
+    out.push(policy.loan_horizon);
+    out.extend_from_slice(&policy.loan_future_due.0.to_le_bytes());
+    out.push(u8::from(policy.enabled));
+}
+
+fn push_issuer_policy_bytes(out: &mut Vec<u8>, policy: &econ::issuer::IssuerPolicy) {
+    out.push(u8::from(policy.fiscal_enabled));
+    out.push(u8::from(policy.credit_enabled));
+    out.extend_from_slice(&policy.max_fiscal_issue_per_tick.0.to_le_bytes());
+    out.extend_from_slice(&policy.max_credit_issue_per_tick.0.to_le_bytes());
+    out.extend_from_slice(&policy.loan_present.0.to_le_bytes());
+    out.push(policy.loan_horizon);
+    out.extend_from_slice(&policy.loan_future_due.0.to_le_bytes());
+}
+
+fn push_redemption_route_bytes(out: &mut Vec<u8>, route: &RedemptionRoute) {
+    match route {
+        RedemptionRoute::Agents(agents) => {
+            out.push(0);
+            out.extend_from_slice(&(agents.len() as u32).to_le_bytes());
+            for agent in agents {
+                out.extend_from_slice(&agent.0.to_le_bytes());
+            }
+        }
+        RedemptionRoute::AllClaimHolders => out.push(1),
+    }
+}
+
+fn push_cantillon_route_bytes(out: &mut Vec<u8>, route: &CantillonRoute) {
+    match route {
+        CantillonRoute::Agents(agents) => {
+            out.push(0);
+            out.extend_from_slice(&(agents.len() as u32).to_le_bytes());
+            for agent in agents {
+                out.extend_from_slice(&agent.0.to_le_bytes());
+            }
+        }
+        CantillonRoute::Sector(sector) => {
+            out.push(1);
+            out.push(cantillon_sector_tag(*sector));
+        }
+        CantillonRoute::Helicopter => out.push(2),
+    }
+}
+
+fn push_debt_purpose_bytes(out: &mut Vec<u8>, purpose: &DebtPurpose) {
+    match purpose {
+        DebtPurpose::Consumption => out.push(0),
+        DebtPurpose::ProjectFunding { plan, project } => {
+            out.push(1);
+            out.extend_from_slice(&plan.0.to_le_bytes());
+            match project {
+                Some(project) => {
+                    out.push(1);
+                    out.extend_from_slice(&project.0.to_le_bytes());
+                }
+                None => out.push(0),
+            }
+        }
+        DebtPurpose::TaxLiability => out.push(2),
+    }
+}
+
+fn push_credit_lender_bytes(out: &mut Vec<u8>, lender: CreditLender) {
+    match lender {
+        CreditLender::Agent(agent) => {
+            out.push(0);
+            out.extend_from_slice(&agent.0.to_le_bytes());
+        }
+        CreditLender::Bank(bank) => {
+            out.push(1);
+            out.extend_from_slice(&bank.0.to_le_bytes());
+        }
+        CreditLender::Issuer(issuer) => {
+            out.push(2);
+            out.extend_from_slice(&issuer.0.to_le_bytes());
+        }
+    }
+}
+
+fn push_credit_source_bytes(out: &mut Vec<u8>, source: CreditSource) {
+    match source {
+        CreditSource::Commodity => out.push(0),
+        CreditSource::BankFiduciary(bank) => {
+            out.push(1);
+            out.extend_from_slice(&bank.0.to_le_bytes());
+        }
+        CreditSource::FiatFiscal(issuer) => {
+            out.push(2);
+            out.extend_from_slice(&issuer.0.to_le_bytes());
+        }
+        CreditSource::FiatCredit(issuer) => {
+            out.push(3);
+            out.extend_from_slice(&issuer.0.to_le_bytes());
+        }
+        CreditSource::Tax(issuer) => {
+            out.push(4);
+            out.extend_from_slice(&issuer.0.to_le_bytes());
+        }
+    }
+}
+
+// Canonical tags for econ enums are part of sim's persisted determinism contract, not
+// ordinal casts from econ. Keep these as named, exhaustive matches: adding a variant
+// upstream must fail compilation here until its byte is assigned deliberately. The
+// `external_econ_canonical_tags_are_pinned` unit test below also pins the current map.
+fn cycle_kind_tag(kind: CycleKind) -> u8 {
+    match kind {
+        CycleKind::CreditCycle => 0,
+        CycleKind::SoundMoney => 1,
+    }
+}
+
+fn scenario_name_tag(name: ScenarioName) -> u8 {
+    match name {
+        ScenarioName::CrusoeSurvival => 0,
+        ScenarioName::CrusoeCapital => 1,
+        ScenarioName::CrusoeAbandon => 2,
+        ScenarioName::MarketBarterishGold => 3,
+        ScenarioName::MarketPriceDiscovery => 4,
+        ScenarioName::MarketNoMutualBenefit => 5,
+        ScenarioName::TimeMarketBasic => 6,
+        ScenarioName::RoundaboutCapital => 7,
+        ScenarioName::BorrowToBuild => 8,
+        ScenarioName::SoundMoney100Pct => 9,
+        ScenarioName::CommodityCreditNeutral => 10,
+        ScenarioName::FractionalReserve => 11,
+        ScenarioName::SuspensionOfConvertibility => 12,
+        ScenarioName::FiatCreditExpansion => 13,
+        ScenarioName::FiatFiscalCantillon => 14,
+        ScenarioName::CantillonIsolation => 15,
+        ScenarioName::EmergedGoldSoundControl => 16,
+        ScenarioName::EmergedGoldFiatDisplacement => 17,
+        ScenarioName::EmergedGoldFiatRefusalControl => 18,
+        ScenarioName::EmergedGoldFiatLegalTender => 19,
+        ScenarioName::EmergedGoldFiatDebtRefusalControl => 20,
+        ScenarioName::EmergedGoldFiatDebtLegalTender => 21,
+        ScenarioName::EmergedGoldBankClaimDebtRefusalControl => 22,
+        ScenarioName::EmergedGoldBankClaimDebtLegalTender => 23,
+        ScenarioName::EmergedGoldBankClaimSpotRefusalControl => 24,
+        ScenarioName::EmergedGoldBankClaimSpotLegalTender => 25,
+        ScenarioName::EmergedGoldBankLoanRepaymentRefusalControl => 26,
+        ScenarioName::EmergedGoldBankLoanRepaymentClaimTender => 27,
+        ScenarioName::EmergedGoldFractionalReserve => 28,
+        ScenarioName::EmergedGoldFiatCreditExpansion => 29,
+        ScenarioName::EmergedGoldFiatWageRefusalControl => 30,
+        ScenarioName::EmergedGoldFiatWageLegalTender => 31,
+        ScenarioName::EmergedGoldIssuerRepaymentFiatRefusalControl => 32,
+        ScenarioName::EmergedGoldIssuerRepaymentFiatTender => 33,
+        ScenarioName::EmergedGoldReserveLeashControl => 34,
+        ScenarioName::EmergedGoldSuspensionOfConvertibility => 35,
+        ScenarioName::EmergedGoldRedemptionRun => 36,
+        ScenarioName::EmergedGoldSuspendedRedemption => 37,
+        ScenarioName::EmergedGoldTaxSpecieControl => 38,
+        ScenarioName::EmergedGoldTaxFiatUnpayableDefaults => 39,
+        ScenarioName::EmergedGoldTaxDrivesFiatLabor => 40,
+        ScenarioName::EmergedGoldNoTaxIdleControl => 41,
+        ScenarioName::MengerSaltMoney => 42,
+        ScenarioName::MengerGoldMoney => 43,
+    }
+}
+
+fn recipe_id_tag(recipe: RecipeId) -> u8 {
+    match recipe {
+        RecipeId::GatherFood => 0,
+        RecipeId::CutWood => 1,
+        RecipeId::FishWithNet => 2,
+        RecipeId::Mill => 3,
+        RecipeId::Bake => 4,
+        RecipeId::Research => 5,
+        RecipeId::Confect => 6,
+    }
+}
+
+fn cantillon_sector_tag(sector: CantillonSector) -> u8 {
+    match sector {
+        CantillonSector::Capitalists => 0,
+        CantillonSector::Households => 1,
+        CantillonSector::Workers => 2,
+        CantillonSector::Consumers => 3,
+    }
+}
+
+fn public_debt_tender_tag(tender: PublicDebtTender) -> u8 {
+    match tender {
+        PublicDebtTender::ParAll => 0,
+        PublicDebtTender::SpecieOnly => 1,
+        PublicDebtTender::FiatAndSpecie => 2,
+        PublicDebtTender::BankClaimsAndSpecie => 3,
+    }
+}
+
+fn bank_repayment_tender_tag(tender: BankRepaymentTender) -> u8 {
+    match tender {
+        BankRepaymentTender::ParAll => 0,
+        BankRepaymentTender::SpecieOnly => 1,
+        BankRepaymentTender::FiatAndSpecie => 2,
+        BankRepaymentTender::BankClaimsAndSpecie => 3,
+    }
+}
+
+fn issuer_repayment_tender_tag(tender: IssuerRepaymentTender) -> u8 {
+    match tender {
+        IssuerRepaymentTender::FiatOnly => 0,
+        IssuerRepaymentTender::FiatRefused => 1,
+    }
+}
+
+fn labor_wage_tender_tag(tender: LaborWageTender) -> u8 {
+    match tender {
+        LaborWageTender::ParAll => 0,
+        LaborWageTender::SpecieOnly => 1,
+        LaborWageTender::FiatAndSpecie => 2,
+    }
+}
+
+fn tax_receivability_tag(receivability: TaxReceivability) -> u8 {
+    match receivability {
+        TaxReceivability::SpecieOnly => 0,
+        TaxReceivability::FiatOnly => 1,
+        TaxReceivability::FiatAndSpecie => 2,
+    }
 }
 
 /// A stable 1-byte tag for the society's money [`Regime`], for the canonical digest.
@@ -5386,6 +6458,24 @@ fn public_spot_tender_tag(tender: PublicSpotTender) -> u8 {
         PublicSpotTender::SpecieOnly => 1,
         PublicSpotTender::FiatAndSpecie => 2,
         PublicSpotTender::BankClaimsAndSpecie => 3,
+    }
+}
+
+fn m2_project_state_tag(state: M2ProjectState) -> u8 {
+    match state {
+        M2ProjectState::Forming => 0,
+        M2ProjectState::Waiting => 1,
+        M2ProjectState::Mature => 2,
+        M2ProjectState::Sold => 3,
+        M2ProjectState::Abandoned => 4,
+    }
+}
+
+fn debt_state_tag(state: DebtState) -> u8 {
+    match state {
+        DebtState::Open => 0,
+        DebtState::Settled => 1,
+        DebtState::Defaulted => 2,
     }
 }
 
@@ -5552,6 +6642,127 @@ fn belief_vec() -> Vec<PriceBelief> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn external_econ_canonical_tags_are_pinned() {
+        assert_eq!(cycle_kind_tag(CycleKind::CreditCycle), 0);
+        assert_eq!(cycle_kind_tag(CycleKind::SoundMoney), 1);
+
+        let scenarios = [
+            ScenarioName::CrusoeSurvival,
+            ScenarioName::CrusoeCapital,
+            ScenarioName::CrusoeAbandon,
+            ScenarioName::MarketBarterishGold,
+            ScenarioName::MarketPriceDiscovery,
+            ScenarioName::MarketNoMutualBenefit,
+            ScenarioName::TimeMarketBasic,
+            ScenarioName::RoundaboutCapital,
+            ScenarioName::BorrowToBuild,
+            ScenarioName::SoundMoney100Pct,
+            ScenarioName::CommodityCreditNeutral,
+            ScenarioName::FractionalReserve,
+            ScenarioName::SuspensionOfConvertibility,
+            ScenarioName::FiatCreditExpansion,
+            ScenarioName::FiatFiscalCantillon,
+            ScenarioName::CantillonIsolation,
+            ScenarioName::EmergedGoldSoundControl,
+            ScenarioName::EmergedGoldFiatDisplacement,
+            ScenarioName::EmergedGoldFiatRefusalControl,
+            ScenarioName::EmergedGoldFiatLegalTender,
+            ScenarioName::EmergedGoldFiatDebtRefusalControl,
+            ScenarioName::EmergedGoldFiatDebtLegalTender,
+            ScenarioName::EmergedGoldBankClaimDebtRefusalControl,
+            ScenarioName::EmergedGoldBankClaimDebtLegalTender,
+            ScenarioName::EmergedGoldBankClaimSpotRefusalControl,
+            ScenarioName::EmergedGoldBankClaimSpotLegalTender,
+            ScenarioName::EmergedGoldBankLoanRepaymentRefusalControl,
+            ScenarioName::EmergedGoldBankLoanRepaymentClaimTender,
+            ScenarioName::EmergedGoldFractionalReserve,
+            ScenarioName::EmergedGoldFiatCreditExpansion,
+            ScenarioName::EmergedGoldFiatWageRefusalControl,
+            ScenarioName::EmergedGoldFiatWageLegalTender,
+            ScenarioName::EmergedGoldIssuerRepaymentFiatRefusalControl,
+            ScenarioName::EmergedGoldIssuerRepaymentFiatTender,
+            ScenarioName::EmergedGoldReserveLeashControl,
+            ScenarioName::EmergedGoldSuspensionOfConvertibility,
+            ScenarioName::EmergedGoldRedemptionRun,
+            ScenarioName::EmergedGoldSuspendedRedemption,
+            ScenarioName::EmergedGoldTaxSpecieControl,
+            ScenarioName::EmergedGoldTaxFiatUnpayableDefaults,
+            ScenarioName::EmergedGoldTaxDrivesFiatLabor,
+            ScenarioName::EmergedGoldNoTaxIdleControl,
+            ScenarioName::MengerSaltMoney,
+            ScenarioName::MengerGoldMoney,
+        ];
+        for (expected, scenario) in scenarios.into_iter().enumerate() {
+            assert_eq!(scenario_name_tag(scenario), expected as u8);
+        }
+
+        assert_eq!(recipe_id_tag(RecipeId::GatherFood), 0);
+        assert_eq!(recipe_id_tag(RecipeId::CutWood), 1);
+        assert_eq!(recipe_id_tag(RecipeId::FishWithNet), 2);
+        assert_eq!(recipe_id_tag(RecipeId::Mill), 3);
+        assert_eq!(recipe_id_tag(RecipeId::Bake), 4);
+        assert_eq!(recipe_id_tag(RecipeId::Research), 5);
+        assert_eq!(recipe_id_tag(RecipeId::Confect), 6);
+
+        assert_eq!(cantillon_sector_tag(CantillonSector::Capitalists), 0);
+        assert_eq!(cantillon_sector_tag(CantillonSector::Households), 1);
+        assert_eq!(cantillon_sector_tag(CantillonSector::Workers), 2);
+        assert_eq!(cantillon_sector_tag(CantillonSector::Consumers), 3);
+
+        assert_eq!(public_debt_tender_tag(PublicDebtTender::ParAll), 0);
+        assert_eq!(public_debt_tender_tag(PublicDebtTender::SpecieOnly), 1);
+        assert_eq!(public_debt_tender_tag(PublicDebtTender::FiatAndSpecie), 2);
+        assert_eq!(
+            public_debt_tender_tag(PublicDebtTender::BankClaimsAndSpecie),
+            3
+        );
+
+        assert_eq!(bank_repayment_tender_tag(BankRepaymentTender::ParAll), 0);
+        assert_eq!(
+            bank_repayment_tender_tag(BankRepaymentTender::SpecieOnly),
+            1
+        );
+        assert_eq!(
+            bank_repayment_tender_tag(BankRepaymentTender::FiatAndSpecie),
+            2
+        );
+        assert_eq!(
+            bank_repayment_tender_tag(BankRepaymentTender::BankClaimsAndSpecie),
+            3
+        );
+
+        assert_eq!(
+            issuer_repayment_tender_tag(IssuerRepaymentTender::FiatOnly),
+            0
+        );
+        assert_eq!(
+            issuer_repayment_tender_tag(IssuerRepaymentTender::FiatRefused),
+            1
+        );
+
+        assert_eq!(labor_wage_tender_tag(LaborWageTender::ParAll), 0);
+        assert_eq!(labor_wage_tender_tag(LaborWageTender::SpecieOnly), 1);
+        assert_eq!(labor_wage_tender_tag(LaborWageTender::FiatAndSpecie), 2);
+
+        assert_eq!(tax_receivability_tag(TaxReceivability::SpecieOnly), 0);
+        assert_eq!(tax_receivability_tag(TaxReceivability::FiatOnly), 1);
+        assert_eq!(tax_receivability_tag(TaxReceivability::FiatAndSpecie), 2);
+
+        assert_eq!(regime_tag(Regime::SoundGold), 0);
+        assert_eq!(regime_tag(Regime::FractionalConvertible), 1);
+        assert_eq!(regime_tag(Regime::SuspendedConvertibility), 2);
+        assert_eq!(regime_tag(Regime::Fiat), 3);
+
+        assert_eq!(public_spot_tender_tag(PublicSpotTender::ParAll), 0);
+        assert_eq!(public_spot_tender_tag(PublicSpotTender::SpecieOnly), 1);
+        assert_eq!(public_spot_tender_tag(PublicSpotTender::FiatAndSpecie), 2);
+        assert_eq!(
+            public_spot_tender_tag(PublicSpotTender::BankClaimsAndSpecie),
+            3
+        );
+    }
 
     #[test]
     fn medium_scale_extension_inserts_near_wants_below_survival() {

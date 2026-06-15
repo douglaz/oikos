@@ -2012,3 +2012,112 @@ view of the reused econ `Bank`. Both appear only for a banked settlement.
 - No `HashMap` in logic; integer state, the econ `Rng` consumed only at generation,
   nothing drawn in the loops; no asserted magnitudes beyond fiduciary-lent > 0 (fractional)
   vs == 0 (full reserve) and exact M3 conservation.
+
+## G8c-1 — fiat, the regime ladder, and the credit cycle (`docs/impl-g8c1.md`)
+
+This is the **climax** of the economic engine: the **Austrian business cycle**, in the
+colony game, on econ's **unchanged** ABCT/regime/shadow machinery. G8a put the sim on M3
+ledger money; G8b added banks and fiduciary credit. **G8c-1** adds **fiat** and the
+**regime ladder** (`SoundGold → FractionalConvertible → SuspendedConvertibility → Fiat`)
+and demonstrates the cycle the lab proved (`emerged-gold-fiat-credit-expansion`): cheap
+credit drives the market rate **below** the credit-disabled **shadow** natural rate (a
+measured **gap**), capitalists over-invest in roundabout production (the **boom**), credit
+**stops**, the rate reasserts, the malinvested projects are **abandoned**, and **capital is
+consumed** (the **bust**) — against a **sound-money control** that shows no gap and no cycle.
+
+### The divergence: a finance settlement that REUSES the lab's cycle unchanged
+
+Where G8a/G8b wired the spatial colony onto the M3 ledger, the credit cycle is fundamentally
+an **econ-level phenomenon** — the M2/M3 project (time/credit) market, the issuer, the
+abandonment + capital-consumption accounting, and the credit-disabled shadow replay. None of
+it lives in the spatial spot market. So G8c-1 adds a **finance settlement** mode rather than
+bending the spatial colony around it:
+
+- A `SettlementConfig` gains a `cycle: Option<CycleConfig>` field (`None` for every pre-G8c-1
+  config, so the finance path is skipped entirely and every existing config — and the six
+  conformance goldens — is byte-identical by construction). `SettlementConfig::credit_cycle`
+  and `sound_money` set it.
+- A `cycle` settlement has **no spatial colony** (zero gatherers/consumers/nodes, no
+  chain/demography/barter/bank — `Settlement::generate` branches to `generate_finance`, which
+  asserts all of that). Its `Society` is built from econ's credit-ladder scenario
+  (`builtin_market_scenario(EmergedGoldFiatCreditExpansion)`), so the issuer, the roundabout
+  project line (`CreditBoomLong`), the regime ladder events, and the credit-ladder agents are
+  all reused **unchanged**.
+- `Settlement::econ_tick` is unchanged: every spatial phase is a no-op over the empty colonist
+  roster, and the existing market step `Society::step()` runs the cycle endogenously
+  (`run_m3_tick` → `apply_events` walks the regime ladder, `plan_projects_and_hire` /
+  `abandon_unviable_projects` run the boom/bust, the M3 records carry the rates/structure/
+  capital). The sim adds **no** ABCT/regime/shadow logic to econ — it only authors the policy
+  timeline and reads the records back.
+
+### The regime ladder + fiat (sim policy routed into econ)
+
+`cycle_scenario(CreditCycle)` authors the ladder as a timeline of econ's existing events:
+`SetRegime(FractionalConvertible)@0 → SetRegime(SuspendedConvertibility)@1 → SetRegime(Fiat)@2`,
+then the lab's own `SetIssuerPolicy` (credit on) and `StopIssuerCredit` (the boom→stop),
+re-timed past the 2-tick descent so the proven cycle shape is preserved. Under `Fiat` the
+issuer extends **fiat-credit** into the economy (the M3 ledger tracks the fiat base =
+issued − retired). `cycle_scenario(SoundMoney)` clears every event, leaving a `SoundGold`
+specie economy with the **same agents and the same project line** — the falsification twin.
+
+### The shadow gap and the cycle (MEASURED, never set)
+
+`Settlement::shadow_gap_bps` replays the **credit-disabled** scenario
+(`econ::shadow::run_credit_disabled_shadow`, read-only — cloned, never perturbing the live
+run) to get the natural rate; `gap = shadow_natural_rate − market_rate`. The cycle opens a
+**positive** gap during the boom (`max_shadow_gap_bps() > 0`); the structure lengthens above
+the shadow baseline (`structure_rose_above_shadow()`); when credit stops, projects are
+**abandoned** (`bust_abandoned_projects() > 0`) and **capital is consumed**
+(`capital_consumed() > 0`, the labor + non-salvaged input goods of the abandoned projects).
+The sound-money control shows all of these as **zero** — pairing the two isolates the cycle to
+credit expansion, not the production/spatial dynamics. Magnitudes are SIGN/direction only.
+
+### The Credit and Modern era rungs (G6a-deferred, unlocked here)
+
+`sim/src/era.rs` gains two rungs above `Capital`: **Credit** (rank 5) and **Modern** (rank 6).
+The G6a spatial/emergent triggers for the *lower* rungs (Barter…Capital) are kept **exactly** as
+shipped — the detector branches on the measured `is_cycle()` and reads finance signals for those
+rungs only on a finance settlement, so every emergent-chain run's measured timeline is
+byte-identical, and a bank-free frontier (no chartered credit, no fiat) still tops out at
+`Capital`. On the finance path the detector measures the same institutional ladder from the
+credit/spot market (Barter), the designated money good (Money), the roundabout project starts
+(Specialist), and the measured structure length (Capital), all with the same hysteresis. The
+**Credit** and **Modern** rungs are path-**independent**: both branches read the same M3-record
+signals — created-credit circulation (`credit_ever_circulated`) and fiat ever circulating as the
+marginal medium (`fiat_ever_circulated`) — because institutionally-created credit and state fiat
+are measured identically wherever they arise. So a *spatial* G8b banked colony whose chartered
+bank lends fiduciary credit also sets the Credit trigger (it is gated below at the emergent
+Barter rung, so it does not climb the full ladder, but the rung is no longer hard-coded
+unreachable on the spatial path). Both finance rungs read monotonic "ever" signals, so the
+climax `Modern` rung, like `Credit`, is earned once and is not silently regressed when the bust
+defaults outstanding fiat back toward zero. The credit cycle climbs to `Modern`; the sound-money
+control tops out at `Money`.
+
+### Conservation
+
+Fiat is **credit, not minted specie**: the specie base (`public_specie + bank_reserves`) is
+unchanged across the cycle, the fiat base = **issued − retired** equals the outstanding
+circulating fiat, broad money is exactly `specie + fiat`, and the M3 ledger reconciles
+(`money_ledgers_reconcile`) every tick. A default changes the money stock by rule
+(retirement/booking), never by a leak. The finance settlement tracks **no** spatial goods (its
+goods live inside econ's own conserving market/project machinery), so the per-tick whole-system
+receipt is vacuous; the conservation that matters is the M3 ledger's, asserted every tick.
+
+### Determinism
+
+Integer state; the econ `Rng` is consumed only at generation; nothing is drawn in the loop.
+The canonical bytes carry the finance state — the regime rung, the issuer's fiat base, and the
+per-tick ABCT records (regime, specie, fiat, fiduciary, boom/bust, structure, market rate,
+capital consumed) — and the finance agents' full stock (no spatial goods to track), so
+`cycle_run_is_deterministic` is byte-identical through boom/stop/bust. The shadow replay is a
+read-only function of the run, so observing the gap never perturbs it. No `HashMap` in logic.
+
+### Excluded from G8c-1 (deferred)
+
+- **No tender policies (M11–M17) or tax receivability as player levers** (G8c-2).
+- **No multi-seed robustness STUDY of the cycle** (deferred, like the lab's sweep was a
+  separate milestone) — G8c-1 is a single-seed demonstration + control.
+- **No change to econ ABCT/regime/shadow BEHAVIOR** — the six goldens are byte-identical; all
+  cycle wiring is additive/game-only (the finance path is skipped without a `cycle` config).
+- No asserted magnitudes beyond the signs: a positive gap vs ≈ 0, abandonments and
+  capital-consumed positive vs zero, and exact M3 (fiat-base) conservation.

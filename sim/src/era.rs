@@ -19,18 +19,32 @@
 //! ## The era ladder (measured triggers + hysteresis)
 //!
 //! ```text
-//! Forager     — no sustained exchange (negligible barter volume)
-//! Barter      — sustained reciprocal exchange (cumulative barter trade volume)
-//! Money       — a money good has been promoted (current_money_good is Some)
-//! Specialist  — a sustained division of labor (producer-role share ≥ a floor
-//!               over a window)
-//! Capital     — sustained roundabout production (a produced intermediate is itself
-//!               consumed as a recipe input — both chain stages staffed — over a window)
+//! Forager     — no sustained exchange (negligible reciprocal trade volume)
+//! Barter      — sustained reciprocal exchange (cumulative trade volume:
+//!               barter + spot + loan)
+//! Money       — a money good has been promoted / designated (current_money_good is Some)
+//! Specialist  — a sustained division of labor (producer-role share ≥ a floor over a
+//!               window, OR — on the finance path — capitalists have started roundabout
+//!               projects)
+//! Capital     — sustained roundabout production (both chain stages staffed, OR a
+//!               measured roundabout project structure has formed)
+//! Credit      — institutionally-created credit circulates (chartered bank fiduciary
+//!               or state fiat-credit) — G8c-1
+//! Modern      — state fiat is the marginal medium (fiat circulates as money) — G8c-1
 //! ```
 //!
-//! The **Credit** and **Modern** eras (chartered banks, state money) are
-//! **deferred to G8**: they need finance machinery that does not exist in the game
-//! yet, and G6a does not invent placeholder finance to reach them.
+//! G6a shipped the first five rungs; **G8c-1 unlocks Credit and Modern** — the finance
+//! rungs the G6a detector deferred until the regime ladder and fiat existed. Their
+//! triggers are MEASURED from the M3 records (created-credit circulation, fiat ever
+//! circulating) with the same hysteresis as every other rung, and are
+//! path-INDEPENDENT: any settlement whose chartered-bank fiduciary or state fiat-credit
+//! circulates earns Credit (a G8b banked colony as well as the credit cycle), and any
+//! settlement whose state fiat circulates as the marginal medium earns Modern. The
+//! lower rungs are generalized so the finance (credit-cycle) settlement — which has no
+//! spatial colony — still climbs them from its credit/spot market, its money good, and
+//! its roundabout project structure; those additive branches are all zero for the
+//! emergent-chain frontier, and a bank-free frontier reads no created credit or fiat,
+//! so its measured timeline is byte-identical and it still tops out at Capital.
 //!
 //! ### Why two trigger shapes
 //!
@@ -82,24 +96,31 @@ pub enum Era {
     /// No sustained exchange — colonists gather/haul/consume, but negligible trade
     /// has cleared (the floor; every run starts here).
     Forager,
-    /// Sustained reciprocal exchange — goods-for-goods barter has cleared a sustained
-    /// cumulative volume (a thick barter book), but no money good has emerged.
+    /// Sustained reciprocal exchange — a sustained cumulative trade volume (barter +
+    /// spot + loan) has cleared (a thick exchange book), but no money good is in use.
     Barter,
-    /// A money good has been promoted from realized barter
-    /// ([`Settlement::current_money_good`] is `Some`) — the economy is money-priced.
+    /// A money good is in use ([`Settlement::current_money_good`] is `Some`) — promoted
+    /// from realized barter (the emergent path) or designated (the M3 finance path).
     Money,
     /// A sustained division of labor — the live producer-role share reaches a floor
-    /// over a window (colonists have adopted milling/baking from the money price spreads).
+    /// over a window (colonists adopted milling/baking from the money price spreads),
+    /// or, on the finance path, capitalists have started roundabout projects.
     Specialist,
-    /// Sustained roundabout production — a produced **intermediate** good is itself
-    /// consumed as a recipe input over a window (both chain stages are staffed: grain
-    /// → flour → bread, where flour is milled *and* baked).
+    /// Sustained roundabout production — both chain stages staffed (grain → flour →
+    /// bread, flour milled *and* baked), or a measured roundabout project structure
+    /// has formed (the time/credit market's lengthened production).
     Capital,
+    /// G8c-1: institutionally-created **credit** circulates — chartered bank fiduciary
+    /// or state fiat-credit (the finance institution the regime ladder enables).
+    Credit,
+    /// G8c-1: state **fiat** is the marginal medium — fiat circulates as money under
+    /// the [`Regime::Fiat`](econ::money::Regime::Fiat) rung.
+    Modern,
 }
 
 impl Era {
-    /// Number of concrete G6a era rungs (Credit/Modern are deliberately deferred to G8).
-    pub const COUNT: usize = 5;
+    /// Number of era rungs (G6a's five + G8c-1's Credit/Modern).
+    pub const COUNT: usize = 7;
 
     /// Every era, lowest rung first — the canonical order for the timeline and the
     /// `first_tick` array.
@@ -109,9 +130,11 @@ impl Era {
         Era::Money,
         Era::Specialist,
         Era::Capital,
+        Era::Credit,
+        Era::Modern,
     ];
 
-    /// The era's ladder rank (`Forager` = 0 … `Capital` = 4) — the array index for
+    /// The era's ladder rank (`Forager` = 0 … `Modern` = 6) — the array index for
     /// the first-tick record and the trigger array. Integer, no map.
     pub fn rank(self) -> usize {
         match self {
@@ -120,6 +143,8 @@ impl Era {
             Era::Money => 2,
             Era::Specialist => 3,
             Era::Capital => 4,
+            Era::Credit => 5,
+            Era::Modern => 6,
         }
     }
 
@@ -128,7 +153,7 @@ impl Era {
         Era::ALL.get(rank).copied()
     }
 
-    /// The next rung up, or `None` at the top ([`Era::Capital`]).
+    /// The next rung up, or `None` at the top ([`Era::Modern`]).
     pub fn next(self) -> Option<Era> {
         Era::from_rank(self.rank() + 1)
     }
@@ -146,6 +171,8 @@ impl Era {
             Era::Money => "money",
             Era::Specialist => "specialist",
             Era::Capital => "capital",
+            Era::Credit => "credit",
+            Era::Modern => "modern",
         }
     }
 }
@@ -265,6 +292,22 @@ impl EraDetector {
     /// in econ. Exposed so the source-gate test can confirm the measurement reads only
     /// read-only accessors, and the hysteresis can be driven independently.
     pub fn measured_triggers(&self, settlement: &Settlement) -> [bool; Era::COUNT] {
+        // The finance (credit-cycle) path measures the lower rungs (Barter…Capital)
+        // from its credit/spot market, designated money good, and roundabout project
+        // structure — see [`Self::finance_triggers`]. Branching on the measured
+        // `is_cycle()` keeps the G6a spatial/emergent triggers below EXACTLY as shipped,
+        // so every emergent-chain run's measured timeline is byte-identical.
+        //
+        // The Credit/Modern rungs are path-INDEPENDENT: both branches read the same
+        // M3-record signals (`credit_ever_circulated` / `fiat_ever_circulated`), because
+        // institutionally-created credit and state fiat are measured the same way
+        // wherever they arise. So a spatial settlement that charters a fiduciary bank
+        // (G8b) climbs to Credit when its bank credit circulates, while the bank-free
+        // emergent-chain frontier reads both signals as zero (no chartered credit, no
+        // fiat) and still tops out at Capital — its measured timeline unchanged.
+        if settlement.is_cycle() {
+            return self.finance_triggers(settlement);
+        }
         let roster = producer_roster(settlement);
         [
             // Forager — the floor: always reachable.
@@ -281,6 +324,49 @@ impl EraDetector {
             // produced intermediate (flour) is milled AND baked — a produced good
             // feeding a further production stage.
             roster.both_stages_staffed(),
+            // Credit — institutionally-created credit (chartered bank fiduciary or state
+            // fiat-credit) has circulated. Zero for the bank-free emergent chain, so the
+            // frontier never reaches it; a G8b banked settlement does.
+            settlement.credit_ever_circulated(),
+            // Modern — state fiat has circulated as the marginal medium. Zero without a
+            // fiat issuer (a G8b bank never reaches it; the credit cycle does).
+            settlement.fiat_ever_circulated(),
+        ]
+    }
+
+    /// The G8c-1 finance-path triggers — the same institutional ladder measured from
+    /// the credit-cycle settlement's reused econ machinery. A finance settlement has
+    /// no spatial colony, so each rung reads a finance signal instead of a spatial
+    /// one: the credit/spot market (Barter), the designated money good (Money), the
+    /// roundabout project starts (Specialist), the measured structure length
+    /// (Capital), created-credit circulation (Credit), and fiat ever circulating
+    /// (Modern). All MEASURED from the M3 records — both finance rungs read monotonic
+    /// "ever" signals, with the same hysteresis as every other rung.
+    fn finance_triggers(&self, settlement: &Settlement) -> [bool; Era::COUNT] {
+        // Reciprocal exchange volume on the finance path: the spot + loan (time/credit)
+        // markets — the finance settlement never barters.
+        let exchange_volume = settlement.spot_trade_count() + settlement.loan_trade_count();
+        [
+            // Forager — the floor.
+            true,
+            // Barter — sustained reciprocal exchange (the credit/spot market).
+            exchange_volume >= self.min_barter_volume,
+            // Money — a money good is in use (designated specie on the M3 ledger).
+            settlement.current_money_good().is_some(),
+            // Specialist — a division of labor: capitalists have started roundabout
+            // projects (a measured division of labor between capitalist and worker).
+            settlement.boom_projects_started() > 0,
+            // Capital — roundabout production: a measured project structure has formed
+            // (the time/credit market's lengthened, multi-period production).
+            settlement.peak_structure_length_x100() > 0,
+            // Credit — institutionally-created credit (chartered bank fiduciary or
+            // state fiat-credit) has circulated.
+            settlement.credit_ever_circulated(),
+            // Modern — state fiat is the marginal medium: fiat has circulated as money
+            // (the Fiat regime rung). A monotonic "ever" signal, mirroring the sibling
+            // `credit_ever_circulated` rung, so the climax era is not silently regressed
+            // when the bust defaults outstanding fiat back toward zero.
+            settlement.fiat_ever_circulated(),
         ]
     }
 
@@ -402,7 +488,7 @@ mod tests {
 
     /// Trigger arrays for the synthetic hysteresis tests, indexed by [`Era::rank`].
     fn triggers(barter: bool, money: bool, specialist: bool, capital: bool) -> [bool; Era::COUNT] {
-        [true, barter, money, specialist, capital]
+        [true, barter, money, specialist, capital, false, false]
     }
 
     #[test]
@@ -411,13 +497,16 @@ mod tests {
         assert!(Era::Barter < Era::Money);
         assert!(Era::Money < Era::Specialist);
         assert!(Era::Specialist < Era::Capital);
+        assert!(Era::Capital < Era::Credit);
+        assert!(Era::Credit < Era::Modern);
         for (i, era) in Era::ALL.into_iter().enumerate() {
             assert_eq!(era.rank(), i);
             assert_eq!(Era::from_rank(i), Some(era));
         }
         assert_eq!(Era::from_rank(Era::COUNT), None);
         assert_eq!(Era::Forager.prev(), None);
-        assert_eq!(Era::Capital.next(), None);
+        assert_eq!(Era::Modern.next(), None);
+        assert_eq!(Era::Capital.next(), Some(Era::Credit));
         assert_eq!(Era::Money.next(), Some(Era::Specialist));
         assert_eq!(Era::Money.prev(), Some(Era::Barter));
     }

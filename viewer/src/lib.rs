@@ -120,10 +120,11 @@ pub fn run_dashboard(scenario: &str, ticks: u64, seed: u64) -> Result<String, St
     let mut settlement = Settlement::generate(seed, &config);
     let goods: Vec<GoodId> = settlement.tracked_goods().to_vec();
 
-    // G6a: classify the settlement's measured institutional era as the run advances.
-    // Read-only — the detector observes (`&settlement`) and never changes the run.
-    // Surfaced only for the emergent path (the ladder classifies barter→money→…).
-    let mut detector = settlement.is_emergent().then(EraDetector::new);
+    // G6a/G8c-1: classify the settlement's measured institutional era as the run
+    // advances. Read-only — the detector observes (`&settlement`) and never changes the
+    // run. Surfaced for the emergent path (barter→money→…) and the finance path
+    // (…→credit→modern, the G8c-1 cycle), both of which climb the measured ladder.
+    let mut detector = (settlement.is_emergent() || settlement.is_cycle()).then(EraDetector::new);
 
     let mut rows = Vec::with_capacity(ticks as usize);
     for _ in 0..ticks {
@@ -200,7 +201,25 @@ pub fn run_dashboard(scenario: &str, ticks: u64, seed: u64) -> Result<String, St
             knowledge: settlement.knowledge(),
             knowledge_produced: report.knowledge_produced(),
             tier: settlement.current_tier(),
+            // G8c-1 cycle surfacing: the regime rung this tick (the ladder descent) and
+            // the shadow gap (filled after the run, once the shadow replay is known).
+            // Empty/None for a non-cycle settlement, so those dashboards are unchanged.
+            regime: if settlement.is_cycle() {
+                settlement.regime_label().to_string()
+            } else {
+                String::new()
+            },
+            gap_bps: None,
         });
+    }
+
+    // G8c-1: fill the per-tick shadow gap (shadow natural rate − market rate). The
+    // shadow replay needs the whole run, so it is computed once here and back-filled
+    // onto the rows. A no-op for a non-cycle settlement.
+    if let Some(gaps) = settlement.shadow_gap_bps() {
+        for (row, gap) in rows.iter_mut().zip(gaps) {
+            row.gap_bps = gap;
+        }
     }
 
     // The era banner: the current era and the tick each rung was first reached.
@@ -244,11 +263,28 @@ pub fn run_dashboard(scenario: &str, ticks: u64, seed: u64) -> Result<String, St
         reserve_ratio_bps: bank.reserve_ratio_bps.0,
     });
 
+    // G8c-1 credit-cycle banner: the regime rung, the measured shadow gap, the
+    // boom/bust indicators, the capital consumed, and the fiat base. `None` for a
+    // non-cycle settlement, so those dashboards are unchanged.
+    let cycle_summary = settlement.cycle_kind().map(|kind| render::CycleSummary {
+        kind: match kind {
+            sim::CycleKind::CreditCycle => "credit-cycle",
+            sim::CycleKind::SoundMoney => "sound-money",
+        },
+        regime: settlement.regime_label(),
+        max_gap_bps: settlement.max_shadow_gap_bps(),
+        boom_projects: settlement.boom_projects_started(),
+        bust_abandoned: settlement.bust_abandoned_projects(),
+        capital_consumed: settlement.capital_consumed(),
+        fiat_base: settlement.fiat_base().0,
+    });
+
     let banners = render::DashboardBanners {
         era: era_summary.as_ref(),
         research: research_summary.as_ref(),
         money: money_summary.as_ref(),
         bank: bank_summary.as_ref(),
+        cycle: cycle_summary.as_ref(),
     };
     Ok(render::format_dashboard(
         &settlement,

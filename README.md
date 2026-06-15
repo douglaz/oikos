@@ -869,11 +869,13 @@ G6a:
 - [x] acceptance suite (`sim/tests/g6a_eras.rs`: the six acceptance tests plus unit tests) +
       README + divergence-log updates
 
-The **Credit** and **Modern** eras (chartered banks, state money) are **deferred to G8**: they
-need finance machinery that does not exist in the game yet, and G6a does not invent
-placeholder finance to reach them. G8a lays the M3 ledger foundation (specie money) but adds no
-new rung — the Credit/Modern rungs unlock with banks/credit (G8b) and fiat/regime (G8c). Era
-detection is also **not** research/tech-tier unlocking (G6b). See `sim/tests/g6a_eras.rs` and
+The **Credit** and **Modern** eras (chartered banks, state money) were **deferred to G8**: they
+need finance machinery that did not exist in the game at G6a, and G6a does not invent
+placeholder finance to reach them. G8a lays the M3 ledger foundation (specie money) and G8b adds
+banks/credit, but neither adds a rung; **G8c-1 unlocks both** — the detector now reaches **Credit**
+when institutionally-created credit circulates and **Modern** when state fiat is the marginal medium
+(measured, with hysteresis; see the G8c-1 status section). Era detection is also **not**
+research/tech-tier unlocking (G6b). See `sim/tests/g6a_eras.rs` and
 `docs/engine-divergence.md` (the G6a entry).
 
 ## Status: G6b (research & tech tiers — capabilities are earned, not timed) — complete
@@ -1128,6 +1130,85 @@ charter (G8c/UI); demand-claim estate routing; and the Credit/Modern era rungs**
 G8b proves the lending **mechanism** + the reserve control. See `sim/tests/g8b_banks.rs` and
 `docs/engine-divergence.md` (the G8b entry).
 
+## Status: G8c-1 (fiat, the regime ladder, and the credit cycle) — complete
+
+This is the **climax** of the economic engine: the **Austrian business cycle**, in the colony game,
+on econ's **unchanged** ABCT/regime/shadow machinery. G8a put the sim on M3 ledger money; G8b added
+banks and fiduciary credit. **G8c-1** adds **fiat** and the **regime ladder** (`SoundGold →
+FractionalConvertible → SuspendedConvertibility → Fiat`) and demonstrates the cycle the lab proved
+(`emerged-gold-fiat-credit-expansion`): cheap credit drives the market rate **below** the
+credit-disabled **shadow** natural rate (a measured **gap**), capitalists over-invest in roundabout
+production (the **boom**), credit **stops**, the rate reasserts, the malinvested projects are
+**abandoned**, and **capital is consumed** (the **bust**) — against a **sound-money control** that
+shows no gap and no cycle.
+
+The reuse is **total**: the regime ladder (`SetRegime`), fiat issuance
+(`SetIssuerPolicy`/`StopIssuerCredit`), the boom/bust/abandonment/capital-consumption M3 records, and
+the credit-disabled `run_credit_disabled_shadow` counterfactual are all econ's, **unchanged**. A
+`credit-cycle` settlement is a **finance** settlement (`SettlementConfig::credit_cycle`): it has no
+spatial colony, its `Society` is built from econ's credit-ladder scenario, and each econ tick simply
+steps that society so the cycle runs **endogenously**; the sim only routes the regime/issuance in and
+reads the measured signals back. So the spot market is untouched and the six conformance goldens stay
+byte-identical by construction.
+
+- **The regime ladder descends.** `SetRegime` walks `SoundGold → FractionalConvertible →
+  SuspendedConvertibility → Fiat` over the first ticks (the per-tick `regime` column shows the
+  descent); under `Fiat` the issuer extends **fiat-credit** into the economy. The credit-cycle's
+  current regime is `Fiat`; the control stays `SoundGold`.
+- **The shadow gap is the authoritative signal.** The settlement replays a credit-disabled **shadow**
+  (`Settlement::shadow_gap_bps`) to get the natural rate; `gap = shadow_natural_rate − market_rate`.
+  Cheap credit pushes the market rate below the natural rate, so the gap opens **positive** during the
+  boom (`max_shadow_gap_bps() > 0`). MEASURED, never set.
+- **Boom → stop → bust → capital consumed.** Seeing cheap credit, capitalists start the long
+  roundabout project, so the measured structure lengthens **above** the shadow baseline
+  (`structure_rose_above_shadow()`) — the **boom**. When credit **stops** (`StopIssuerCredit`), the
+  rate reasserts, the malinvested projects no longer pencil out and are **abandoned**
+  (`bust_abandoned_projects() > 0`), consuming non-salvaged embodied capital
+  (`capital_consumed() > 0`) — reusing the M2/M3 abandonment + capital-consumption machinery. The
+  bust is a cluster of individually-rational abandonments, not a global trigger.
+- **The sound-money control has no cycle.** `SoundGold`, no fiat, no credit — the same agents and the
+  same roundabout project line, only credit differs. The gap stays ≈ 0, no boom forms, nothing is
+  abandoned, and no capital is consumed. Paired with the cycle, it isolates the boom/bust to **credit
+  expansion**, not the production/spatial dynamics — *if the control busts, the cycle is not coming
+  from credit*.
+- **Fiat conserves.** Fiat is **credit, not minted specie**: the specie base
+  (`public_specie + bank_reserves`) is unchanged across the cycle, the fiat base = **issued − retired**
+  equals the outstanding circulating fiat, broad money is exactly `specie + fiat`, and the M3 ledger
+  reconciles every tick — a default changes the money stock by rule (retirement/booking), never by a
+  leak.
+- **The Credit and Modern era rungs unlock.** The G6a detector gains two rungs above Capital: it
+  reaches **Credit** when institutionally-created credit circulates and **Modern** when state fiat is
+  the marginal medium — both MEASURED, with the same hysteresis. The finance path climbs the full
+  ladder (`forager → barter → money → specialist → capital → credit → modern`); the sound-money
+  control tops out at Money. The emergent-chain frontier's measured timeline is **byte-identical**
+  (the new rungs are unreachable without chartered credit or fiat, so it still tops out at Capital).
+- **Viewer surfacing.** The `credit-cycle` / `sound-money` dashboards surface the regime ladder (a
+  per-tick `regime` column + a `gap.bps` column), the era banner climbing to `modern`, and a cycle
+  banner `cycle: KIND — regime R · shadow gap(max) G bps · boom B · bust X · capital consumed C ·
+  fiat base F`.
+
+G8c-1:
+
+- [x] the regime ladder + fiat issuance as sim policy (`SettlementConfig::credit_cycle` /
+      `sound_money`, the finance `Settlement` built from econ's credit-ladder scenario, the
+      `SetRegime`/`SetIssuerPolicy`/`StopIssuerCredit` timeline — no ABCT/regime/shadow logic added to
+      econ)
+- [x] the shadow-gap wiring (`Settlement::shadow_gap_bps` / `max_shadow_gap_bps` /
+      `structure_rose_above_shadow`, the credit-disabled `run_credit_disabled_shadow` replay) and the
+      boom/bust/capital-consumed/fiat-base accessors read from the M3 records
+- [x] the Credit/Modern era rungs (`sim/src/era.rs`: Credit/Modern measured from path-independent
+      M3-record signals — `credit_ever_circulated` / `fiat_ever_circulated` — so a chartered-bank
+      (G8b) colony also sets the Credit trigger; the lower-rung emergent path is unchanged and the
+      bank-free frontier's measured timeline stays byte-identical)
+- [x] viewer surfacing — the `credit-cycle` / `sound-money` scenarios, the regime + gap columns, the
+      cycle banner, and the era climb to `modern`
+- [x] acceptance suite (`sim/tests/g8c1_cycle.rs`: the seven acceptance tests + unit tests) + viewer
+      dashboard tests + README + divergence-log updates
+
+**Tender policies (M11–M17) and tax receivability as player levers (G8c-2), and the multi-seed
+robustness study of the cycle (deferred)** are **not** here — G8c-1 is fiat + the regime ladder + the
+cycle + the control. See `sim/tests/g8c1_cycle.rs` and `docs/engine-divergence.md` (the G8c-1 entry).
+
 ## Build and test
 
 ```bash
@@ -1163,4 +1244,6 @@ cargo run -p viewer -- run roads-control --ticks 60           # G7: no road → 
 cargo run -p viewer -- run m3-settlement --ticks 40           # G8a: the viable economy on M3 ledger money (specie composition banner)
 cargo run -p viewer -- run bank --ticks 40                    # G8b: a fractional-reserve bank — deposits, claims, fiduciary credit
 cargo run -p viewer -- run bank-full-reserve --ticks 40       # G8b: the 100%-reserve control — deposits circulate, zero fiduciary
+cargo run -p viewer -- run credit-cycle --ticks 80           # G8c-1: the Austrian cycle — regime descends to Fiat, gap opens, boom, stop, bust, capital consumed
+cargo run -p viewer -- run sound-money --ticks 80            # G8c-1: the sound-money control — SoundGold, no fiat, no gap, no cycle
 ```
