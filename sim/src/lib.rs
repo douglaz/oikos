@@ -103,6 +103,7 @@ pub use settlement::{
 /// over one crate — instead of reaching into `econ`/`life` directly.
 pub use econ::agent::{Agent, AgentId, Want, WantKind};
 pub use econ::good::{Gold, GoodId, Horizon, FOOD, WOOD};
+pub use econ::ledger::MoneyStock;
 pub use econ::market::Trade;
 pub use econ::society::Society;
 pub use life::NeedState;

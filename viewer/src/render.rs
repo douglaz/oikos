@@ -192,13 +192,27 @@ pub struct ResearchSummary {
 }
 
 /// The optional milestone banners rendered above the dashboard table: the G6a era
-/// summary and the G6b research summary. Each is `None` unless its overlay is present
-/// (era for an emergent settlement, research for a research settlement). Grouped so the
-/// renderer takes one banner argument rather than many.
+/// summary, the G6b research summary, and the G8a M3 money composition. Each is `None`
+/// unless its overlay is present (era for an emergent settlement, research for a research
+/// settlement, money for an M3 ledger settlement). Grouped so the renderer takes one
+/// banner argument rather than many.
 #[derive(Default)]
 pub struct DashboardBanners<'a> {
     pub era: Option<&'a EraSummary>,
     pub research: Option<&'a ResearchSummary>,
+    pub money: Option<&'a MoneySummary>,
+}
+
+/// G8a M3 money-composition summary: the settlement's M3 ledger money broken into its
+/// four components. A read-only digest of the [`sim::Settlement::money_composition`]
+/// snapshot, rendered above the dashboard for an M3 settlement. `None` for a closed-GOLD
+/// M1 settlement. In G8a the money is pure **specie**: `fiat`, `claims`, and `reserves`
+/// are all zero (banks and fiat are G8b/G8c).
+pub struct MoneySummary {
+    pub specie: u64,
+    pub fiat: u64,
+    pub claims: u64,
+    pub reserves: u64,
 }
 
 /// G6a era-banner summary: the current institutional era and the timeline of the
@@ -279,6 +293,16 @@ pub fn format_dashboard(
             out,
             "research: knowledge {} · tier {} · {unlock}",
             research.knowledge, research.tier
+        );
+    }
+    // G8a money banner: the M3 ledger composition — "money is ledger-accounted now".
+    // In G8a it is pure specie (fiat/claims/reserves all zero); banks and fiat are
+    // G8b/G8c. Shown only for an M3 settlement (the closed-GOLD M1 path surfaces none).
+    if let Some(money) = banners.money {
+        let _ = writeln!(
+            out,
+            "money: M3 ledger — specie {} · fiat {} · claims {} · reserves {}",
+            money.specie, money.fiat, money.claims, money.reserves
         );
     }
     out.push('\n');

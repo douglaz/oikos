@@ -565,8 +565,9 @@ the slot generation so the id resolves to `None` and the slot is reusable), then
 `labor_reservations` (the dead id forgotten), the labor/loan/spot books (orders
 cancelled), `barter_book` (offers/reservations forgotten), dead-owned
 `project_funding_plans` (reserved gold released and unstarted plans expired), and an
-empty M3 `MoneySystem` balance. A non-empty M3 ledger balance is refused before
-removal because routing that estate is G4b. The `sim` `Settlement` and the `life`
+empty M3 `MoneySystem` balance. A non-empty M3 ledger balance was refused before
+removal at G4a (routing that estate was deferred — now **resolved in G8a**, which drains
+the specie into the `Estate`). The `sim` `Settlement` and the `life`
 `Camp` route the returned estate, plus the dead colonist's world-carried delivery
 escrow and any stranded exchange-deposit escrow (both drained out of the world), into
 a **commons** — a conserved, sim-owned sink that joins `total_gold` and
@@ -596,8 +597,9 @@ G4a:
       arena/reconcile unit tests; README + divergence-log updates
 
 Deferred (noted in `docs/engine-divergence.md`): births/aging/households/inheritance
-and estate-to-heirs (G4b), non-empty M3 ledger estate routing (G4b), and the
-population-stability study (G4b/later). See `sim/tests/g4a_death.rs` and
+and estate-to-heirs (G4b), non-empty M3 ledger estate routing (specie resolved in G8a;
+fiat/claims deferred to G8b/c), and the population-stability study (G4b/later). See
+`sim/tests/g4a_death.rs` and
 `docs/engine-divergence.md` (the G4a entry).
 
 ## Status: G4b (births, aging, households, culture inheritance) — complete
@@ -674,7 +676,8 @@ G4b:
 Deferred (noted in `docs/engine-divergence.md`): the **multi-seed stability/selection
 studies** (the game-spec's 100-seed stability band and a multi-seed selection study,
 analogous to M18/M19 for money emergence), inter-settlement migration, and non-empty M3
-ledger estate routing. See `sim/tests/g4b_demography.rs` and `docs/engine-divergence.md`
+ledger estate routing (**resolved in G8a** — M3 demography now drains/credits specie
+through the ledger). See `sim/tests/g4b_demography.rs` and `docs/engine-divergence.md`
 (the G4b entry).
 
 ## Status: G5a (money emerges from spatial barter) — complete
@@ -868,8 +871,10 @@ G6a:
 
 The **Credit** and **Modern** eras (chartered banks, state money) are **deferred to G8**: they
 need finance machinery that does not exist in the game yet, and G6a does not invent
-placeholder finance to reach them. Era detection is also **not** research/tech-tier unlocking
-(G6b). See `sim/tests/g6a_eras.rs` and `docs/engine-divergence.md` (the G6a entry).
+placeholder finance to reach them. G8a lays the M3 ledger foundation (specie money) but adds no
+new rung — the Credit/Modern rungs unlock with banks/credit (G8b) and fiat/regime (G8c). Era
+detection is also **not** research/tech-tier unlocking (G6b). See `sim/tests/g6a_eras.rs` and
+`docs/engine-divergence.md` (the G6a entry).
 
 ## Status: G6b (research & tech tiers — capabilities are earned, not timed) — complete
 
@@ -999,6 +1004,59 @@ G7:
 settlements / multi-route topology** are **deferred** — G7 is one community-labor road on the one
 abstract route. See `sim/tests/g7_roads.rs` and `docs/engine-divergence.md` (the G7 entry).
 
+## Status: G8a (the M3-ledger money settlement — finance foundation) — complete
+
+Every settlement through G7 ran on **closed-GOLD M1** money (`Agent.gold`, no ledger). **G8a** is
+the finance foundation: it runs the spatial settlement on econ's **M3 `MoneySystem`** instead —
+money is M3 **specie** (NO banks, NO fiat, NO demand claims — those are G8b/G8c) — and routes every
+sim money flow (spot trades, the world→econ settlement, wage/birth/estate transfers) through that
+ledger rather than mutating `Agent.gold`. It also resolves the runtime-M3-removal piece **G4a/b
+deferred**: a funded M3 colonist's death now **drains** its ledger specie into the estate
+(conserved) instead of refusing removal. econ's M3 market/ledger **behavior is reused unchanged** —
+G8a routes the SIM's flows through the ledger and resolves removal; it does not change how M3 clears
+markets, so the six conformance goldens stay byte-identical by construction.
+
+The `m3-settlement` scenario is the `viable` economy run on M3 specie. Because specie with no
+banks/fiat behaves economically like the M1 gold did, it produces the **same spatial pricing,
+provisioning, and sustenance** as the M1 settlement — M3 here is M1, only ledger-accounted, which is
+the proof the wiring is correct.
+
+- **The settlement runs on M3 specie.** A `SettlementConfig::m3 = true` flag (`false`, so inert, for
+  every pre-G8a config) builds the society as the pure-specie M3 scenario
+  (`EmergedGoldSoundControl`: `MarketM3` kind, `SoundGold`, no banks, no issuers, no project lines).
+  The only active M3 machinery is the **ledger-settled spot market**; the loan/labor passes are
+  inert for a gatherer/consumer roster.
+- **Conservation spans the M3 ledger (specie) + goods** every econ tick, and the M3 ledger's **own**
+  conservation holds (`money_ledgers_reconcile`) — across spot trades, births, and deaths. Every sim
+  money flow is a ledger move, never an `Agent.gold` mutation.
+- **M3 estate routing resolved.** `Society::remove_agent` (M3) drains the dead colonist's specie into
+  the `Estate` (`commodity_base` falls by exactly that, the row is forgotten, the invariant holds);
+  the sim routes it to the commons or, via the new additive `Society::credit_estate_gold`, to an
+  heir. `can_remove_agent` no longer refuses a funded **specie** balance (a fiat/claims balance is
+  still refused — G8b/c). Deaths and births conserve M3 balances.
+- **Pure specie.** The M3 composition is specie only — fiat, demand claims, bank reserves, fiduciary,
+  and time deposits are all zero. The viewer's `m3-settlement` dashboard surfaces it as a
+  `money: M3 ledger — specie S · fiat 0 · claims 0 · reserves 0` banner.
+- **Goldens byte-identical by construction.** The M3-removal drain and the shared consumed-provision
+  capture are game-only (the lab never frees an agent) and/or gated on flags the lab
+  never sets, so the six econ goldens and every G1–G7 test stay green.
+
+G8a:
+
+- [x] the M3-money settlement mode (`SettlementConfig::m3` / `m3_settlement`, the `EmergedGoldSoundControl`
+      specie society) and the routing of the sim's money flows through the M3 ledger
+- [x] the resolved M3 estate routing — `remove_agent` drains specie into the `Estate`, `credit_estate_gold`
+      re-credits an heir, `can_remove_agent` allows funded specie (econ unit tests migrated)
+- [x] the additive, gated consumed-provision capture in `run_m3_tick` (so the spatial sim reads its
+      consumed sink back on M3; the M3 goldens stay byte-identical)
+- [x] viewer surfacing — the `m3-settlement` scenario + the M3 money-composition banner
+- [x] acceptance suite (`sim/tests/g8a_m3_money.rs`: the seven acceptance tests) + econ M3-removal unit
+      tests + README + divergence-log updates
+
+**Banks, deposits, fiduciary, and credit (G8b); fiat, the regime ladder, tender policies, and taxation
+(G8c); and the Credit/Modern era rungs** are **deferred** — G8a is M3 **specie** money only. See
+`sim/tests/g8a_m3_money.rs` and `docs/engine-divergence.md` (the G8a entry).
+
 ## Build and test
 
 ```bash
@@ -1031,4 +1089,5 @@ cargo run -p viewer -- run research --ticks 60                # G6b: Knowledge a
 cargo run -p viewer -- run research-control --ticks 60        # G6b: no scholars → no Knowledge → tier 2 never unlocks
 cargo run -p viewer -- run roads --ticks 60                   # G7: a road is built from labor, transit drops, the gap converges faster
 cargo run -p viewer -- run roads-control --ticks 60           # G7: no road → transit stays high → the gap converges slower
+cargo run -p viewer -- run m3-settlement --ticks 40           # G8a: the viable economy on M3 ledger money (specie composition banner)
 ```

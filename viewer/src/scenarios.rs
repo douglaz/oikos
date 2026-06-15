@@ -105,6 +105,12 @@ const SCENARIOS: &[Scenario] = &[
             "G6b no-scholars control: no Knowledge accrues, so tier 2 never unlocks and pastry is never produced",
         build: SettlementConfig::research_control,
     },
+    Scenario {
+        name: "m3-settlement",
+        description:
+            "G8a: the viable settlement run on M3 ledger money (specie — no banks, no fiat); money is ledger-accounted, economically M1",
+        build: SettlementConfig::m3_settlement,
+    },
 ];
 
 fn build_near() -> SettlementConfig {

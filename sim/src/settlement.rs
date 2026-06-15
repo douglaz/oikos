@@ -528,6 +528,17 @@ pub struct SettlementConfig {
     /// composition with production/demography is G5b). See [`BarterConfig`] and
     /// [`SettlementConfig::barter_camp`].
     pub barter: Option<BarterConfig>,
+    /// The G8a **M3 ledger-money** flag. `false` (the default for every pre-G8a
+    /// config) keeps the settlement on the closed-GOLD M1 spot market exactly as
+    /// before, so every existing config and the six econ goldens are byte-identical
+    /// by construction. `true` builds the society on econ's M3 `MoneySystem` (specie
+    /// is the money; **no banks, no fiat, no claims** — those are G8b/G8c), so every
+    /// money flow (spot trades, the world→econ settlement, wage/birth/estate
+    /// transfers) is a ledger move rather than an `Agent.gold` mutation. Economically
+    /// equivalent to the M1 settlement (M3 specie with no banks/fiat *is* M1, only
+    /// ledger-accounted); mutually exclusive with `barter` (which runs the V2
+    /// emergent-money path). See [`SettlementConfig::m3_settlement`].
+    pub m3: bool,
 }
 
 impl SettlementConfig {
@@ -588,6 +599,25 @@ impl SettlementConfig {
             // Emergent money is opt-in via `barter_camp`, so every golden stays
             // byte-identical.
             barter: None,
+            // Closed-GOLD M1 by default; the M3 ledger settlement is opt-in via
+            // `m3_settlement`, so every golden stays byte-identical.
+            m3: false,
+        }
+    }
+
+    /// The G8a **M3 ledger-money** settlement: the exact [`Self::viable`] economy run
+    /// on econ's M3 `MoneySystem` instead of closed-GOLD `Agent.gold`. The money is M3
+    /// **specie** — there are NO banks, NO fiat, NO demand claims (those are G8b/G8c) —
+    /// so every money flow (the ledger-settled spot market, the world→econ settlement,
+    /// and any wage/birth/estate transfer) is a ledger move that conserves the M3
+    /// ledger total. Because specie with no banks/fiat behaves economically exactly
+    /// like the M1 gold did, this settlement produces the **same trades, prices, and
+    /// provisioning** as [`Self::viable`] — it is M1, only ledger-accounted. That
+    /// equivalence is the proof the G8a wiring is correct (`g8a_m3_money` test 3).
+    pub fn m3_settlement() -> Self {
+        Self {
+            m3: true,
+            ..Self::viable()
         }
     }
 
@@ -639,6 +669,7 @@ impl SettlementConfig {
             chain: Some(chain),
             demography: None,
             barter: None,
+            m3: false,
         }
     }
 
@@ -709,6 +740,7 @@ impl SettlementConfig {
             chain: Some(chain),
             demography: None,
             barter: None,
+            m3: false,
         }
     }
 
@@ -819,6 +851,7 @@ impl SettlementConfig {
             chain: Some(chain),
             demography: None,
             barter: None,
+            m3: false,
         }
     }
 
@@ -941,6 +974,7 @@ impl SettlementConfig {
             resident_traders: Vec::new(),
             chain: None,
             demography: None,
+            m3: false,
             barter: Some(BarterConfig {
                 menger: MengerianConfig {
                     candidate_goods: vec![FOOD, WOOD, SALT],
@@ -1176,6 +1210,7 @@ impl SettlementConfig {
             resident_traders: Vec::new(),
             chain: Some(chain),
             demography: Some(demography),
+            m3: false,
             barter: Some(BarterConfig {
                 menger: MengerianConfig {
                     // The candidate set the saleability tracker watches. SALT is the
@@ -2063,12 +2098,28 @@ impl Settlement {
         // Mengerian `winner` rule promotes a money good, after which the same
         // V2 money phase clears the money-priced market. Both log consumption
         // (the additive V2 logging G5a wired into econ) and realize prices.
-        let (scenario_name, money) = match &config.barter {
-            Some(barter) => (
+        //
+        // G8a adds the M3 ledger-money settlement: `EmergedGoldSoundControl` is the
+        // pure-specie M3 scenario (`ScenarioKind::MarketM3`, SoundGold regime, no banks,
+        // no issuers, no project lines, default specie tenders), so the society builds a
+        // `MoneySystem` whose only active machinery is the ledger-settled spot market —
+        // economically the same designated-GOLD market as M1, only ledger-accounted. The
+        // money good is still GOLD (the specie). M3 is mutually exclusive with the barter
+        // overlay (which runs the V2 emergent-money path).
+        assert!(
+            !(config.m3 && config.barter.is_some()),
+            "an M3 ledger settlement is mutually exclusive with the barter (V2 emergent-money) overlay"
+        );
+        let (scenario_name, money) = match (&config.barter, config.m3) {
+            (Some(barter), _) => (
                 ScenarioName::MengerSaltMoney,
                 MarketMoneyConfig::Emergent(barter.menger.clone()),
             ),
-            None => (
+            (None, true) => (
+                ScenarioName::EmergedGoldSoundControl,
+                MarketMoneyConfig::Designated(DesignatedMoney { good: GOLD }),
+            ),
+            (None, false) => (
                 ScenarioName::MarketBarterishGold,
                 MarketMoneyConfig::Designated(DesignatedMoney { good: GOLD }),
             ),
@@ -2086,19 +2137,14 @@ impl Settlement {
         let mut society = Society::from_scenario(scenario);
         society.enable_consumption_log();
 
-        // G4b estate routing is closed-GOLD M1 only. On an M3 (ledger-money) society
-        // `Society::can_remove_agent` refuses to remove an agent that still holds
-        // spendable ledger gold, so an elderly M3 colonist would be *silently* skipped
-        // by `age_and_remove_elderly`/`update_needs_and_remove_dead` — an immortal
-        // elder with `deaths` undercounted, while conservation still passes. M3 estate
-        // routing is explicitly deferred (see `docs/impl-g4b.md`); the demography
-        // settlement is built SoundGold M1 above, so this holds by construction. A real
-        // `assert!` (not `debug_assert!`) so a future M3 demography config trips loudly at
-        // generation even in release, instead of silently undercounting deaths.
-        assert!(
-            config.demography.is_none() || society.money_system.is_none(),
-            "G4b demography requires a closed-GOLD M1 society (M3 estate routing is deferred)"
-        );
+        // G8a resolves the G4b deferral: M3 (ledger-money) demography now settles. A
+        // funded M3 colonist's death drains its ledger specie into the estate via
+        // `Society::remove_agent` (`can_remove_agent` no longer refuses a funded specie
+        // balance), the heir credit re-credits that specie through the ledger, and a
+        // birth endowment is a conserved within-ledger `transfer_gold`. So demography
+        // runs on either money regime; the G4b pre-G8a assert that forbade M3 demography
+        // is retired (banks/fiat — not specie — remain G8b/c, and a fiat/claims balance
+        // is still refused upstream).
 
         // Build the production-chain runtime and register the content good names
         // so the society's registry resolves them (the viewer reads names through
@@ -2797,28 +2843,17 @@ impl Settlement {
         true
     }
 
-    /// Credit already-collected estate gold to a live heir. This is deliberately
-    /// settlement-local: [`Society::credit_gold`] is the external half-move accessor
-    /// for closed-GOLD region transfers and correctly rejects emergent-money
-    /// societies. Frontier inheritance is different — [`Society::remove_agent`] has
-    /// already removed the dead colonist's post-promotion `Agent.gold` from this same
-    /// society, so restoring it to a live household heir is a conserved in-settlement
-    /// estate move. Ledger-money estates remain deferred, so do not mutate an M3 cache.
+    /// Credit already-collected estate gold to a live heir, on either money regime.
+    /// [`Society::remove_agent`] has already removed the dead colonist's money from
+    /// this same society — its `Agent.gold` in closed-GOLD M1, or its public specie
+    /// drained out of the ledger in M3 (G8a) — so restoring it to a live household
+    /// heir is a conserved in-settlement estate move. [`Society::credit_estate_gold`]
+    /// handles every regime: it adds to `Agent.gold` in closed-GOLD M1 and in
+    /// post-promotion emergent money, and re-credits ledger specie (returning
+    /// `commodity_base` to its pre-death total) in M3. Returns `false` only on an
+    /// overflow or stale heir, in which case the gold routes to the commons instead.
     fn credit_estate_gold_to_heir(&mut self, heir: AgentId, gold: Gold) -> bool {
-        if gold == Gold::ZERO {
-            return true;
-        }
-        if self.society.money_system.is_some() {
-            return false;
-        }
-        let Some(agent) = self.society.agents.get_mut(heir) else {
-            return false;
-        };
-        let Some(updated) = agent.gold.checked_add(gold) else {
-            return false;
-        };
-        agent.gold = updated;
-        true
+        self.society.credit_estate_gold(heir, gold)
     }
 
     fn colonist_household(&self, id: AgentId) -> Option<usize> {
@@ -3554,6 +3589,24 @@ impl Settlement {
         self.society.total_gold().saturating_add(self.commons_gold)
     }
 
+    /// Whether this settlement runs on the M3 ledger-money [`econ::ledger::MoneySystem`]
+    /// (G8a) rather than closed-GOLD `Agent.gold` M1. `false` for every pre-G8a config.
+    pub fn is_m3(&self) -> bool {
+        self.society.money_system.is_some()
+    }
+
+    /// The M3 money composition (G8a), or `None` on the closed-GOLD M1 path. The
+    /// snapshot's `public_specie` is the circulating money; for a G8a settlement
+    /// `public_fiat`, `demand_claims`, `bank_reserves`, `fiduciary`, and `time_deposits`
+    /// are all zero — there are no banks and no fiat (those are G8b/G8c). The viewer
+    /// surfaces this composition; `g8a_m3_money` test 6 pins the all-specie shape.
+    pub fn money_composition(&self) -> Option<econ::ledger::MoneyStock> {
+        self.society
+            .money_system
+            .as_ref()
+            .map(|money_system| money_system.snapshot())
+    }
+
     /// Read-only access to the underlying world (carry/stockpile/node inspection).
     pub fn world(&self) -> &World {
         &self.world
@@ -3877,6 +3930,16 @@ impl Settlement {
                 .emergence()
                 .expect("a barter-overlay settlement runs econ's Emergent money state");
             push_emergence_runtime_bytes(&mut out, emergence);
+        }
+
+        // The G8a M3 ledger-money runtime. Omitted entirely for pre-G8a settlements
+        // so their canonical layout stays byte-identical; present for M3 so a
+        // ledger-backed settlement never collides with the M1 state whose Agent.gold
+        // cache happens to match at generation, and so future ledger composition
+        // changes are part of the determinism surface.
+        if let Some(money_system) = &self.society.money_system {
+            out.push(1);
+            push_money_system_bytes(&mut out, money_system);
         }
 
         // Delivered exchange-stockpile units that are still awaiting econ credit
@@ -4666,6 +4729,29 @@ fn push_barter_config_bytes(out: &mut Vec<u8>, barter: &BarterConfig) {
     out.extend_from_slice(&barter.consumer_medium_endowment.to_le_bytes());
 }
 
+fn push_money_system_bytes(out: &mut Vec<u8>, money_system: &econ::ledger::MoneySystem) {
+    out.extend_from_slice(&money_system.base.commodity_base.0.to_le_bytes());
+    out.extend_from_slice(&money_system.base.fiat_base.0.to_le_bytes());
+    out.extend_from_slice(&money_system.base.issuer_gold_vault.0.to_le_bytes());
+    out.extend_from_slice(&money_system.base.issuer_fiat_unissued.0.to_le_bytes());
+    out.extend_from_slice(&money_system.base.bank_reserves.0.to_le_bytes());
+    out.extend_from_slice(&money_system.base.bank_fiat_reserves.0.to_le_bytes());
+    out.extend_from_slice(&money_system.claims.demand_claims.0.to_le_bytes());
+    out.extend_from_slice(&money_system.claims.fiduciary.0.to_le_bytes());
+    out.extend_from_slice(&money_system.claims.time_deposits.0.to_le_bytes());
+    out.extend_from_slice(&(money_system.balances.len() as u32).to_le_bytes());
+    for balance in &money_system.balances {
+        out.extend_from_slice(&balance.agent.0.to_le_bytes());
+        out.extend_from_slice(&balance.public_specie.0.to_le_bytes());
+        out.extend_from_slice(&balance.public_fiat.0.to_le_bytes());
+        out.extend_from_slice(&(balance.demand_claims.len() as u32).to_le_bytes());
+        for (bank, claim) in &balance.demand_claims {
+            out.extend_from_slice(&bank.0.to_le_bytes());
+            out.extend_from_slice(&claim.0.to_le_bytes());
+        }
+    }
+}
+
 /// Serialize an `Option<GoodId>` into the canonical digest: a present/absent tag
 /// byte followed by the good id when present. Keeps the optional-good encoding
 /// uniform across the emergent-money blocks.
@@ -5308,6 +5394,43 @@ mod tests {
             settled_stock.canonical_bytes(),
             baseline.canonical_bytes(),
             "settled commons stock must enter the canonical bytes"
+        );
+    }
+
+    #[test]
+    fn canonical_bytes_include_m3_ledger_money_runtime() {
+        // M3 starts with the same public money quantities as the M1 viable economy,
+        // but its future stepping is ledger-backed. The canonical state must encode
+        // that regime and the ledger rows, or generation-time M1/M3 twins collide.
+        let m1 = Settlement::generate(7, &SettlementConfig::viable());
+        let m3 = Settlement::generate(7, &SettlementConfig::m3_settlement());
+
+        assert!(
+            !m1.is_m3() && m3.is_m3(),
+            "the twins must differ only by money regime"
+        );
+        assert_ne!(
+            m1.canonical_bytes(),
+            m3.canonical_bytes(),
+            "M1 and M3 settlements must not serialize identically"
+        );
+        assert_ne!(
+            m1.digest(),
+            m3.digest(),
+            "M1 and M3 settlements must not digest identically"
+        );
+
+        let mut expected = vec![1];
+        push_money_system_bytes(
+            &mut expected,
+            m3.society.money_system.as_ref().expect("M3 money system"),
+        );
+        let bytes = m3.canonical_bytes();
+        assert!(
+            bytes
+                .windows(expected.len())
+                .any(|window| window == expected.as_slice()),
+            "the M3 ledger snapshot is missing from canonical bytes"
         );
     }
 

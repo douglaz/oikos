@@ -1752,3 +1752,138 @@ deterministic, like every other viewer surface.
   the only econ edit is the additive `ProjectTemplateId::BuildRoad` variant + its (non-builtin)
   template constructor. No `HashMap` in logic, nothing drawn in the loops, no asserted magnitudes
   beyond road-speeds-convergence (sign vs the control) and conserved labor/materials.
+
+## G8a — the M3-ledger money settlement (`docs/impl-g8a.md`)
+
+Every settlement through G7 ran on econ's **closed-GOLD M1** money — `Agent.gold`, no
+`MoneySystem`. G8a is the finance foundation: it runs the spatial settlement on econ's
+**M3 `MoneySystem`** instead (specie is the money; **no banks, no fiat, no demand
+claims** — those are G8b/G8c), routes every sim money flow through that ledger, and
+resolves the runtime-M3-removal piece G4a/b deferred. econ's M3 market/ledger
+**behavior is reused unchanged** — G8a only routes the SIM's flows through the M3 ledger
+and resolves removal; it does not change how M3 clears markets. The six conformance
+goldens are byte-identical **by construction** (the new code paths are game-only and/or
+gated on flags the lab never sets), and every G1–G7 test stays green — the unchanged
+workspace `cargo test` is the proof.
+
+### 1. The settlement selects an M3 specie society (opt-in, goldens safe)
+
+`SettlementConfig` gains a `m3: bool` flag (`false` for every pre-G8a config, so each one
+and the six goldens are byte-identical). When `true` (and no barter overlay — the two are
+mutually exclusive, since barter runs the V2 emergent-money path), `Settlement::generate`
+builds the society as **`ScenarioName::EmergedGoldSoundControl`** with
+`MarketMoneyConfig::Designated(GOLD)`. That scenario is the pure-specie M3 kind
+(`ScenarioKind::MarketM3`, `Regime::SoundGold`, **no banks, no issuers, no project lines,
+default specie tenders**), so the resulting `MoneySystem` is funded only with specie
+(each colonist's seeded `Agent.gold` mirrored into `public_specie`), and the only active
+M3 machinery is the **ledger-settled spot market** — the loan/labor/project passes
+`run_m3_tick` always runs are inert (nothing clears) for a gatherer/consumer roster.
+`SettlementConfig::m3_settlement()` is `viable()` with `m3 = true`; the viewer registers
+it as the `m3-settlement` scenario.
+
+### 2. Every sim money flow is a ledger move, not an `Agent.gold` mutation
+
+On the M3 path the sim's flows route through the `MoneySystem`, reusing econ's existing
+M3 machinery:
+
+- **spot trades** clear through econ's M3 spot path (`add_order_m3` →
+  `transfer_spendable_with_media`), settled in the ledger and reconciled back into the
+  `Agent.gold` cache — reused unchanged;
+- the **world→econ settlement** credits delivered goods to the depositor's econ stock
+  exactly as in M1 (a goods transfer; the depositor is *paid* by then selling those
+  goods through the ledger-settled market);
+- **birth endowments** are conserved **within-ledger** transfers via the already
+  M3-aware `Society::transfer_gold` (parent → child, `commodity_base` unchanged);
+- **estate transfers** drain/credit specie through the ledger (see §3);
+- the **two-rate wage escrow** (§4.3) is econ's M3 labor/wage market path
+  (`run_m3_tick`'s wage funding/payment), which already settles through the ledger and is
+  reused unchanged — it is dormant in G8a's gatherer/consumer and demography configs (no
+  hiring), since the sim never built a *separate* wage-escrow money flow (G2b's escrow is
+  the goods-haul form; a money wage escrow would settle on the ledger here automatically).
+
+`Settlement::total_gold()` is unchanged: `Society::total_gold()` already returns the M3
+`commodity_base`, so `commodity_base + commons_gold` is the whole-system money total on
+both regimes, and the G2b/G3/G4 conservation receipt holds **across the M3 ledger +
+goods** every econ tick. The M3 ledger's **own** conservation
+(`Society::money_ledgers_reconcile` / `MoneySystem::invariants_hold`) also holds every
+tick, including across deaths and births (the acceptance suite's test 2 tripwire).
+
+### 3. M3 estate routing — the resolved G4a/b deferral (the load-bearing econ edit)
+
+G4a/b parked one case: `Society::remove_agent` **gracefully refused** a funded M3 agent
+(returned `None`), so a death with an M3 ledger balance could not complete. G8a resolves
+it for **specie**:
+
+- `remove_agent` (M3 path) now **drains** the dead agent's public specie into the
+  returned `Estate` — `debit_specie` reduces `commodity_base` by exactly the cached
+  balance before `forget_agent` removes the (now-empty) ledger row, so the money
+  invariant ("every balance has a live agent", and `commodity_base` reconciles) holds.
+  The caller routes that `Estate.gold` to the commons (the ledger total falls, the
+  sim-owned commons rises by the same — conserved) or to an heir;
+- `can_remove_agent` no longer refuses a funded **specie** balance (it still refuses a
+  balance holding **fiat or demand claims** — banks/fiat are G8b/G8c, with no conserved
+  route yet);
+- a new additive `Society::credit_estate_gold` re-credits an heir's specie through the
+  ledger (the heir-side mirror of the drain — `commodity_base` returns to its pre-death
+  total), and adds to `Agent.gold` directly on the closed-GOLD M1 / post-promotion
+  emergent-money paths (no `uses_closed_gold_money` gate, because the estate gold was
+  already removed from the society by `remove_agent`, so restoring it is conserved on any
+  regime where `Agent.gold` carries money). The sim's `credit_estate_gold_to_heir` now
+  delegates to it, so M3 demography (births **and** old-age deaths) conserves balances.
+
+**Goldens safe by construction.** The lab never frees an agent at runtime, so the M3
+removal/drain path is game-only; the six goldens and every prior `remove_agent`/`add_agent`
+unit test stay byte-identical. The econ unit test that asserted the old refusal is
+migrated to assert the **drain** (`removal_drains_a_funded_m3_specie_balance_into_the_estate`),
+with a companion pinning the still-deferred fiat/claims refusal
+(`removal_still_refuses_a_funded_m3_balance_with_fiat`).
+
+### 4. Shared consumed-provision capture (additive, gated, golden-safe)
+
+The spatial sim reads the per-tick **consumed** sink back through
+`Society::enable_consumption_log` (for its conservation receipt and need replenishment).
+M1, V2, M2, and M3 now share the same pre-direct-labor consumed-provision recorder:
+when the log is enabled it feeds `consumption_log`, and when metric observations are
+enabled it feeds the realized-delta consumed-goods buffer. G8a extends the log capture to
+the **M3** consume path (`run_m3_tick`) — clearing the log at tick start and recording
+the consumed provisions before direct-labor provisioning, exactly as `step_m1` does. The
+log capture is gated on `consumption_log_enabled` (which the lab M3 goldens never set),
+so the M3 series golden is byte-identical; the `enable_consumption_log` debug-assert is
+widened from "M1/V2 only" to "M1/V2/M3" (a pure-M2 regime still asserts).
+
+### 5. M3 specie is economically M1, ledger-accounted (the wiring proof)
+
+Because there are no banks or fiat, M3 specie behaves economically like the M1 gold did.
+The `m3_specie_is_economically_equivalent_to_m1` test runs the `viable` (M1) and
+`m3_settlement` (M3) twins from one seed and pins the substantive equivalence: the **FOOD
+(spatial good) realized price, world→econ settlement, and consumption are identical every
+tick**, the **living population is identical every tick**, both clear real trades, and the
+**total money is conserved and equal**. The exact **WOOD** micro-price drifts late in the
+run (≈0.9% of total provisioning) because econ's M3 tick runs the additional institutional
+loan/labor passes — inert here (nothing clears) but still advancing the order-sequence
+counter, which perturbs CDA price-time tie-breaks. That is **reused econ M3 behavior**,
+not the sim's money wiring; the substantive outcomes (spatial pricing, sustenance, exact
+conservation) are identical, which is the proof the ledger wiring is correct before banks
+and fiat add real M3 behavior in G8b/G8c.
+
+### 6. Viewer surfacing
+
+The `oikos run m3-settlement` dashboard adds a **money banner** —
+`money: M3 ledger — specie S · fiat 0 · claims 0 · reserves 0` — read from a new
+read-only `Settlement::money_composition()` (the `MoneySystem::snapshot()`). It appears
+only for an M3 settlement; the closed-GOLD M1 dashboards are byte-identical.
+
+### Excluded from G8a (deferred)
+
+- **No banks, deposits, fiduciary, or credit** (G8b) — the M3 composition is pure specie
+  (`fiat`/`claims`/`reserves`/`fiduciary`/`time_deposits` all zero; test 6 pins it).
+- **No fiat, regime ladder, tender policies, or taxation** (G8c) — the regime is
+  `SoundGold`, tenders are the specie defaults, and a funded balance holding fiat/claims
+  is still refused removal (no conserved estate route yet).
+- **No Credit/Modern era rungs** — those unlock with the finance machinery in G8c.
+- **No change to econ M3 market/ledger BEHAVIOR** — the six goldens are byte-identical;
+  the M3-removal drain and the shared consumed-provision capture are additive/game-only
+  and (for the log) gated on a flag the lab never sets.
+- No `HashMap` in logic; integer state, the econ `Rng` consumed only at generation,
+  nothing drawn in the loops; no asserted magnitudes beyond economic-equivalence-to-M1
+  (specie, no banks) and exact M3 conservation.

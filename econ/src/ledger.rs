@@ -265,11 +265,11 @@ impl MoneySystem {
     /// arena frees the slot. Returns the removed balance, or `None` if the agent
     /// had no entry.
     ///
-    /// G4a only frees agents whose ledger balance is empty: the closed-GOLD M1
-    /// `sim`/`life` drivers keep no `MoneySystem` at all, and the lab never frees.
-    /// Routing a non-empty ledger estate (M3) is G4b, so this refuses a funded
-    /// balance before mutating — a nonzero drop would silently break money
-    /// conservation (its specie/fiat/claims would vanish from the snapshot).
+    /// Callers must empty the row before forgetting it. G8a's
+    /// `Society::remove_agent` does that for funded public specie by draining the
+    /// specie into the returned estate; fiat and demand claims are still refused
+    /// before this method is reached (G8b/G8c). A nonzero drop would silently break
+    /// money conservation, so this asserts instead of gracefully refusing.
     pub fn forget_agent(&mut self, agent: AgentId) -> Option<AgentMoneyBalance> {
         let index = self
             .balances
@@ -278,13 +278,13 @@ impl MoneySystem {
         assert_eq!(
             self.balances[index].spendable_total(),
             Gold::ZERO,
-            "G4a frees only empty-ledger agents; non-empty M3 estate routing is G4b"
+            "forget_agent requires the caller to drain or refuse funded M3 balances first"
         );
         let balance = self.balances.remove(index);
         debug_assert_eq!(
             balance.spendable_total(),
             Gold::ZERO,
-            "G4a frees only empty-ledger agents; non-empty M3 estate routing is G4b"
+            "forget_agent requires the caller to drain or refuse funded M3 balances first"
         );
         Some(balance)
     }

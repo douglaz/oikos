@@ -221,12 +221,14 @@ pub enum V2PromotionFailureReason {
 
 /// The settled estate of a removed colonist (G4a real death): the econ gold and
 /// stock extracted from its arena slot at death, returned by
-/// [`Society::remove_agent`] for the caller to route to the settlement commons —
-/// a conserved transfer, nothing created or destroyed. G4b will route the same
-/// estate to heirs/households instead.
+/// [`Society::remove_agent`] for the caller to route to the settlement commons or
+/// to heirs — a conserved transfer, nothing created or destroyed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Estate {
-    /// The dead colonist's gold balance at death (the closed-GOLD M1 money).
+    /// The dead colonist's money at death: the closed-GOLD M1 `Agent.gold` balance,
+    /// or — in an M3 ledger society — the public **specie** drained out of the
+    /// [`MoneySystem`] into the estate (G8a), so routing it to the commons or an heir
+    /// conserves the ledger total.
     pub gold: Gold,
     /// The dead colonist's econ stock at death, every physical good it held.
     pub stock: Stock,
@@ -646,9 +648,7 @@ impl Society {
             self.agents[index].recompute_satisfaction_for_money(money_good);
             let (_, mut provisions) =
                 self.agents[index].consume_now_wants_with_provisions_for_money(money_good);
-            if self.consumption_log_enabled {
-                self.record_consumption_log(index, &provisions);
-            }
+            self.record_consumed_provisions(index, &provisions);
             self.allocate_direct_labor(index, &mut provisions, Some(money_good), None);
             self.agents[index]
                 .recompute_satisfaction_with_provisions_for_money(&provisions, money_good);
@@ -674,6 +674,7 @@ impl Society {
         self.nudge_unfilled_quotes(&filled);
         self.records
             .push(self.build_record(expired_orders, &tick_trades));
+        self.capture_metric_observation(&tick_trades);
         self.tick.0 += 1;
     }
 
@@ -791,6 +792,7 @@ impl Society {
             &tick_spot_trades,
             expired_orders,
         ));
+        self.capture_metric_observation(&tick_spot_trades);
         self.tick.0 += 1;
     }
 
@@ -816,6 +818,14 @@ impl Society {
     fn run_m3_tick(&mut self) -> M2Record {
         let money_good = self.legacy_money_good();
         self.tick_labor_used.clear();
+        // Mirror `step_m1`/`step_v2`: when consumption logging is enabled, this tick's
+        // log starts empty so `consumption_log_last_tick` reflects only what this tick's
+        // consume phase eats. Inert (no clear) for the lab's M3 goldens, which never
+        // enable the log — so M3 stays byte-identical; the spatial sim (G8a) enables it
+        // to read the eaten sink for its whole-system conservation receipt.
+        if self.consumption_log_enabled {
+            self.consumption_log.clear();
+        }
         self.tick_self_funded_project_starts.clear();
         self.tick_credit_retired = Gold::ZERO;
         self.tick_bank_credit_issued = Gold::ZERO;
@@ -872,9 +882,12 @@ impl Society {
             self.agents[index].recompute_satisfaction_for_money(money_good);
             let (_, mut provisions) =
                 self.agents[index].consume_now_wants_with_provisions_for_money(money_good);
-            let consumed_provisions = provisions.clone();
+            // Capture the consumed sink before direct-labor provisioning (the same
+            // conservative readback `step_m1` records), gated on the opt-in flags so
+            // the M3 goldens are byte-identical. The G8a spatial sim reads this back
+            // for its whole-system conservation receipt and need replenishment.
+            self.record_consumed_provisions(index, &provisions);
             self.allocate_direct_labor(index, &mut provisions, Some(money_good), None);
-            self.record_metric_consumption(index, &consumed_provisions);
             self.agents[index]
                 .recompute_satisfaction_with_provisions_for_money(&provisions, money_good);
             self.restore_reserved_assets(index, reserved_assets);
@@ -976,6 +989,7 @@ impl Society {
             self.agents[index].recompute_satisfaction_for_money(money_good);
             let (_, mut provisions) =
                 self.agents[index].consume_now_wants_with_provisions_for_money(money_good);
+            self.record_consumed_provisions(index, &provisions);
             self.allocate_direct_labor(index, &mut provisions, Some(money_good), None);
             self.agents[index]
                 .recompute_satisfaction_with_provisions_for_money(&provisions, money_good);
@@ -1026,14 +1040,16 @@ impl Society {
 
         self.records
             .push(self.build_record(expired_orders, &tick_trades));
-        self.build_m2_record(
+        let m2 = self.build_m2_record(
             &tick_trades,
             &tick_labor_trades,
             &tick_loan_trades,
             market_rate_bps,
             natural_rate_proxy_bps,
             rate_gap_bps,
-        )
+        );
+        self.capture_metric_observation(&tick_trades);
+        m2
     }
 
     pub fn total_money_balance(&self) -> Gold {
@@ -1927,9 +1943,7 @@ impl Society {
             self.agents[index].recompute_satisfaction_for_money(money_good);
             let (_, mut provisions) =
                 self.agents[index].consume_now_wants_with_provisions_for_money(money_good);
-            if self.consumption_log_enabled {
-                self.record_consumption_log(index, &provisions);
-            }
+            self.record_consumed_provisions(index, &provisions);
             self.allocate_direct_labor(index, &mut provisions, Some(money_good), Some(money_good));
             self.agents[index]
                 .recompute_satisfaction_with_provisions_for_money(&provisions, money_good);
@@ -1945,9 +1959,7 @@ impl Society {
             self.agents[index].recompute_satisfaction_without_money();
             let (_, mut provisions) =
                 self.agents[index].consume_now_wants_with_provisions_without_money();
-            if self.consumption_log_enabled {
-                self.record_consumption_log(index, &provisions);
-            }
+            self.record_consumed_provisions(index, &provisions);
             self.allocate_direct_labor(index, &mut provisions, None, None);
             self.agents[index].recompute_satisfaction_with_provisions_without_money(&provisions);
             self.restore_reserved_assets(index, reserved_assets);
@@ -3711,22 +3723,25 @@ impl Society {
     /// back via [`Society::consumption_log_last_tick`]. Goldens never enable it,
     /// so the conformance suite stays byte-identical.
     ///
-    /// Regime contract: the log is captured by the M1 consume path (`step_m1`)
-    /// and the V2 direct passes (`step_v2`, both barter and money phases — the
-    /// G5a addition); the M2/M3 step paths never touch it. Enabling it on an
-    /// M2/M3 society is therefore not *incorrect* but *inert* — the log simply
-    /// stays empty, so a caller that reads it back would see no consumption and
-    /// (in the camp's case) replenish no needs. The `debug_assert!` below turns
-    /// that silent no-op into a loud failure in debug/test builds; in release
-    /// builds the assert is compiled out and the inert-empty-log behavior is the
-    /// documented fallback. G1 runs M1 and G5a runs V2 — both capture the log —
-    /// so the assert never fires in practice. A future milestone that wants
-    /// consumption logging under another regime must extend the capture in that
-    /// regime's step path (as G5a did for V2) rather than rely on this hook alone.
+    /// Regime contract: the log is captured by the M1 consume path (`step_m1`),
+    /// the V2 direct passes (`step_v2`, both barter and money phases — the G5a
+    /// addition), and the M3 consume path (`run_m3_tick` — the G8a addition, so the
+    /// spatial sim can run on the M3 ledger and still read its consumed sink back).
+    /// Only a **pure-M2** step path (M2 without M3) never touches it. Enabling it on
+    /// such a society is therefore not *incorrect* but *inert* — the log simply stays
+    /// empty, so a caller that reads it back would see no consumption and (in the
+    /// camp's case) replenish no needs. The `debug_assert!` below turns that silent
+    /// no-op into a loud failure in debug/test builds; in release builds the assert is
+    /// compiled out and the inert-empty-log behavior is the documented fallback. G1
+    /// runs M1, G5a runs V2, and G8a runs M3 — all capture the log — so the assert
+    /// never fires in practice. Each capture is gated on `consumption_log_enabled`
+    /// (which the lab goldens never set), so it is byte-identical for the conformance
+    /// suite. A future milestone wanting the log under a pure-M2 regime must extend
+    /// the capture in that step path rather than rely on this hook alone.
     pub fn enable_consumption_log(&mut self) {
         debug_assert!(
-            !self.m2_enabled && !self.m3_enabled,
-            "consumption logging records the M1 and V2 consume paths only"
+            self.m3_enabled || !self.m2_enabled,
+            "consumption logging records the M1, V2, and M3 consume paths only"
         );
         self.consumption_log_enabled = true;
         self.consumption_log.clear();
@@ -3734,8 +3749,8 @@ impl Society {
 
     /// The tick-local consumption log captured by [`Society::enable_consumption_log`].
     ///
-    /// The log is read-only and only populated by the M1 consume path. It is
-    /// captured before direct-labor provisioning, so direct-labor recipes that
+    /// The log is read-only and populated by the M1, V2, and M3 consume paths. It
+    /// is captured before direct-labor provisioning, so direct-labor recipes that
     /// satisfy a current want are not credited here. The G1 `Camp` scans this
     /// conservative slice once per tick to replenish needs without changing any
     /// econ rule or conformance output.
@@ -3971,17 +3986,59 @@ impl Society {
         true
     }
 
-    fn record_consumption_log(&mut self, agent_index: usize, provisions: &TickProvisions) {
+    /// Credit `gold` to a live agent as a conserved **estate hand-off** (G4a/G4b/G8a
+    /// inheritance). In closed-GOLD M1 this adds to the recipient's `Agent.gold`; in M3
+    /// it re-credits the public **specie** that [`Society::remove_agent`] drained out of
+    /// the [`MoneySystem`] at the dead colonist's death, so `commodity_base` returns to
+    /// its pre-death total, and reconciles the recipient's cache. It is the heir-side
+    /// mirror of removal's estate drain: the two together move the estate from the dead
+    /// colonist to a survivor without minting or burning.
+    ///
+    /// Unlike [`Society::transfer_gold`] there is no reservation guard and no
+    /// `uses_closed_gold_money` gate — the source is the already-removed estate, not a
+    /// live agent that could over-commit a resting order, so restoring it is conserved
+    /// on **any** regime where `Agent.gold` carries money (closed-GOLD M1 *and*
+    /// post-promotion emergent money, where the dead colonist's gold was real). Returns
+    /// `false` (crediting nothing) for an unknown / stale / dead recipient or an
+    /// overflow. A zero amount is a no-op success (pre-promotion barter estates are
+    /// zero-gold, so they take this path harmlessly).
+    pub fn credit_estate_gold(&mut self, agent: AgentId, gold: Gold) -> bool {
+        if gold == Gold::ZERO {
+            return true;
+        }
+        let Some(position) = self.agents.position_of(agent) else {
+            return false;
+        };
+        if self.dead_agents.binary_search(&agent).is_ok() {
+            return false;
+        }
+        if let Some(money_system) = self.money_system.as_mut() {
+            if money_system.credit_specie(agent, gold).is_err() {
+                return false;
+            }
+            money_system.reconcile_agent_cache_at(self.agents.as_mut_slice(), position);
+            return true;
+        }
+        let Some(updated) = self.agents[position].gold.checked_add(gold) else {
+            return false;
+        };
+        self.agents[position].gold = updated;
+        true
+    }
+
+    fn record_consumed_provisions(&mut self, agent_index: usize, provisions: &TickProvisions) {
+        if !self.consumption_log_enabled && self.metric_observation_accumulator.is_none() {
+            return;
+        }
         let agent_id = self.agents[agent_index].id;
         // `provisions.allocated` is built index-parallel to `agent.scale`
         // (`vec![0; scale.len()]`), so position i is the allocation for want i.
-        // This is the same contract `record_metric_consumption` relies on; the
-        // assert pins it so a future reordering of the consume phase fails loudly
-        // rather than silently misattributing consumption.
+        // The assert pins it so a future reordering of the consume phase fails
+        // loudly rather than silently misattributing consumption.
         debug_assert_eq!(
             self.agents[agent_index].scale.len(),
             provisions.allocated.len(),
-            "consumption log requires scale/allocated index-parallelism"
+            "consumption capture requires scale/allocated index-parallelism"
         );
         for (want, qty) in self.agents[agent_index]
             .scale
@@ -3992,16 +4049,23 @@ impl Society {
                 continue;
             }
             if let WantKind::Good(good) = want.kind {
-                self.consumption_log.push((agent_id, good, *qty));
+                if self.consumption_log_enabled {
+                    self.consumption_log.push((agent_id, good, *qty));
+                }
+                if self.metric_observation_accumulator.is_some() {
+                    self.metric_consumed_goods.push((agent_id, good, *qty));
+                }
             }
         }
     }
 
     /// Real death (G4a, game-spec §5.6): remove `agent` from the running society,
     /// returning its settled [`Estate`] (gold + econ stock) for the caller to route
-    /// to the settlement commons — a conserved hand-off, nothing created or
-    /// destroyed. Returns `None` for an unknown, stale, already-removed, or funded
-    /// M3-ledger id (then nothing changes).
+    /// to the settlement commons or to heirs — a conserved hand-off, nothing created
+    /// or destroyed. Returns `None` for an unknown, stale, or already-removed id, or
+    /// for an M3 agent still holding fiat/demand-claims (banks/fiat are G8b/c); then
+    /// nothing changes. A funded **specie** M3 balance is NOT refused (G8a): step 1
+    /// drains it into the returned `Estate` (see below).
     ///
     /// This is the G4a successor to G1's freeze-in-place tombstone, now retired
     /// (`docs/engine-divergence.md`). The order of operations is load-bearing:
@@ -4030,11 +4094,17 @@ impl Society {
     /// the id resolves to `None`, so a driver MUST stop scaling, endowing, or reading
     /// it back (every `sim`/`life` driver mirrors removal in a per-colonist `alive`
     /// flag checked in each phase). It settles the **raw agent holdings** (the gold
-    /// field + stock), the closed-GOLD M1 estate the `sim`/`life` drivers use;
-    /// ledger-money (M3) estate routing is deferred (no lab path frees an M3 agent).
+    /// field + stock): in closed-GOLD M1 that gold field IS the money; in M3 the gold
+    /// field is the reconciled cache of the ledger specie, and step 1 additionally
+    /// drains that specie out of the [`MoneySystem`] into the same `Estate` so the
+    /// hand-off is conserved on the ledger too (G8a — the resolved G4a/b deferral).
     ///
     /// Preflight for callers that need death bookkeeping to be transactional: `true`
-    /// means `remove_agent` can run without refusing a funded M3 ledger balance.
+    /// means `remove_agent` will run to completion. In G8a a funded M3 (ledger-money)
+    /// agent IS removable — `remove_agent` drains its public **specie** into the
+    /// returned [`Estate`], the conserved resolution of the G4a/b deferral. Only fiat
+    /// and demand claims remain deferred (banks/fiat are G8b/G8c), so an agent holding
+    /// either is still refused — there is no conserved estate route for them yet.
     pub fn can_remove_agent(&self, agent: AgentId) -> bool {
         if self.agents.position_of(agent).is_none() {
             return false;
@@ -4047,7 +4117,8 @@ impl Society {
             .as_ref()
             .and_then(|money_system| money_system.balance_snapshot(agent))
         {
-            return balance.spendable_total() == Gold::ZERO;
+            return balance.public_fiat == Gold::ZERO
+                && balance.demand_claims_total() == Gold::ZERO;
         }
         true
     }
@@ -4107,11 +4178,22 @@ impl Society {
         self.reservations.forget_agent(agent);
         self.labor_reservations.forget_agent(agent);
         self.loan_reservations.forget_agent(agent);
-        // A ledger-money (M3) society also keys a balance by agent id; drop the
-        // freed agent's (empty) entry so the money invariant's "every balance has a
-        // live agent" check holds. The closed-GOLD M1 estate the sim settles lives
-        // in `Estate.gold`, not here. Non-empty M3 estate routing is G4b.
+        // A ledger-money (M3) society keys a balance by agent id. G8a resolves the
+        // G4a/b deferral for **specie**: drain the dead agent's public specie into the
+        // `Estate` (a conserved hand-off — `commodity_base` falls by exactly the
+        // drained amount, which the caller routes to the commons or an heir), zeroing
+        // the ledger row so `forget_agent`'s empty-balance invariant holds and the
+        // money invariant's "every balance has a live agent" check stays true. The
+        // `Estate.gold` already holds this colonist's cached spendable total, which
+        // equals its public specie for a removable agent (fiat/claims are refused by
+        // `can_remove_agent` — banks/fiat are G8b/c). In closed-GOLD M1 the estate
+        // lives in `Estate.gold` directly and there is no ledger to touch.
         if let Some(money_system) = self.money_system.as_mut() {
+            if estate.gold > Gold::ZERO {
+                money_system
+                    .debit_specie(agent, estate.gold)
+                    .expect("a removable M3 agent's specie equals its Estate gold");
+            }
             money_system.forget_agent(agent);
         }
 
@@ -4338,25 +4420,6 @@ impl Society {
             .collect::<Vec<_>>();
         rows.sort_by_key(|row| row.bank);
         self.bank_audit.extend(rows);
-    }
-
-    fn record_metric_consumption(&mut self, agent_index: usize, provisions: &TickProvisions) {
-        if self.metric_observation_accumulator.is_none() {
-            return;
-        }
-        let agent_id = self.agents[agent_index].id;
-        let metric_consumed_goods = &mut self.metric_consumed_goods;
-        for (want, qty) in self.agents[agent_index]
-            .scale
-            .iter()
-            .zip(&provisions.allocated)
-        {
-            if let WantKind::Good(good) = want.kind {
-                if *qty > 0 {
-                    metric_consumed_goods.push((agent_id, good, *qty));
-                }
-            }
-        }
     }
 
     fn add_tick_labor_used(&mut self, agent: AgentId, labor: u32) {
@@ -6536,6 +6599,109 @@ mod tests {
             events: Vec::new(),
             money: MarketMoneyConfig::Designated(DesignatedMoney { good: GOLD }),
         })
+    }
+
+    fn consuming_test_agent() -> Agent {
+        let mut stock = Stock::new(WOOD.0);
+        stock.add(FOOD, 1);
+        Agent {
+            id: AgentId(1),
+            scale: vec![Want {
+                kind: WantKind::Good(FOOD),
+                horizon: Horizon::Now,
+                qty: 1,
+                satisfied: false,
+            }],
+            stock,
+            gold: Gold::ZERO,
+            labor_capacity: 0,
+            hunger_deficit: 0,
+            roles: vec![Role::Consumer],
+            expect: vec![PriceBelief::new(Gold(1), Gold(1)); usize::from(WOOD.0) + 1],
+        }
+    }
+
+    #[test]
+    fn m1_metric_observations_are_captured_when_enabled() {
+        let mut society =
+            Society::from_scenario(builtin_market_scenario(ScenarioName::MarketBarterishGold));
+        society.enable_metric_observations();
+
+        society.step();
+
+        assert_eq!(
+            society.metric_observations.len(),
+            1,
+            "M1 should emit a metric observation when accumulation is enabled"
+        );
+        assert_eq!(society.metric_observations[0].tick, 0);
+        assert!(
+            !society.metric_observations[0].agent_wealth.is_empty(),
+            "the observation should include agent wealth rows"
+        );
+    }
+
+    #[test]
+    fn v2_metric_observations_are_captured_after_promotion_when_enabled() {
+        let mut society =
+            Society::from_scenario(builtin_market_scenario(ScenarioName::MengerSaltMoney));
+        society.enable_metric_observations();
+
+        for _ in 0..12 {
+            society.step();
+        }
+
+        assert!(
+            society.money.current_money_good().is_some(),
+            "the scenario should have promoted a money good"
+        );
+        assert!(
+            !society.metric_observations.is_empty(),
+            "V2 should emit metric observations once it reaches the money phase"
+        );
+    }
+
+    #[test]
+    fn direct_pass_consumption_capture_feeds_log_and_metrics() {
+        let mut m1 = Society::from_scenario(MarketScenario {
+            name: "m1-consumption-capture",
+            scenario: ScenarioName::MarketPriceDiscovery,
+            seed: 1,
+            periods: 1,
+            agents: vec![consuming_test_agent()],
+            recipes: Vec::new(),
+            events: Vec::new(),
+            money: MarketMoneyConfig::Designated(DesignatedMoney { good: GOLD }),
+        });
+        m1.enable_consumption_log();
+        m1.enable_metric_observations();
+
+        m1.run_direct_pass_for_money(GOLD);
+
+        let consumed = vec![(AgentId(1), FOOD, 1)];
+        assert_eq!(m1.consumption_log, consumed);
+        assert_eq!(m1.metric_consumed_goods, consumed);
+
+        let mut v2 = Society::from_scenario(MarketScenario {
+            name: "v2-consumption-capture",
+            scenario: ScenarioName::MengerSaltMoney,
+            seed: 1,
+            periods: 1,
+            agents: vec![consuming_test_agent()],
+            recipes: Vec::new(),
+            events: Vec::new(),
+            money: MarketMoneyConfig::Emergent(MengerianConfig {
+                candidate_goods: vec![FOOD, WOOD, SALT],
+                ..MengerianConfig::default()
+            }),
+        });
+        v2.enable_consumption_log();
+        v2.enable_metric_observations();
+
+        v2.run_direct_pass_without_money();
+
+        assert_eq!(v2.consumption_log, consumed);
+        assert_eq!(v2.metric_consumed_goods, consumed);
     }
 
     #[test]
@@ -9638,40 +9804,91 @@ mod tests {
     }
 
     #[test]
-    fn removal_refuses_non_empty_m3_ledger_before_mutating() {
-        let society_agent = redemption_agent(1, Gold(2));
-        let mut society = test_m3_society(society_agent, GOLD, Vec::new());
-        let len_before = society.agents.len();
-        let agent_gold_before = society.agents.get(AgentId(1)).unwrap().gold;
-        let ledger_before = society
+    fn removal_drains_a_funded_m3_specie_balance_into_the_estate() {
+        // G8a resolves the G4a/b deferral: a funded M3 agent is no longer refused —
+        // its public specie drains into the returned `Estate` (conserved), the slot
+        // frees, and the ledger reconciles. Two agents so a survivor stays funded.
+        let mut society = Society::from_scenario(MarketScenario {
+            name: "commodity-credit-neutral",
+            scenario: ScenarioName::CommodityCreditNeutral,
+            seed: 1,
+            periods: 1,
+            agents: vec![redemption_agent(1, Gold(2)), redemption_agent(2, Gold(3))],
+            recipes: Vec::new(),
+            events: Vec::new(),
+            money: MarketMoneyConfig::Designated(DesignatedMoney { good: GOLD }),
+        });
+        let commodity_base_before = society
             .money_system
             .as_ref()
-            .and_then(|money_system| money_system.balance_snapshot(AgentId(1)))
-            .expect("M3 balance exists");
+            .expect("M3 society has a money system")
+            .base
+            .commodity_base;
+        assert_eq!(commodity_base_before, Gold(5));
 
-        let result = society.remove_agent(AgentId(1));
+        let estate = society
+            .remove_agent(AgentId(1))
+            .expect("a funded specie M3 agent is removable in G8a");
+        assert_eq!(
+            estate.gold,
+            Gold(2),
+            "the estate carries the drained specie"
+        );
 
-        assert!(result.is_none(), "funded M3 removal must be refused");
+        // The slot is freed; the dead id no longer resolves.
+        assert!(society.agents.get(AgentId(1)).is_none());
+
+        let money_system = society
+            .money_system
+            .as_ref()
+            .expect("M3 society has a money system");
+        // `commodity_base` fell by exactly the drained specie — conserved end to end
+        // (estate.gold + commodity_base_after == commodity_base_before).
+        assert_eq!(money_system.base.commodity_base, Gold(3));
+        assert_eq!(
+            estate.gold.0 + money_system.base.commodity_base.0,
+            commodity_base_before.0,
+            "the drain is conserved: estate + remaining ledger == the original base"
+        );
+        // The dead agent's ledger row is gone; the survivor's balance is untouched and
+        // its cache still mirrors the ledger.
+        assert!(money_system.balance_snapshot(AgentId(1)).is_none());
+        assert_eq!(money_system.spendable_total(AgentId(2)), Gold(3));
+        assert_eq!(society.agents.get(AgentId(2)).unwrap().gold, Gold(3));
+        assert!(
+            society.money_ledgers_reconcile(),
+            "the M3 ledger reconciles after the drain"
+        );
+    }
+
+    #[test]
+    fn removal_still_refuses_a_funded_m3_balance_with_fiat() {
+        // G8a drains **specie** only; fiat (and demand claims) remain deferred to
+        // G8b/c, so a balance holding either still refuses removal — there is no
+        // conserved estate route for them yet.
+        let society_agent = redemption_agent(1, Gold::ZERO);
+        let mut society = test_m3_society(society_agent, GOLD, Vec::new());
+        society
+            .money_system
+            .as_mut()
+            .expect("M3 society has a money system")
+            .credit_fiat(AgentId(1), Gold(2))
+            .expect("crediting fiat to a live ledger agent");
+        let len_before = society.agents.len();
+
+        assert!(
+            !society.can_remove_agent(AgentId(1)),
+            "a fiat-bearing M3 balance is not yet drainable"
+        );
+        assert!(
+            society.remove_agent(AgentId(1)).is_none(),
+            "funded-fiat M3 removal is refused"
+        );
         assert_eq!(
             society.agents.len(),
             len_before,
-            "the arena was mutated before the ledger preflight"
+            "a refused removal mutates nothing"
         );
-        assert_eq!(
-            society.agents.get(AgentId(1)).unwrap().gold,
-            agent_gold_before,
-            "raw agent gold changed despite refused removal"
-        );
-        assert_eq!(
-            society
-                .money_system
-                .as_ref()
-                .and_then(|money_system| money_system.balance_snapshot(AgentId(1)))
-                .expect("M3 balance still exists"),
-            ledger_before,
-            "ledger balance changed despite refused removal"
-        );
-        assert!(society.money_ledgers_reconcile());
     }
 
     #[test]

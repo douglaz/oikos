@@ -221,9 +221,21 @@ pub fn run_dashboard(scenario: &str, ticks: u64, seed: u64) -> Result<String, St
         unlocked_at: settlement.tier2_unlocked_at(),
     });
 
+    // G8a money banner: the M3 ledger composition (specie; fiat/claims/reserves zero).
+    // `None` for a closed-GOLD M1 settlement, so non-M3 dashboards are unchanged.
+    let money_summary = settlement
+        .money_composition()
+        .map(|c| render::MoneySummary {
+            specie: c.public_specie.0,
+            fiat: c.public_fiat.0,
+            claims: c.demand_claims.0,
+            reserves: c.bank_reserves.0,
+        });
+
     let banners = render::DashboardBanners {
         era: era_summary.as_ref(),
         research: research_summary.as_ref(),
+        money: money_summary.as_ref(),
     };
     Ok(render::format_dashboard(
         &settlement,

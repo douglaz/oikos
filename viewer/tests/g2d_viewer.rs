@@ -247,6 +247,32 @@ fn frontier_dashboard_surfaces_the_measured_era() {
 }
 
 #[test]
+fn m3_dashboard_surfaces_money_composition() {
+    // G8a: the M3 ledger settlement surfaces its money composition — specie, with fiat,
+    // claims, and reserves all zero (banks/fiat are G8b/G8c).
+    let output = viewer::run_dashboard("m3-settlement", 40, 1).expect("m3 dashboard");
+    let banner = output
+        .lines()
+        .find(|line| line.starts_with("money: "))
+        .expect("the M3 dashboard prints a money banner");
+    assert!(
+        banner.contains("M3 ledger") && banner.contains("specie "),
+        "the money banner omits the M3 specie composition: {banner:?}"
+    );
+    assert!(
+        banner.contains("fiat 0") && banner.contains("claims 0") && banner.contains("reserves 0"),
+        "G8a money must be pure specie — no fiat/claims/reserves: {banner:?}"
+    );
+
+    // A closed-GOLD M1 settlement surfaces no money banner (the composition is M3-only).
+    let plain = viewer::run_dashboard("viable", 12, 1).expect("viable dashboard");
+    assert!(
+        !plain.lines().any(|line| line.starts_with("money: ")),
+        "a non-M3 settlement should not surface an M3 money banner"
+    );
+}
+
+#[test]
 fn lineages_dashboard_surfaces_demography() {
     // The G4b demography dashboard surfaces population, births/deaths, and per-lineage
     // wealth, and the patient lineage (L0) out-accumulates the present-biased one (L1).
