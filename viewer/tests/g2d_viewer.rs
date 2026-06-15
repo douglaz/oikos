@@ -187,6 +187,65 @@ fn chain_dashboard_shows_production_receipts() {
     );
 }
 
+/// G6a: the frontier dashboard surfaces the measured era — a banner with the timeline
+/// of the tick each rung was earned, and a per-tick `era` column that climbs the
+/// ladder (forager → … → capital) as the economy advances. A plain (non-emergent)
+/// settlement surfaces no era (the ladder classifies the emergent path).
+#[test]
+fn frontier_dashboard_surfaces_the_measured_era() {
+    let output = viewer::run_dashboard("frontier", 40, 1).expect("frontier dashboard");
+
+    // The era banner names the current era and the timeline of first-tick rungs.
+    let banner = output
+        .lines()
+        .find(|line| line.starts_with("era: "))
+        .expect("the frontier dashboard prints an era banner");
+    assert!(
+        banner.contains("forager@0"),
+        "the era banner omits the Forager floor: {banner:?}"
+    );
+    // The frontier climbs at least through Money over this horizon.
+    assert!(
+        banner.contains("barter@") && banner.contains("money@"),
+        "the era banner omits the barter→money progression: {banner:?}"
+    );
+
+    // The per-tick era column climbs the ladder: it starts at forager and reaches a
+    // later rung by the end of the run.
+    let headers = table_headers(&output);
+    let era_col = headers
+        .iter()
+        .position(|header| header == "era")
+        .expect("the frontier dashboard includes an era column");
+    let rows = table_rows(&output);
+    assert_eq!(
+        rows[0][era_col], "forager",
+        "the run does not start in Forager"
+    );
+    assert!(
+        rows.iter().any(|row| row[era_col] == "money"),
+        "the era column never reaches the Money era"
+    );
+    // The column is monotonic-ish: it never prints an unknown rung.
+    let ladder = ["forager", "barter", "money", "specialist", "capital"];
+    assert!(
+        rows.iter()
+            .all(|row| ladder.contains(&row[era_col].as_str())),
+        "the era column printed an unknown rung"
+    );
+
+    // A plain (non-emergent) settlement surfaces no era banner or column.
+    let plain = viewer::run_dashboard("viable", 12, 1).expect("viable dashboard");
+    assert!(
+        !plain.lines().any(|line| line.starts_with("era: ")),
+        "a non-emergent settlement should not surface an era banner"
+    );
+    assert!(
+        !table_headers(&plain).iter().any(|header| header == "era"),
+        "a non-emergent settlement should not surface an era column"
+    );
+}
+
 #[test]
 fn lineages_dashboard_surfaces_demography() {
     // The G4b demography dashboard surfaces population, births/deaths, and per-lineage

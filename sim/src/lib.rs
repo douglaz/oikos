@@ -56,14 +56,32 @@
 //! (every good and all gold across all settlements plus the in-transit escrow) and
 //! that trade converges prices (the gap narrows versus a no-caravan control — sign
 //! only). See [`mod@region`].
+//!
+//! ## G6a — the era detector ([`mod@era`])
+//!
+//! [`EraDetector`] is a **read-only** classification of a settlement's institutional
+//! era (`Forager → Barter → Money → Specialist → Capital`) from **measured**
+//! quantities, with hysteresis — game-spec pillar 2, *"eras are earned, not timed."*
+//! It is the engine's *"phase is measured, never set"* doctrine: the era is a derived
+//! statistic, not a state the engine sets or a timer advances. It reads only the
+//! existing accessors (vocations, the money good, the per-tick report, barter
+//! volume), mutates nothing, draws no RNG, holds no `HashMap`, and is imported by **no
+//! decision path** (a source-gate, like econ's `metrics`, enforces it) — so a run
+//! observed by a detector is byte-identical to one that is not, and the six econ
+//! goldens are untouched. The Credit/Modern rungs are deferred to G8 (finance). See
+//! [`mod@era`] and `sim/tests/g6a_eras.rs`.
 
 pub mod content;
 pub mod demography;
+pub mod era;
 pub mod region;
 pub mod settlement;
 
 pub use content::ContentSet;
 pub use demography::{DemographyConfig, HouseholdSpec};
+pub use era::{
+    Era, EraDetector, DEFAULT_ERA_WINDOW, DEFAULT_MIN_BARTER_VOLUME, DEFAULT_MIN_PRODUCER_SHARE_BPS,
+};
 pub use region::{Region, RegionConfig, RegionTickReport, Route};
 pub use settlement::{
     recipe_adoption_pays, recipe_adoption_pays_for_money, BarterConfig, ChainConfig,

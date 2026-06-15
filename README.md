@@ -815,6 +815,62 @@ Deferred (noted in `docs/engine-divergence.md`): the multi-seed robustness **stu
 **multi-settlement** composition (the Region with all overlays). G5b is a single combined
 settlement. See `sim/tests/g5b_frontier.rs` and `docs/engine-divergence.md` (the G5b entry).
 
+## Status: G6a (era detection — eras are earned, not timed) — complete
+
+The frontier (G5b) already passes through institutional phases — forage, barter, a money
+good emerges, producers specialize, a roundabout chain runs — but nothing *named* the era.
+**G6a adds the era detector**: a read-only classification of the settlement's institutional
+era from **measured** quantities, with hysteresis, surfaced in the viewer. This is game-spec
+pillar 2 — *"eras are earned, not timed"* — and the lab's *"phase is measured, never set"*
+doctrine: the era is a derived statistic, never a state the engine sets or a timer advances.
+
+`sim::EraDetector` classifies an **ordered** ladder from existing accessors:
+
+```text
+Forager     — no sustained exchange (negligible barter volume)
+Barter      — sustained reciprocal exchange (cumulative barter trade volume)
+Money       — a money good has been promoted (current_money_good is Some)
+Specialist  — a sustained division of labor (producer-role share ≥ a floor over a window)
+Capital     — sustained roundabout production (both chain stages staffed: a produced
+              intermediate is itself consumed as a recipe input) over a window
+```
+
+It is **measurement-only**, the discipline the milestone is about:
+
+- **Era is MEASURED, never set.** The detector reads only `sim`'s read-only accessors
+  (vocations, the money good, barter volume, population), mutates nothing (`observe` borrows
+  `&Settlement`), draws no RNG, and holds no `HashMap` — so the era timeline is a pure
+  function of the run. Running a settlement with vs without a detector observing it is
+  **byte-identical**, and the six econ goldens and every prior G1–G5 test stay green by
+  construction (era detection writes no econ/sim state).
+- **No decision reads the era** (purism). Like econ's `metrics` module, the era is a layer no
+  decision path may import — a **source-gate** test enforces it, so running with vs without
+  querying the era cannot change a run.
+- **Hysteresis is the anti-flap rule.** An era is *entered* only when its trigger holds for a
+  sustained window of ticks, and is not abandoned on a single-tick dip: the reached era only
+  regresses when the current rung's trigger fails for a sustained window. Eras are ordered;
+  the detector tracks the reached era and the first tick each rung was earned (never cleared
+  by a later regression). Barter and Money are monotonic *milestones* (a camp that has
+  bartered, a money good that has been promoted, do not un-happen); Specialist reads the live
+  producer-role share, and Specialist/Capital are ongoing *structure* the window protects from
+  flapping.
+- **No new econ measurement.** It reuses the existing signals — nothing new is measured in
+  `econ`.
+
+G6a:
+
+- [x] `sim::EraDetector` (read-only) — the measured era ladder with hysteresis; reports the
+      current era + each rung's first-tick, with a pure `apply_triggers` hysteresis core
+- [x] viewer surfacing — an era **banner** (the timeline of earned rungs) and a per-tick `era`
+      column in the frontier dashboard
+- [x] acceptance suite (`sim/tests/g6a_eras.rs`: the six acceptance tests plus unit tests) +
+      README + divergence-log updates
+
+The **Credit** and **Modern** eras (chartered banks, state money) are **deferred to G8**: they
+need finance machinery that does not exist in the game yet, and G6a does not invent
+placeholder finance to reach them. Era detection is also **not** research/tech-tier unlocking
+(G6b). See `sim/tests/g6a_eras.rs` and `docs/engine-divergence.md` (the G6a entry).
+
 ## Build and test
 
 ```bash
@@ -841,4 +897,6 @@ cargo run -p viewer -- run lineages --ticks 200        # G4b: two households age
 cargo run -p viewer -- run barter-camp --ticks 40             # G5a: money emerges (barter → promotion → money-priced)
 cargo run -p viewer -- run barter-camp-control --ticks 40     # G5a: no saleability differential → stays in barter
 cargo run -p viewer -- run frontier --ticks 80                # G5b: money emerges, then roles adopt, with demography
+#                                                              # G6a: the frontier/barter-camp dashboards show an era
+#                                                              #      banner + per-tick era column (forager → … → capital)
 ```

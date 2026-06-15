@@ -26,7 +26,7 @@ mod cli;
 mod render;
 mod scenarios;
 
-use sim::{EconTickReport, GoodId, Region, RegionConfig, Settlement, Vocation};
+use sim::{EconTickReport, EraDetector, GoodId, Region, RegionConfig, Settlement, Vocation};
 
 pub use scenarios::{config_for, scenarios_text};
 
@@ -114,9 +114,18 @@ pub fn run_dashboard(scenario: &str, ticks: u64, seed: u64) -> Result<String, St
     let mut settlement = Settlement::generate(seed, &config);
     let goods: Vec<GoodId> = settlement.tracked_goods().to_vec();
 
+    // G6a: classify the settlement's measured institutional era as the run advances.
+    // Read-only — the detector observes (`&settlement`) and never changes the run.
+    // Surfaced only for the emergent path (the ladder classifies barter→money→…).
+    let mut detector = settlement.is_emergent().then(EraDetector::new);
+
     let mut rows = Vec::with_capacity(ticks as usize);
     for _ in 0..ticks {
         let report = settlement.econ_tick();
+        let era = detector
+            .as_mut()
+            .map(|d| d.observe(&settlement).label().to_string())
+            .unwrap_or_default();
         let prices = goods
             .iter()
             .map(|&g| settlement.realized_price(g))
@@ -179,8 +188,19 @@ pub fn run_dashboard(scenario: &str, ticks: u64, seed: u64) -> Result<String, St
             saleability_leader,
             money_good: money_label,
             promoted_this_tick,
+            era,
         });
     }
+
+    // The era banner: the current era and the tick each rung was first reached.
+    let era_summary = detector.as_ref().map(|d| render::EraSummary {
+        current: d.current_era().label().to_string(),
+        timeline: d
+            .timeline()
+            .into_iter()
+            .map(|(era, tick)| (era.label().to_string(), tick))
+            .collect(),
+    });
 
     Ok(render::format_dashboard(
         &settlement,
@@ -188,6 +208,7 @@ pub fn run_dashboard(scenario: &str, ticks: u64, seed: u64) -> Result<String, St
         seed,
         ticks,
         &population_label(&settlement),
+        era_summary.as_ref(),
         &rows,
     ))
 }

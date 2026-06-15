@@ -1482,3 +1482,87 @@ also rejects a medium that names a node good, a chain good, or a demography-prov
   byte-identical and there is no econ edit (G5b reuses G5a/G3b/G4b's additive accessors).
 - No `HashMap` in logic; nothing drawn in the loops; no asserted magnitudes beyond
   all-three-fire and exact conservation.
+
+## G6a — era detection: the era is measured, never set (`docs/impl-g6a.md`)
+
+The frontier (G5b) already passes through institutional phases, but nothing **named** the
+era. G6a adds `sim::EraDetector`: a **read-only** classification of the settlement's
+institutional era from **measured** quantities, with hysteresis, surfaced in the viewer. It
+is game-spec pillar 2 — *"eras are earned, not timed"* — and the lab's *"phase is measured,
+never set"* doctrine made literal: the era is a **derived statistic**, never a state the
+engine sets or a timer advances. There is **no econ edit and no sim behaviour change** — the
+detector is a new, additive, read-only `sim` module that reuses existing accessors.
+
+### 1. The era ladder (measured triggers + hysteresis)
+
+```text
+Forager     — no sustained exchange (negligible barter volume)
+Barter      — sustained reciprocal exchange (cumulative barter trade volume ≥ a floor)
+Money       — a money good has been promoted (current_money_good is Some)
+Specialist  — a sustained division of labor (producer-role share ≥ a floor) over a window
+Capital     — sustained roundabout production (both chain stages staffed: a produced
+              intermediate is itself consumed as a recipe input) over a window
+```
+
+The detector reads **only** existing read-only accessors — `barter_trade_count()`,
+`current_money_good()`, `living_count(Vocation::…)`, `living_total()` — and the per-rung
+trigger booleans feed a pure integer hysteresis state machine (`apply_triggers`). It climbs
+**one rung at a time**; `first_tick(era)` records the first tick each rung was earned
+(monotonic; never cleared by a later regression), and `current_era()` is the rung held now.
+
+**Two trigger shapes, by design.** Barter and Money are institutional **milestones**: once a
+camp has bartered a sustained *cumulative volume*, or a money good *has been* promoted, the
+fact does not un-happen (barter even stops after promotion, freezing its count). Their
+triggers are therefore monotonic. Specialist and Capital describe an ongoing **structure** —
+a division of labor, a roundabout chain — that can genuinely collapse, so their triggers read
+the live producer roster (producer-role share and both-stage staffing), and the hysteresis
+window protects them from flapping on a single-tick dip while still letting a *sustained*
+collapse regress the era. The per-tick
+barter event and the per-tick roundabout *flow* are bursty (clearings arrive in bursts; the
+roundabout flow does not fire every tick), which is exactly why the Barter rung reads the
+**cumulative** count and the Capital rung reads the **both-stages-staffed** structure rather
+than a per-tick flow — the structural signals are persistent and do not flap.
+
+### 2. Hysteresis is the anti-flap rule
+
+An era is **entered** only when the next rung's trigger holds for a sustained `window` of
+consecutive ticks; it is **not** abandoned on a single-tick dip — the reached era regresses
+only when the current rung's trigger fails for a sustained `window`. The enter check runs
+before the regress check, so on the tick a promotion both starts the next-rung climb and ends
+barter, the climb wins the tie (the era never regresses on the same tick it earns the next
+rung). On the `frontier` the measured signals are clean enough that the era is monotonic
+(`forager → barter → money → specialist → capital`); the regression path is exercised by the
+acceptance suite driving the pure `apply_triggers` core with a controlled sustained-failure
+signal.
+
+### 3. Measurement-only — the purism gate
+
+- **Era is MEASURED, never set.** `observe` borrows `&Settlement`; the detector mutates
+  nothing, draws no RNG, holds no `HashMap`. A run observed by a detector is **byte-identical**
+  to one that is not (acceptance test `era_is_read_only`), so the six econ goldens and every
+  G1–G5 test stay green **by construction**.
+- **No decision reads the era.** Like econ's `metrics` module, the era is an unimportable
+  measurement layer: a **source-gate** test asserts no `sim` decision/behaviour module
+  (`settlement.rs`, `region.rs`, `demography.rs`, `content.rs`) references the `era` module, so
+  running with vs without querying the era cannot change a run.
+- **No new econ measurement.** Nothing new is measured in `econ`; the detector reuses the
+  existing signals.
+
+### 4. Viewer surfacing
+
+The `frontier`/`barter-camp` dashboards gain an **era banner** (the timeline of the tick each
+rung was earned — e.g. `era: capital — forager@0 → barter@… → money@… → specialist@… →
+capital@…`) and a per-tick **era column** that climbs the ladder as the economy advances. A
+non-emergent settlement surfaces no era (the ladder classifies the emergent path).
+
+### Excluded from G6a (deferred)
+
+- **The Credit and Modern eras are deferred to G8.** Chartered banks and state money need
+  finance machinery that does not exist in the game yet; G6a does **not** invent placeholder
+  finance to reach them. The ladder stops at Capital.
+- **No research / tech-tier unlocking (G6b).** G6a names the era; it does not gate content on
+  it.
+- **No decision reads the era (purism).** The era is measurement-only, like the lab's metrics.
+- **No econ/sim behaviour change** — the six goldens are byte-identical; no `HashMap` in logic,
+  nothing drawn, no asserted magnitudes beyond the ordered-progression and hysteresis-sign
+  claims.

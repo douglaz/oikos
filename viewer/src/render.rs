@@ -169,6 +169,21 @@ pub struct DashboardRow {
     pub saleability_leader: String,
     pub money_good: String,
     pub promoted_this_tick: bool,
+    /// G6a era surfacing (rendered behind the era banner): the measured institutional
+    /// era at this tick (`forager`/`barter`/`money`/`specialist`/`capital`). Empty for
+    /// a non-emergent settlement (the era ladder measures the emergent path).
+    pub era: String,
+}
+
+/// G6a era-banner summary: the current institutional era and the timeline of the
+/// tick each rung was first reached. A read-only digest of the [`sim::EraDetector`]
+/// the dashboard ran alongside the settlement. `None` for a non-emergent settlement
+/// (the era ladder classifies the emergent barter→money→specialist→capital path).
+pub struct EraSummary {
+    /// The current era's label.
+    pub current: String,
+    /// `(era label, first tick)` for each rung reached, lowest rung first.
+    pub timeline: Vec<(String, u64)>,
 }
 
 /// Format a fixed-point mean (one decimal) from an integer sum and count using
@@ -188,6 +203,7 @@ pub fn format_dashboard(
     seed: u64,
     ticks: u64,
     population_label: &str,
+    era: Option<&EraSummary>,
     rows: &[DashboardRow],
 ) -> String {
     let goods = settlement.tracked_goods();
@@ -207,6 +223,22 @@ pub fn format_dashboard(
         "seed {seed} · {ticks} econ ticks · population {population_label}"
     );
     let _ = writeln!(out, "tracked goods: {}", good_names.join(", "));
+    // G6a era banner: the measured era reached and the tick each rung was earned —
+    // "eras are earned, not timed". Shown only for an emergent settlement (the ladder
+    // classifies the barter→money→specialist→capital path).
+    if let Some(era) = era {
+        let timeline: Vec<String> = era
+            .timeline
+            .iter()
+            .map(|(label, tick)| format!("{label}@{tick}"))
+            .collect();
+        let trail = if timeline.is_empty() {
+            String::new()
+        } else {
+            format!(" — {}", timeline.join(" → "))
+        };
+        let _ = writeln!(out, "era: {}{trail}", era.current);
+    }
     out.push('\n');
 
     // Headers: the per-tick fixed columns, then price/volume columns per tracked
@@ -235,6 +267,14 @@ pub fn format_dashboard(
         headers.push("money".to_string());
         aligns.push(Align::Left);
         aligns.push(Align::Left);
+        aligns.push(Align::Left);
+    }
+    // G6a era column: the measured institutional era this tick — the headline
+    // surfacing alongside the banner. Shown when an era summary is provided (an
+    // emergent settlement).
+    let show_era = era.is_some();
+    if show_era {
+        headers.push("era".to_string());
         aligns.push(Align::Left);
     }
     headers.push("consv".to_string());
@@ -312,6 +352,9 @@ pub fn format_dashboard(
                 row.money_good.clone()
             };
             cells.push(money);
+        }
+        if show_era {
+            cells.push(row.era.clone());
         }
         cells.push(consv);
         cells.push(hunger_max);
