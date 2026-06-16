@@ -107,6 +107,63 @@ fn repaid_capital_advance_sustains_roles_and_raises_production() {
 }
 
 #[test]
+fn market_gate_trace_at_the_halt() {
+    // Observational diagnostic (run with --nocapture): trace the input market
+    // across the ~tick-300 production halt of the revolving-loan colony. The
+    // question (per the Codex read): is it SUPPLY withdrawal (raw grain piles up
+    // with gatherers/savers who won't sell while millers hold none), DEMAND
+    // collapse (consumers sit on bread and post no bids), or a recipe/stock bug?
+    let config = SettlementConfig::frontier_capital_advance();
+    let content = config.chain.as_ref().expect("chain").content.clone();
+    let grain = content.grain();
+    let flour = content.flour();
+    let bread = content.bread();
+    let mut settlement = Settlement::generate(1, &config);
+    for tick in 1..=350 {
+        let report = settlement.econ_tick();
+        if tick >= 240 && tick % 10 == 0 {
+            eprintln!(
+                "t={tick:<4} bread.made={} grain.input={} flour.input={}\n  grain.stock={:?}\n  flour.stock={:?}\n  bread.stock={:?}\n  gold={:?}",
+                report.produced_of(bread),
+                report.consumed_as_input_of(grain),
+                report.consumed_as_input_of(flour),
+                settlement.stock_by_vocation(grain),
+                settlement.stock_by_vocation(flour),
+                settlement.stock_by_vocation(bread),
+                settlement.gold_by_vocation(),
+            );
+        }
+    }
+
+    // Lock the halt signature: grain piles up with the gatherers (the sellers)
+    // and never reaches the millers, and consumers hoard the bread + money while
+    // producers hold neither. The chain dies from input starvation driven by a
+    // satiated, withdrawn consumer class — not lack of producer working capital.
+    let grain_stock = settlement.stock_by_vocation(grain);
+    let grain_of = |voc| {
+        grain_stock
+            .iter()
+            .find(|(v, _)| *v == voc)
+            .map_or(0, |(_, q)| *q)
+    };
+    assert!(
+        grain_of(Vocation::Gatherer) > 1_000 && grain_of(Vocation::Miller) == 0,
+        "halt signature: grain should pile with gatherers and not reach millers, got gatherer={} miller={}",
+        grain_of(Vocation::Gatherer),
+        grain_of(Vocation::Miller),
+    );
+    let bread_stock = settlement.stock_by_vocation(bread);
+    let consumer_bread = bread_stock
+        .iter()
+        .find(|(v, _)| *v == Vocation::Consumer)
+        .map_or(0, |(_, q)| *q);
+    assert!(
+        consumer_bread > 1_000,
+        "halt signature: consumers should hoard bread while producers starve, got {consumer_bread}"
+    );
+}
+
+#[test]
 fn gold_by_vocation_conserves_against_total() {
     // The per-vocation gold sum (living colonists) plus commons must not exceed
     // the settlement's total gold — a sanity check on the diagnostic accessor.

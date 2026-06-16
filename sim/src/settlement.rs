@@ -6147,6 +6147,28 @@ impl Settlement {
         out
     }
 
+    /// Diagnostic (game-only, read-only): living colonists' holdings of `good`
+    /// grouped by [`Vocation`] — the market-gate probe for the downstream halt
+    /// (does raw grain pile up with the gatherers/savers who won't sell it while
+    /// the millers hold none, i.e. supply withdrawal, vs. consumers sitting on
+    /// bread they don't bid for?). Returns `(vocation, total_qty)` pairs.
+    pub fn stock_by_vocation(&self, good: GoodId) -> Vec<(Vocation, u64)> {
+        let mut out: Vec<(Vocation, u64)> = Vec::new();
+        for &slot in &self.live_colonist_slots {
+            let colonist = &self.colonists[slot];
+            let Some(agent) = self.society.agents.get(colonist.id) else {
+                continue;
+            };
+            let qty = u64::from(agent.stock.get(good));
+            if let Some(entry) = out.iter_mut().find(|(voc, _)| *voc == colonist.vocation) {
+                entry.1 = entry.1.saturating_add(qty);
+            } else {
+                out.push((colonist.vocation, qty));
+            }
+        }
+        out
+    }
+
     /// The highest hunger any living colonist carries — the boundedness probe for
     /// the smoke test (hunger is the need that kills).
     pub fn max_living_hunger(&self) -> u16 {

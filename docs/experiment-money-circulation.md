@@ -243,3 +243,45 @@ culprits (per the Codex analysis): the role/production decision still being
 gated on a realized money spread rather than standing demand, market-matching or
 quote-timing on the one-unit machinery, or a stockpile/again-satiation dynamic on
 the consumer side.
+
+## Experiment 7 — the market-gate trace localizes the halt (the economy bifurcates)
+
+A per-vocation stock/gold trace across the halt (`market_gate_trace_at_the_halt`,
+via the new `Settlement::stock_by_vocation`) settles it. At t240–350 the colony
+has **bifurcated**:
+
+| Class | grain | flour | bread | gold | state |
+| --- | --- | --- | --- | --- | --- |
+| Consumers | 0 | 0 | **3.4k → 5.0k (growing)** | **~319,800 (≈all)** | satiated, well-fed, withdrawn |
+| Gatherers | **34k → 50k (growing)** | 0 | 0 | ~200 | hungry, hold unsold grain |
+| Millers | 0 | 230 (idle) | 0 | 0 | hungry, no grain to mill |
+| Bakers | 0 | 0 | 0 | 0 | hungry, no flour to bake |
+
+The chain dies of **input starvation**: grain piles with the gatherers and never
+reaches the millers (`grain.input = 0`). The deeper cause is a **distribution
+seizure**, not a working-capital one:
+
+- The **consumers hold the output *and* the money** and are satiated, so they
+  withdraw — they don't buy more and don't recirculate. Nothing (no spoilage,
+  storage cost, tax, or rent) forces their bread/money hoard back into the market.
+- Grain has **no effective buyer**: the only would-be buyers are the millers, but
+  the millers are *hungry* (hold 0 bread), so their **present bread want outranks
+  their grain-input want** — they chase bread (which the consumers hoard and won't
+  sell) instead of buying grain. The consumers who *do* hold money don't eat grain.
+- So the hungry producer class can never re-enter: too poor and too hungry to buy
+  inputs, and locked out of the hoarded output.
+
+This is the same root that surfaced at every layer — **a bounded savings want +
+zero carrying cost ⇒ satiated agents withdraw holding goods + money** — now
+localized exactly: the satiated *consumers* corner the bread and the money, and
+the producers starve with unsold grain piling beside them. Locked by the halt
+signature (gatherer grain large, miller grain zero, consumers hoard bread).
+
+**Next (the real redesign, per the Codex read):** give the model the
+counter-pressures real economies have — inventory carrying cost / spoilage so a
+satiated holder still offers surplus; a subsistence/household path so the hungry
+producers feed themselves and stay solvent; and entrepreneurial production keyed
+to *live unmet demand* (standing bids) rather than only a realized spread. The
+loan fixed the supply of working capital; the remaining problem is that a
+satiated, frictionless hoard never recirculates — a demand/turnover problem, not
+a credit one.
