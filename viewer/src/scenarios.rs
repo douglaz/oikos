@@ -94,6 +94,12 @@ const SCENARIOS: &[Scenario] = &[
         build: SettlementConfig::frontier,
     },
     Scenario {
+        name: "no-consumers",
+        description:
+            "EXPERIMENT: frontier with the pure-consumer class removed — money held by producing gatherers, not idle consumers (does de-segregating money fix the deadlock?)",
+        build: build_no_consumers,
+    },
+    Scenario {
         name: "millisats-1x",
         description:
             "EXPERIMENT: frontier at coarse (x1) money precision — the unit-starved baseline that freezes (~320 money units)",
@@ -238,6 +244,10 @@ const SCENARIOS: &[Scenario] = &[
         build: build_issuer_repayment_tender_refusal,
     },
 ];
+
+fn build_no_consumers() -> SettlementConfig {
+    SettlementConfig::frontier_no_consumers()
+}
 
 fn build_millisats_1x() -> SettlementConfig {
     SettlementConfig::frontier_millisats(1)

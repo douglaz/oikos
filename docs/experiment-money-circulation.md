@@ -80,4 +80,45 @@ divisibility** — both were refuted or shown insufficient here. It is the
 genuine **savings → investment** channel: real saved balances advanced to
 capitalize the production structure (the credit-*disabled* natural-rate
 mechanism the engine already models), so producers can buy inputs ahead of
-revenue. That is the next thing to design and test.
+revenue.
+
+## Hypothesis 3 — the pure-consumer class causes it (REFUTED, but illuminating)
+
+A pure-consumer class (agents that hold money, eat, and never produce) is
+unrealistic for a subsistence age, and it segregates the money from the
+producers. Hypothesis: remove it — make everyone a self-provisioning gatherer
+who holds money — and the deadlock dissolves because money sits with the
+producers.
+
+**Test:** `no-consumers` (`frontier_no_consumers`) — fold the consumers into
+the gathering labor force and move the SALT endowment onto the gatherers,
+total supply preserved. The only controlled change vs `frontier` is who holds
+the money.
+
+**Result (refuted):** removing the consumers **broke money emergence**. The
+run never leaves barter (`money = —`, era stalls at `barter`), the chain never
+forms (the latent producers adopt only on a realized *money* spread that never
+appears), and hunger still climbs to ~8. The consumers were **load-bearing for
+monetization** — the SALT-rich, goods-poor saleability hub that lets SALT win
+as money (game-spec's Mengerian emergence). And the colony still starves for
+the deeper reason: as all-gatherers they harvest *grain* (inedible) and the
+only path to the staple (bread) is the fragile chain — there is **no
+directly-edible base food, no subsistence floor.** "Everyone produces" does not
+help when what they produce cannot feed them.
+
+## Synthesis: the robust ingredient is a directly-edible subsistence base
+
+| Scenario | Money emerges | Chain runs | Long-run | Why |
+| --- | --- | --- | --- | --- |
+| `viable` (edible food, self-provision) | n/a (direct) | n/a | healthy | directly-edible subsistence base |
+| `frontier` (chain, pure consumers) | yes | stalls ~t37 | chronic hunger | no subsistence fallback; producers cash-starve |
+| `millisats` (finer money) | yes | stalls | chronic hunger | divisibility fixed money, not production |
+| `no-consumers` (money to gatherers) | no | never | chronic hunger | consumers were the saleability hub; still no edible base |
+
+`viable` is the only robust colony, and the only one with a directly-edible
+subsistence base agents can fall back to. The fix is to make the grain→bread
+chain **optional specialization on top of** a subsistence floor (survival-driven
+gathering of edible food), not the sole food source. That is the next thing to
+design and test — and it is also where the genuine savings → investment channel
+(above) belongs: real savings capitalize the *specialized* structure, while the
+subsistence base keeps anyone from starving when it fails.

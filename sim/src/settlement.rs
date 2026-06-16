@@ -2138,6 +2138,37 @@ impl SettlementConfig {
         cfg
     }
 
+    /// EXPERIMENTAL (no-pure-consumer probe — not a golden path): `frontier`
+    /// with the pure-consumer class removed. The "consumers" — agents that hold
+    /// the money, eat, and never produce — are folded into the gathering labor
+    /// force, and the SALT money endowment is moved onto the gatherers (total
+    /// supply preserved). The controlled variable vs `frontier` is ONLY who
+    /// holds the money: working gatherers instead of a non-producing consumer
+    /// class; the chain, food model, nodes, and demography are otherwise
+    /// identical. It tests whether segregating money from production (the
+    /// consumer class) is what causes the circular-flow cold-start deadlock —
+    /// the producer-working-capital finding in `docs/experiment-money-
+    /// circulation.md`. Additive and game-only; econ goldens untouched.
+    pub fn frontier_no_consumers() -> Self {
+        let mut cfg = Self::frontier();
+        let ex_consumers = u32::from(cfg.consumers);
+        // Fold the removed consumers into the gathering labor force so the
+        // population and the number of mouths are preserved; only their role
+        // (idle money-holder -> producing gatherer) changes.
+        cfg.gatherers = cfg.gatherers.saturating_add(cfg.consumers);
+        cfg.consumers = 0;
+        if let Some(b) = cfg.barter.as_mut() {
+            // Move the SALT endowment from the removed consumers onto the
+            // gatherers, preserving the total supply: money is now held by
+            // producers, not an idle consumer class.
+            let total_salt = ex_consumers.saturating_mul(b.consumer_medium_endowment);
+            let gatherers = u32::from(cfg.gatherers).max(1);
+            b.gatherer_medium_endowment = total_salt / gatherers;
+            b.consumer_medium_endowment = 0;
+        }
+        cfg
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).
