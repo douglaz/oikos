@@ -2502,6 +2502,14 @@ pub struct Settlement {
     /// plain settlement. Drives the econ tick's scale-injection and production
     /// phases; `None` skips both, so a plain settlement is byte-identical to G2b.
     chain: Option<ChainRuntime>,
+    /// EXPERIMENTAL (capital-advance-with-repayment): outstanding revolving
+    /// working-capital loans, `borrower -> (lender, owed)`. Each enabled tick a
+    /// cashless producer borrows up to a working-capital floor from the richest
+    /// saver (before the market) and repays from its sales (after the market),
+    /// so it stays cash-light and its future-money want stays unmet (the
+    /// incentive to keep producing survives, unlike an unrepaid gift). Empty and
+    /// unused unless [`ChainConfig::capital_advance`] is set.
+    capital_loans: BTreeMap<AgentId, (AgentId, Gold)>,
     econ_tick: u64,
     last_report: EconTickReport,
     /// The settlement **commons** (G4a real death): the conserved sink that holds a
@@ -3381,6 +3389,7 @@ impl Settlement {
             pending_deposits: BTreeMap::new(),
             trader_ids,
             chain,
+            capital_loans: BTreeMap::new(),
             econ_tick: 0,
             last_report: EconTickReport::default(),
             commons_gold: Gold::ZERO,
@@ -3533,6 +3542,7 @@ impl Settlement {
             pending_deposits: BTreeMap::new(),
             trader_ids: Vec::new(),
             chain: None,
+            capital_loans: BTreeMap::new(),
             econ_tick: 0,
             last_report: EconTickReport::default(),
             commons_gold: Gold::ZERO,
@@ -3686,6 +3696,11 @@ impl Settlement {
         } else {
             self.society.step();
         }
+        // ---- 5b. CAPITAL-ADVANCE REPAYMENT (EXPERIMENT): borrowers repay their
+        // revolving working-capital loans from this tick's sales, staying
+        // cash-light so the future-money want stays unmet. Conserved; no-op
+        // unless the capital-advance experiment is enabled and loans are open.
+        self.run_capital_repayment();
         if bank_credit_issued > Gold::ZERO {
             // `checked_add` onto whatever econ's own loan market booked this tick. In G8b
             // the curated bank configs do not activate the debt cycle; when G8c
@@ -4963,8 +4978,8 @@ impl Settlement {
         if !enabled || self.society.current_money_good().is_none() {
             return;
         }
-        // The working-capital floor a cashless producer is advanced up to.
-        const FLOOR: u64 = 100;
+        // Per-producer working-capital floor for one tick of input purchases.
+        const FLOOR: u64 = 20;
         let live = self.live_colonist_slots.clone();
         for &slot in &live {
             let (producer_id, vocation) = {
@@ -4974,52 +4989,103 @@ impl Settlement {
             if !matches!(vocation, Vocation::Miller | Vocation::Baker) {
                 continue;
             }
-            let held = self
-                .society
-                .agents
-                .get(producer_id)
-                .map_or(0, |agent| agent.gold.0);
-            if held >= FLOOR {
+            // One revolving loan at a time: re-borrow only once the prior loan is
+            // repaid, so a producer's debt stays bounded by the floor.
+            if self.capital_loans.contains_key(&producer_id) {
                 continue;
             }
-            let need = FLOOR - held;
-            // Richest donor by free (unreserved) gold, deterministic (ties -> lowest id),
-            // never the producer itself.
-            let donor = live
+            let free = self.society.free_gold_after_all_reserves(producer_id).0;
+            if free >= FLOOR {
+                continue;
+            }
+            let need = FLOOR - free;
+            // Richest lender by free (unreserved) gold — a saver, never a chain
+            // producer, never the borrower; deterministic (ties -> lowest id).
+            let lender = live
                 .iter()
-                .filter_map(|&donor_slot| {
-                    let donor_id = self.colonists[donor_slot].id;
-                    if donor_id == producer_id {
+                .filter_map(|&lender_slot| {
+                    let colonist = &self.colonists[lender_slot];
+                    if colonist.id == producer_id
+                        || matches!(colonist.vocation, Vocation::Miller | Vocation::Baker)
+                    {
                         return None;
                     }
-                    let free = self.society.free_gold_after_all_reserves(donor_id).0;
-                    (free > 0).then_some((free, donor_id))
+                    let free = self.society.free_gold_after_all_reserves(colonist.id).0;
+                    (free > 0).then_some((free, colonist.id))
                 })
-                .max_by_key(|&(free, donor_id)| (free, std::cmp::Reverse(donor_id)));
-            if let Some((free, donor_id)) = donor {
+                .max_by_key(|&(free, lender_id)| (free, std::cmp::Reverse(lender_id)));
+            if let Some((free, lender_id)) = lender {
                 let amount = need.min(free);
-                if amount > 0 {
-                    // Conserved move of real money. `transfer_gold` handles
-                    // designated-GOLD and M3; for an EMERGENT money (the money is
-                    // in `Agent.gold` but the regime is not `Designated(GOLD)`) it
-                    // refuses before mutating, so move `Agent.gold` directly. The
-                    // reservation guard is already honored: `amount <= free`, the
-                    // donor's unreserved gold, so it never over-commits a resting
-                    // order. No `money_system` cache exists in the emergent regime.
-                    if !self
-                        .society
-                        .transfer_gold(donor_id, producer_id, Gold(amount))
-                    {
-                        if let Some(donor) = self.society.agents.get_mut(donor_id) {
-                            donor.gold = donor.gold.saturating_sub(Gold(amount));
-                        }
-                        if let Some(producer) = self.society.agents.get_mut(producer_id) {
-                            producer.gold = producer.gold.saturating_add(Gold(amount));
-                        }
-                    }
+                if amount > 0 && self.move_money_conserved(lender_id, producer_id, Gold(amount)) {
+                    self.capital_loans
+                        .insert(producer_id, (lender_id, Gold(amount)));
                 }
             }
         }
+    }
+
+    /// Capital-advance REPAYMENT phase (EXPERIMENT): after the market clears,
+    /// each borrower repays its revolving working-capital loan from its sales,
+    /// keeping it cash-light so its future-money want stays UNMET — the incentive
+    /// to keep producing survives (unlike an unrepaid gift, which satisfies the
+    /// want and gets the producer de-adopted). Conserved; a no-op when there are
+    /// no loans. Deterministic: id-ordered over the loan ledger.
+    fn run_capital_repayment(&mut self) {
+        if self.capital_loans.is_empty() {
+            return;
+        }
+        let borrowers: Vec<AgentId> = self.capital_loans.keys().copied().collect();
+        for borrower in borrowers {
+            let Some(&(lender, owed)) = self.capital_loans.get(&borrower) else {
+                continue;
+            };
+            // Drop loans whose borrower or lender is no longer live — the estate
+            // already settled that gold elsewhere; the money stays conserved in
+            // the system, only the (unrecoverable) bookkeeping is dropped.
+            if self.society.agents.get(borrower).is_none()
+                || self.society.agents.get(lender).is_none()
+            {
+                self.capital_loans.remove(&borrower);
+                continue;
+            }
+            let free = self.society.free_gold_after_all_reserves(borrower);
+            let repay = free.min(owed);
+            if repay > Gold::ZERO && self.move_money_conserved(borrower, lender, repay) {
+                let remaining = owed.saturating_sub(repay);
+                if remaining == Gold::ZERO {
+                    self.capital_loans.remove(&borrower);
+                } else {
+                    self.capital_loans.insert(borrower, (lender, remaining));
+                }
+            }
+        }
+    }
+
+    /// Conserved money move usable in BOTH the designated-GOLD / M3 regimes (via
+    /// [`Society::transfer_gold`]) and the EMERGENT regime (where `transfer_gold`
+    /// refuses because the money lives in `Agent.gold` under a non-`Designated`
+    /// regime, so move the field directly). Returns whether it moved. The caller
+    /// must cap `amount` at the sender's free (unreserved) gold; the direct path
+    /// re-checks that and never over-commits a reservation. Experiment-only; the
+    /// direct path assumes the emergent no-`money_system` regime.
+    fn move_money_conserved(&mut self, from: AgentId, to: AgentId, amount: Gold) -> bool {
+        if amount == Gold::ZERO {
+            return false;
+        }
+        if self.society.transfer_gold(from, to, amount) {
+            return true;
+        }
+        if self.society.free_gold_after_all_reserves(from) < amount {
+            return false;
+        }
+        let Some(sender) = self.society.agents.get_mut(from) else {
+            return false;
+        };
+        sender.gold = sender.gold.saturating_sub(amount);
+        if let Some(recipient) = self.society.agents.get_mut(to) {
+            recipient.gold = recipient.gold.saturating_add(amount);
+        }
+        true
     }
 
     /// ROLE-CHOICE phase (G3b): each living colonist holding latent production

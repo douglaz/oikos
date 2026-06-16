@@ -200,3 +200,46 @@ follows the money spread / an unmet money want, not survival or physical demand.
 loan), so the producer's money want stays unmet and the working capital actually
 funds production. If that still fails, the role-choice motivation itself
 (profit-only, no survival/demand-driven production) is the thing to redesign.
+
+## Experiment 6 — the revolving loan with repayment (the fix that works, to a point)
+
+The `capital-advance` scenario now implements the faithful mechanism (replacing
+the unrepaid gift): a **revolving working-capital loan**. Each enabled tick,
+before the market, a cashless active producer borrows up to a small floor from
+the richest saver (`run_capital_advance`, recorded in a `borrower -> (lender,
+owed)` ledger); after the market, it repays from its sales
+(`run_capital_repayment`). The producer stays **cash-light**, so its future-money
+want stays UNMET and role-choice keeps it adopted — the loan supplies working
+capital *without* the gift's de-adoption. Conserved (gold moves both ways; the
+ledger is bookkeeping); a tooling helper `move_money_conserved` handles the
+emergent regime (`transfer_gold` refuses there).
+
+**Result — the loan fixes what it targets, and beats every prior variant:**
+
+| Variant | bread.made (300t) | producers | healthy window |
+| --- | --- | --- | --- |
+| `millisats` (no advance) | 585 | stall ~t37 | ~37 ticks |
+| unrepaid gift, floor 100 | 9 | de-adopt | none |
+| unrepaid gift, floor 5 | 624 | de-adopt ~t75 | ~50 ticks |
+| **revolving loan, floor 20** | **732** | **stay adopted (to t700+)** | **~300 ticks** |
+
+The loan keeps producers **in role for the whole run** (the de-adoption fix) and
+unblocks the cold start, raising total production to the most of any variant and
+extending the well-fed window from ~37 to ~300 ticks. Locked by
+`repaid_capital_advance_sustains_roles_and_raises_production`. Conservation holds
+throughout.
+
+**But it reveals the next layer.** Over a long horizon, production still halts
+(~tick 300): producers stay *adopted* (`mill=3, bake=3` to t700) and funded, yet
+make no bread, and hunger climbs to ~8. So working capital was a **real binding
+constraint** — now removed — but not the only one. Funded, in-role producers that
+nonetheless stop producing point downstream: a **demand/market-coordination**
+limit (why hungry consumers holding money don't sustain bread purchases), not a
+supply-of-working-capital one.
+
+**Next:** investigate the downstream halt — why funded, adopted producers stop
+selling/producing while the colony is hungry and the buyers hold money. Candidate
+culprits (per the Codex analysis): the role/production decision still being
+gated on a realized money spread rather than standing demand, market-matching or
+quote-timing on the one-unit machinery, or a stockpile/again-satiation dynamic on
+the consumer side.

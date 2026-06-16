@@ -78,22 +78,31 @@ fn bread_made_over(config: SettlementConfig, ticks: u32) -> u64 {
 }
 
 #[test]
-fn unrepaid_capital_advance_is_counterproductive() {
-    // Codex's capital-advance experiment, with its predicted falsification.
-    // A conserved but UNREPAID advance to cashless producers does not restart
-    // the chain — it suppresses it. In this ordinal-value model production is
-    // motivated by an UNMET future-money want; handing a producer money
-    // satisfies that want, so role-choice never adopts (or de-adopts) the
-    // producer role. So the subsidy removes the motive to produce. The faithful
-    // fix is a funded LOAN WITH REPAYMENT (which keeps the want unmet), not a
-    // gift. This test locks the finding: the advance produces strictly LESS
-    // bread than the same millisats baseline without it.
+fn repaid_capital_advance_sustains_roles_and_raises_production() {
+    // The faithful capital advance is a REVOLVING loan: working capital is
+    // advanced to cashless producers before the market and repaid from their
+    // sales after it, so they stay cash-light and their future-money want stays
+    // UNMET — role-choice keeps them adopted (an unrepaid gift, by contrast,
+    // satisfies the want and gets them de-adopted, suppressing production). This
+    // locks the two effects: the loan raises total production above the millisats
+    // baseline, and the producers are still in role late in the run.
     let with_advance = bread_made_over(SettlementConfig::frontier_capital_advance(), 300);
     let baseline = bread_made_over(SettlementConfig::frontier_millisats(1_000), 300);
     assert!(
-        with_advance < baseline,
-        "unrepaid capital advance should suppress production (role-choice de-adopts \
-         funded producers), but with_advance={with_advance} >= baseline={baseline}"
+        with_advance > baseline,
+        "revolving capital advance should raise production above baseline, \
+         got with_advance={with_advance}, baseline={baseline}"
+    );
+
+    let mut settlement = Settlement::generate(1, &SettlementConfig::frontier_capital_advance());
+    for _ in 0..200 {
+        settlement.econ_tick();
+    }
+    let producers =
+        settlement.living_count(Vocation::Miller) + settlement.living_count(Vocation::Baker);
+    assert!(
+        producers > 0,
+        "the revolving advance should keep producers adopted at tick 200, got {producers}"
     );
 }
 
