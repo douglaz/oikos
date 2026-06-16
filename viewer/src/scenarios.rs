@@ -106,6 +106,12 @@ const SCENARIOS: &[Scenario] = &[
         build: build_subsistence,
     },
     Scenario {
+        name: "capital-advance",
+        description:
+            "EXPERIMENT: millisats frontier + a conserved capital advance to cashless producers (does funding working capital keep the chain producing past tick 37?)",
+        build: build_capital_advance,
+    },
+    Scenario {
         name: "millisats-1x",
         description:
             "EXPERIMENT: frontier at coarse (x1) money precision — the unit-starved baseline that freezes (~320 money units)",
@@ -257,6 +263,10 @@ fn build_no_consumers() -> SettlementConfig {
 
 fn build_subsistence() -> SettlementConfig {
     SettlementConfig::frontier_subsistence()
+}
+
+fn build_capital_advance() -> SettlementConfig {
+    SettlementConfig::frontier_capital_advance()
 }
 
 fn build_millisats_1x() -> SettlementConfig {

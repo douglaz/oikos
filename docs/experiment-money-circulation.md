@@ -155,3 +155,48 @@ that prevents starvation while bread/specialization stays attractive enough to
 sustain trade, monetization, and — capitalized by genuine savings → investment —
 the roundabout structure. That balance (and fixing the grain under-eating) is the
 next tuning step.
+
+## Experiment 5 — the capital advance (Codex's test; an unrepaid subsidy backfires)
+
+Codex's recommended falsification of the producer-working-capital thesis: from
+`frontier_millisats` (so money concentration and the integer price floor are not
+confounds), add a conserved capital-advance phase
+(`ChainConfig::capital_advance`, `frontier_capital_advance`, scenario
+`capital-advance`): after money emerges, top up cashless active producers from
+the richest saver so they can buy inputs. Prediction: if missing working capital
+is the binding cause, the chain keeps producing past the seed-exhaustion tick.
+
+**A tooling gap surfaced first:** every conserved gold primitive
+(`transfer_gold` / `credit_gold` / `debit_gold`) gates on
+`uses_closed_gold_money()` (which requires a *designated* GOLD regime), so they
+silently refuse on an *emergent* money even though the money lives in
+`Agent.gold` post-promotion. The first run was a no-op (byte-identical to
+`millisats`) — a false negative caught only by instrumenting the phase. The sim
+now moves `Agent.gold` directly for the emergent regime (reservation guard
+honored by capping at the donor's free gold; no `money_system` cache exists
+there).
+
+**Result with the transfer working — REFUTED, and counterproductive:** funding
+the producers did not restart the chain; it *suppressed* it. Bread produced over
+300 ticks collapsed from **585** (`millisats`) to **9** (`capital-advance`); the
+latent producers stayed idle, the era stalled at `money` (never reached
+`capital`), hunger climbed to ~8. Locked by
+`unrepaid_capital_advance_is_counterproductive`.
+
+**Mechanism (a clean praxeological point):** in an ordinal-value model, an actor
+produces to satisfy an **unmet future-money want**. Handing a producer money
+*satisfies* that want, so the role-choice appraisal
+(`recipe_adoption_pays_for_money`, which adopts a role only when running the
+recipe newly provisions an unmet money want) never adopts — or de-adopts — the
+producer. **The subsidy removes the motive to produce.** This is exactly why the
+faithful mechanism is a funded **loan with repayment**, not a gift: a loan keeps
+the want unmet (the producer must still earn to repay), so it supplies working
+capital *without* destroying the incentive. The no-repayment shortcut is what
+backfired. It also confirms Codex's fallback prediction: with funded producers
+still not producing, the culprit is the **role-choice gating** — production
+follows the money spread / an unmet money want, not survival or physical demand.
+
+**Next:** a capital advance *with a repayment obligation* (a real conserved
+loan), so the producer's money want stays unmet and the working capital actually
+funds production. If that still fails, the role-choice motivation itself
+(profit-only, no survival/demand-driven production) is the thing to redesign.

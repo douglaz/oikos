@@ -747,6 +747,14 @@ pub struct ChainConfig {
     /// the sole food source. `false` (every existing config) leaves hunger
     /// satisfied only by the staple, byte-identical.
     pub subsistence_on_grain: bool,
+    /// EXPERIMENTAL (capital-advance probe): when `true` *and* money has emerged,
+    /// each econ tick a conserved working-capital advance moves real money from
+    /// the richest saver to any cashless active chain producer (Miller/Baker), so
+    /// it can buy inputs ahead of selling output. The causal test of the
+    /// producer-working-capital thesis — a funded transfer of real money (NOT
+    /// fiduciary credit), with no repayment modeled yet (the first test is
+    /// causal). `false` (every existing config) skips the phase, byte-identical.
+    pub capital_advance: bool,
     /// Per-producer, per-econ-tick cap on recipe applications — a deterministic
     /// throughput bound (nothing is drawn). A producer applies its recipe up to
     /// this many times, limited by the input it holds.
@@ -830,6 +838,7 @@ impl ChainConfig {
             operating_cost: 1,
             bread_is_staple: true,
             subsistence_on_grain: false,
+            capital_advance: false,
             throughput: 2,
             miller_grain_buffer: 16,
             baker_flour_buffer: 16,
@@ -879,6 +888,7 @@ impl ChainConfig {
             operating_cost: 1,
             bread_is_staple: true,
             subsistence_on_grain: false,
+            capital_advance: false,
             throughput: 2,
             miller_grain_buffer: 16,
             baker_flour_buffer: 16,
@@ -2196,6 +2206,23 @@ impl SettlementConfig {
         cfg
     }
 
+    /// EXPERIMENTAL (capital-advance probe — not a golden path): `frontier` on a
+    /// finer money unit (built from [`Self::frontier_millisats`] so concentration
+    /// and the integer price floor are not confounds), plus the conserved
+    /// capital-advance phase ([`ChainConfig::capital_advance`]). It isolates the
+    /// producer-working-capital thesis: after promotion, cashless active
+    /// producers are funded from the richest saver so they can buy inputs. If
+    /// missing working capital is the binding cause, the chain keeps producing
+    /// past the seed-exhaustion tick instead of stalling. Additive and game-only;
+    /// econ goldens untouched.
+    pub fn frontier_capital_advance() -> Self {
+        let mut cfg = Self::frontier_millisats(1_000);
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.capital_advance = true;
+        }
+        cfg
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).
@@ -2648,6 +2675,9 @@ struct ChainRuntime {
     /// G6b: the flour a confectioner holds/reserves (its tier-2 input buffer + bid
     /// ceiling). `0` for a non-research chain.
     confectioner_flour_buffer: u32,
+    /// EXPERIMENTAL: enable the conserved capital-advance phase (see
+    /// [`ChainConfig::capital_advance`]). `false` for every existing config.
+    capital_advance: bool,
 }
 
 impl Settlement {
@@ -3325,6 +3355,7 @@ impl Settlement {
                 tier2_recipe_id: chain.content.tier2_recipe_id(),
                 scholar_grain_buffer: chain.scholar_grain_buffer,
                 confectioner_flour_buffer: chain.confectioner_flour_buffer,
+                capital_advance: chain.capital_advance,
             }
         });
 
@@ -3607,6 +3638,14 @@ impl Settlement {
         if self.run_role_choice() {
             self.regenerate_scales();
         }
+
+        // ---- 4b'. CAPITAL ADVANCE (EXPERIMENT): a conserved working-capital
+        // advance — move real money from the richest saver to any cashless active
+        // chain producer so it can buy inputs ahead of selling output. After
+        // role-choice (producers are in role) and before the market clears (the
+        // advanced cash funds this tick's input bids). A no-op unless enabled and
+        // money has emerged, so every other run is byte-identical.
+        self.run_capital_advance();
 
         // ---- 4c. PROVISION (G4b): deliver each living householder its household's
         // renewable hunger-staple/WOOD hearth into econ stock, recorded as a source
@@ -4904,6 +4943,82 @@ impl Settlement {
         self.society.set_recipe_enabled(recipe_id, true);
         if let Some(chain) = self.chain.as_mut() {
             chain.content.set_recipe_enabled(recipe_id, true);
+        }
+    }
+
+    /// CAPITAL-ADVANCE phase (EXPERIMENT — see [`ChainConfig::capital_advance`]).
+    /// Once money has emerged, top up any cashless active chain producer
+    /// (Miller/Baker) to a small working-capital floor by transferring real,
+    /// conserved money from the richest saver — so the producer can buy inputs
+    /// ahead of selling output. Funded (no fiduciary credit), no repayment yet:
+    /// a causal probe of whether missing working capital is what stalls the
+    /// chain. A no-op unless enabled and money has emerged, so every other run is
+    /// byte-identical. Deterministic: integer state, id-ordered, no RNG; the
+    /// donor is chosen by most free (unreserved) gold, ties broken by lowest id.
+    fn run_capital_advance(&mut self) {
+        let enabled = self
+            .chain
+            .as_ref()
+            .is_some_and(|chain| chain.capital_advance);
+        if !enabled || self.society.current_money_good().is_none() {
+            return;
+        }
+        // The working-capital floor a cashless producer is advanced up to.
+        const FLOOR: u64 = 100;
+        let live = self.live_colonist_slots.clone();
+        for &slot in &live {
+            let (producer_id, vocation) = {
+                let colonist = &self.colonists[slot];
+                (colonist.id, colonist.vocation)
+            };
+            if !matches!(vocation, Vocation::Miller | Vocation::Baker) {
+                continue;
+            }
+            let held = self
+                .society
+                .agents
+                .get(producer_id)
+                .map_or(0, |agent| agent.gold.0);
+            if held >= FLOOR {
+                continue;
+            }
+            let need = FLOOR - held;
+            // Richest donor by free (unreserved) gold, deterministic (ties -> lowest id),
+            // never the producer itself.
+            let donor = live
+                .iter()
+                .filter_map(|&donor_slot| {
+                    let donor_id = self.colonists[donor_slot].id;
+                    if donor_id == producer_id {
+                        return None;
+                    }
+                    let free = self.society.free_gold_after_all_reserves(donor_id).0;
+                    (free > 0).then_some((free, donor_id))
+                })
+                .max_by_key(|&(free, donor_id)| (free, std::cmp::Reverse(donor_id)));
+            if let Some((free, donor_id)) = donor {
+                let amount = need.min(free);
+                if amount > 0 {
+                    // Conserved move of real money. `transfer_gold` handles
+                    // designated-GOLD and M3; for an EMERGENT money (the money is
+                    // in `Agent.gold` but the regime is not `Designated(GOLD)`) it
+                    // refuses before mutating, so move `Agent.gold` directly. The
+                    // reservation guard is already honored: `amount <= free`, the
+                    // donor's unreserved gold, so it never over-commits a resting
+                    // order. No `money_system` cache exists in the emergent regime.
+                    if !self
+                        .society
+                        .transfer_gold(donor_id, producer_id, Gold(amount))
+                    {
+                        if let Some(donor) = self.society.agents.get_mut(donor_id) {
+                            donor.gold = donor.gold.saturating_sub(Gold(amount));
+                        }
+                        if let Some(producer) = self.society.agents.get_mut(producer_id) {
+                            producer.gold = producer.gold.saturating_add(Gold(amount));
+                        }
+                    }
+                }
+            }
         }
     }
 

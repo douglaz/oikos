@@ -62,6 +62,41 @@ fn producers_cash_starve_while_savers_accumulate() {
     );
 }
 
+fn bread_made_over(config: SettlementConfig, ticks: u32) -> u64 {
+    let mut settlement = Settlement::generate(1, &config);
+    let bread = config
+        .chain
+        .as_ref()
+        .map(|c| c.content.bread())
+        .expect("chain");
+    let mut total = 0;
+    for _ in 0..ticks {
+        let report = settlement.econ_tick();
+        total += report.produced_of(bread);
+    }
+    total
+}
+
+#[test]
+fn unrepaid_capital_advance_is_counterproductive() {
+    // Codex's capital-advance experiment, with its predicted falsification.
+    // A conserved but UNREPAID advance to cashless producers does not restart
+    // the chain — it suppresses it. In this ordinal-value model production is
+    // motivated by an UNMET future-money want; handing a producer money
+    // satisfies that want, so role-choice never adopts (or de-adopts) the
+    // producer role. So the subsidy removes the motive to produce. The faithful
+    // fix is a funded LOAN WITH REPAYMENT (which keeps the want unmet), not a
+    // gift. This test locks the finding: the advance produces strictly LESS
+    // bread than the same millisats baseline without it.
+    let with_advance = bread_made_over(SettlementConfig::frontier_capital_advance(), 300);
+    let baseline = bread_made_over(SettlementConfig::frontier_millisats(1_000), 300);
+    assert!(
+        with_advance < baseline,
+        "unrepaid capital advance should suppress production (role-choice de-adopts \
+         funded producers), but with_advance={with_advance} >= baseline={baseline}"
+    );
+}
+
 #[test]
 fn gold_by_vocation_conserves_against_total() {
     // The per-vocation gold sum (living colonists) plus commons must not exceed
