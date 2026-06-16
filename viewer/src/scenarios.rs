@@ -100,6 +100,12 @@ const SCENARIOS: &[Scenario] = &[
         build: build_no_consumers,
     },
     Scenario {
+        name: "subsistence",
+        description:
+            "EXPERIMENT: frontier with raw grain edible as a subsistence floor — the bread chain is optional specialization on top (does the colony stay fed when the chain stalls?)",
+        build: build_subsistence,
+    },
+    Scenario {
         name: "millisats-1x",
         description:
             "EXPERIMENT: frontier at coarse (x1) money precision — the unit-starved baseline that freezes (~320 money units)",
@@ -247,6 +253,10 @@ const SCENARIOS: &[Scenario] = &[
 
 fn build_no_consumers() -> SettlementConfig {
     SettlementConfig::frontier_no_consumers()
+}
+
+fn build_subsistence() -> SettlementConfig {
+    SettlementConfig::frontier_subsistence()
 }
 
 fn build_millisats_1x() -> SettlementConfig {

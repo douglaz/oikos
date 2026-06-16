@@ -739,6 +739,14 @@ pub struct ChainConfig {
     /// goods never price, so the same role-choice appraisal forms no roles. G3a and
     /// the emergent config set it `true`.
     pub bread_is_staple: bool,
+    /// EXPERIMENTAL (subsistence floor): when `true` *and* `bread_is_staple`,
+    /// raw **grain** becomes a directly-edible subsistence food ranked just
+    /// below bread (see [`KnownGoods::subsistence`]). Colonists prefer bread but
+    /// eat raw grain to survive when the chain stalls, so the grain→flour→bread
+    /// chain is optional specialization on top of a subsistence base rather than
+    /// the sole food source. `false` (every existing config) leaves hunger
+    /// satisfied only by the staple, byte-identical.
+    pub subsistence_on_grain: bool,
     /// Per-producer, per-econ-tick cap on recipe applications — a deterministic
     /// throughput bound (nothing is drawn). A producer applies its recipe up to
     /// this many times, limited by the input it holds.
@@ -821,6 +829,7 @@ impl ChainConfig {
             latent_bakers: 0,
             operating_cost: 1,
             bread_is_staple: true,
+            subsistence_on_grain: false,
             throughput: 2,
             miller_grain_buffer: 16,
             baker_flour_buffer: 16,
@@ -869,6 +878,7 @@ impl ChainConfig {
             latent_bakers: 0,
             operating_cost: 1,
             bread_is_staple: true,
+            subsistence_on_grain: false,
             throughput: 2,
             miller_grain_buffer: 16,
             baker_flour_buffer: 16,
@@ -2169,6 +2179,23 @@ impl SettlementConfig {
         cfg
     }
 
+    /// EXPERIMENTAL (subsistence floor — not a golden path): `frontier` with raw
+    /// grain made a directly-edible subsistence food (`subsistence_on_grain`),
+    /// so the grain→flour→bread chain is **optional specialization on top of a
+    /// subsistence base** rather than the sole food source. Colonists prefer
+    /// bread but eat the raw grain they already over-gather to survive when the
+    /// chain stalls. Tests whether a subsistence floor keeps the colony fed (no
+    /// chronic-hunger collapse) over a long horizon while specialization still
+    /// emerges — the synthesis of `docs/experiment-money-circulation.md`.
+    /// Additive and game-only; econ goldens untouched.
+    pub fn frontier_subsistence() -> Self {
+        let mut cfg = Self::frontier();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.subsistence_on_grain = true;
+        }
+        cfg
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).
@@ -2669,11 +2696,13 @@ impl Settlement {
                 hunger: chain.content.bread(),
                 warmth: WOOD,
                 savings: barter.medium_good,
+                subsistence: chain.subsistence_on_grain.then(|| chain.content.grain()),
             },
             (Some(chain), _) if chain.bread_is_staple => KnownGoods {
                 hunger: chain.content.bread(),
                 warmth: WOOD,
                 savings: GOLD,
+                subsistence: chain.subsistence_on_grain.then(|| chain.content.grain()),
             },
             // The G5a barter camp (no chain) eats gathered FOOD, warms with WOOD,
             // and **saves the emergent medium** (e.g. SALT). Saving the good that
@@ -2689,6 +2718,7 @@ impl Settlement {
                 hunger: FOOD,
                 warmth: WOOD,
                 savings: barter.medium_good,
+                subsistence: None,
             },
             // A barter-start chain whose bread is NOT the staple (hunger stays FOOD,
             // the no-spread control's shape) still circulates and is endowed the
@@ -2705,6 +2735,7 @@ impl Settlement {
                 hunger: FOOD,
                 warmth: WOOD,
                 savings: barter.medium_good,
+                subsistence: None,
             },
             // The control (chain present, bread not the staple) eats seeded FOOD;
             // every plain settlement eats gathered FOOD, warms with WOOD, saves GOLD.
@@ -3457,6 +3488,7 @@ impl Settlement {
                 hunger: FOOD,
                 warmth: WOOD,
                 savings: GOLD,
+                subsistence: None,
             },
             exchange,
             carry_cap: config.carry_cap,
@@ -4153,7 +4185,11 @@ impl Settlement {
             let Ok(intake_index) = live_slots.binary_search(&index) else {
                 continue;
             };
-            if good == self.known.hunger {
+            if good == self.known.hunger || Some(good) == self.known.subsistence {
+                // The preferred staple OR the directly-edible subsistence food
+                // (e.g. raw grain) both reduce hunger. This is final
+                // consumption (want satisfaction), not chain-input use, so
+                // grain milled into flour is not counted here.
                 intakes[intake_index].food_consumed =
                     intakes[intake_index].food_consumed.saturating_add(qty);
             } else if good == self.known.warmth {

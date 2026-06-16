@@ -122,3 +122,36 @@ gathering of edible food), not the sole food source. That is the next thing to
 design and test — and it is also where the genuine savings → investment channel
 (above) belongs: real savings capitalize the *specialized* structure, while the
 subsistence base keeps anyone from starving when it fails.
+
+## Experiment 4 — the subsistence floor (built; reveals a tradeoff)
+
+A real subsistence floor was added as an additive, game-only feature
+(`KnownGoods::subsistence`, `ChainConfig::subsistence_on_grain`,
+`SettlementConfig::frontier_subsistence`, scenario `subsistence`): raw **grain**
+— already over-gathered and piling up — becomes a directly-edible food ranked
+just below bread. A colonist prefers bread but eats raw grain to survive, so the
+grain→flour→bread chain is optional specialization on top of a subsistence base.
+`None` by default, so every existing scenario stays byte-identical (verified:
+full suite green, econ goldens byte-identical).
+
+**Result (mechanically works; economically a tradeoff):**
+
+- The fallback fires — `grain.eaten > 0` and hunger improves from frontier's
+  chronic ~8 toward ~6.2. Nobody is one chain-stall from death.
+- **But money no longer emerges** (`money = —`, stuck in `barter`) and the chain
+  never forms. Easy subsistence **crowds out the bread trade that monetized
+  SALT**: money emerges from the *extent of exchange* (Menger), so cheap
+  self-sufficiency suppresses it. Subsistence and specialization trade off.
+- Hunger settles at ~6.2, not the well-fed ~1.5 of `viable` — agents under-eat
+  the abundant grain, a want-ranking/access tuning issue (the fallback is real
+  but not yet fully exploited).
+
+**Reading:** this is the central tension of the primitive→advanced arc, now
+visible in the model. `frontier` got specialization only by *forcing* it (no
+subsistence → fragile, deadlocks). A subsistence floor removes the fragility but,
+if too cheap, removes the gains from trade that drive money and specialization
+(stable but primitive barter). The civ-builder must **balance** the two: a floor
+that prevents starvation while bread/specialization stays attractive enough to
+sustain trade, monetization, and — capitalized by genuine savings → investment —
+the roundabout structure. That balance (and fixing the grain under-eating) is the
+next tuning step.

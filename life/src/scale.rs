@@ -62,6 +62,12 @@ const FUTURE_BASE_LEVEL: i64 = 3;
 /// provisioning and the channels order deterministically.
 const HUNGER_OFFSET: i64 = 6;
 const WARMTH_OFFSET: i64 = 5;
+/// Within-level offset for the subsistence-food fallback. Below [`HUNGER_OFFSET`]
+/// so the preferred staple outranks the subsistence food at each depletion level
+/// (a colonist reaches for bread before raw grain), while still ranking with the
+/// present-consumption band so a hungry colonist eats to survive rather than
+/// hoard. Only emitted when [`KnownGoods::subsistence`] is `Some`.
+const SUBSISTENCE_OFFSET: i64 = 4;
 
 /// The goods a colonist knows satisfy which need. In G1 this is the fixed lab
 /// mapping (hunger ↔ FOOD, warmth ↔ fuel/WOOD); rest is satisfied by Leisure,
@@ -74,15 +80,27 @@ pub struct KnownGoods {
     pub hunger: GoodId,
     pub warmth: GoodId,
     pub savings: GoodId,
+    /// An optional **subsistence** food that also satisfies hunger, ranked just
+    /// below the preferred `hunger` staple. `None` (the lab default and every
+    /// existing scenario) means there is no fallback — hunger is satisfied only
+    /// by `hunger`, exactly as before, so scales stay byte-identical. `Some(g)`
+    /// adds a directly-edible floor: a colonist prefers the `hunger` staple but
+    /// will acquire and eat `g` to survive when the staple is unavailable (e.g.
+    /// raw grain when the bread chain has stalled). The colony game uses this to
+    /// make a roundabout food chain *optional specialization on top of* a
+    /// subsistence base, instead of the sole food source.
+    pub subsistence: Option<GoodId>,
 }
 
 impl KnownGoods {
-    /// The lab mapping: hunger → FOOD, warmth → WOOD, savings → GOLD.
+    /// The lab mapping: hunger → FOOD, warmth → WOOD, savings → GOLD, no
+    /// subsistence fallback.
     pub const fn lab_default() -> Self {
         Self {
             hunger: FOOD,
             warmth: WOOD,
             savings: GOLD,
+            subsistence: None,
         }
     }
 }
@@ -98,9 +116,16 @@ impl Default for KnownGoods {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Channel {
     HungerNow = 0,
-    WarmthNow = 1,
-    Leisure = 2,
-    Savings = 3,
+    /// The optional subsistence-food fallback (see [`KnownGoods::subsistence`]).
+    /// Ordered immediately after `HungerNow` so that at equal urgency the
+    /// preferred staple outranks the subsistence food. Inserting it here keeps
+    /// the relative order of the other channels unchanged, so scenarios with no
+    /// subsistence good (every existing one) emit no items on this channel and
+    /// stay byte-identical.
+    SubsistenceNow = 1,
+    WarmthNow = 2,
+    Leisure = 3,
+    Savings = 4,
 }
 
 struct Item {
@@ -129,6 +154,20 @@ pub fn regenerate_scale(
         needs.hunger,
         HUNGER_OFFSET,
     );
+    // Optional subsistence-food fallback: a parallel hunger ladder for the
+    // directly-edible food, ranked just below the preferred staple at each level.
+    // A no-op (byte-identical) when `subsistence` is `None` or equals the staple.
+    if let Some(subsistence) = known.subsistence {
+        if subsistence != known.hunger {
+            push_present_ladder(
+                &mut items,
+                Channel::SubsistenceNow,
+                WantKind::Good(subsistence),
+                needs.hunger,
+                SUBSISTENCE_OFFSET,
+            );
+        }
+    }
     push_present_ladder(
         &mut items,
         Channel::WarmthNow,
