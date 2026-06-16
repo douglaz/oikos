@@ -2075,6 +2075,69 @@ impl SettlementConfig {
         }
     }
 
+    /// EXPERIMENTAL (progression probe — not a golden path): `frontier` with the
+    /// whole productive bundle scaled by `scale` — the food supply (grain/WOOD
+    /// node regen, cap, stock), the gathering labor force, and the chain
+    /// processing throughput — under a fixed-generous demographic headroom held
+    /// CONSTANT across scales (so demography is never the binding cap and is not
+    /// the variable under test). It answers one question: is the colony's
+    /// long-run equilibrium carrying-capacity-bound (output and sustained
+    /// population rise ~linearly with the productive bundle) or pinned by a fixed
+    /// cap (they saturate)? Additive and game-only; the six econ goldens and
+    /// every existing scenario are untouched.
+    pub fn frontier_probe(scale: u32) -> Self {
+        let scale = scale.max(1);
+        let mut cfg = Self::frontier();
+        for node in &mut cfg.nodes {
+            node.regen = node.regen.saturating_mul(scale);
+            node.cap = node.cap.saturating_mul(scale);
+            node.stock = node.stock.saturating_mul(scale);
+        }
+        let scale_u16 =
+            |n: u16| -> u16 { ((n as u32).saturating_mul(scale)).min(u16::MAX as u32) as u16 };
+        cfg.gatherers = scale_u16(cfg.gatherers);
+        cfg.consumers = scale_u16(cfg.consumers);
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.throughput = chain.throughput.saturating_mul(scale);
+            chain.millers = scale_u16(chain.millers);
+            chain.bakers = scale_u16(chain.bakers);
+            chain.latent_millers = scale_u16(chain.latent_millers);
+            chain.latent_bakers = scale_u16(chain.latent_bakers);
+            chain.bread_buffer = chain.bread_buffer.saturating_mul(scale);
+            chain.latent_flour_seed = chain.latent_flour_seed.saturating_mul(scale);
+        }
+        if let Some(d) = cfg.demography.as_mut() {
+            // Generous, constant headroom: demography never binds, so any change
+            // in the equilibrium across scales comes from carrying capacity, not
+            // from a demographic ceiling.
+            d.max_household_size = 60;
+        }
+        cfg
+    }
+
+    /// EXPERIMENTAL (millisats / divisibility probe — not a golden path):
+    /// `frontier` redenominated into a `precision`-times-finer money unit (the
+    /// Lightning-millisat idea — same real economy, many more money units). It
+    /// scales every money-denominated SUPPLY/WANT in the barter config (the SALT
+    /// endowments and the medium want) by `precision`, leaving goods, recipes,
+    /// labor, and demography identical. The point: the post-promotion savings
+    /// demand is a count of single money-unit wants capped at `MAX_SAVE_UNITS`
+    /// (life::scale) — a NOMINAL, unit-denominated demand. With only a few
+    /// hundred money units in the base `frontier`, a handful of patient savers
+    /// corner the whole supply and circulation freezes. A finer unit gives the
+    /// economy enough units that the same capped nominal savings demand can no
+    /// longer absorb the supply. Additive and game-only; econ goldens untouched.
+    pub fn frontier_millisats(precision: u32) -> Self {
+        let precision = precision.max(1);
+        let mut cfg = Self::frontier();
+        if let Some(b) = cfg.barter.as_mut() {
+            b.consumer_medium_endowment = b.consumer_medium_endowment.saturating_mul(precision);
+            b.gatherer_medium_endowment = b.gatherer_medium_endowment.saturating_mul(precision);
+            b.medium_want_qty = b.medium_want_qty.saturating_mul(precision);
+        }
+        cfg
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).
@@ -5811,6 +5874,29 @@ impl Settlement {
             })
             .map(|a| u64::from(a.stock.get(good)))
             .sum()
+    }
+
+    /// Diagnostic (game-only, read-only): total `gold` held by living colonists
+    /// grouped by [`Vocation`] — the probe for the producer-working-capital
+    /// hypothesis (do the chain producers cash-starve while the saving
+    /// households accumulate, halting the chain for lack of working capital?).
+    /// Returns `(vocation, total_gold)` pairs in living-roster encounter order;
+    /// reads only, so the econ goldens are untouched.
+    pub fn gold_by_vocation(&self) -> Vec<(Vocation, u64)> {
+        let mut out: Vec<(Vocation, u64)> = Vec::new();
+        for &slot in &self.live_colonist_slots {
+            let colonist = &self.colonists[slot];
+            let Some(agent) = self.society.agents.get(colonist.id) else {
+                continue;
+            };
+            let gold = agent.gold.0;
+            if let Some(entry) = out.iter_mut().find(|(voc, _)| *voc == colonist.vocation) {
+                entry.1 = entry.1.saturating_add(gold);
+            } else {
+                out.push((colonist.vocation, gold));
+            }
+        }
+        out
     }
 
     /// The highest hunger any living colonist carries — the boundedness probe for

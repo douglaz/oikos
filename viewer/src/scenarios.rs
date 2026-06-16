@@ -94,6 +94,36 @@ const SCENARIOS: &[Scenario] = &[
         build: SettlementConfig::frontier,
     },
     Scenario {
+        name: "millisats-1x",
+        description:
+            "EXPERIMENT: frontier at coarse (x1) money precision — the unit-starved baseline that freezes (~320 money units)",
+        build: build_millisats_1x,
+    },
+    Scenario {
+        name: "millisats",
+        description:
+            "EXPERIMENT: frontier redenominated into a x1000-finer money unit (Lightning millisats) — same economy, ~320000 units; does circulation survive?",
+        build: build_millisats,
+    },
+    Scenario {
+        name: "progress-probe-1x",
+        description:
+            "EXPERIMENT: frontier with a constant-generous demographic headroom, productive bundle x1 (the carrying-capacity baseline)",
+        build: build_progress_probe_1x,
+    },
+    Scenario {
+        name: "progress-probe-2x",
+        description:
+            "EXPERIMENT: the same colony with the productive bundle (food supply, labor, throughput) x2 — does the equilibrium scale?",
+        build: build_progress_probe_2x,
+    },
+    Scenario {
+        name: "progress-probe-4x",
+        description:
+            "EXPERIMENT: the same colony with the productive bundle x4 — carrying-capacity-bound (scales) or hard-capped (saturates)?",
+        build: build_progress_probe_4x,
+    },
+    Scenario {
         name: "research",
         description:
             "G6b: research & tech tiers — scholars accumulate Knowledge, which unlocks the gated tier-2 recipe (pastry)",
@@ -208,6 +238,26 @@ const SCENARIOS: &[Scenario] = &[
         build: build_issuer_repayment_tender_refusal,
     },
 ];
+
+fn build_millisats_1x() -> SettlementConfig {
+    SettlementConfig::frontier_millisats(1)
+}
+
+fn build_millisats() -> SettlementConfig {
+    SettlementConfig::frontier_millisats(1_000)
+}
+
+fn build_progress_probe_1x() -> SettlementConfig {
+    SettlementConfig::frontier_probe(1)
+}
+
+fn build_progress_probe_2x() -> SettlementConfig {
+    SettlementConfig::frontier_probe(2)
+}
+
+fn build_progress_probe_4x() -> SettlementConfig {
+    SettlementConfig::frontier_probe(4)
+}
 
 fn build_near() -> SettlementConfig {
     SettlementConfig::price_probe().with_food_node_distance(NEAR_DISTANCE)
