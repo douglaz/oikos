@@ -314,8 +314,10 @@ pub struct Society {
     /// `(reservation, limit)` in place of the agent's own
     /// [`Agent::reservation_bid_for_money`]; the live-quote change detector
     /// consults it too, so the resting quote survives the tick's reconciliation.
-    /// Cleared at the end of each `try_step`/`step`/`step_rejecting_…` so an
-    /// override is one-shot. Empty in every lab scenario (the lab never sets one),
+    /// Cleared at the end of each [`Society::try_step`] (so also [`Society::step`]
+    /// and [`Society::run`], which delegate to it) and
+    /// [`Society::step_rejecting_v2_money_goods`], so an override is one-shot.
+    /// Empty in every lab scenario (the lab never sets one),
     /// so the conformance goldens are byte-identical — an additive, gated seam.
     bid_overrides: BTreeMap<(AgentId, GoodId), (Gold, Gold)>,
     agent_order: Vec<usize>,

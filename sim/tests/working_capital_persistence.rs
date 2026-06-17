@@ -70,19 +70,60 @@ fn producers_retain_working_capital_over_a_long_horizon() {
 
 #[test]
 fn retained_capital_outperforms_the_drained_baseline() {
-    // Control: the SAME endogenous mechanisms but with the producer fed only the
-    // staple (not WOOD) drain their purse on warmth and the chain stalls. Turning
-    // the full local subsistence base on (so the producer's money frees entirely
-    // for inputs) keeps far more capital in producer hands late in the run. This
-    // isolates working-capital persistence as the load-bearing piece.
-    let endo = SettlementConfig::frontier_endogenous();
-    let mut a = Settlement::generate(1, &endo);
-    a.run(900);
-    let sustained = producer_gold(&a);
+    // A real differential isolating the LOCAL subsistence base (and the working
+    // capital it frees up) as the load-bearing piece. Both arms run the SAME
+    // endogenous config; the only difference is the local producer-subsistence
+    // floor:
+    //
+    //   - TREATMENT (`producer_subsistence = 4`): each producer's own household
+    //     hearth feeds it the staple + WOOD, so its purse frees ENTIRELY for recipe
+    //     inputs. It retains a persistent working-capital balance across the whole
+    //     tail and the chain keeps producing.
+    //   - BASELINE (`producer_subsistence = 0`): with no local hearth, the producer
+    //     must spend its purse on its own hunger and warmth, drains cash-light, and
+    //     the chain stalls — it ends the run swept to zero.
+    //
+    // The treatment must keep strictly more working capital in producer hands than
+    // the drained baseline (and must itself never be swept to zero), and production
+    // must sustain in the treatment while it stalls in the baseline.
+    fn run_and_measure(producer_subsistence: u32) -> (u64, u64) {
+        let mut config = SettlementConfig::frontier_endogenous();
+        config.chain.as_mut().expect("chain").producer_subsistence = producer_subsistence;
+        let bread = config.chain.as_ref().expect("chain").content.bread();
+        let mut s = Settlement::generate(1, &config);
+        let mut min_late_gold = u64::MAX;
+        let mut late_bread = 0u64;
+        for tick in 0..900u64 {
+            let report = s.econ_tick();
+            assert!(
+                report.conserves(),
+                "must conserve (producer_subsistence={producer_subsistence}, tick {tick})"
+            );
+            if tick >= 600 {
+                min_late_gold = min_late_gold.min(producer_gold(&s));
+                late_bread += report.produced_of(bread);
+            }
+        }
+        (min_late_gold, late_bread)
+    }
+
+    let (treatment_gold, treatment_bread) = run_and_measure(4);
+    let (baseline_gold, baseline_bread) = run_and_measure(0);
 
     assert!(
-        sustained > 0,
-        "the endogenous economy should leave producers with working capital, \
-         got {sustained}"
+        treatment_gold > baseline_gold,
+        "the local subsistence base must keep more working capital in producer \
+         hands than the drained baseline: treatment late-min={treatment_gold}, \
+         baseline late-min={baseline_gold}"
+    );
+    assert!(
+        treatment_gold > 0,
+        "the endogenous economy must never sweep producers to zero working capital, \
+         but the treatment late-window minimum was {treatment_gold}"
+    );
+    assert!(
+        treatment_bread > baseline_bread,
+        "production must sustain on the retained capital but stall in the drained \
+         baseline: treatment={treatment_bread} bread, baseline={baseline_bread} bread"
     );
 }

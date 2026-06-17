@@ -7005,6 +7005,18 @@ impl Settlement {
             if has_latent_pool {
                 out.extend_from_slice(&chain.operating_cost.to_le_bytes());
             }
+            // The S2/S5 endogenous knobs steer future ticks but never show up in the
+            // generated holdings, so two chains differing only in one would collide
+            // at generation and then diverge — they belong in the "byte-identical iff
+            // future behaviour identical" identity, exactly like the operating cost.
+            // `producer_subsistence` mints the local staple/WOOD floor for producers
+            // each tick; `project_input_bids` switches input acquisition to the
+            // project-aware market bid. Both are included unconditionally (not
+            // latent-pool-gated like the operating cost): every chain config has
+            // producers and a money path, so each always eventually steers a tick —
+            // there is no behaviour-identical config pair they would falsely split.
+            out.extend_from_slice(&chain.producer_subsistence.to_le_bytes());
+            out.push(u8::from(chain.project_input_bids));
             // The staple mapping steers the next needs/scale phase for *any* chain,
             // role-choice or not, so it is included whenever a chain is active. The
             // G3b no-spread control shares the emergent config's physical state but
@@ -7737,6 +7749,15 @@ pub fn recipe_is_profitable(
 /// the input is never worth more than the output it yields net of cost. The
 /// highest tolerated price is found by binary search over `[1, ceiling]`.
 ///
+/// The binary search is correct only because `recipe_adoption_pays_for_money` is
+/// monotone-decreasing in the input price (a dearer input only raises the
+/// bundle's `present_advance`, which `appraise_project_bundle_for_money` in the
+/// `econ` crate treats monotonically: a larger advance is never easier to repay).
+/// That invariant is load-bearing and crosses the crate boundary, so a debug
+/// assertion below pins the found boundary against it — if a future appraisal
+/// change broke monotonicity, the search could return a wrong reservation and
+/// this would catch it in tests.
+///
 /// If the savings want is already satiated (no price provisions it) but
 /// `recurring_motive` is set, fall back to the ceiling — a satiated owner-operator
 /// still re-stocks at break-even to keep the consumption cycle going (the same
@@ -7772,6 +7793,11 @@ fn imputed_input_reservation(
         let mut low = 1u64;
         let mut high = ceiling;
         while low < high {
+            // Round the midpoint UP (`div_ceil`): with `low + 1 == high` the
+            // floor midpoint would equal `low`, and `pays(low)` already holds, so
+            // `low = mid` would never advance — an infinite loop. Rounding up
+            // probes `high` instead, which makes progress and biases the result
+            // toward the higher tolerated price.
             let mid = low + (high - low).div_ceil(2);
             if pays(mid) {
                 low = mid;
@@ -7779,6 +7805,15 @@ fn imputed_input_reservation(
                 high = mid - 1;
             }
         }
+        // Pin the boundary against the monotonicity the search relies on: `low`
+        // must pay, and `low + 1` (when within the ceiling) must not. A
+        // non-monotone appraisal change would trip this in debug/test builds
+        // rather than silently mis-pricing the input.
+        debug_assert!(pays(low), "the binary-search reservation must pay");
+        debug_assert!(
+            low == ceiling || !pays(low + 1),
+            "the reservation must be the HIGHEST tolerated input price (monotone)"
+        );
         return Some(Gold(low));
     }
     // Satiated savings want: a recurring owner-operator still re-stocks at the
@@ -7829,7 +7864,7 @@ pub fn recipe_adoption_pays_for_money(
     };
     // `econ` rejects `candidate.owner == AgentId(0)` as an invalid project-candidate
     // sentinel (bundle.rs), so the first colonist (id 0) needs a non-zero label to
-    // appraise the same ordinal bundle as everyone else. Using `AgentId(1)` is safe
+    // appraise the same ordinal bundle as everyone else. Using this sentinel is safe
     // even when a real `AgentId(1)` exists: the owner id is stamped ONLY onto the two
     // hypothetical contracts the appraisal builds in-memory for this one call (the
     // imagined receivable/payable in `bundle_accepts_due`), and the provisioning math
@@ -7837,8 +7872,9 @@ pub fn recipe_adoption_pays_for_money(
     // borrower id and never a global claim registry (agio.rs). This wrapper passes the
     // real agent's own `receivables`/`payables` as empty (`&[]`), so no other agent's
     // claims are in scope to collide with. The owner is a per-call label, not a key.
+    const APPRAISAL_OWNER_SENTINEL: AgentId = AgentId(1);
     let appraisal_owner = if agent.id == AgentId(0) {
-        AgentId(1)
+        APPRAISAL_OWNER_SENTINEL
     } else {
         agent.id
     };
@@ -9839,6 +9875,44 @@ mod tests {
             base.canonical_bytes(),
             dearer.canonical_bytes(),
             "an operating cost no latent pool can read must not split the digest"
+        );
+    }
+
+    #[test]
+    fn canonical_bytes_include_producer_subsistence() {
+        // `producer_subsistence` mints a local staple/WOOD floor for the chain's
+        // producers every tick — it steers future behaviour, yet it is a pure
+        // runtime knob that never shows up in the generated holdings. Two chains
+        // differing only in it must therefore digest differently, or the
+        // determinism tripwire would call two non-equivalent configs equal.
+        let mut base = SettlementConfig::emergent_chain();
+        base.chain.as_mut().expect("chain").producer_subsistence = 0;
+        let mut fed = SettlementConfig::emergent_chain();
+        fed.chain.as_mut().expect("chain").producer_subsistence = 4;
+        let base = Settlement::generate(7, &base);
+        let fed = Settlement::generate(7, &fed);
+        assert_ne!(
+            base.canonical_bytes(),
+            fed.canonical_bytes(),
+            "the producer-subsistence floor must be part of the chain config identity"
+        );
+    }
+
+    #[test]
+    fn canonical_bytes_include_project_input_bids() {
+        // `project_input_bids` switches input acquisition from the generic spot bid
+        // to the project-aware imputed market bid — a runtime knob that steers
+        // future ticks without changing generation, so it too must split the digest.
+        let mut base = SettlementConfig::emergent_chain();
+        base.chain.as_mut().expect("chain").project_input_bids = false;
+        let mut bidding = SettlementConfig::emergent_chain();
+        bidding.chain.as_mut().expect("chain").project_input_bids = true;
+        let base = Settlement::generate(7, &base);
+        let bidding = Settlement::generate(7, &bidding);
+        assert_ne!(
+            base.canonical_bytes(),
+            bidding.canonical_bytes(),
+            "the project-aware input bid flag must be part of the chain config identity"
         );
     }
 
