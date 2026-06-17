@@ -112,6 +112,12 @@ const SCENARIOS: &[Scenario] = &[
         build: build_capital_advance,
     },
     Scenario {
+        name: "spoilage",
+        description:
+            "EXPERIMENT: capital-advance + perishable food spoilage (carrying cost) — does forcing satiated hoards back into circulation stop the ~tick-300 distribution seizure?",
+        build: build_spoilage,
+    },
+    Scenario {
         name: "millisats-1x",
         description:
             "EXPERIMENT: frontier at coarse (x1) money precision — the unit-starved baseline that freezes (~320 money units)",
@@ -267,6 +273,10 @@ fn build_subsistence() -> SettlementConfig {
 
 fn build_capital_advance() -> SettlementConfig {
     SettlementConfig::frontier_capital_advance()
+}
+
+fn build_spoilage() -> SettlementConfig {
+    SettlementConfig::frontier_spoilage()
 }
 
 fn build_millisats_1x() -> SettlementConfig {

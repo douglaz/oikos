@@ -107,6 +107,34 @@ fn repaid_capital_advance_sustains_roles_and_raises_production() {
 }
 
 #[test]
+fn threshold_spoilage_raises_production_and_conserves() {
+    // Codex's carrying-cost fix, in its working form: a THRESHOLD spoilage (only
+    // hoards above a free-storage floor decay, so working/fresh stock is exempt)
+    // raises total production over the capital-advance baseline and keeps the
+    // colony well-fed longer. (Naive flat spoilage instead collapsed production
+    // by rotting the bootstrap; the threshold is what makes carrying cost help.)
+    // It does NOT yet achieve sustained production — the residual blocker is the
+    // value-scale ordering (hungry producers won't buy inputs) — but it is a
+    // clear, conserved improvement.
+    let with_spoilage = bread_made_over(SettlementConfig::frontier_spoilage(), 300);
+    let baseline = bread_made_over(SettlementConfig::frontier_capital_advance(), 300);
+    assert!(
+        with_spoilage > baseline,
+        "threshold spoilage should raise production over capital-advance, \
+         got with_spoilage={with_spoilage}, baseline={baseline}"
+    );
+
+    // Spoilage is a real sink — whole-system conservation must still hold.
+    let mut settlement = Settlement::generate(1, &SettlementConfig::frontier_spoilage());
+    for _ in 0..200 {
+        assert!(
+            settlement.econ_tick().conserves(),
+            "spoilage must conserve (the sink is accounted in report.spoiled)"
+        );
+    }
+}
+
+#[test]
 fn market_gate_trace_at_the_halt() {
     // Observational diagnostic (run with --nocapture): trace the input market
     // across the ~tick-300 production halt of the revolving-loan colony. The

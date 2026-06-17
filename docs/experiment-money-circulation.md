@@ -285,3 +285,46 @@ to *live unmet demand* (standing bids) rather than only a realized spread. The
 loan fixed the supply of working capital; the remaining problem is that a
 satiated, frictionless hoard never recirculates — a demand/turnover problem, not
 a credit one.
+
+## Experiment 8 — inventory carrying cost / spoilage (Codex's primary fix; partial)
+
+Codex's primary counter-pressure for the distribution seizure: make the staple
+**perish** so a satiated agent can't hoard its way out of the market. Built as
+an additive, game-only, conserved sink: `ChainConfig::perishable_decay_bps`, a
+`run_spoilage` phase, an `EconTickReport::spoiled` term added to the conservation
+identity (`after = before + sources − consumed − … − spoiled`), and
+`frontier_spoilage` / the `spoilage` scenario. Conservation holds every tick
+(verified).
+
+**Two findings — the *shape* of the carrying cost is decisive:**
+
+1. **Flat percentage spoilage backfires.** Decaying a flat fraction of *all*
+   holdings collapsed production to 33 bread/800 at every rate (2%–20%) — it rots
+   the bakers' fresh output and the bootstrap seed buffers along with the hoard.
+2. **Threshold spoilage (decay only holdings *above* a free-storage floor)
+   works — partially.** With working stock and fresh output under the floor and
+   exempt, spoilage curbs only true hoards. Result: total production rises to
+   **951 bread/800 — the most of any variant** (vs 732 capital-advance, 585
+   millisats), and the well-fed window is healthier (hunger ~1.1 through t~100).
+   Locked by `threshold_spoilage_raises_production_and_conserves`.
+
+**But it does not achieve sustained production.** The halt still returns
+~tick 150–200 and hunger climbs to ~8. Adding grain to the spoiled set made **no
+difference** (951, identical halt) — confirming the residual blocker is *not* the
+grain hoard. `grain.input → 0` while grain is available: **the millers don't
+*buy* grain.** That is the value-scale ordering Codex flagged — a hungry
+producer's own present-consumption want outranks its input-buying want, so it
+won't buy inputs while hungry, and once the colony can't keep producers fed they
+stop buying inputs and the chain halts. Carrying cost curbs hoarding (a real
+gain) but cannot make a hungry producer prioritize buying inputs over eating.
+
+**So, after eight experiments, the binding constraint is finally isolated to one
+thing:** the producer value-scale / role decision. Working capital is solved
+(loan); the demand-hoard is curbable (threshold carrying cost); but production is
+still gated on producers who, when hungry, won't provision inputs — and on role
+adoption keyed to a realized money spread rather than standing demand. **The next
+work is the role/scale redesign**: producers (or a dedicated entrepreneur/
+capitalist) must provision inputs against *expected sales / live demand* without
+that being crowded out by their own consumption — i.e. entrepreneurial
+production, and/or a subsistence path so producers stay fed and solvent enough to
+keep buying inputs.

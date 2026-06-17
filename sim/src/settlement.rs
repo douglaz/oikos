@@ -755,6 +755,15 @@ pub struct ChainConfig {
     /// fiduciary credit), with no repayment modeled yet (the first test is
     /// causal). `false` (every existing config) skips the phase, byte-identical.
     pub capital_advance: bool,
+    /// EXPERIMENTAL (inventory carrying cost): per-econ-tick **spoilage** rate, in
+    /// basis points, applied to every colonist's holdings of the perishable chain
+    /// foods (grain, flour, bread). `0` (every existing config) means no spoilage,
+    /// byte-identical. A positive rate means a satiated agent cannot hoard its way
+    /// out of the market permanently — its food stock decays, hunger returns, so
+    /// it must keep acquiring (buying or producing), and raw grain must be sold
+    /// before it rots. Codex's primary fix for the distribution-seizure halt: the
+    /// counter-pressure that forces a satiated hoard back into circulation.
+    pub perishable_decay_bps: u16,
     /// Per-producer, per-econ-tick cap on recipe applications — a deterministic
     /// throughput bound (nothing is drawn). A producer applies its recipe up to
     /// this many times, limited by the input it holds.
@@ -839,6 +848,7 @@ impl ChainConfig {
             bread_is_staple: true,
             subsistence_on_grain: false,
             capital_advance: false,
+            perishable_decay_bps: 0,
             throughput: 2,
             miller_grain_buffer: 16,
             baker_flour_buffer: 16,
@@ -889,6 +899,7 @@ impl ChainConfig {
             bread_is_staple: true,
             subsistence_on_grain: false,
             capital_advance: false,
+            perishable_decay_bps: 0,
             throughput: 2,
             miller_grain_buffer: 16,
             baker_flour_buffer: 16,
@@ -2223,6 +2234,23 @@ impl SettlementConfig {
         cfg
     }
 
+    /// EXPERIMENTAL (spoilage / inventory carrying cost — not a golden path):
+    /// `frontier_capital_advance` (the revolving working-capital loan) PLUS
+    /// per-tick spoilage on the perishable chain foods. Codex's primary fix for
+    /// the distribution-seizure halt: with the loan supplying working capital and
+    /// spoilage forcing satiated holders' bread/grain hoards back into
+    /// circulation (hunger returns, raw grain must sell before it rots), the test
+    /// is whether production sustains past the ~tick-300 halt without the colony
+    /// bifurcating into a hoarding consumer class and a starving producer class.
+    /// Additive and game-only; econ goldens untouched.
+    pub fn frontier_spoilage() -> Self {
+        let mut cfg = Self::frontier_capital_advance();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.perishable_decay_bps = 2_000;
+        }
+        cfg
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).
@@ -2283,6 +2311,12 @@ pub struct EconTickReport {
     /// but the single promotion tick, and on every non-emergent settlement, so the
     /// conservation identity is unchanged elsewhere.
     pub promoted: BTreeMap<GoodId, u64>,
+    /// Goods **spoiled** this tick (EXPERIMENT): perishable holdings decayed out
+    /// of existence by the inventory carrying-cost / spoilage phase — a real
+    /// sink, like `consumed`. Empty unless spoilage is enabled
+    /// ([`ChainConfig::perishable_decay_bps`]), so the conservation identity is
+    /// unchanged on every other settlement.
+    pub spoiled: BTreeMap<GoodId, u64>,
     /// Whole-system total per good at the start of the econ tick.
     pub whole_system_before: BTreeMap<GoodId, u64>,
     /// Whole-system total per good at the end of the econ tick.
@@ -2345,6 +2379,10 @@ impl EconTickReport {
     pub fn whole_system_after_of(&self, good: GoodId) -> u64 {
         self.whole_system_after.get(&good).copied().unwrap_or(0)
     }
+    /// Units of `good` spoiled this tick (a sink). Zero unless spoilage is enabled.
+    pub fn spoiled_of(&self, good: GoodId) -> u64 {
+        self.spoiled.get(&good).copied().unwrap_or(0)
+    }
 
     /// Whether the whole-system ledger balances for every tracked good. This is
     /// the conservation DoD; [`Settlement::econ_tick`] also `debug_assert`s it.
@@ -2385,7 +2423,13 @@ impl EconTickReport {
             let produced = self.produced_of(*good) as i128;
             let consumed_as_input = self.consumed_as_input_of(*good) as i128;
             let promoted = self.promoted_of(*good) as i128;
-            after == before + regen + endowment + produced - consumed_as_input - consumed - promoted
+            let spoiled = self.spoiled_of(*good) as i128;
+            after
+                == before + regen + endowment + produced
+                    - consumed_as_input
+                    - consumed
+                    - promoted
+                    - spoiled
         })
     }
 }
@@ -2686,6 +2730,9 @@ struct ChainRuntime {
     /// EXPERIMENTAL: enable the conserved capital-advance phase (see
     /// [`ChainConfig::capital_advance`]). `false` for every existing config.
     capital_advance: bool,
+    /// EXPERIMENTAL: per-tick spoilage rate (bps) on perishable chain foods (see
+    /// [`ChainConfig::perishable_decay_bps`]). `0` for every existing config.
+    perishable_decay_bps: u16,
 }
 
 impl Settlement {
@@ -3364,6 +3411,7 @@ impl Settlement {
                 scholar_grain_buffer: chain.scholar_grain_buffer,
                 confectioner_flour_buffer: chain.confectioner_flour_buffer,
                 capital_advance: chain.capital_advance,
+                perishable_decay_bps: chain.perishable_decay_bps,
             }
         });
 
@@ -3755,6 +3803,11 @@ impl Settlement {
         for &(_, good, qty) in self.society.consumption_log_last_tick() {
             *report.consumed.entry(good).or_insert(0) += u64::from(qty);
         }
+        // ---- 7. SPOILAGE (EXPERIMENT): decay perishable food holdings, a real
+        // sink recorded in `report.spoiled`. After all production/consumption so
+        // it decays end-of-tick holdings, before the whole-system snapshot so the
+        // conservation identity accounts it. A no-op unless enabled.
+        self.run_spoilage(&mut report);
         for &good in &self.goods {
             report
                 .whole_system_after
@@ -5056,6 +5109,69 @@ impl Settlement {
                     self.capital_loans.remove(&borrower);
                 } else {
                     self.capital_loans.insert(borrower, (lender, remaining));
+                }
+            }
+        }
+    }
+
+    /// SPOILAGE phase (EXPERIMENT — see [`ChainConfig::perishable_decay_bps`]):
+    /// decay every colonist's (and the commons') holdings of the **staple** food
+    /// (the hunger good, plus the subsistence food if any) by the configured
+    /// per-tick rate. A real sink: every removed unit is recorded in
+    /// `report.spoiled` so whole-system conservation accounts it exactly. This is
+    /// the inventory carrying cost that stops a satiated agent from hoarding its
+    /// way out of the market — the staple decays, hunger returns, so it must keep
+    /// acquiring (buying or producing). Deliberately does NOT spoil the chain's
+    /// intermediates (grain/flour) — their small working stocks and large
+    /// bootstrap seed buffers must survive — nor durable goods (WOOD, SALT,
+    /// tools, money). A no-op unless enabled, so every other settlement is
+    /// byte-identical. Deterministic: integer floor decay, id-ordered.
+    fn run_spoilage(&mut self, report: &mut EconTickReport) {
+        let bps = match self.chain.as_ref() {
+            Some(chain) if chain.perishable_decay_bps > 0 => u64::from(chain.perishable_decay_bps),
+            _ => return,
+        };
+        // Spoil the **staple** food a satiated agent hoards (and the subsistence
+        // food, if any) — NOT the chain's intermediates (grain/flour), whose
+        // small working stocks and large bootstrap seed buffers must survive for
+        // the chain to run. Targeting the satiation hoard is the point: when the
+        // staple decays, hunger returns and the holder must re-enter the market.
+        let mut perishable = vec![self.known.hunger];
+        if let Some(subsistence) = self.known.subsistence {
+            if subsistence != self.known.hunger {
+                perishable.push(subsistence);
+            }
+        }
+        // Also pressure the raw-grain hoard (threshold-protected, so the miller's
+        // small working stock is exempt) so gatherers must sell before it rots.
+        if let Some(chain) = self.chain.as_ref() {
+            let grain = chain.content.grain();
+            if !perishable.contains(&grain) {
+                perishable.push(grain);
+            }
+        }
+        // Carrying cost hits only HOARDS: the portion of holdings above a free
+        // storage threshold decays. Working stock and a baker's fresh
+        // about-to-be-sold output (both small) sit under the threshold and are
+        // exempt, so spoilage curbs hoarding without destroying production.
+        const FREE_STORAGE: u64 = 20;
+        let decay = |held: u64| -> u64 { held.saturating_sub(FREE_STORAGE) * bps / 10_000 };
+        let live = self.live_colonist_slots.clone();
+        for &good in &perishable {
+            for &slot in &live {
+                let id = self.colonists[slot].id;
+                let held = u64::from(self.society.agents.get(id).map_or(0, |a| a.stock.get(good)));
+                let spoil = u32::try_from(decay(held)).unwrap_or(u32::MAX);
+                if spoil > 0 && self.society.debit_stock(id, good, spoil) {
+                    *report.spoiled.entry(good).or_insert(0) += u64::from(spoil);
+                }
+            }
+            let commons_held = self.commons_stock.get(&good).copied().unwrap_or(0);
+            let commons_spoil = decay(commons_held);
+            if commons_spoil > 0 {
+                if let Some(qty) = self.commons_stock.get_mut(&good) {
+                    *qty -= commons_spoil;
+                    *report.spoiled.entry(good).or_insert(0) += commons_spoil;
                 }
             }
         }
