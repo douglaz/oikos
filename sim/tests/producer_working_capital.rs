@@ -248,17 +248,17 @@ fn input_advance_conserves_but_triggers_satiation_de_adoption() {
 }
 
 #[test]
-fn recurring_motive_sustains_the_specialization_arc() {
-    // The whole arc, sustained: a fed subsistence base + in-kind capital advances
-    // + the recurring owner-operator motive (no firms) let specialization emerge
-    // AND keep running, instead of satiating and collapsing. Production runs
-    // continuously and far above the non-recurring in-kind colony, the producers
-    // stay adopted long-horizon, and the whole-system conservation holds.
+fn scaffolded_economy_sustains_production() {
+    // The full SCAFFOLDED economy (loan + food-in-kind + inputs-in-kind +
+    // recurring motive) keeps the chain producing at full throughput long-horizon
+    // and conserves — far above the non-recurring in-kind colony. NB: this is
+    // sustained *under curated advances*, not a self-organizing market (see
+    // `economy_collapses_without_input_advance`).
     let economy = bread_made_over(SettlementConfig::frontier_economy(), 800);
     let in_kind = bread_made_over(SettlementConfig::frontier_in_kind(), 800);
     assert!(
         economy > in_kind.saturating_mul(5),
-        "the recurring-motive economy should sustain production far above the \
+        "the scaffolded economy should sustain production far above the \
          non-recurring in-kind colony, got economy={economy}, in_kind={in_kind}"
     );
 
@@ -266,7 +266,7 @@ fn recurring_motive_sustains_the_specialization_arc() {
     for _ in 0..800 {
         assert!(
             settlement.econ_tick().conserves(),
-            "the sustained economy must conserve every tick"
+            "the scaffolded economy must conserve every tick"
         );
     }
     let producers =
@@ -274,6 +274,22 @@ fn recurring_motive_sustains_the_specialization_arc() {
     assert!(
         producers > 0,
         "the recurring motive should keep producers adopted at tick 800, got {producers}"
+    );
+}
+
+#[test]
+fn economy_collapses_without_input_advance() {
+    // The decisive ablation (Codex review): the sustained chain was the scripted
+    // input placement, not market coordination. Remove ONLY the in-kind input
+    // advance (keep loan + food + recurring motive) and production collapses to a
+    // fraction — producers can't acquire inputs through the market. Proof the
+    // `economy` result is scaffolded, not endogenous.
+    let economy = bread_made_over(SettlementConfig::frontier_economy(), 800);
+    let no_input = bread_made_over(SettlementConfig::frontier_economy_no_input(), 800);
+    assert!(
+        no_input.saturating_mul(5) < economy,
+        "without the input advance the chain should collapse far below the \
+         scaffolded economy, got no_input={no_input}, economy={economy}"
     );
 }
 

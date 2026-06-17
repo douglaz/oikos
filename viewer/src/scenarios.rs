@@ -136,6 +136,18 @@ const SCENARIOS: &[Scenario] = &[
         build: build_economy,
     },
     Scenario {
+        name: "economy-no-input",
+        description:
+            "ABLATION: economy minus the in-kind input advance (producers must buy inputs at market) — does production collapse, i.e. was the chain mostly scripted input placement?",
+        build: build_economy_no_input,
+    },
+    Scenario {
+        name: "recurring-only",
+        description:
+            "ABLATION: recurring motive alone, no curated advances — does specialization sustain ENDOGENOUSLY (inputs acquired by market trade) or is the economy scaffolded?",
+        build: build_recurring_only,
+    },
+    Scenario {
         name: "millisats-1x",
         description:
             "EXPERIMENT: frontier at coarse (x1) money precision — the unit-starved baseline that freezes (~320 money units)",
@@ -307,6 +319,14 @@ fn build_input_advance() -> SettlementConfig {
 
 fn build_economy() -> SettlementConfig {
     SettlementConfig::frontier_economy()
+}
+
+fn build_economy_no_input() -> SettlementConfig {
+    SettlementConfig::frontier_economy_no_input()
+}
+
+fn build_recurring_only() -> SettlementConfig {
+    SettlementConfig::frontier_recurring_only()
 }
 
 fn build_millisats_1x() -> SettlementConfig {

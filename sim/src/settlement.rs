@@ -2341,6 +2341,34 @@ impl SettlementConfig {
         cfg
     }
 
+    /// EXPERIMENTAL (ablation — `economy` minus the in-kind INPUT advance): loan +
+    /// food-in-kind + recurring motive, but producers must acquire inputs through
+    /// the **market** (no `input_advance`). If tail production collapses relative
+    /// to `frontier_economy`, the sustained chain was mostly scripted input
+    /// placement, not market coordination (Codex's sharp ablation). Game-only.
+    pub fn frontier_economy_no_input() -> Self {
+        let mut cfg = Self::frontier_in_kind();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.recurring_motive = true;
+        }
+        cfg
+    }
+
+    /// EXPERIMENTAL (endogenous ablation — recurring motive ALONE): the divisible-
+    /// money base plus only `recurring_motive` — NO curated capital/food/input
+    /// advances. The market, latent producers, and subsistence wants are as in the
+    /// base colony. Tests whether specialization sustains **endogenously** (inputs
+    /// acquired by market trade, not placed). The falsification of the "economy"
+    /// being self-organizing: if this does not sustain, `frontier_economy` is
+    /// scaffolded, not endogenous. Game-only; econ goldens untouched.
+    pub fn frontier_recurring_only() -> Self {
+        let mut cfg = Self::frontier_millisats(1_000);
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.recurring_motive = true;
+        }
+        cfg
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).

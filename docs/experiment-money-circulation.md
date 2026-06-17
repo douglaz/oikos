@@ -539,23 +539,61 @@ recurring motive), **the whole subsistence→specialization arc finally sustains
 | conserved | yes | **yes, every tick** |
 
 Production runs continuously at full chain throughput (9 bread/tick, 3 grain/tick)
-through tick 1600 — a **self-sustaining specialized production economy** grown
-from a subsistence base, via self-employed artisans, with no firms and no fiat.
-Locked by `recurring_motive_sustains_the_specialization_arc`.
+through tick 1600, producers stay adopted, era holds `capital`, conserved.
+Locked by `scaffolded_economy_sustains_production`.
 
-**Caveat (honest):** hunger drifts from ~2.7 to ~6 over the long run. Production
-is *constant* at 9/tick while the population grows, so per-capita food slowly
-tightens — a **throughput/scaling** matter (more producers via a larger latent
-pool / replacement), not a structural collapse. The chain itself never halts.
+### Ablations (Codex review): the result is SCAFFOLDED, not endogenous
 
-**What this closes.** The ten-experiment hunt for "why the long-horizon colony
-dies" ends here: it was never one missing institution (not banks, not divisibility,
-not firms). It was a stack of model artifacts — money unit-starvation, the
-producer cold-start, satiated hoards with no carrying cost, and above all role
-adoption keyed to a one-off savings want instead of recurring consumption. With a
-subsistence floor, genuine in-kind savings→investment advances, and a recurring
-owner-operator motive, a primitive colony grows into a sustained specialized
-economy. **Next is scaling/balance** (a bigger producer pool + replacement so
-output tracks population; pricing so specialization emerges *endogenously* from
-surplus rather than via curated advances) — and then the era ladder beyond
-`capital` (credit/modern) on this now-living base.
+A skeptical Codex review forced the honest test — strip the supports and see what
+holds. The ablations are decisive:
+
+- **`economy` minus only `input_advance`** (loan + food + recurring motive, but
+  producers must *buy* inputs at market): bread/800 **collapses 7011 → 546**,
+  production dies ~tick 150. So the 9 bread/tick was **almost entirely the
+  scripted input placement** (`run_input_advance` puts grain/flour directly in
+  producers' hands each tick), not market coordination.
+- **`recurring_only`** (recurring motive alone, no curated advances): bread/800 =
+  585, also collapses ~tick 150, hunger → 8. Producers stay *adopted*
+  (mill 3/bake 3) but produce nothing — they still cannot acquire inputs through
+  the market (the Experiment-9 bid gate persists).
+
+Locked by `economy_collapses_without_input_advance`.
+
+### Claims retracted (Codex review)
+
+- **"Self-sustaining specialized economy" / "grown from a subsistence base" —
+  overclaimed.** The honest claim: *with curated money, food, and input advances
+  plus recurring role retention, the configured chain can be kept producing at
+  full throughput for long horizons while conserving.* The economy is **sustained
+  under scaffolding**, not self-organizing.
+- **"Closes the hunt" — false (another premature "settled").** What is shown: the
+  scaffold prevents the old halt. What is NOT shown: specialization emerging and
+  sustaining **endogenously** from prices, surplus, and agent choice — there is
+  still **no configuration that sustains the chain without curated advances.**
+- **"Recurring motive = the faithful self-employment fix" → a profitability-
+  retention heuristic**, and a scalar one *outside* the ordinal appraisal: it
+  reads `recipe_is_profitable` on `realized_price` (the *last* trade price, which
+  can go stale and keep a role alive), and treats a missing input price as zero
+  cost. Plausible heuristic, not a clean praxeological resolution.
+- **"Hunger drift is throughput/scaling" — unproven hypothesis**, not established
+  (could be managed decline; needs tail diagnostics — population trend,
+  per-capita food, donor stocks, would-starvation-occur).
+
+### The real remaining problem (re-opened)
+
+The core is still unsolved and unchanged from Experiment 9: **producers do not
+acquire inputs through the market.** The in-kind input advance bypasses this with
+a planner-like allocator; remove it and the chain dies. Endogenous emergence
+requires producers to actually *buy* inputs — still blocked by their money being
+reserved for higher-ranked consumption/savings wants over the grain-input want.
+
+**Next (the genuine test):** make specialization emerge and sustain **without the
+curated advances** — e.g. let producers acquire inputs by market trade (the input
+want must be reachable), specialization triggered by real surplus + price
+signals, with a producer pool that scales/churns. Falsifiable: money emerges,
+producers adopt, `grain.input > 0` and `flour.input > 0` past t300 **via market
+trades (no transfer phase)**, bread sustained through t800, hunger bounded (not
+drifting), conserved. Until that passes, the honest status is: *a sustainable
+subsistence colony (Experiment 10), plus a chain that can be hand-fed
+indefinitely (Experiment 12) — but not yet a self-organizing specialized
+economy.*
