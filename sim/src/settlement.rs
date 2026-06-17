@@ -2454,6 +2454,13 @@ impl SettlementConfig {
             chain.bread_buffer = 8;
             chain.consumer_staple_buffer = 2;
             chain.latent_flour_seed = 12;
+            // Threshold carrying cost on the staple + raw-grain HOARDS (working
+            // stock under the free-storage floor is exempt): a satiated holder's
+            // bread/grain pile decays, so hunger recurs and the holder re-enters
+            // the market — keeping demand (and the chain) running rather than
+            // letting bread/grain accumulate unbounded. Bounds every stock, so the
+            // colony is genuinely stationary, not slowly hoarding.
+            chain.perishable_decay_bps = 1_500;
         }
         if let Some(demo) = cfg.demography.as_mut() {
             demo.child_gold_endowment = 16;

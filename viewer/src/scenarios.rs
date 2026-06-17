@@ -150,7 +150,7 @@ const SCENARIOS: &[Scenario] = &[
     Scenario {
         name: "endogenous",
         description:
-            "EXPERIMENT: loan + recurring motive + project-aware input BIDS (producer buys its own input at an imputed price), NO curated food/input placement — does specialization self-organize?",
+            "THE ENDOGENOUS ECONOMY: grain->flour->bread specialization on a household/subsistence base, producers BUY their inputs on the real market at an imputed price and fund them from RETAINED earnings (no loan), NO curated food/input placement — it self-organizes and sustains.",
         build: build_endogenous,
     },
     Scenario {
