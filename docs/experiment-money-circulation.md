@@ -393,3 +393,47 @@ taking repayment / an output claim), so the producer's bread want is met, its
 money is freed, and it bids for grain — or, equivalently, the inputs are placed
 directly in its hands. Falsifiable as above (`grain.input > 0` past t300, bread
 through t800, hunger ≪ 8, conserved, no fiat). That is the next build.
+
+## Experiment 10 — the in-kind subsistence advance (the first non-starving colony)
+
+Built the faithful fix: `ChainConfig::subsistence_advance` + a `run_subsistence_
+advance` phase (before the market) that feeds each hungry active producer up to a
+small staple floor by transferring staple food **in kind** from the richest
+food-holder (a saver, keeping its own floor). Conserved (food moves
+holder→producer, then is eaten — a transfer, not a mint). `frontier_in_kind` /
+the `in-kind-advance` scenario combine it with the revolving loan. Locked by
+`in_kind_advance_feeds_producers_and_conserves`.
+
+**Result — a major welfare win, a partial production result:**
+
+- **Hunger collapses from ~8 to ~2.7 and stays there through tick 1600**
+  (conserved throughout). This is the **first long-horizon colony that does not
+  starve** — Codex's "hunger materially below 8" criterion, met and sustained.
+  The mechanism: the otherwise-starving producers (not in lineages, so they get
+  no household provision) are fed in kind from the provisioned lineages, so the
+  whole colony stays fed.
+- **But the production chain still does not self-sustain.** `bread.made` is ~0 in
+  the tail (total 546, *below* capital-advance's 732); `grain.input → 0`. The
+  colony is fed by *sharing the lineages' subsistence provision*, not by reviving
+  the grain→bread market chain.
+
+**Why feeding didn't restart production** — the blocker moved one rank up. Feeding
+provisions the producer's *bread* want, freeing its money — but a fed producer's
+money is then reserved for its still-unmet **savings (future-money) want**, which
+also outranks the grain-input want. So the funded, fed miller *still* doesn't bid
+for grain. The grain-input want simply sits below both present consumption **and**
+savings on the value scale, so a producer with limited money never reaches it.
+
+**Where this leaves the arc.** Welfare is solved: a sustainable, non-starving
+colony (the in-kind advance). Working capital is solved (the loan). The
+demand-hoard is curbable (threshold carrying cost). The one remaining problem is
+a **self-sustaining production chain** — gated by the grain-input want ranking
+below both consumption and savings. The faithful next step is **not** scale
+surgery (don't make a saver prefer grain over its own savings) but the *other*
+in-kind form Codex named: **advance the inputs themselves in kind** (a
+capitalist buys grain with real saved money and places it in the producer's
+hands, taking an output claim), so production never depends on the producer
+out-ranking its own savings to buy inputs. That, or accept the fed-but-
+redistributive colony as the playable baseline and build the production economy
+on the finance stack (banks/credit channeling savings into capitalist input
+purchase) — the G8 machinery, now with a concrete job to do.

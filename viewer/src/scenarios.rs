@@ -118,6 +118,12 @@ const SCENARIOS: &[Scenario] = &[
         build: build_spoilage,
     },
     Scenario {
+        name: "in-kind-advance",
+        description:
+            "EXPERIMENT: capital-advance loan + an in-kind staple-food advance to hungry producers (frees their money to buy inputs) — does the chain sustain past the halt?",
+        build: build_in_kind,
+    },
+    Scenario {
         name: "millisats-1x",
         description:
             "EXPERIMENT: frontier at coarse (x1) money precision — the unit-starved baseline that freezes (~320 money units)",
@@ -277,6 +283,10 @@ fn build_capital_advance() -> SettlementConfig {
 
 fn build_spoilage() -> SettlementConfig {
     SettlementConfig::frontier_spoilage()
+}
+
+fn build_in_kind() -> SettlementConfig {
+    SettlementConfig::frontier_in_kind()
 }
 
 fn build_millisats_1x() -> SettlementConfig {

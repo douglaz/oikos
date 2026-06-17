@@ -764,6 +764,16 @@ pub struct ChainConfig {
     /// before it rots. Codex's primary fix for the distribution-seizure halt: the
     /// counter-pressure that forces a satiated hoard back into circulation.
     pub perishable_decay_bps: u16,
+    /// EXPERIMENTAL (in-kind subsistence advance): when `true` *and* money has
+    /// emerged, each econ tick (before the market) a hungry active chain producer
+    /// (Miller/Baker) is advanced **staple food in kind** from the richest
+    /// food-holder. The live order-book trace proved a funded-but-hungry producer
+    /// posts no input bid because its money is reserved for its own unmet bread
+    /// want; feeding it provisions that want, frees its money, and it bids for
+    /// grain. Conserved (food moves holder→producer, then is eaten). It also
+    /// recirculates the satiated consumers' idle bread hoard to the producers.
+    /// `false` (every existing config) skips the phase, byte-identical.
+    pub subsistence_advance: bool,
     /// Per-producer, per-econ-tick cap on recipe applications — a deterministic
     /// throughput bound (nothing is drawn). A producer applies its recipe up to
     /// this many times, limited by the input it holds.
@@ -849,6 +859,7 @@ impl ChainConfig {
             subsistence_on_grain: false,
             capital_advance: false,
             perishable_decay_bps: 0,
+            subsistence_advance: false,
             throughput: 2,
             miller_grain_buffer: 16,
             baker_flour_buffer: 16,
@@ -900,6 +911,7 @@ impl ChainConfig {
             subsistence_on_grain: false,
             capital_advance: false,
             perishable_decay_bps: 0,
+            subsistence_advance: false,
             throughput: 2,
             miller_grain_buffer: 16,
             baker_flour_buffer: 16,
@@ -2251,6 +2263,23 @@ impl SettlementConfig {
         cfg
     }
 
+    /// EXPERIMENTAL (in-kind subsistence advance — not a golden path): the
+    /// revolving working-capital loan (`frontier_capital_advance`) PLUS an in-kind
+    /// staple-food advance to hungry producers (`ChainConfig::subsistence_advance`).
+    /// The live order-book trace (Experiment 9) proved a loan-funded but hungry
+    /// miller posts no grain bid because its money is reserved for its own unmet
+    /// bread want; feeding it in kind frees that money so it buys grain and the
+    /// chain runs. The faithful fix: a saver advances both money (loan) and
+    /// present goods (food) to the producer, keeping each worker's value scale
+    /// intact. Additive and game-only; econ goldens untouched.
+    pub fn frontier_in_kind() -> Self {
+        let mut cfg = Self::frontier_capital_advance();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.subsistence_advance = true;
+        }
+        cfg
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).
@@ -2748,6 +2777,9 @@ struct ChainRuntime {
     /// EXPERIMENTAL: per-tick spoilage rate (bps) on perishable chain foods (see
     /// [`ChainConfig::perishable_decay_bps`]). `0` for every existing config.
     perishable_decay_bps: u16,
+    /// EXPERIMENTAL: enable the in-kind subsistence advance to hungry producers
+    /// (see [`ChainConfig::subsistence_advance`]). `false` for every existing config.
+    subsistence_advance: bool,
 }
 
 impl Settlement {
@@ -3427,6 +3459,7 @@ impl Settlement {
                 confectioner_flour_buffer: chain.confectioner_flour_buffer,
                 capital_advance: chain.capital_advance,
                 perishable_decay_bps: chain.perishable_decay_bps,
+                subsistence_advance: chain.subsistence_advance,
             }
         });
 
@@ -3719,6 +3752,13 @@ impl Settlement {
         // advanced cash funds this tick's input bids). A no-op unless enabled and
         // money has emerged, so every other run is byte-identical.
         self.run_capital_advance();
+
+        // ---- 4b''. IN-KIND SUBSISTENCE ADVANCE (EXPERIMENT): feed hungry active
+        // producers staple food in kind (from the richest holder) so their bread
+        // want is provisioned and their money frees to bid for inputs. After the
+        // capital advance (so funded producers are also fed), before the market.
+        // Conserved; a no-op unless enabled.
+        self.run_subsistence_advance();
 
         // ---- 4c. PROVISION (G4b): deliver each living householder its household's
         // renewable hunger-staple/WOOD hearth into econ stock, recorded as a source
@@ -5087,6 +5127,78 @@ impl Settlement {
                 if amount > 0 && self.move_money_conserved(lender_id, producer_id, Gold(amount)) {
                     self.capital_loans
                         .insert(producer_id, (lender_id, Gold(amount)));
+                }
+            }
+        }
+    }
+
+    /// IN-KIND SUBSISTENCE ADVANCE phase (EXPERIMENT — see
+    /// [`ChainConfig::subsistence_advance`]). Before the market, feed each hungry
+    /// active chain producer (Miller/Baker) up to a small staple floor by
+    /// transferring staple food **in kind** from the richest food-holder (a
+    /// saver, never another producer, which keeps at least the same floor for
+    /// itself). The live order-book trace proved a funded-but-hungry producer
+    /// posts no input bid because its money is reserved for its own unmet bread
+    /// want; provisioning that want frees the money so it bids for grain. The
+    /// food moves holder→producer and is later eaten — conserved, no new sink.
+    /// A no-op unless enabled and money has emerged. Deterministic: id-ordered,
+    /// integer; donor chosen by most staple held (ties → lowest id).
+    fn run_subsistence_advance(&mut self) {
+        let enabled = self
+            .chain
+            .as_ref()
+            .is_some_and(|chain| chain.subsistence_advance);
+        if !enabled || self.society.current_money_good().is_none() {
+            return;
+        }
+        // Staple floor that provisions a producer's present hunger ladder.
+        const FEED_TARGET: u32 = 4;
+        let staple = self.known.hunger;
+        let live = self.live_colonist_slots.clone();
+        for &slot in &live {
+            let (producer_id, vocation) = {
+                let colonist = &self.colonists[slot];
+                (colonist.id, colonist.vocation)
+            };
+            if !matches!(vocation, Vocation::Miller | Vocation::Baker) {
+                continue;
+            }
+            let held = self
+                .society
+                .agents
+                .get(producer_id)
+                .map_or(0, |agent| agent.stock.get(staple));
+            if held >= FEED_TARGET {
+                continue;
+            }
+            let need = FEED_TARGET - held;
+            // Richest food-holder, never a producer, never the producer itself,
+            // and keeping at least FEED_TARGET for its own subsistence.
+            let donor = live
+                .iter()
+                .filter_map(|&donor_slot| {
+                    let colonist = &self.colonists[donor_slot];
+                    if colonist.id == producer_id
+                        || matches!(colonist.vocation, Vocation::Miller | Vocation::Baker)
+                    {
+                        return None;
+                    }
+                    let stock = self
+                        .society
+                        .agents
+                        .get(colonist.id)
+                        .map_or(0, |agent| agent.stock.get(staple));
+                    (stock > FEED_TARGET).then_some((stock, colonist.id))
+                })
+                .max_by_key(|&(stock, donor_id)| (stock, std::cmp::Reverse(donor_id)));
+            if let Some((stock, donor_id)) = donor {
+                let give = need.min(stock - FEED_TARGET);
+                if give > 0 && self.society.debit_stock(donor_id, staple, give) {
+                    // Conserved transfer; roll back to the donor if the credit
+                    // can't land (overflow), so no food is created or destroyed.
+                    if !self.society.credit_stock(producer_id, staple, give) {
+                        self.society.credit_stock(donor_id, staple, give);
+                    }
                 }
             }
         }

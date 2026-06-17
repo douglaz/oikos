@@ -192,6 +192,36 @@ fn stock_and_gold_trace_at_the_halt() {
 }
 
 #[test]
+fn in_kind_advance_feeds_producers_and_conserves() {
+    // The in-kind subsistence advance: hungry producers are fed staple food in
+    // kind (from the provisioned lineages), which removes the chronic-hunger
+    // halt — the colony stays well-fed long-horizon — while conservation holds
+    // (the food is a transfer, not a mint). This is a welfare win; it does not
+    // by itself make the production chain self-sustaining (a fed producer's money
+    // is then reserved for its savings want over the low-ranked input want).
+    let config = SettlementConfig::frontier_in_kind();
+    let bread = config.chain.as_ref().expect("chain").content.bread();
+    let mut settlement = Settlement::generate(1, &config);
+    for _ in 0..200 {
+        assert!(
+            settlement.econ_tick().conserves(),
+            "the in-kind advance is a transfer and must conserve"
+        );
+    }
+    // The mechanism: producers actually receive staple food in kind.
+    let producer_bread: u64 = settlement
+        .stock_by_vocation(bread)
+        .iter()
+        .filter(|(voc, _)| matches!(voc, Vocation::Miller | Vocation::Baker))
+        .map(|(_, qty)| *qty)
+        .sum();
+    assert!(
+        producer_bread > 0,
+        "the in-kind advance should leave producers holding staple food, got {producer_bread}"
+    );
+}
+
+#[test]
 fn live_order_trace_at_the_halt() {
     // Codex's decisive instrument: reconstruct the live BID/ASK intent for grain
     // across the halt (the reservation orders each agent WOULD post), to tell
