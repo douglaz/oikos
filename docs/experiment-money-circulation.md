@@ -597,3 +597,40 @@ drifting), conserved. Until that passes, the honest status is: *a sustainable
 subsistence colony (Experiment 10), plus a chain that can be hand-fed
 indefinitely (Experiment 12) — but not yet a self-organizing specialized
 economy.*
+
+## Experiment 13 — project-aware input bids (faithful mechanism; does NOT yet sustain)
+
+Built Codex's specced endogenous fix: `ChainConfig::project_input_bids` +
+`run_project_input_bids`. An active producer **buys** one unit of its recipe input
+through a real market trade, with its **own** money, at a price *imputed* from the
+output (Menger: the input's value is the output's realized value minus the
+operating cost), matched against the cheapest *willing* seller at that seller's
+own ask. Unlike the curated `input_advance` (a planner *places* inputs), the
+producer pays from its own purse — endogenous acquisition, conserved, voluntary on
+both sides. `frontier_endogenous` / the `endogenous` scenario combines it with the
+loan and the recurring motive, with **no** curated food/input placement.
+
+**Result — honest negative.** It does not yet self-organize: bread/800 = 666 (vs
+the curated scaffold's 7011), production collapses ~tick 150, tail `grain.input =
+flour.input = 0`, hunger → ~8 — only marginally above the no-mechanism ablations
+(546 / 585). The producer does buy *some* inputs early via the market (the
+mechanism works and conserves), but the chain still dies. Locked by
+`endogenous_input_bids_conserve_but_do_not_yet_sustain`.
+
+**Why it's hard (the tangle).** The producer needs working capital on hand to buy
+inputs, but the revolving loan's repayment sweeps it cash-light; moving the bid
+before the market (so it spends fresh loan gold) instead broke the miller
+cold-start (no flour price → no adoption). The cold-start sequencing, the
+loan/repayment timing, and the grain→flour→bread pipeline lag interact in a way
+that a single per-tick project bid doesn't resolve. So **the faithful mechanism
+is built and conserved, but a self-organizing specialized economy is still not
+achieved** — only the curated scaffold (Experiment 12) sustains.
+
+**Honest standing of the whole arc.** Two real results: (1) a sustainable
+**subsistence** colony (Experiment 10) — the right stone-age baseline; (2) a chain
+that can be **hand-fed** indefinitely (Experiment 12 scaffold). The endogenous
+self-organizing transition — specialization emerging from surplus and sustaining
+on market trade alone — is **not yet demonstrated**. This is genuinely milestone
+territory (working-capital persistence across ticks, cold-start bootstrapping, a
+scaling/churning producer pool, and likely posting the project-aware bid into the
+real order book rather than a sim phase), not a one-shot experiment.

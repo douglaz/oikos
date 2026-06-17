@@ -148,6 +148,12 @@ const SCENARIOS: &[Scenario] = &[
         build: build_recurring_only,
     },
     Scenario {
+        name: "endogenous",
+        description:
+            "EXPERIMENT: loan + recurring motive + project-aware input BIDS (producer buys its own input at an imputed price), NO curated food/input placement — does specialization self-organize?",
+        build: build_endogenous,
+    },
+    Scenario {
         name: "millisats-1x",
         description:
             "EXPERIMENT: frontier at coarse (x1) money precision — the unit-starved baseline that freezes (~320 money units)",
@@ -327,6 +333,10 @@ fn build_economy_no_input() -> SettlementConfig {
 
 fn build_recurring_only() -> SettlementConfig {
     SettlementConfig::frontier_recurring_only()
+}
+
+fn build_endogenous() -> SettlementConfig {
+    SettlementConfig::frontier_endogenous()
 }
 
 fn build_millisats_1x() -> SettlementConfig {

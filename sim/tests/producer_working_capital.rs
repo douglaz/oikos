@@ -294,6 +294,31 @@ fn economy_collapses_without_input_advance() {
 }
 
 #[test]
+fn endogenous_input_bids_conserve_but_do_not_yet_sustain() {
+    // The faithful endogenous mechanism (Codex's spec): an active producer BUYS
+    // its own recipe input through a real market trade, at a price imputed from
+    // the output, from a willing seller — its own money, no placement. It
+    // conserves and produces some early output, but it does NOT yet sustain the
+    // chain: production still collapses far below the curated-input scaffold. So
+    // self-organizing specialization is not yet achieved; only hand-placed inputs
+    // sustain. (Honest negative result; the mechanism is real, the goal is not met.)
+    let mut settlement = Settlement::generate(1, &SettlementConfig::frontier_endogenous());
+    for _ in 0..300 {
+        assert!(
+            settlement.econ_tick().conserves(),
+            "endogenous input bids (producer pays a willing seller) must conserve"
+        );
+    }
+    let endogenous = bread_made_over(SettlementConfig::frontier_endogenous(), 800);
+    let scaffold = bread_made_over(SettlementConfig::frontier_economy(), 800);
+    assert!(
+        endogenous.saturating_mul(3) < scaffold,
+        "endogenous market-bought inputs should NOT yet match the curated-input \
+         scaffold (self-organization not achieved), got endogenous={endogenous}, scaffold={scaffold}"
+    );
+}
+
+#[test]
 fn live_order_trace_at_the_halt() {
     // Codex's decisive instrument: reconstruct the live BID/ASK intent for grain
     // across the halt (the reservation orders each agent WOULD post), to tell

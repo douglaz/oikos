@@ -796,6 +796,19 @@ pub struct ChainConfig {
     /// keyed to ongoing profitability. `false` (every existing config) keeps the
     /// savings-want-only rule, byte-identical.
     pub recurring_motive: bool,
+    /// EXPERIMENTAL (project-aware input bids — the endogenous fix): when `true`
+    /// *and* money has emerged, each econ tick (before production) an active
+    /// producer buys ONE unit of its recipe input through a real market trade,
+    /// using its OWN money, at a price **imputed** from the output it will
+    /// produce (Menger: a higher-order good's value derives from the final good —
+    /// the producer's reservation is the output's realized value minus the
+    /// operating cost), matched against the cheapest *willing* seller (a gatherer
+    /// holding grain / a miller holding flour, at that seller's own ask). Unlike
+    /// the curated `input_advance` (a planner *places* inputs), here the producer
+    /// pays for its own input from its own purse — the input acquired by market
+    /// trade, not handed over. Conserved; voluntary on both sides. `false` (every
+    /// existing config) skips it, byte-identical.
+    pub project_input_bids: bool,
     /// Per-producer, per-econ-tick cap on recipe applications — a deterministic
     /// throughput bound (nothing is drawn). A producer applies its recipe up to
     /// this many times, limited by the input it holds.
@@ -884,6 +897,7 @@ impl ChainConfig {
             subsistence_advance: false,
             input_advance: false,
             recurring_motive: false,
+            project_input_bids: false,
             throughput: 2,
             miller_grain_buffer: 16,
             baker_flour_buffer: 16,
@@ -938,6 +952,7 @@ impl ChainConfig {
             subsistence_advance: false,
             input_advance: false,
             recurring_motive: false,
+            project_input_bids: false,
             throughput: 2,
             miller_grain_buffer: 16,
             baker_flour_buffer: 16,
@@ -2369,6 +2384,24 @@ impl SettlementConfig {
         cfg
     }
 
+    /// EXPERIMENTAL (the ENDOGENOUS economy — the genuine test): divisible money,
+    /// a revolving working-capital loan, the recurring owner-operator motive, and
+    /// project-aware input bids — but **NO curated food or input placement**. The
+    /// producer feeds and supplies itself through the market: it borrows working
+    /// capital, **buys** its input at an imputed price from a willing seller
+    /// (`project_input_bids`), mills/bakes, and sells the output. If the chain
+    /// sustains here, specialization is **self-organizing**, not scaffolded — the
+    /// falsification of the Experiment-12 "scaffolded" verdict. Game-only; econ
+    /// goldens untouched.
+    pub fn frontier_endogenous() -> Self {
+        let mut cfg = Self::frontier_capital_advance();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.recurring_motive = true;
+            chain.project_input_bids = true;
+        }
+        cfg
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).
@@ -2875,6 +2908,10 @@ struct ChainRuntime {
     /// EXPERIMENTAL: recurring owner-operator role-adoption motive (see
     /// [`ChainConfig::recurring_motive`]). `false` for every existing config.
     recurring_motive: bool,
+    /// EXPERIMENTAL: project-aware (imputed) input bids — the producer buys its
+    /// own input by market trade (see [`ChainConfig::project_input_bids`]).
+    /// `false` for every existing config.
+    project_input_bids: bool,
 }
 
 impl Settlement {
@@ -3557,6 +3594,7 @@ impl Settlement {
                 subsistence_advance: chain.subsistence_advance,
                 input_advance: chain.input_advance,
                 recurring_motive: chain.recurring_motive,
+                project_input_bids: chain.project_input_bids,
             }
         });
 
@@ -3934,6 +3972,12 @@ impl Settlement {
         // mills/bakes it this tick. Bypasses the value-scale bid gate. Conserved;
         // a no-op unless enabled.
         self.run_input_advance();
+
+        // ---- 5d. PROJECT-AWARE INPUT BIDS (EXPERIMENT): an active producer buys
+        // its recipe input through a real market trade with its own money, at a
+        // price imputed from the output — the endogenous alternative to the
+        // curated input placement above. Conserved; a no-op unless enabled.
+        self.run_project_input_bids();
 
         // ---- 6. PRODUCTION (G3a): each living producer applies its recipe to the
         // input it now holds, transforming it into output. A conserved conversion:
@@ -5396,6 +5440,102 @@ impl Settlement {
                     }
                 } else {
                     self.move_money_conserved(seller_id, cap_id, cost);
+                }
+            }
+        }
+    }
+
+    /// PROJECT-AWARE INPUT BID phase (EXPERIMENT — see
+    /// [`ChainConfig::project_input_bids`]). Before production, an active producer
+    /// buys ONE unit of its recipe input through a real market trade, with its OWN
+    /// money, at a price imputed from the output it will produce (Menger: the
+    /// input's value is the output's realized value minus the operating cost),
+    /// matched against the cheapest *willing* seller at that seller's own ask.
+    /// Unlike `run_input_advance` (a planner places inputs for free), here the
+    /// producer pays for its own input — endogenous market acquisition. Conserved
+    /// (money producer→seller, input seller→producer), voluntary on both sides.
+    /// No-op unless enabled and money has emerged. Deterministic: id-ordered;
+    /// seller chosen by lowest ask (ties → lowest id).
+    fn run_project_input_bids(&mut self) {
+        let (grain, flour, bread, mill_out, bake_out, operating_cost) = match self.chain.as_ref() {
+            Some(chain) if chain.project_input_bids => (
+                chain.content.grain(),
+                chain.content.flour(),
+                chain.content.bread(),
+                chain.content.mill_recipe().output_qty,
+                chain.content.bake_recipe().output_qty,
+                chain.operating_cost,
+            ),
+            _ => return,
+        };
+        let Some(money) = self.society.current_money_good() else {
+            return;
+        };
+        let live = self.live_colonist_slots.clone();
+        for &slot in &live {
+            let (producer_id, vocation) = {
+                let colonist = &self.colonists[slot];
+                (colonist.id, colonist.vocation)
+            };
+            let (input, output, out_qty) = match vocation {
+                Vocation::Miller => (grain, flour, mill_out),
+                Vocation::Baker => (flour, bread, bake_out),
+                _ => continue,
+            };
+            // Already holds an input unit for this tick's recipe → no need to buy.
+            let held = self
+                .society
+                .agents
+                .get(producer_id)
+                .map_or(0, |agent| agent.stock.get(input));
+            if held >= 1 {
+                continue;
+            }
+            // Imputed reservation for one input unit: the output it yields, valued
+            // at the output's realized price, minus the operating cost. No price
+            // for the output yet → no basis to impute → skip.
+            let Some(out_price) = self.realized_price(output) else {
+                continue;
+            };
+            let reservation = out_price
+                .0
+                .saturating_mul(u64::from(out_qty))
+                .saturating_sub(operating_cost);
+            if reservation == 0 {
+                continue;
+            }
+            let producer_gold = self.society.free_gold_after_all_reserves(producer_id).0;
+            // Cheapest willing seller of the input (its own reservation ask),
+            // never the producer itself; lowest ask, ties → lowest id.
+            let seller = live
+                .iter()
+                .filter_map(|&seller_slot| {
+                    let id = self.colonists[seller_slot].id;
+                    if id == producer_id {
+                        return None;
+                    }
+                    let agent = self.society.agents.get(id)?;
+                    if agent.stock.get(input) == 0 {
+                        return None;
+                    }
+                    let ask = agent.reservation_ask_for_money(input, 1, money)?.0;
+                    Some((ask, id))
+                })
+                .min_by_key(|&(ask, id)| (ask, id));
+            if let Some((ask, seller_id)) = seller {
+                // Trade only if the producer's imputed value crosses the seller's
+                // ask and the producer can pay from its own purse.
+                if ask <= reservation && ask <= producer_gold {
+                    let price = Gold(ask);
+                    if self.move_money_conserved(producer_id, seller_id, price)
+                        && self.society.debit_stock(seller_id, input, 1)
+                        && !self.society.credit_stock(producer_id, input, 1)
+                    {
+                        // Roll back (overflow): re-credit the seller's stock and
+                        // refund the money so nothing is created or destroyed.
+                        self.society.credit_stock(seller_id, input, 1);
+                        self.move_money_conserved(seller_id, producer_id, price);
+                    }
                 }
             }
         }
