@@ -1345,6 +1345,48 @@ headline. **The next milestone is G9 (the Bevy graphical UI), which cannot be dr
 test loop and is the explicit hand-off point to the user.** See `sim/tests/g8c3_tax.rs` and
 `docs/engine-divergence.md` (the G8c-3 entry).
 
+## Status: endogenous specialization (the grain→flour→bread chain self-organizes) — complete
+
+The twelve money-circulation experiments showed the production chain only sustained under **curated
+placement** — a planner handing food and inputs to every producer; strip it and the chain died
+~tick 150. This milestone makes the **division of labor self-organize**: grain→flour→bread
+specialization emerges atop a **household/subsistence base** and **sustains on real market trade**,
+with **no chain-specific global placement**. Sliced per `docs/impl-endogenous-specialization.md`:
+
+- [x] **S1 — econ order-book bid override** (`econ/src/society.rs`): a gated per-`(agent, good)`
+      spot-bid override. The sim sets `(reservation, limit)` before `step()`; `ensure_bid` consults it
+      first and `live_quote_changed` mirrors the branch so the resting override bid survives the next
+      tick's reconciliation; `ensure_order` stays the sole insertion path (the bid reserves gold, fills
+      against a willing ask, records a real `Trade`); overrides are cleared after the step. **Additive
+      and gated** — with no override set, the six conformance goldens (m5/m6/m7/m8/m9) are
+      byte-identical (the disabled-hook regression is the tripwire).
+- [x] **S2 — project-aware producer bid** (`sim/src/settlement.rs`): the input bid price is the imputed
+      reservation from the **project-bundle appraisal** (`imputed_input_reservation` reuses
+      `recipe_adoption_pays_for_money` / `appraise_project_bundle_for_money`), not a scalar heuristic —
+      the highest input price at which running the recipe-as-project still provisions the producer's
+      savings want, off the output's last realized price. The generic recipe-blind input want is
+      suppressed so the override is the sole input bid.
+- [x] **S3 — working-capital persistence**: real **retained earnings**, no per-tick planner loan
+      (`capital_advance` off). A local **producer-subsistence hearth** (`producer_subsistence`) feeds
+      each producer its staple + WOOD so its money frees entirely for inputs, and a **demand-responsive
+      restock gate** keeps it from over-producing into a saturated market and draining its purse.
+- [x] **S4 — cold-start bootstrap**: the seeded `latent_flour_seed` / `bread_buffer` yield the first
+      realized flour/bread prices so the latent pool adopts in deterministic pipeline order (bread
+      demand pulls a baker in, the baker's flour purchase pulls a miller in), with no curated advance.
+- [x] **S5 — the endogenous DoD** (`SettlementConfig::frontier_endogenous`, the `endogenous` scenario):
+      a designated-GOLD colony on the household demography + edible-grain subsistence base, composing
+      S1–S4 with `subsistence_advance` / `input_advance` **off**. The chain sustains: bread is still
+      produced through tick 1600, producers retain working capital, and population, per-capita bread,
+      and hunger are stationary — all conserving and deterministic.
+- [x] acceptance suite (`sim/tests/endogenous_economy.rs`: the six named tests, incl.
+      `inputs_acquired_by_market_trade` requiring an actual `Society::trade` by an active producer plus
+      downstream recipe consumption with no placement counter) + the S1/S2/S3/S4 slice tests + the
+      viewer `endogenous` scenario.
+
+The curated-placement scenarios (`in-kind-advance`, `input-advance`, `economy`) and their flags are
+**kept for comparison**; the DoD passes with them off. **S6 (scaling / churn — replacement producers
+so output tracks a growing population) is deferred.**
+
 ## Build and test
 
 ```bash
@@ -1371,6 +1413,7 @@ cargo run -p viewer -- run lineages --ticks 200        # G4b: two households age
 cargo run -p viewer -- run barter-camp --ticks 40             # G5a: money emerges (barter → promotion → money-priced)
 cargo run -p viewer -- run barter-camp-control --ticks 40     # G5a: no saleability differential → stays in barter
 cargo run -p viewer -- run frontier --ticks 80                # G5b: money emerges, then roles adopt, with demography
+cargo run -p viewer -- run endogenous --ticks 1600           # endogenous specialization: the chain self-organizes on a subsistence base and sustains, no curated placement
 #                                                              # G6a: the frontier/barter-camp dashboards show an era
 #                                                              #      banner + per-tick era column (forager → … → capital)
 cargo run -p viewer -- run research --ticks 60                # G6b: Knowledge accrues, tier 2 unlocks, pastry is produced
