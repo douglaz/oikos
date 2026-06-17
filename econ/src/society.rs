@@ -309,12 +309,12 @@ pub struct Society {
     market_goods: Vec<GoodId>,
     max_good_id: u16,
     live_quotes: Vec<LiveQuote>,
-    /// Per-`(agent, good)` spot-bid override (S1). A driver sets entries before
-    /// [`Society::step`] and [`Society::ensure_bid`] uses the override's
+    /// Per-`(agent, good)` spot-bid override (S1). A driver sets entries before a
+    /// public step API and [`Society::ensure_bid`] uses the override's
     /// `(reservation, limit)` in place of the agent's own
     /// [`Agent::reservation_bid_for_money`]; the live-quote change detector
-    /// consults it too, so the resting quote survives the next tick's
-    /// reconciliation. Cleared at the end of each `step`/`step_rejecting_…` so an
+    /// consults it too, so the resting quote survives the tick's reconciliation.
+    /// Cleared at the end of each `try_step`/`step`/`step_rejecting_…` so an
     /// override is one-shot. Empty in every lab scenario (the lab never sets one),
     /// so the conformance goldens are byte-identical — an additive, gated seam.
     bid_overrides: BTreeMap<(AgentId, GoodId), (Gold, Gold)>,
@@ -591,7 +591,7 @@ impl Society {
         self.m3_shadow_attached = true;
     }
 
-    pub fn try_step(&mut self) -> Result<(), SocietyStepError> {
+    fn try_step_inner(&mut self) -> Result<(), SocietyStepError> {
         if self.v2_enabled {
             self.step_v2(&[]);
             return Ok(());
@@ -611,6 +611,12 @@ impl Society {
         Ok(())
     }
 
+    pub fn try_step(&mut self) -> Result<(), SocietyStepError> {
+        let result = self.try_step_inner();
+        self.clear_bid_overrides();
+        result
+    }
+
     /// Advance the market society by one tick.
     ///
     /// Phase A exposes `try_step` for typed rejection of emergent-money
@@ -619,7 +625,6 @@ impl Society {
         match self.try_step() {
             Ok(()) | Err(SocietyStepError::EmergentMoneyDeferred) => {}
         }
-        self.clear_bid_overrides();
     }
 
     /// Set a spot-bid override for `agent` on `good` (S1). During the next
@@ -647,9 +652,10 @@ impl Society {
             .insert((agent, good), (reservation, limit));
     }
 
-    /// Drop every spot-bid override. `step`/`step_rejecting_v2_money_goods` call
-    /// this at the end of the tick so an override the driver set is consumed by a
-    /// single step. A no-op (so byte-identical) when the table is already empty.
+    /// Drop every spot-bid override. The public step/run APIs call this at the end
+    /// of each attempted tick so an override the driver set is consumed by a
+    /// single step attempt. A no-op (so byte-identical) when the table is already
+    /// empty.
     pub fn clear_bid_overrides(&mut self) {
         self.bid_overrides.clear();
     }
@@ -6800,6 +6806,54 @@ mod tests {
         assert!(
             society.bid_overrides.is_empty(),
             "step clears the override table"
+        );
+    }
+
+    #[test]
+    fn bid_override_is_one_shot_on_try_step_and_run() {
+        let buyer = AgentId(2);
+
+        let mut try_step_society = override_society(vec![override_buyer(Gold(5))]);
+        try_step_society.set_bid_override(buyer, FOOD, Gold(3), Gold(3));
+        try_step_society.try_step().unwrap();
+        assert!(
+            try_step_society.bid_overrides.is_empty(),
+            "try_step clears the override table"
+        );
+        assert_eq!(
+            try_step_society.live_spot_quote_count_for_good(FOOD),
+            1,
+            "the first try_step posts the one-shot override bid"
+        );
+
+        try_step_society.try_step().unwrap();
+        assert_eq!(
+            try_step_society.live_spot_quote_count_for_good(FOOD),
+            0,
+            "without a reset override, the next try_step cancels the non-scale bid"
+        );
+        assert_eq!(
+            try_step_society.free_gold_after_all_reserves(buyer),
+            Gold(5),
+            "the canceled one-shot bid releases the buyer's reserved gold"
+        );
+
+        let mut run_society = override_society(vec![override_buyer(Gold(5))]);
+        run_society.set_bid_override(buyer, FOOD, Gold(3), Gold(3));
+        run_society.run(2);
+        assert!(
+            run_society.bid_overrides.is_empty(),
+            "run clears overrides through its try_run/try_step path"
+        );
+        assert_eq!(
+            run_society.live_spot_quote_count_for_good(FOOD),
+            0,
+            "run does not keep re-posting a one-shot override on later periods"
+        );
+        assert_eq!(
+            run_society.free_gold_after_all_reserves(buyer),
+            Gold(5),
+            "run releases the buyer's reserve after the one-shot bid is canceled"
         );
     }
 

@@ -5394,8 +5394,9 @@ impl Settlement {
             return;
         }
         let staple = self.known.hunger;
-        let live = self.live_colonist_slots.clone();
-        for &slot in &live {
+        let live_len = self.live_colonist_slots.len();
+        for live_index in 0..live_len {
+            let slot = self.live_colonist_slots[live_index];
             let (id, vocation, latent) = {
                 let colonist = &self.colonists[slot];
                 (colonist.id, colonist.vocation, colonist.latent)
@@ -5633,8 +5634,9 @@ impl Settlement {
         };
         let staple = self.known.hunger;
         let tick = self.society.tick.0;
-        let live = self.live_colonist_slots.clone();
-        for &slot in &live {
+        let live_len = self.live_colonist_slots.len();
+        for live_index in 0..live_len {
+            let slot = self.live_colonist_slots[live_index];
             let (producer_id, vocation) = {
                 let colonist = &self.colonists[slot];
                 (colonist.id, colonist.vocation)
