@@ -309,6 +309,15 @@ pub struct Society {
     market_goods: Vec<GoodId>,
     max_good_id: u16,
     live_quotes: Vec<LiveQuote>,
+    /// Per-`(agent, good)` spot-bid override (S1). A driver sets entries before
+    /// [`Society::step`] and [`Society::ensure_bid`] uses the override's
+    /// `(reservation, limit)` in place of the agent's own
+    /// [`Agent::reservation_bid_for_money`]; the live-quote change detector
+    /// consults it too, so the resting quote survives the next tick's
+    /// reconciliation. Cleared at the end of each `step`/`step_rejecting_…` so an
+    /// override is one-shot. Empty in every lab scenario (the lab never sets one),
+    /// so the conformance goldens are byte-identical — an additive, gated seam.
+    bid_overrides: BTreeMap<(AgentId, GoodId), (Gold, Gold)>,
     agent_order: Vec<usize>,
     /// Ids removed by [`Society::remove_agent`] (G4a real death), ascending. The
     /// id is freed from the arena, but it is recorded here so any capital project
@@ -453,6 +462,7 @@ impl Society {
             market_goods,
             max_good_id,
             live_quotes: Vec::new(),
+            bid_overrides: BTreeMap::new(),
             agent_order,
             dead_agents: Vec::new(),
             m2_enabled,
@@ -609,6 +619,46 @@ impl Society {
         match self.try_step() {
             Ok(()) | Err(SocietyStepError::EmergentMoneyDeferred) => {}
         }
+        self.clear_bid_overrides();
+    }
+
+    /// Set a spot-bid override for `agent` on `good` (S1). During the next
+    /// [`Society::step`], [`Society::ensure_bid`] posts a bid for `good` using
+    /// `reservation` (the agent's imputed max willingness to pay, used by the
+    /// change detector) and `limit` (the posted price, still capped by the
+    /// agent's free gold and tender), instead of the scale-derived
+    /// [`Agent::reservation_bid_for_money`]. The bid enters the real order book
+    /// through the sole [`Society::ensure_order`] path, so it reserves gold, can
+    /// fill against a willing ask, and records a [`Trade`] exactly like any other
+    /// quote. The override is consumed by exactly one step (cleared at the end),
+    /// so a driver re-sets it each tick a producer stays active.
+    ///
+    /// Purely additive and gated: a society whose driver never calls this keeps an
+    /// empty override table, so [`Society::ensure_bid`] and the change detector
+    /// take their original branch and every conformance golden is byte-identical.
+    pub fn set_bid_override(
+        &mut self,
+        agent: AgentId,
+        good: GoodId,
+        reservation: Gold,
+        limit: Gold,
+    ) {
+        self.bid_overrides
+            .insert((agent, good), (reservation, limit));
+    }
+
+    /// Drop every spot-bid override. `step`/`step_rejecting_v2_money_goods` call
+    /// this at the end of the tick so an override the driver set is consumed by a
+    /// single step. A no-op (so byte-identical) when the table is already empty.
+    pub fn clear_bid_overrides(&mut self) {
+        self.bid_overrides.clear();
+    }
+
+    /// The active spot-bid override for `(agent, good)`, if any (S1). `None` —
+    /// the lab default — means [`Society::ensure_bid`] falls back to the agent's
+    /// own [`Agent::reservation_bid_for_money`], the original behavior.
+    fn bid_override_for(&self, agent: AgentId, good: GoodId) -> Option<(Gold, Gold)> {
+        self.bid_overrides.get(&(agent, good)).copied()
     }
 
     /// Advance one tick while rejecting specific V2 commodity-money promotion
@@ -621,6 +671,7 @@ impl Society {
     pub fn step_rejecting_v2_money_goods(&mut self, rejected_money_goods: &[GoodId]) {
         if self.v2_enabled {
             self.step_v2(rejected_money_goods);
+            self.clear_bid_overrides();
             return;
         }
         self.step();
@@ -2412,17 +2463,26 @@ impl Society {
         let Some(money_good) = self.money.current_money_good() else {
             return;
         };
-        let existing = self.find_live_quote(self.agents[agent_index].id, OrderSide::Bid, good);
+        let agent_id = self.agents[agent_index].id;
+        let existing = self.find_live_quote(agent_id, OrderSide::Bid, good);
         let Some(agent) = self.available_agent(agent_index, existing) else {
             self.cancel_existing(existing);
             return;
         };
-        let Some(reservation) = agent.reservation_bid_for_money(good, 1, money_good) else {
-            self.cancel_existing(existing);
-            return;
+        // S1: a driver-set override replaces the scale-derived reservation/limit
+        // for this `(agent, good)`. Empty in every lab scenario, so the original
+        // `reservation_bid_for_money` branch is taken and behavior is unchanged.
+        let (reservation, mut limit) = match self.bid_override_for(agent_id, good) {
+            Some((reservation, limit)) => (reservation, limit),
+            None => {
+                let Some(reservation) = agent.reservation_bid_for_money(good, 1, money_good) else {
+                    self.cancel_existing(existing);
+                    return;
+                };
+                let belief = belief_for(&self.agents[agent_index], good);
+                (reservation, belief.shade_bid(reservation))
+            }
         };
-        let belief = belief_for(&self.agents[agent_index], good);
-        let mut limit = belief.shade_bid(reservation);
         limit = limit.min(agent.gold);
         limit = limit.min(self.free_spot_tender_after_all_reserves_for_quote(agent.id, existing));
         if limit == Gold::ZERO {
@@ -2728,12 +2788,25 @@ impl Society {
         let belief = belief_for(&self.agents[agent_index], quote.good);
         match quote.side {
             OrderSide::Bid => {
-                let Some(reservation) =
-                    agent.reservation_bid_for_money(quote.good, quote.qty, money_good)
-                else {
-                    return true;
-                };
-                let limit = belief.shade_bid(reservation).min(agent.gold).min(
+                // S1: mirror `ensure_bid`'s override branch so an override quote is
+                // judged against the SAME reservation/limit it was posted at — else
+                // the change detector recomputes the scale price, sees a mismatch,
+                // and cancels the override bid (the highest-risk failure mode). With
+                // no override the original `reservation_bid_for_money` branch runs,
+                // so the goldens are byte-identical.
+                let (reservation, shaded_limit) =
+                    match self.bid_override_for(quote.agent, quote.good) {
+                        Some((reservation, limit)) => (reservation, limit),
+                        None => {
+                            let Some(reservation) =
+                                agent.reservation_bid_for_money(quote.good, quote.qty, money_good)
+                            else {
+                                return true;
+                            };
+                            (reservation, belief.shade_bid(reservation))
+                        }
+                    };
+                let limit = shaded_limit.min(agent.gold).min(
                     self.free_spot_tender_after_all_reserves_for_quote(
                         quote.agent,
                         Some(quote_index),
@@ -6619,6 +6692,198 @@ mod tests {
             roles: vec![Role::Consumer],
             expect: vec![PriceBelief::new(Gold(1), Gold(1)); usize::from(WOOD.0) + 1],
         }
+    }
+
+    // ---- S1: gated spot-bid override ------------------------------------------
+
+    /// Belief slots wide enough for the lab goods used in the override tests.
+    fn override_expect() -> Vec<PriceBelief> {
+        let slots = [GOLD, FOOD, WOOD, SALT]
+            .into_iter()
+            .map(|good| usize::from(good.0))
+            .max()
+            .unwrap_or(0)
+            + 1;
+        vec![PriceBelief::new(Gold(1), Gold(1)); slots]
+    }
+
+    /// A buyer that, on its own scale, has NO want for `FOOD` and so posts no
+    /// `FOOD` bid — the override is the only thing that can make it bid.
+    fn override_buyer(gold: Gold) -> Agent {
+        Agent {
+            id: AgentId(2),
+            scale: Vec::new(),
+            stock: Stock::new(WOOD.0),
+            gold,
+            labor_capacity: 0,
+            hunger_deficit: 0,
+            roles: vec![Role::Capitalist],
+            expect: override_expect(),
+        }
+    }
+
+    /// A seller holding one `FOOD`, willing to sell it for gold (its savings want
+    /// out-ranks the `FOOD` want), so `reservation_ask(FOOD, 1) == Some(Gold(1))`.
+    fn override_seller() -> Agent {
+        let mut stock = Stock::new(WOOD.0);
+        stock.add(FOOD, 1);
+        Agent {
+            id: AgentId(1),
+            scale: vec![
+                Want {
+                    kind: WantKind::Good(GOLD),
+                    horizon: Horizon::Later(1),
+                    qty: 1,
+                    satisfied: false,
+                },
+                Want {
+                    kind: WantKind::Good(FOOD),
+                    horizon: Horizon::Next,
+                    qty: 1,
+                    satisfied: false,
+                },
+            ],
+            stock,
+            gold: Gold::ZERO,
+            labor_capacity: 0,
+            hunger_deficit: 0,
+            roles: vec![Role::Consumer],
+            expect: override_expect(),
+        }
+    }
+
+    fn override_society(agents: Vec<Agent>) -> Society {
+        Society::from_scenario(MarketScenario {
+            name: "bid-override",
+            scenario: ScenarioName::MarketPriceDiscovery,
+            seed: 1,
+            periods: 1,
+            agents,
+            recipes: Vec::new(),
+            events: Vec::new(),
+            money: MarketMoneyConfig::Designated(DesignatedMoney { good: GOLD }),
+        })
+    }
+
+    #[test]
+    fn bid_override_enters_book_and_reserves_gold() {
+        // A lone buyer with no FOOD want posts nothing on its own; with an override
+        // it posts a resting FOOD bid into the real book and that bid reserves gold.
+        let mut society = override_society(vec![override_buyer(Gold(5))]);
+        let buyer = AgentId(2);
+
+        society.step();
+        assert_eq!(
+            society.live_spot_quote_count_for_good(FOOD),
+            0,
+            "with no override the buyer posts no FOOD bid"
+        );
+        assert_eq!(
+            society.free_gold_after_all_reserves(buyer),
+            Gold(5),
+            "nothing is reserved when no bid rests"
+        );
+
+        society.set_bid_override(buyer, FOOD, Gold(3), Gold(3));
+        society.step();
+        assert_eq!(
+            society.live_spot_quote_count_for_good(FOOD),
+            1,
+            "the override posts exactly one resting FOOD bid into the real book"
+        );
+        assert_eq!(
+            society.free_gold_after_all_reserves(buyer),
+            Gold(2),
+            "the resting override bid reserves its limit (3) out of the buyer's 5 gold"
+        );
+        // The override is one-shot: cleared at the end of the step, so it is gone.
+        assert!(
+            society.bid_overrides.is_empty(),
+            "step clears the override table"
+        );
+    }
+
+    #[test]
+    fn bid_override_fills_against_willing_ask_and_records_trade() {
+        // Control: without the override the buyer has no FOOD want, so even though a
+        // willing seller asks, no FOOD trade ever forms.
+        let mut control = override_society(vec![override_seller(), override_buyer(Gold(5))]);
+        control.step();
+        assert!(
+            control.trades.iter().all(|trade| trade.good != FOOD),
+            "without the override there is no FOOD trade: {:?}",
+            control.trades
+        );
+
+        // With the override the buyer's bid enters the book, crosses the seller's
+        // ask, and records a real Trade through the sole `ensure_order` path.
+        let mut society = override_society(vec![override_seller(), override_buyer(Gold(5))]);
+        let buyer = AgentId(2);
+        let seller = AgentId(1);
+        let buyer_gold_before = society.agents.get(buyer).unwrap().gold;
+
+        society.set_bid_override(buyer, FOOD, Gold(3), Gold(3));
+        society.step();
+
+        let food_trade = society
+            .trades
+            .iter()
+            .find(|trade| trade.good == FOOD)
+            .expect("the override bid should fill against the willing ask");
+        assert_eq!(food_trade.buyer, buyer, "the override agent is the buyer");
+        assert_eq!(food_trade.seller, seller, "the willing asker is the seller");
+        assert_eq!(food_trade.qty, 1);
+        assert!(
+            food_trade.price >= Gold(1) && food_trade.price <= Gold(3),
+            "the fill price sits between the ask and the override limit, got {:?}",
+            food_trade.price
+        );
+
+        // The good and the money actually moved, conserved.
+        assert_eq!(society.agents.get(buyer).unwrap().stock.get(FOOD), 1);
+        assert_eq!(society.agents.get(seller).unwrap().stock.get(FOOD), 0);
+        let paid = buyer_gold_before
+            .checked_sub(society.agents.get(buyer).unwrap().gold)
+            .unwrap();
+        assert_eq!(
+            paid, food_trade.price,
+            "the buyer paid exactly the fill price"
+        );
+        assert_eq!(
+            society.agents.get(seller).unwrap().gold,
+            food_trade.price,
+            "the seller received exactly the fill price"
+        );
+    }
+
+    #[test]
+    fn unused_bid_override_hook_is_byte_identical() {
+        // The disabled-hook tripwire: a run that touches the (empty) override API
+        // every tick is byte-identical to one that never touches it. Combined with
+        // the m5..m9 conformance goldens, this proves the S1 seam is inert when no
+        // override is set.
+        let run = |touch_hook: bool| {
+            let mut society =
+                Society::from_scenario(builtin_market_scenario(ScenarioName::MarketPriceDiscovery));
+            for _ in 0..16 {
+                if touch_hook {
+                    society.clear_bid_overrides();
+                }
+                society.step();
+            }
+            (society.records, society.trades)
+        };
+
+        let (plain_records, plain_trades) = run(false);
+        let (hooked_records, hooked_trades) = run(true);
+        assert_eq!(
+            plain_records, hooked_records,
+            "the unused override hook must not change market records"
+        );
+        assert_eq!(
+            plain_trades, hooked_trades,
+            "the unused override hook must not change trades"
+        );
     }
 
     #[test]
