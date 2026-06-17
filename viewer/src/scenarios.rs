@@ -130,6 +130,12 @@ const SCENARIOS: &[Scenario] = &[
         build: build_input_advance,
     },
     Scenario {
+        name: "economy",
+        description:
+            "EXPERIMENT: the subsistence→specialization arc — fed subsistence base + in-kind capital advances + recurring owner-operator motive (no firms); does specialization sustain?",
+        build: build_economy,
+    },
+    Scenario {
         name: "millisats-1x",
         description:
             "EXPERIMENT: frontier at coarse (x1) money precision — the unit-starved baseline that freezes (~320 money units)",
@@ -297,6 +303,10 @@ fn build_in_kind() -> SettlementConfig {
 
 fn build_input_advance() -> SettlementConfig {
     SettlementConfig::frontier_input_advance()
+}
+
+fn build_economy() -> SettlementConfig {
+    SettlementConfig::frontier_economy()
 }
 
 fn build_millisats_1x() -> SettlementConfig {

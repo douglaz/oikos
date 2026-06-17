@@ -785,6 +785,17 @@ pub struct ChainConfig {
     /// sellers (gatherers). Conserved (money cap→seller, input seller→producer).
     /// `false` (every existing config) skips the phase, byte-identical.
     pub input_advance: bool,
+    /// EXPERIMENTAL (recurring owner-operator motive): when `true`, a latent
+    /// producer also adopts/keeps its role whenever the recipe is simply
+    /// **profitable** at realized prices (expected revenue > input + operating
+    /// cost), not only when it newly provisions a one-off future-money savings
+    /// want. The faithful self-employment fix for the satiation wall: a real
+    /// artisan keeps producing because consumption **recurs** (it must keep
+    /// earning to keep eating), so it does not permanently retire the moment its
+    /// savings ladder fills. No firms, no value-scale surgery — role adoption
+    /// keyed to ongoing profitability. `false` (every existing config) keeps the
+    /// savings-want-only rule, byte-identical.
+    pub recurring_motive: bool,
     /// Per-producer, per-econ-tick cap on recipe applications — a deterministic
     /// throughput bound (nothing is drawn). A producer applies its recipe up to
     /// this many times, limited by the input it holds.
@@ -872,6 +883,7 @@ impl ChainConfig {
             perishable_decay_bps: 0,
             subsistence_advance: false,
             input_advance: false,
+            recurring_motive: false,
             throughput: 2,
             miller_grain_buffer: 16,
             baker_flour_buffer: 16,
@@ -925,6 +937,7 @@ impl ChainConfig {
             perishable_decay_bps: 0,
             subsistence_advance: false,
             input_advance: false,
+            recurring_motive: false,
             throughput: 2,
             miller_grain_buffer: 16,
             baker_flour_buffer: 16,
@@ -2310,6 +2323,24 @@ impl SettlementConfig {
         cfg
     }
 
+    /// EXPERIMENTAL (the subsistence→specialization arc — not a golden path): the
+    /// full in-kind capital-advance colony (`frontier_input_advance`, which
+    /// advances the loan, food, and inputs in kind on a fed subsistence base) plus
+    /// the recurring owner-operator motive ([`ChainConfig::recurring_motive`]). The
+    /// recurring motive stops producers retiring once their savings fill (the
+    /// satiation wall that collapsed Experiment 11), so — with inputs placed and
+    /// the colony fed — specialization that emerges from the subsistence base can
+    /// *sustain*: a self-employment economy, no firms. Tests the whole arc:
+    /// subsistence, emergent money, then sustained specialized production. Additive
+    /// and game-only; econ goldens untouched.
+    pub fn frontier_economy() -> Self {
+        let mut cfg = Self::frontier_input_advance();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.recurring_motive = true;
+        }
+        cfg
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).
@@ -2813,6 +2844,9 @@ struct ChainRuntime {
     /// EXPERIMENTAL: enable the in-kind input advance to producers (see
     /// [`ChainConfig::input_advance`]). `false` for every existing config.
     input_advance: bool,
+    /// EXPERIMENTAL: recurring owner-operator role-adoption motive (see
+    /// [`ChainConfig::recurring_motive`]). `false` for every existing config.
+    recurring_motive: bool,
 }
 
 impl Settlement {
@@ -3494,6 +3528,7 @@ impl Settlement {
                 perishable_decay_bps: chain.perishable_decay_bps,
                 subsistence_advance: chain.subsistence_advance,
                 input_advance: chain.input_advance,
+                recurring_motive: chain.recurring_motive,
             }
         });
 
@@ -5516,6 +5551,7 @@ impl Settlement {
         let flour = chain.content.flour();
         let bread = chain.content.bread();
         let operating_cost = chain.operating_cost;
+        let recurring_motive = chain.recurring_motive;
         let tick = self.society.tick.0;
         let mut changed = false;
 
@@ -5559,6 +5595,13 @@ impl Settlement {
                     money_good,
                 )
             };
+            // Recurring owner-operator motive: also keep the role while the recipe
+            // is simply profitable at realized prices, so a producer whose savings
+            // ladder is full does not retire (consumption recurs — it keeps
+            // producing to keep eating). A no-op unless enabled.
+            let pays = pays
+                || (recurring_motive
+                    && recipe_is_profitable(recipe, output_price, input_price, operating_cost));
             let next = if pays { adopted } else { Vocation::Unassigned };
             if self.colonists[slot].vocation != next {
                 self.colonists[slot].vocation = next;
@@ -7335,6 +7378,29 @@ pub fn recipe_adoption_pays(
 /// appraisal must provision is the same good the post-promotion market clears in. The
 /// `output_price`/`input_price` are realized money prices either way (`Gold`-valued),
 /// so only the identity of the future want changes, not the spread arithmetic.
+/// Whether a recipe is simply profitable at realized prices: expected revenue
+/// (`output_price × output_qty`) exceeds the present advance (`input_price ×
+/// input_qty + operating_cost`). The recurring owner-operator adoption test (see
+/// [`ChainConfig::recurring_motive`]) — independent of any savings want, so a
+/// satiated producer still keeps producing while the trade pays. Declines without
+/// an observed output price (no sale → no spread).
+pub fn recipe_is_profitable(
+    recipe: &Recipe,
+    output_price: Option<Gold>,
+    input_price: Option<Gold>,
+    operating_cost: u64,
+) -> bool {
+    let Some(output_price) = output_price else {
+        return false;
+    };
+    let input_qty = recipe.input_good.map_or(0, |(_input, qty)| qty);
+    let revenue = output_price.0.saturating_mul(u64::from(recipe.output_qty));
+    let input_cost = input_price
+        .map_or(0, |price| price.0)
+        .saturating_mul(u64::from(input_qty));
+    revenue > input_cost.saturating_add(operating_cost)
+}
+
 pub fn recipe_adoption_pays_for_money(
     agent: &Agent,
     recipe: &Recipe,

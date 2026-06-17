@@ -248,6 +248,36 @@ fn input_advance_conserves_but_triggers_satiation_de_adoption() {
 }
 
 #[test]
+fn recurring_motive_sustains_the_specialization_arc() {
+    // The whole arc, sustained: a fed subsistence base + in-kind capital advances
+    // + the recurring owner-operator motive (no firms) let specialization emerge
+    // AND keep running, instead of satiating and collapsing. Production runs
+    // continuously and far above the non-recurring in-kind colony, the producers
+    // stay adopted long-horizon, and the whole-system conservation holds.
+    let economy = bread_made_over(SettlementConfig::frontier_economy(), 800);
+    let in_kind = bread_made_over(SettlementConfig::frontier_in_kind(), 800);
+    assert!(
+        economy > in_kind.saturating_mul(5),
+        "the recurring-motive economy should sustain production far above the \
+         non-recurring in-kind colony, got economy={economy}, in_kind={in_kind}"
+    );
+
+    let mut settlement = Settlement::generate(1, &SettlementConfig::frontier_economy());
+    for _ in 0..800 {
+        assert!(
+            settlement.econ_tick().conserves(),
+            "the sustained economy must conserve every tick"
+        );
+    }
+    let producers =
+        settlement.living_count(Vocation::Miller) + settlement.living_count(Vocation::Baker);
+    assert!(
+        producers > 0,
+        "the recurring motive should keep producers adopted at tick 800, got {producers}"
+    );
+}
+
+#[test]
 fn live_order_trace_at_the_halt() {
     // Codex's decisive instrument: reconstruct the live BID/ASK intent for grain
     // across the halt (the reservation orders each agent WOULD post), to tell

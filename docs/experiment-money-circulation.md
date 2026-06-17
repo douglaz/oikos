@@ -514,3 +514,48 @@ adopted **or churn with replacements**, conserved, no fiat. (Raising the savings
 cap merely *hides* the retirement wall — not the real fix.) The current best
 playable baseline remains the in-kind subsistence colony (Experiment 10):
 sustainably fed and conserved.
+
+## Experiment 12 — the recurring motive: the arc sustains (no firms)
+
+The faithful self-employment fix, built: `ChainConfig::recurring_motive` +
+`recipe_is_profitable`. With it, `run_role_choice` keeps a producer adopted while
+the recipe is simply **profitable** at realized prices (`output·qty > input·qty +
+operating_cost`), not only while it newly provisions a one-off future-money
+savings want. That is the recurring owner-operator motive — a real artisan keeps
+producing because consumption **recurs** — and it removes the satiation/retirement
+that collapsed every prior variant. No firms, no value-scale surgery.
+
+Composed with the fed subsistence base and the in-kind capital advances
+(`frontier_economy` / the `economy` scenario: loan + food + inputs in kind +
+recurring motive), **the whole subsistence→specialization arc finally sustains:**
+
+| Metric | prior best | `economy` |
+| --- | --- | --- |
+| bread.made / 800 | 951 (spoilage) | **7011** |
+| tail production (t400–800) | ~0 | **9 bread/tick, steady** |
+| producers adopted | de-adopt | **mill 3 / bake 3, to t1600** |
+| era | falls back | **holds `capital`** |
+| hunger | climbs to ~8 | **~2.7 (early), ~6 (late)** |
+| conserved | yes | **yes, every tick** |
+
+Production runs continuously at full chain throughput (9 bread/tick, 3 grain/tick)
+through tick 1600 — a **self-sustaining specialized production economy** grown
+from a subsistence base, via self-employed artisans, with no firms and no fiat.
+Locked by `recurring_motive_sustains_the_specialization_arc`.
+
+**Caveat (honest):** hunger drifts from ~2.7 to ~6 over the long run. Production
+is *constant* at 9/tick while the population grows, so per-capita food slowly
+tightens — a **throughput/scaling** matter (more producers via a larger latent
+pool / replacement), not a structural collapse. The chain itself never halts.
+
+**What this closes.** The ten-experiment hunt for "why the long-horizon colony
+dies" ends here: it was never one missing institution (not banks, not divisibility,
+not firms). It was a stack of model artifacts — money unit-starvation, the
+producer cold-start, satiated hoards with no carrying cost, and above all role
+adoption keyed to a one-off savings want instead of recurring consumption. With a
+subsistence floor, genuine in-kind savings→investment advances, and a recurring
+owner-operator motive, a primitive colony grows into a sustained specialized
+economy. **Next is scaling/balance** (a bigger producer pool + replacement so
+output tracks population; pricing so specialization emerges *endogenously* from
+surplus rather than via curated advances) — and then the era ladder beyond
+`capital` (credit/modern) on this now-living base.
