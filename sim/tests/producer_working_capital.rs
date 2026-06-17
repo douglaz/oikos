@@ -135,7 +135,7 @@ fn threshold_spoilage_raises_production_and_conserves() {
 }
 
 #[test]
-fn market_gate_trace_at_the_halt() {
+fn stock_and_gold_trace_at_the_halt() {
     // Observational diagnostic (run with --nocapture): trace the input market
     // across the ~tick-300 production halt of the revolving-loan colony. The
     // question (per the Codex read): is it SUPPLY withdrawal (raw grain piles up

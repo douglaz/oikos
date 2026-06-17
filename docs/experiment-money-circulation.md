@@ -244,11 +244,14 @@ gated on a realized money spread rather than standing demand, market-matching or
 quote-timing on the one-unit machinery, or a stockpile/again-satiation dynamic on
 the consumer side.
 
-## Experiment 7 — the market-gate trace localizes the halt (the economy bifurcates)
+## Experiment 7 — the stock/gold trace at the halt (the economy bifurcates)
 
-A per-vocation stock/gold trace across the halt (`market_gate_trace_at_the_halt`,
-via the new `Settlement::stock_by_vocation`) settles it. At t240–350 the colony
-has **bifurcated**:
+A per-vocation **stock/gold** trace across the halt
+(`stock_and_gold_trace_at_the_halt`, via the new `Settlement::stock_by_vocation`)
+shows what is *held* at the halt — strong evidence for hoarding + input
+starvation, though (per the Codex review) it does **not** log live bids/asks, so
+it cannot by itself distinguish "miller posts no grain bid" from "miller's bid
+doesn't fill." At t240–350 the colony has **bifurcated**:
 
 | Class | grain | flour | bread | gold | state |
 | --- | --- | --- | --- | --- | --- |
@@ -271,11 +274,12 @@ seizure**, not a working-capital one:
 - So the hungry producer class can never re-enter: too poor and too hungry to buy
   inputs, and locked out of the hoarded output.
 
-This is the same root that surfaced at every layer — **a bounded savings want +
-zero carrying cost ⇒ satiated agents withdraw holding goods + money** — now
-localized exactly: the satiated *consumers* corner the bread and the money, and
-the producers starve with unsold grain piling beside them. Locked by the halt
-signature (gatherer grain large, miller grain zero, consumers hoard bread).
+This is consistent with the root that surfaced at every layer — **a bounded
+savings want + zero carrying cost ⇒ satiated agents withdraw holding goods +
+money**: the satiated *consumers* hold the bread and the money, and the producers
+starve with unsold grain piling beside them. (Strong evidence, not a live-order
+proof — see the Experiment-8 caveats.) Locked by the halt signature (gatherer
+grain large, miller grain zero, consumers hoard bread).
 
 **Next (the real redesign, per the Codex read):** give the model the
 counter-pressures real economies have — inventory carrying cost / spoilage so a
@@ -309,22 +313,44 @@ identity (`after = before + sources − consumed − … − spoiled`), and
    Locked by `threshold_spoilage_raises_production_and_conserves`.
 
 **But it does not achieve sustained production.** The halt still returns
-~tick 150–200 and hunger climbs to ~8. Adding grain to the spoiled set made **no
-difference** (951, identical halt) — confirming the residual blocker is *not* the
-grain hoard. `grain.input → 0` while grain is available: **the millers don't
-*buy* grain.** That is the value-scale ordering Codex flagged — a hungry
-producer's own present-consumption want outranks its input-buying want, so it
-won't buy inputs while hungry, and once the colony can't keep producers fed they
-stop buying inputs and the chain halts. Carrying cost curbs hoarding (a real
-gain) but cannot make a hungry producer prioritize buying inputs over eating.
+~tick 150–200 and hunger climbs to ~8. `grain.input → 0` while grain is
+available, so the millers are not getting grain. Adding grain to the spoiled set
+made no difference (951, identical halt).
 
-**So, after eight experiments, the binding constraint is finally isolated to one
-thing:** the producer value-scale / role decision. Working capital is solved
-(loan); the demand-hoard is curbable (threshold carrying cost); but production is
-still gated on producers who, when hungry, won't provision inputs — and on role
-adoption keyed to a realized money spread rather than standing demand. **The next
-work is the role/scale redesign**: producers (or a dedicated entrepreneur/
-capitalist) must provision inputs against *expected sales / live demand* without
-that being crowded out by their own consumption — i.e. entrepreneurial
-production, and/or a subsistence path so producers stay fed and solvent enough to
-keep buying inputs.
+### Caveats (Codex review — claims downgraded)
+
+A code-grounded review flagged that several earlier conclusions outran the
+evidence. Corrected:
+
+- The residual blocker is on the **producer/input side**, but it is **not yet
+  isolated** to "value-scale ordering." The ranking is real (present `bread-now`
+  outranks the producer's `grain-input` want — pinned by a g3a test), **but**
+  `reservation_bid_for_money` (econ/src/agent.rs) does *not* simply suppress the
+  grain bid because of an unsatisfied higher bread want — it protects only
+  *already-provisioned* higher wants and money above the target. So "hungry miller
+  ⇒ no grain bid" is **not proven**; bid-suppression from the ranking is an
+  unconfirmed hypothesis.
+- The Experiment-7 trace is a **stock/gold trace**, not a live order-book trace.
+  It shows millers hold no grain, but cannot distinguish "miller posts no grain
+  bid" from "miller's bid does not fill" — and that distinction changes the fix.
+- "Grain spoilage made no difference ⇒ grain hoarding isn't the blocker" is too
+  strong: this spoilage is an **ex-post** sink, so it never enters a gatherer's
+  reservation-*ask* decision; it does not test whether *anticipated* storage cost
+  would make gatherers sell.
+- "Working capital is solved" means **money** working capital. The loan advances
+  money, not the present goods (food/inputs) a worker needs — **in-kind**
+  maintenance/input advance is not addressed.
+
+### What's actually next (per the review)
+
+**First build a live order-book / reservation trace** around the halt (does the
+miller post a grain bid? does the gatherer post a grain ask? do they cross?) to
+identify *which* gate it is, before any behavioral fix. Then, almost certainly,
+the faithful fix is **institutional and in-kind**: a saver/entrepreneur advances
+*subsistence and/or inputs in kind* to active producers, bears risk, and takes
+repayment or an output claim after sale — keeping each worker's own value-scale
+ordering intact (do **not** make a starving miller prefer grain-for-production
+over bread; that would be fake entrepreneurship by value-scale surgery).
+Falsifiable success: `grain.input > 0` past tick 300, bread production through
+tick 800, hunger materially below the ~8 plateau, producers still adopted,
+conservation intact, no fiat/fiduciary issuance.
