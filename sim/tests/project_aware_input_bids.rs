@@ -14,8 +14,12 @@ fn endogenous() -> SettlementConfig {
     SettlementConfig::frontier_endogenous()
 }
 
-#[test]
-fn producer_buys_input_through_a_real_order_book_trade() {
+/// Run the colony, recording — for each NEW trade as it happens — the buyer's
+/// vocation AT THAT TICK (role-choice runs at the start of the next tick, so a
+/// buyer's vocation immediately after the tick is the one it traded under).
+/// Returns `(grain trades bought by an active Miller, flour trades bought by an
+/// active Baker, flour produced, bread produced)`.
+fn run_and_classify(ticks: u64) -> (u64, u64, u64, u64) {
     let config = endogenous();
     let content = config.chain.as_ref().expect("chain").content.clone();
     let grain = content.grain();
@@ -23,9 +27,10 @@ fn producer_buys_input_through_a_real_order_book_trade() {
     let bread = content.bread();
 
     let mut settlement = Settlement::generate(1, &config);
-    let mut flour_made = 0u64;
-    let mut bread_made = 0u64;
-    for tick in 0..200u64 {
+    let (mut grain_to_miller, mut flour_to_baker) = (0u64, 0u64);
+    let (mut flour_made, mut bread_made) = (0u64, 0u64);
+    let mut seen = 0usize;
+    for tick in 0..ticks {
         let report = settlement.econ_tick();
         assert!(
             report.conserves(),
@@ -33,25 +38,33 @@ fn producer_buys_input_through_a_real_order_book_trade() {
         );
         flour_made += report.produced_of(flour);
         bread_made += report.produced_of(bread);
+        let trades = &settlement.society().trades;
+        for trade in &trades[seen..] {
+            if trade.buyer == trade.seller {
+                continue;
+            }
+            match settlement.vocation_of_id(trade.buyer) {
+                Some(Vocation::Miller) if trade.good == grain => grain_to_miller += 1,
+                Some(Vocation::Baker) if trade.good == flour => flour_to_baker += 1,
+                _ => {}
+            }
+        }
+        seen = trades.len();
     }
+    (grain_to_miller, flour_to_baker, flour_made, bread_made)
+}
 
-    // There must exist a real order-book Trade where an active Miller/Baker bought
-    // its recipe input (grain or flour) from a *different* seller — the input
-    // acquired by market trade, not handed over. (Codex's clean metric.)
-    let input_trade = settlement.society().trades.iter().find(|trade| {
-        (trade.good == grain || trade.good == flour)
-            && trade.buyer != trade.seller
-            && matches!(
-                settlement.vocation_of_id(trade.buyer),
-                Some(Vocation::Miller) | Some(Vocation::Baker)
-            )
-    });
+#[test]
+fn producer_buys_input_through_a_real_order_book_trade_and_produces() {
+    let (grain_to_miller, flour_to_baker, flour_made, bread_made) = run_and_classify(200);
+
+    // The input is acquired by a real order-book Trade where an active producer
+    // bought its recipe input from a different seller (Codex's clean metric)...
     assert!(
-        input_trade.is_some(),
+        grain_to_miller > 0 || flour_to_baker > 0,
         "an active producer should acquire its input through a real order-book Trade"
     );
-
-    // And the acquired input is actually transformed: the chain produced output.
+    // ...and the acquired input is actually transformed: the chain produced output.
     assert!(
         flour_made > 0,
         "a miller that bought grain should have milled flour, got {flour_made}"
@@ -63,37 +76,16 @@ fn producer_buys_input_through_a_real_order_book_trade() {
 }
 
 #[test]
-fn miller_buys_grain_and_baker_buys_flour() {
+fn both_stages_buy_their_input_on_the_order_book() {
     // Both stages buy their own input through the market: at least one grain trade
-    // to a miller AND one flour trade to a baker.
-    let config = endogenous();
-    let content = config.chain.as_ref().expect("chain").content.clone();
-    let grain = content.grain();
-    let flour = content.flour();
-
-    let mut settlement = Settlement::generate(1, &config);
-    for _ in 0..200u64 {
-        settlement.econ_tick();
-    }
-
-    let mut miller_bought_grain = false;
-    let mut baker_bought_flour = false;
-    for trade in &settlement.society().trades {
-        if trade.buyer == trade.seller {
-            continue;
-        }
-        match settlement.vocation_of_id(trade.buyer) {
-            Some(Vocation::Miller) if trade.good == grain => miller_bought_grain = true,
-            Some(Vocation::Baker) if trade.good == flour => baker_bought_flour = true,
-            _ => {}
-        }
-    }
+    // to an active miller AND one flour trade to an active baker.
+    let (grain_to_miller, flour_to_baker, _, _) = run_and_classify(200);
     assert!(
-        miller_bought_grain,
-        "a miller should buy grain through the order book"
+        grain_to_miller > 0,
+        "a miller should buy grain through the order book, got {grain_to_miller}"
     );
     assert!(
-        baker_bought_flour,
-        "a baker should buy flour through the order book"
+        flour_to_baker > 0,
+        "a baker should buy flour through the order book, got {flour_to_baker}"
     );
 }

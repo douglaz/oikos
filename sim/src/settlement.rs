@@ -809,6 +809,20 @@ pub struct ChainConfig {
     /// trade, not handed over. Conserved; voluntary on both sides. `false` (every
     /// existing config) skips it, byte-identical.
     pub project_input_bids: bool,
+    /// LOCAL producer subsistence floor (S5 — the household/subsistence base): the
+    /// units of staple food each chain producer (Miller/Baker, and the latent pool
+    /// that will adopt) draws each tick from its OWN renewable household hearth —
+    /// minted fresh, exactly like the demography [`deliver_demography_provisions`]
+    /// provision, and NOT taken from any other agent. This is the **local**
+    /// household allocation the endogenous milestone is allowed to keep (a
+    /// producer's kitchen garden / its lineage's hearth), as distinct from the
+    /// **global** `subsistence_advance` redistribution (richest food-holder → every
+    /// producer) it turns OFF. It keeps a producer fed so its money frees to bid
+    /// for recipe inputs rather than reserve for its own hunger — the subsistence
+    /// base the specialization sits on top of. Conserved: a source recorded in
+    /// `report.endowment`, eaten in the consume phase like any provision. `0`
+    /// (every existing config) mints nothing, so the run is byte-identical.
+    pub producer_subsistence: u32,
     /// Per-producer, per-econ-tick cap on recipe applications — a deterministic
     /// throughput bound (nothing is drawn). A producer applies its recipe up to
     /// this many times, limited by the input it holds.
@@ -898,6 +912,7 @@ impl ChainConfig {
             input_advance: false,
             recurring_motive: false,
             project_input_bids: false,
+            producer_subsistence: 0,
             throughput: 2,
             miller_grain_buffer: 16,
             baker_flour_buffer: 16,
@@ -953,6 +968,7 @@ impl ChainConfig {
             input_advance: false,
             recurring_motive: false,
             project_input_bids: false,
+            producer_subsistence: 0,
             throughput: 2,
             miller_grain_buffer: 16,
             baker_flour_buffer: 16,
@@ -2394,10 +2410,56 @@ impl SettlementConfig {
     /// falsification of the Experiment-12 "scaffolded" verdict. Game-only; econ
     /// goldens untouched.
     pub fn frontier_endogenous() -> Self {
-        let mut cfg = Self::frontier_capital_advance();
+        // The ENDOGENOUS economy (the S5 DoD): the grain→flour→bread division of
+        // labor emerges atop a HOUSEHOLD/SUBSISTENCE base and sustains on REAL
+        // MARKET TRADE, with NO chain-specific global placement.
+        //
+        // Base (local/household allocation — allowed, not scaffolding):
+        // - the household demography hearth feeds the consumer lineages their staple
+        //   + WOOD (`deliver_demography_provisions`), and reproduces/ages them;
+        // - each chain producer feeds from its OWN local hearth
+        //   (`producer_subsistence`: staple + WOOD) so its money frees ENTIRELY for
+        //   recipe inputs rather than its own subsistence;
+        // - raw grain is a directly-edible subsistence floor (`subsistence_on_grain`)
+        //   — the roundabout bread chain is OPTIONAL specialization on top of it.
+        //
+        // Coordination (S1–S4, all real market trade):
+        // - producers BUY their recipe inputs on the real order book at the imputed
+        //   bundle reservation (`project_input_bids`, S1/S2), restocking only as they
+        //   clear their output (working-capital discipline, S3);
+        // - `recurring_motive` keeps an owner-operator producing while profitable;
+        // - the cold-start buffers (`latent_flour_seed`, `bread_buffer`) seed the
+        //   first realized flour/bread prices so latent millers→bakers adopt in
+        //   pipeline order (S4).
+        //
+        // NO curated scaffolds: NO per-tick planner loan (`capital_advance` off —
+        // working capital is real retained earnings), NO global food redistribution
+        // (`subsistence_advance` off), NO global input placement (`input_advance`
+        // off). A designated-GOLD market (`barter = None`) so the study is the chain,
+        // not money emergence (that is G5a/G5b); the money supply is the colonists'
+        // starting gold, which circulates rather than pooling.
+        let mut cfg = Self::frontier();
+        cfg.barter = None;
+        cfg.starting_gold_gatherer = 60;
+        cfg.starting_gold_consumer = 60;
         if let Some(chain) = cfg.chain.as_mut() {
             chain.recurring_motive = true;
             chain.project_input_bids = true;
+            chain.subsistence_on_grain = true;
+            chain.producer_subsistence = 4;
+            chain.producer_gold = 16;
+            // Smaller bread/flour bootstrap than the barter frontier (no barter
+            // window to bridge): enough to seed the first prices, not so much that
+            // reshuffling the buffer drowns out new production.
+            chain.bread_buffer = 8;
+            chain.consumer_staple_buffer = 2;
+            chain.latent_flour_seed = 12;
+        }
+        if let Some(demo) = cfg.demography.as_mut() {
+            demo.child_gold_endowment = 16;
+            for household in &mut demo.households {
+                household.starting_gold = 60;
+            }
         }
         cfg
     }
@@ -2912,6 +2974,10 @@ struct ChainRuntime {
     /// own input by market trade (see [`ChainConfig::project_input_bids`]).
     /// `false` for every existing config.
     project_input_bids: bool,
+    /// S5: the local producer-subsistence floor — the staple a producer's own
+    /// household hearth mints fresh each tick (see
+    /// [`ChainConfig::producer_subsistence`]). `0` for every existing config.
+    producer_subsistence: u32,
 }
 
 impl Settlement {
@@ -3595,6 +3661,7 @@ impl Settlement {
                 input_advance: chain.input_advance,
                 recurring_motive: chain.recurring_motive,
                 project_input_bids: chain.project_input_bids,
+                producer_subsistence: chain.producer_subsistence,
             }
         });
 
@@ -3902,6 +3969,14 @@ impl Settlement {
         // quote goes stale), before the market clears. A no-op without a demography
         // overlay.
         self.deliver_demography_provisions(&mut report);
+
+        // ---- 4c'. LOCAL PRODUCER SUBSISTENCE (S5): top each chain producer (and
+        // the latent pool) up to a small staple floor from its OWN renewable
+        // household hearth — minted fresh, like the demography provision, not taken
+        // from any other agent. The local household/subsistence base the
+        // specialization sits on, so a producer's money frees for input bids; a
+        // no-op unless enabled, so every other run is byte-identical.
+        self.run_producer_subsistence(&mut report);
 
         // ---- 4d. BANK (G8b): colonists deposit M3 specie into the chartered bank
         // (specie → reserves, claims to the depositor) and the bank lends fiduciary
@@ -5290,6 +5365,56 @@ impl Settlement {
         }
     }
 
+    /// LOCAL PRODUCER SUBSISTENCE phase (S5 — the household/subsistence base, see
+    /// [`ChainConfig::producer_subsistence`]). Before the market, top each chain
+    /// producer (active Miller/Baker AND the latent pool that will adopt) up to a
+    /// small staple-food floor, minting the staple FRESH from the producer's own
+    /// renewable household hearth — exactly like [`Self::deliver_demography_provisions`]
+    /// and NOT taken from any other agent. This is the LOCAL household allocation
+    /// the endogenous milestone keeps (a producer's subsistence garden / its
+    /// lineage's hearth), as distinct from the GLOBAL `run_subsistence_advance`
+    /// redistribution (richest holder → producer) it turns OFF. A fed producer's
+    /// money frees to bid for recipe inputs rather than reserve for its own hunger,
+    /// and a latent producer survives the cold-start window to adopt. Conserved:
+    /// the food is a source (`report.endowment`), eaten in the consume phase like
+    /// any provision. Deterministic: slot order, integer; a no-op unless enabled.
+    fn run_producer_subsistence(&mut self, report: &mut EconTickReport) {
+        let target = self
+            .chain
+            .as_ref()
+            .map_or(0, |chain| chain.producer_subsistence);
+        if target == 0 {
+            return;
+        }
+        let staple = self.known.hunger;
+        let live = self.live_colonist_slots.clone();
+        for &slot in &live {
+            let (id, vocation, latent) = {
+                let colonist = &self.colonists[slot];
+                (colonist.id, colonist.vocation, colonist.latent)
+            };
+            let is_producer = matches!(vocation, Vocation::Miller | Vocation::Baker)
+                || (vocation == Vocation::Unassigned && latent.is_some());
+            if !is_producer {
+                continue;
+            }
+            // The producer's own hearth provisions BOTH the hunger staple and WOOD
+            // (warmth) up to the floor — exactly the two goods the demography hearth
+            // mints for its members — so a producer's whole subsistence (food and
+            // warmth) is met locally and its money frees ENTIRELY for recipe inputs.
+            for good in [staple, WOOD] {
+                let held = self
+                    .society
+                    .agents
+                    .get(id)
+                    .map_or(0, |agent| agent.stock.get(good));
+                if held < target {
+                    self.deliver_demography_provision_unit(id, good, target - held, report);
+                }
+            }
+        }
+    }
+
     /// IN-KIND SUBSISTENCE ADVANCE phase (EXPERIMENT — see
     /// [`ChainConfig::subsistence_advance`]). Before the market, feed each hungry
     /// active chain producer (Miller/Baker) up to a small staple floor by
@@ -5482,7 +5607,7 @@ impl Settlement {
     /// override) unless enabled and money has emerged, so every other run is
     /// byte-identical.
     fn set_project_input_bid_overrides(&mut self) {
-        let (mill_recipe, bake_recipe, grain, flour, bread, operating_cost, recurring) =
+        let (mill_recipe, bake_recipe, grain, flour, bread, operating_cost, recurring, subsistence) =
             match self.chain.as_ref() {
                 Some(chain) if chain.project_input_bids => (
                     chain.content.mill_recipe().clone(),
@@ -5492,12 +5617,14 @@ impl Settlement {
                     chain.content.bread(),
                     chain.operating_cost,
                     chain.recurring_motive,
+                    chain.producer_subsistence,
                 ),
                 _ => return,
             };
         let Some(money) = self.society.current_money_good() else {
             return;
         };
+        let staple = self.known.hunger;
         let tick = self.society.tick.0;
         let live = self.live_colonist_slots.clone();
         for &slot in &live {
@@ -5517,6 +5644,19 @@ impl Settlement {
             let Some(agent) = self.society.agents.get(producer_id) else {
                 continue;
             };
+            // Demand-responsive restock (S3 working-capital discipline): do not buy
+            // more input while last cycle's output is still UNSOLD. A producer
+            // clears its output before restocking, so its input demand tracks its
+            // actual sales — it never drains working capital over-producing into a
+            // saturated market (the recurring-motive failure mode). The subsistence
+            // floor is excluded when the output IS the staple the producer's own
+            // hearth feeds it (a baker's bread), so its food is not mistaken for
+            // unsold inventory. One full batch (`output_qty`) of slack absorbs the
+            // one-tick lag between buying input and selling the output it becomes.
+            let output_floor = if output == staple { subsistence } else { 0 };
+            if agent.stock.get(output) >= recipe.output_qty.saturating_add(output_floor) {
+                continue;
+            }
             let Some(reservation) = imputed_input_reservation(
                 agent,
                 recipe,
