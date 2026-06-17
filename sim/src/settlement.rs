@@ -3914,6 +3914,18 @@ impl Settlement {
         // econ writes that tick's row so exported M3 metrics surface the credit.
         let bank_credit_issued = self.run_bank_phase();
 
+        // ---- 4e. PROJECT-AWARE INPUT BID OVERRIDES (S2, the endogenous fix): for
+        // each active producer, set a gated econ spot-bid override for its recipe
+        // input at the reservation IMPUTED from the project-bundle appraisal (the
+        // same machinery role-choice uses to adopt, not the recipe-blind scale
+        // bid). The override is consumed by this tick's `society.step()`: the bid
+        // enters the real order book, reserves the producer's own gold, and fills
+        // against a willing seller (a gatherer's grain, a miller's flour) — the
+        // input acquired by market trade, not placed. A no-op (no overrides set)
+        // unless [`ChainConfig::project_input_bids`] is on, so every other run is
+        // byte-identical.
+        self.set_project_input_bid_overrides();
+
         // ---- 5. MARKET: the econ clearing; money is redistributed between
         // colonists here. Producers have bought their inputs (a miller a unit of
         // grain, a baker a unit of flour) and sold last tick's output. For a G5a
@@ -3972,12 +3984,6 @@ impl Settlement {
         // mills/bakes it this tick. Bypasses the value-scale bid gate. Conserved;
         // a no-op unless enabled.
         self.run_input_advance();
-
-        // ---- 5d. PROJECT-AWARE INPUT BIDS (EXPERIMENT): an active producer buys
-        // its recipe input through a real market trade with its own money, at a
-        // price imputed from the output — the endogenous alternative to the
-        // curated input placement above. Conserved; a no-op unless enabled.
-        self.run_project_input_bids();
 
         // ---- 6. PRODUCTION (G3a): each living producer applies its recipe to the
         // input it now holds, transforming it into output. A conserved conversion:
@@ -5069,7 +5075,11 @@ impl Settlement {
                 {
                     let input_wants = match colonist.vocation {
                         // Active producers (G3a seeded, G3b adopted) bid `throughput`
-                        // units of input each tick.
+                        // units of input each tick. S2: when the project-aware
+                        // override drives input acquisition, suppress this generic
+                        // (recipe-blind, low-ranked) input want so the producer posts
+                        // no DUPLICATE bid — the override is the sole input bid.
+                        Vocation::Miller | Vocation::Baker if chain.project_input_bids => 0,
                         Vocation::Miller | Vocation::Baker => chain.throughput.max(1),
                         // G6b: a scholar/confectioner reserves (and tops up) its FULL
                         // input buffer, so research / tier-2 production runs from seeded
@@ -5445,99 +5455,86 @@ impl Settlement {
         }
     }
 
-    /// PROJECT-AWARE INPUT BID phase (EXPERIMENT — see
-    /// [`ChainConfig::project_input_bids`]). Before production, an active producer
-    /// buys ONE unit of its recipe input through a real market trade, with its OWN
-    /// money, at a price imputed from the output it will produce (Menger: the
-    /// input's value is the output's realized value minus the operating cost),
-    /// matched against the cheapest *willing* seller at that seller's own ask.
-    /// Unlike `run_input_advance` (a planner places inputs for free), here the
-    /// producer pays for its own input — endogenous market acquisition. Conserved
-    /// (money producer→seller, input seller→producer), voluntary on both sides.
-    /// No-op unless enabled and money has emerged. Deterministic: id-ordered;
-    /// seller chosen by lowest ask (ties → lowest id).
-    fn run_project_input_bids(&mut self) {
-        let (grain, flour, bread, mill_out, bake_out, operating_cost) = match self.chain.as_ref() {
-            Some(chain) if chain.project_input_bids => (
-                chain.content.grain(),
-                chain.content.flour(),
-                chain.content.bread(),
-                chain.content.mill_recipe().output_qty,
-                chain.content.bake_recipe().output_qty,
-                chain.operating_cost,
-            ),
-            _ => return,
-        };
+    /// PROJECT-AWARE INPUT BID phase (S2 — the endogenous fix, see
+    /// [`ChainConfig::project_input_bids`]). Before the market clears, set a gated
+    /// econ spot-bid override (S1) for each active producer's recipe input, so the
+    /// producer bids for its input on the REAL order book during `society.step()`
+    /// — with its own money, at the reservation IMPUTED from the project-bundle
+    /// appraisal. The bid reserves the producer's gold and fills against a willing
+    /// seller (a gatherer's grain, a miller's flour) at the seller's own ask,
+    /// recording a real `Trade` — the input acquired by market trade, not placed
+    /// by a planner (`run_input_advance`).
+    ///
+    /// The reservation reuses [`recipe_adoption_pays_for_money`] /
+    /// [`appraise_project_bundle_for_money`] — the SAME machinery role-choice
+    /// adopts on — not the scalar [`recipe_is_profitable`]: it is the highest input
+    /// price at which running the recipe-as-project still provisions the producer's
+    /// savings want on its current endowment (see [`imputed_input_reservation`]).
+    ///
+    /// Output-price source for the imputation: the good's LAST REALIZED trade price
+    /// (`Society::realized_price`), the same observed signal role-choice adopts on
+    /// — not a hypothetical live bid. No realized output price yet → no basis to
+    /// impute → no override (the cold-start buffers seed the first realized prices,
+    /// S4). The generic low-ranked input want is suppressed for these producers in
+    /// `regenerate_scales`, so the override is the SOLE input bid (no duplicate).
+    ///
+    /// Deterministic: id-ordered, integer, nothing drawn. A no-op (sets no
+    /// override) unless enabled and money has emerged, so every other run is
+    /// byte-identical.
+    fn set_project_input_bid_overrides(&mut self) {
+        let (mill_recipe, bake_recipe, grain, flour, bread, operating_cost, recurring) =
+            match self.chain.as_ref() {
+                Some(chain) if chain.project_input_bids => (
+                    chain.content.mill_recipe().clone(),
+                    chain.content.bake_recipe().clone(),
+                    chain.content.grain(),
+                    chain.content.flour(),
+                    chain.content.bread(),
+                    chain.operating_cost,
+                    chain.recurring_motive,
+                ),
+                _ => return,
+            };
         let Some(money) = self.society.current_money_good() else {
             return;
         };
+        let tick = self.society.tick.0;
         let live = self.live_colonist_slots.clone();
         for &slot in &live {
             let (producer_id, vocation) = {
                 let colonist = &self.colonists[slot];
                 (colonist.id, colonist.vocation)
             };
-            let (input, output, out_qty) = match vocation {
-                Vocation::Miller => (grain, flour, mill_out),
-                Vocation::Baker => (flour, bread, bake_out),
+            let (recipe, input, output) = match vocation {
+                Vocation::Miller => (&mill_recipe, grain, flour),
+                Vocation::Baker => (&bake_recipe, flour, bread),
                 _ => continue,
             };
-            // Already holds an input unit for this tick's recipe → no need to buy.
-            let held = self
-                .society
-                .agents
-                .get(producer_id)
-                .map_or(0, |agent| agent.stock.get(input));
-            if held >= 1 {
-                continue;
-            }
-            // Imputed reservation for one input unit: the output it yields, valued
-            // at the output's realized price, minus the operating cost. No price
-            // for the output yet → no basis to impute → skip.
-            let Some(out_price) = self.realized_price(output) else {
+            // The output's last realized price is the imputation basis (S4 seeds it).
+            let Some(out_price) = self.society.realized_price(output) else {
                 continue;
             };
-            let reservation = out_price
-                .0
-                .saturating_mul(u64::from(out_qty))
-                .saturating_sub(operating_cost);
-            if reservation == 0 {
+            let Some(agent) = self.society.agents.get(producer_id) else {
                 continue;
-            }
-            let producer_gold = self.society.free_gold_after_all_reserves(producer_id).0;
-            // Cheapest willing seller of the input (its own reservation ask),
-            // never the producer itself; lowest ask, ties → lowest id.
-            let seller = live
-                .iter()
-                .filter_map(|&seller_slot| {
-                    let id = self.colonists[seller_slot].id;
-                    if id == producer_id {
-                        return None;
-                    }
-                    let agent = self.society.agents.get(id)?;
-                    if agent.stock.get(input) == 0 {
-                        return None;
-                    }
-                    let ask = agent.reservation_ask_for_money(input, 1, money)?.0;
-                    Some((ask, id))
-                })
-                .min_by_key(|&(ask, id)| (ask, id));
-            if let Some((ask, seller_id)) = seller {
-                // Trade only if the producer's imputed value crosses the seller's
-                // ask and the producer can pay from its own purse.
-                if ask <= reservation && ask <= producer_gold {
-                    let price = Gold(ask);
-                    if self.move_money_conserved(producer_id, seller_id, price)
-                        && self.society.debit_stock(seller_id, input, 1)
-                        && !self.society.credit_stock(producer_id, input, 1)
-                    {
-                        // Roll back (overflow): re-credit the seller's stock and
-                        // refund the money so nothing is created or destroyed.
-                        self.society.credit_stock(seller_id, input, 1);
-                        self.move_money_conserved(seller_id, producer_id, price);
-                    }
-                }
-            }
+            };
+            let Some(reservation) = imputed_input_reservation(
+                agent,
+                recipe,
+                out_price,
+                tick,
+                operating_cost,
+                recurring,
+                money,
+            ) else {
+                continue;
+            };
+            // Bid at the imputed reservation: econ caps the posted limit by the
+            // producer's own free gold and tender, and the willing seller's resting
+            // ask sets the fill price (the producer captures the spread when the
+            // seller's ask rests first — the id-ordered book's normal case, since
+            // gatherers/millers precede the producer that buys from them).
+            self.society
+                .set_bid_override(producer_id, input, reservation, reservation);
         }
     }
 
@@ -6569,6 +6566,16 @@ impl Settlement {
         self.colonists.get(index).map(|c| c.vocation)
     }
 
+    /// The current vocation of the colonist with stable id `id` (living or dead),
+    /// or `None` for a non-colonist id (e.g. a resident trader). Lets a test map a
+    /// `Society::trades` buyer/seller back to a role — the S5 acceptance metric
+    /// that an input was bought by an active Miller/Baker from a different seller.
+    pub fn vocation_of_id(&self, id: AgentId) -> Option<Vocation> {
+        self.colonist_slot_by_id
+            .get(&id)
+            .map(|&slot| self.colonists[slot].vocation)
+    }
+
     /// Whether the colonist at generation `index` is still alive.
     pub fn is_alive(&self, index: usize) -> bool {
         self.colonists.get(index).is_some_and(|c| c.alive)
@@ -7567,6 +7574,70 @@ pub fn recipe_is_profitable(
         .map_or(0, |price| price.0)
         .saturating_mul(u64::from(input_qty));
     revenue > input_cost.saturating_add(operating_cost)
+}
+
+/// The producer's imputed reservation for ONE unit of its recipe input (S2),
+/// derived by REUSING the project-bundle appraisal rather than a scalar profit.
+///
+/// Returns the highest per-unit input price at which running the recipe once,
+/// framed as a project bundle, still provisions the producer's soonest savings
+/// want on its current endowment — probing [`recipe_adoption_pays_for_money`] (the
+/// same gate role-choice adopts on, which internally calls
+/// [`appraise_project_bundle_for_money`]). The Mengerian ceiling — the output's
+/// realized value minus the operating cost, per input unit — bounds the search:
+/// the input is never worth more than the output it yields net of cost. The
+/// highest tolerated price is found by binary search over `[1, ceiling]`.
+///
+/// If the savings want is already satiated (no price provisions it) but
+/// `recurring_motive` is set, fall back to the ceiling — a satiated owner-operator
+/// still re-stocks at break-even to keep the consumption cycle going (the same
+/// recurring gate role-choice keeps the role adopted on). `None` if nothing pays.
+fn imputed_input_reservation(
+    agent: &Agent,
+    recipe: &Recipe,
+    output_price: Gold,
+    tick: u64,
+    operating_cost: u64,
+    recurring: bool,
+    money_good: GoodId,
+) -> Option<Gold> {
+    let input_qty = u64::from(recipe.input_good.map_or(1, |(_input, qty)| qty).max(1));
+    let revenue = output_price.0.saturating_mul(u64::from(recipe.output_qty));
+    let ceiling = revenue.saturating_sub(operating_cost) / input_qty;
+    if ceiling == 0 {
+        return None;
+    }
+    let pays = |price: u64| {
+        recipe_adoption_pays_for_money(
+            agent,
+            recipe,
+            Some(output_price),
+            Some(Gold(price)),
+            tick,
+            operating_cost,
+            money_good,
+        )
+    };
+    if pays(1) {
+        // Binary-search the highest input price the bundle still tolerates.
+        let mut low = 1u64;
+        let mut high = ceiling;
+        while low < high {
+            let mid = low + (high - low).div_ceil(2);
+            if pays(mid) {
+                low = mid;
+            } else {
+                high = mid - 1;
+            }
+        }
+        return Some(Gold(low));
+    }
+    // Satiated savings want: a recurring owner-operator still re-stocks at the
+    // Mengerian break-even ceiling (there is a positive spread, since ceiling ≥ 1).
+    if recurring {
+        return Some(Gold(ceiling));
+    }
+    None
 }
 
 pub fn recipe_adoption_pays_for_money(
