@@ -192,6 +192,55 @@ fn stock_and_gold_trace_at_the_halt() {
 }
 
 #[test]
+fn live_order_trace_at_the_halt() {
+    // Codex's decisive instrument: reconstruct the live BID/ASK intent for grain
+    // across the halt (the reservation orders each agent WOULD post), to tell
+    // apart the four candidate gates — (1) miller posts no grain bid, (2) miller
+    // bids but no gatherer asks, (3) both post but don't cross, (4) inputs held
+    // but recipe fails. Observational (run with --nocapture).
+    let config = SettlementConfig::frontier_capital_advance();
+    let grain = config.chain.as_ref().expect("chain").content.grain();
+    let mut settlement = Settlement::generate(1, &config);
+    for tick in 1..=350 {
+        let report = settlement.econ_tick();
+        if tick >= 240 && tick % 20 == 0 {
+            let stats: Vec<_> = settlement
+                .order_stats_by_vocation(grain)
+                .into_iter()
+                .filter(|s| s.bidders > 0 || s.askers > 0)
+                .map(|s| {
+                    format!(
+                        "{:?}{{bid {}@{:?}, ask {}@{:?}}}",
+                        s.vocation, s.bidders, s.best_bid, s.askers, s.best_ask
+                    )
+                })
+                .collect();
+            eprintln!(
+                "t={tick:<4} grain.input={} grain bid/ask: [{}]",
+                report.consumed_as_input_of(grain),
+                stats.join(", ")
+            );
+        }
+    }
+
+    // Lock the producer-side-gate signature at the halt: the grain market has
+    // SELLERS (gatherers post asks) but NO BUYERS (zero grain bidders across all
+    // vocations). The would-be buyer (the miller) posts no bid and the
+    // money-holding consumers don't want grain — so grain never trades and the
+    // chain is input-starved. (Market-time instrumentation further showed even a
+    // loan-funded miller posts no grain bid — its money is reserved for its own
+    // unmet bread want — which is why a money-only advance can't fix this and an
+    // in-kind advance is needed.)
+    let grain_orders = settlement.order_stats_by_vocation(grain);
+    let askers: usize = grain_orders.iter().map(|s| s.askers).sum();
+    let bidders: usize = grain_orders.iter().map(|s| s.bidders).sum();
+    assert!(
+        askers > 0 && bidders == 0,
+        "halt: grain should have sellers and no buyers, got askers={askers} bidders={bidders}"
+    );
+}
+
+#[test]
 fn gold_by_vocation_conserves_against_total() {
     // The per-vocation gold sum (living colonists) plus commons must not exceed
     // the settlement's total gold — a sanity check on the diagnostic accessor.

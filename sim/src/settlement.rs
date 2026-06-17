@@ -2450,6 +2450,21 @@ pub struct LineageStats {
     pub gold: u64,
 }
 
+/// Diagnostic: the live money BID/ASK intent for one good from one vocation,
+/// reconstructed from each living colonist's reservation price (the order it
+/// *would* post). `best_bid`/`best_ask` are `None` when no colonist of that
+/// vocation would post that side. A bid and ask **cross** (would trade) when
+/// `best_bid >= best_ask`. Used to localize the input-market halt: do millers
+/// bid for grain, do gatherers ask for grain, and do they cross?
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OrderStat {
+    pub vocation: Vocation,
+    pub bidders: usize,
+    pub best_bid: Option<u64>,
+    pub askers: usize,
+    pub best_ask: Option<u64>,
+}
+
 struct Colonist {
     id: AgentId,
     vocation: Vocation,
@@ -6280,6 +6295,51 @@ impl Settlement {
                 entry.1 = entry.1.saturating_add(qty);
             } else {
                 out.push((colonist.vocation, qty));
+            }
+        }
+        out
+    }
+
+    /// Diagnostic (read-only): the live money BID/ASK intent for `good` grouped by
+    /// [`Vocation`] — for each living colonist, the single-unit order it *would*
+    /// post is reconstructed from `Agent::reservation_bid_for_money` /
+    /// `reservation_ask_for_money` (the same pure functions the market uses). This
+    /// is the live order-book probe the stock/gold trace could not give: it
+    /// distinguishes "miller posts no grain bid" (producer-side gate) from
+    /// "miller bids but no gatherer asks" (seller-side gate) from "both post but
+    /// don't cross" (price/spread gate). Empty before money emerges.
+    pub fn order_stats_by_vocation(&self, good: GoodId) -> Vec<OrderStat> {
+        let Some(money) = self.society.current_money_good() else {
+            return Vec::new();
+        };
+        let mut out: Vec<OrderStat> = Vec::new();
+        for &slot in &self.live_colonist_slots {
+            let colonist = &self.colonists[slot];
+            let Some(agent) = self.society.agents.get(colonist.id) else {
+                continue;
+            };
+            let bid = agent.reservation_bid_for_money(good, 1, money).map(|g| g.0);
+            let ask = agent.reservation_ask_for_money(good, 1, money).map(|g| g.0);
+            let stat = match out.iter_mut().find(|s| s.vocation == colonist.vocation) {
+                Some(stat) => stat,
+                None => {
+                    out.push(OrderStat {
+                        vocation: colonist.vocation,
+                        bidders: 0,
+                        best_bid: None,
+                        askers: 0,
+                        best_ask: None,
+                    });
+                    out.last_mut().expect("just pushed")
+                }
+            };
+            if let Some(bid) = bid {
+                stat.bidders += 1;
+                stat.best_bid = Some(stat.best_bid.map_or(bid, |b| b.max(bid)));
+            }
+            if let Some(ask) = ask {
+                stat.askers += 1;
+                stat.best_ask = Some(stat.best_ask.map_or(ask, |a| a.min(ask)));
             }
         }
         out

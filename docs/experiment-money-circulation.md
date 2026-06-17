@@ -354,3 +354,42 @@ over bread; that would be fake entrepreneurship by value-scale surgery).
 Falsifiable success: `grain.input > 0` past tick 300, bread production through
 tick 800, hunger materially below the ~8 plateau, producers still adopted,
 conservation intact, no fiat/fiduciary issuance.
+
+## Experiment 9 — the live order-book trace (the gate is producer-side, proven)
+
+Built the instrument the review asked for: `Settlement::order_stats_by_vocation`
+reconstructs each living colonist's live BID/ASK intent for a good from its pure
+`reservation_bid_for_money` / `reservation_ask_for_money` (the same functions the
+market uses), grouped by vocation, with best bid/ask. The `live_order_trace_at_
+the_halt` test reads the grain book across the halt. This distinguishes the four
+candidate gates Codex named.
+
+**Result — case #1, the producer-side gate, confirmed:**
+
+- At the halt, **gatherers post grain ASKS** (4 askers @ price 1) — the seller
+  side works.
+- **No vocation posts a grain BID** (`bidders = 0` everywhere) — including
+  market-time instrumentation (snapshot right after the loan tops the millers
+  up): a **loan-funded miller still posts no grain bid.**
+
+So grain has sellers and **no buyers**: the would-be buyer (the miller) doesn't
+bid even when funded, and the money-holding consumers don't want grain. Grain
+never trades → `grain.input = 0` → the chain is input-starved. Locked by the halt
+signature (grain askers > 0, grain bidders = 0).
+
+**Why the funded miller posts no grain bid** — and it vindicates the *mechanism*
+I'd earlier asserted without proof: `reservation_bid_for_money` returns `None`
+because the miller's gold is **reserved for its higher-ranked own bread want**
+(`allocated_money_before_rank` protects money earmarked for wants above the
+grain-input rank). The hungry miller mentally holds its cash for bread it can't
+get, so it never bids for grain. This is individually rational — the fix is NOT
+to reorder the scale (fake entrepreneurship) but to remove the hunger: feed the
+producer.
+
+**This rules out the money-only advance** (a funded miller still doesn't bid) and
+confirms the **in-kind advance** as the faithful fix: a saver/entrepreneur
+advances *subsistence and/or inputs in kind* to active producers (bearing risk,
+taking repayment / an output claim), so the producer's bread want is met, its
+money is freed, and it bids for grain — or, equivalently, the inputs are placed
+directly in its hands. Falsifiable as above (`grain.input > 0` past t300, bread
+through t800, hunger ≪ 8, conserved, no fiat). That is the next build.
