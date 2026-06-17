@@ -774,6 +774,17 @@ pub struct ChainConfig {
     /// recirculates the satiated consumers' idle bread hoard to the producers.
     /// `false` (every existing config) skips the phase, byte-identical.
     pub subsistence_advance: bool,
+    /// EXPERIMENTAL (in-kind INPUT advance): when `true` *and* money has emerged,
+    /// each econ tick (before production) a capitalist (the richest money-holder)
+    /// **buys each active producer's recipe input in kind** from a seller — grain
+    /// for a miller, flour for a baker — paying the seller real money and placing
+    /// the input directly in the producer's hands. This bypasses the value-scale
+    /// gate entirely: production no longer depends on a producer out-ranking its
+    /// own consumption/savings to *bid* for inputs (Experiment 9–10's residual
+    /// blocker). It also recirculates the capitalist's idle money to the input
+    /// sellers (gatherers). Conserved (money cap→seller, input seller→producer).
+    /// `false` (every existing config) skips the phase, byte-identical.
+    pub input_advance: bool,
     /// Per-producer, per-econ-tick cap on recipe applications — a deterministic
     /// throughput bound (nothing is drawn). A producer applies its recipe up to
     /// this many times, limited by the input it holds.
@@ -860,6 +871,7 @@ impl ChainConfig {
             capital_advance: false,
             perishable_decay_bps: 0,
             subsistence_advance: false,
+            input_advance: false,
             throughput: 2,
             miller_grain_buffer: 16,
             baker_flour_buffer: 16,
@@ -912,6 +924,7 @@ impl ChainConfig {
             capital_advance: false,
             perishable_decay_bps: 0,
             subsistence_advance: false,
+            input_advance: false,
             throughput: 2,
             miller_grain_buffer: 16,
             baker_flour_buffer: 16,
@@ -2280,6 +2293,23 @@ impl SettlementConfig {
         cfg
     }
 
+    /// EXPERIMENTAL (in-kind INPUT advance — not a golden path): the in-kind
+    /// subsistence colony (`frontier_in_kind`: loan + food in kind, so the colony
+    /// stays fed) PLUS the in-kind **input** advance
+    /// ([`ChainConfig::input_advance`]) — a capitalist buys each producer's recipe
+    /// input in kind and places it in its hands, so production runs without the
+    /// producer having to out-rank its own savings to bid for inputs (the residual
+    /// blocker from Experiment 10). Tests whether placing inputs makes the
+    /// production chain self-sustain past the halt. Additive and game-only; econ
+    /// goldens untouched.
+    pub fn frontier_input_advance() -> Self {
+        let mut cfg = Self::frontier_in_kind();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.input_advance = true;
+        }
+        cfg
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).
@@ -2780,6 +2810,9 @@ struct ChainRuntime {
     /// EXPERIMENTAL: enable the in-kind subsistence advance to hungry producers
     /// (see [`ChainConfig::subsistence_advance`]). `false` for every existing config.
     subsistence_advance: bool,
+    /// EXPERIMENTAL: enable the in-kind input advance to producers (see
+    /// [`ChainConfig::input_advance`]). `false` for every existing config.
+    input_advance: bool,
 }
 
 impl Settlement {
@@ -3460,6 +3493,7 @@ impl Settlement {
                 capital_advance: chain.capital_advance,
                 perishable_decay_bps: chain.perishable_decay_bps,
                 subsistence_advance: chain.subsistence_advance,
+                input_advance: chain.input_advance,
             }
         });
 
@@ -3830,6 +3864,13 @@ impl Settlement {
                 report.promoted.insert(emerged, minted);
             }
         }
+
+        // ---- 5c. IN-KIND INPUT ADVANCE (EXPERIMENT): a capitalist buys each
+        // active producer's recipe input in kind from the richest holder and
+        // places it in the producer's hands — before production, so the producer
+        // mills/bakes it this tick. Bypasses the value-scale bid gate. Conserved;
+        // a no-op unless enabled.
+        self.run_input_advance();
 
         // ---- 6. PRODUCTION (G3a): each living producer applies its recipe to the
         // input it now holds, transforming it into output. A conserved conversion:
@@ -5199,6 +5240,99 @@ impl Settlement {
                     if !self.society.credit_stock(producer_id, staple, give) {
                         self.society.credit_stock(donor_id, staple, give);
                     }
+                }
+            }
+        }
+    }
+
+    /// IN-KIND INPUT ADVANCE phase (EXPERIMENT — see [`ChainConfig::input_advance`]).
+    /// Before production, a capitalist (the richest money-holder) buys each active
+    /// producer's recipe input **in kind** from the holder with the most of it
+    /// (grain for a miller from the gatherers, flour for a baker from the millers),
+    /// paying the seller real money and placing the input in the producer's hands.
+    /// This bypasses the value-scale gate: production no longer needs a producer to
+    /// out-rank its own consumption/savings to *bid* for inputs. Conserved (money
+    /// capitalist→seller, input seller→producer); it also recirculates the
+    /// capitalist's idle money to the sellers. No-op unless enabled and money has
+    /// emerged. Deterministic: id-ordered; capitalist/seller by most free
+    /// gold / most stock (ties → lowest id).
+    fn run_input_advance(&mut self) {
+        let (grain, flour) = match self.chain.as_ref() {
+            Some(chain) if chain.input_advance => (chain.content.grain(), chain.content.flour()),
+            _ => return,
+        };
+        if self.society.current_money_good().is_none() {
+            return;
+        }
+        // A small per-tick input float — enough for a recipe application.
+        const STOCK_TARGET: u32 = 3;
+        let live = self.live_colonist_slots.clone();
+        for &slot in &live {
+            let (producer_id, vocation) = {
+                let colonist = &self.colonists[slot];
+                (colonist.id, colonist.vocation)
+            };
+            let input = match vocation {
+                Vocation::Miller => grain,
+                Vocation::Baker => flour,
+                _ => continue,
+            };
+            let held = self
+                .society
+                .agents
+                .get(producer_id)
+                .map_or(0, |agent| agent.stock.get(input));
+            if held >= STOCK_TARGET {
+                continue;
+            }
+            let need = STOCK_TARGET - held;
+            let pick = |key: &dyn Fn(AgentId) -> u64| -> Option<(u64, AgentId)> {
+                live.iter()
+                    .filter_map(|&s| {
+                        let id = self.colonists[s].id;
+                        if id == producer_id {
+                            return None;
+                        }
+                        let v = key(id);
+                        (v > 0).then_some((v, id))
+                    })
+                    .max_by_key(|&(v, id)| (v, std::cmp::Reverse(id)))
+            };
+            let seller = pick(&|id| {
+                u64::from(
+                    self.society
+                        .agents
+                        .get(id)
+                        .map_or(0, |a| a.stock.get(input)),
+                )
+            });
+            let capitalist = pick(&|id| self.society.free_gold_after_all_reserves(id).0);
+            let (Some((seller_stock, seller_id)), Some((cap_free, cap_id))) = (seller, capitalist)
+            else {
+                continue;
+            };
+            if cap_id == seller_id {
+                continue;
+            }
+            let price = self.realized_price(input).map_or(1, |g| g.0.max(1));
+            let affordable = u32::try_from(cap_free / price).unwrap_or(u32::MAX);
+            let qty = need
+                .min(u32::try_from(seller_stock).unwrap_or(u32::MAX))
+                .min(affordable);
+            if qty == 0 {
+                continue;
+            }
+            let cost = Gold(u64::from(qty) * price);
+            // Pay the seller, then place the input. Roll back on any failure so no
+            // good or money is created or destroyed.
+            if self.move_money_conserved(cap_id, seller_id, cost) {
+                if self.society.debit_stock(seller_id, input, qty) {
+                    if !self.society.credit_stock(producer_id, input, qty) {
+                        self.society.credit_stock(seller_id, input, qty);
+                        self.move_money_conserved(seller_id, cap_id, cost);
+                    }
+                } else {
+                    self.move_money_conserved(seller_id, cap_id, cost);
                 }
             }
         }

@@ -437,3 +437,40 @@ out-ranking its own savings to buy inputs. That, or accept the fed-but-
 redistributive colony as the playable baseline and build the production economy
 on the finance stack (banks/credit channeling savings into capitalist input
 purchase) — the G8 machinery, now with a concrete job to do.
+
+## Experiment 11 — the in-kind INPUT advance (refuted: the satiation wall returns)
+
+Built the other in-kind form: `ChainConfig::input_advance` + a `run_input_advance`
+phase (before production) where a capitalist (richest money-holder) **buys each
+active producer's recipe input in kind** from the holder with the most of it
+(grain for millers from gatherers, flour for bakers from millers), paying the
+seller real money and placing the input in the producer's hands. Conserved (money
+cap→seller, input seller→producer). `frontier_input_advance` / the `input-advance`
+scenario stack it on the in-kind food colony. Locked by
+`input_advance_conserves_but_triggers_satiation_de_adoption`.
+
+**Result — refuted, and worse than in-kind food alone.** Production bursts early
+(bread.made 9 at t30–40) but the producers then **de-adopt** (`mill 3→0,
+bake 3→0` by t100–200), the era falls back to `money`, and hunger climbs to ~8.
+Total bread 555 — *below* even the in-kind food colony, which stayed well-fed.
+
+**Why — the bounded-savings satiation wall, again.** Placing inputs lets the
+producer make and *sell* output, so it **earns**; its capped savings want
+(`MAX_SAVE_UNITS`) fills; role-choice then sees no unmet money want and
+de-adopts it. The revolving loan had avoided this only by sweeping producers
+cash-light (which capped production low); boosting production via input placement
+re-triggers the satiation. So the two pull against each other: keep producers
+cash-light → they stay adopted but barely produce; let them earn → they satiate
+and quit.
+
+**The real remaining wall, now unmistakable.** Across the self-employed-producer
+model, *any* mechanism that makes a producer earn makes it satiate and stop — a
+self-employed artisan with a bounded savings want rationally retires once
+provisioned, and the fixed producer pool has no replacement. The faithful fix is
+therefore **not** another advance but a **firm / employment structure**: a
+capitalist (or firm) *owns* the production and *hires* labor for a wage; the
+worker is paid (doesn't accumulate-and-retire as an owner), and the firm keeps
+producing as long as there is demand. That is the M11–M17 labor-wage machinery
+(already in econ) applied to the colony chain — the concrete next build. The
+current best playable baseline remains the in-kind FOOD colony (Experiment 10):
+sustainably fed, conserved, if not yet a self-sustaining production economy.

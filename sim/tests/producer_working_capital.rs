@@ -222,6 +222,32 @@ fn in_kind_advance_feeds_producers_and_conserves() {
 }
 
 #[test]
+fn input_advance_conserves_but_triggers_satiation_de_adoption() {
+    // The in-kind INPUT advance (a capitalist buys producers' inputs in kind and
+    // places them) conserves, but it does NOT make the chain self-sustain: by
+    // boosting output it makes producers EARN, which fills their bounded savings
+    // want, so role-choice de-adopts them and the chain collapses (worse than the
+    // in-kind FOOD advance alone). This locks the conservation of the new
+    // transfer and documents the satiation/de-adoption wall (producers gone by a
+    // few hundred ticks) — the deepest remaining blocker.
+    let config = SettlementConfig::frontier_input_advance();
+    let mut settlement = Settlement::generate(1, &config);
+    for _ in 0..300 {
+        assert!(
+            settlement.econ_tick().conserves(),
+            "in-kind input advance (money cap→seller, input seller→producer) must conserve"
+        );
+    }
+    let producers =
+        settlement.living_count(Vocation::Miller) + settlement.living_count(Vocation::Baker);
+    assert_eq!(
+        producers, 0,
+        "input advance over-feeds producer earnings → savings satiate → de-adoption; \
+         expected producers gone by tick 300, got {producers}"
+    );
+}
+
+#[test]
 fn live_order_trace_at_the_halt() {
     // Codex's decisive instrument: reconstruct the live BID/ASK intent for grain
     // across the halt (the reservation orders each agent WOULD post), to tell
