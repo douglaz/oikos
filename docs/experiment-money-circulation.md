@@ -463,14 +463,54 @@ re-triggers the satiation. So the two pull against each other: keep producers
 cash-light → they stay adopted but barely produce; let them earn → they satiate
 and quit.
 
-**The real remaining wall, now unmistakable.** Across the self-employed-producer
-model, *any* mechanism that makes a producer earn makes it satiate and stop — a
-self-employed artisan with a bounded savings want rationally retires once
-provisioned, and the fixed producer pool has no replacement. The faithful fix is
-therefore **not** another advance but a **firm / employment structure**: a
-capitalist (or firm) *owns* the production and *hires* labor for a wage; the
-worker is paid (doesn't accumulate-and-retire as an owner), and the firm keeps
-producing as long as there is demand. That is the M11–M17 labor-wage machinery
-(already in econ) applied to the colony chain — the concrete next build. The
-current best playable baseline remains the in-kind FOOD colony (Experiment 10):
-sustainably fed, conserved, if not yet a self-sustaining production economy.
+**Why — the bounded-savings satiation, again.** Placing inputs lets the producer
+make and *sell* output, so it **earns**; its capped savings want
+(`MAX_SAVE_UNITS`) fills; role-choice then sees no unmet money want and
+de-adopts it. The revolving loan had avoided this only by sweeping producers
+cash-light (which capped production low); boosting production via input placement
+re-triggers the satiation.
+
+### Caveats (Codex review — "needs firms" retracted)
+
+A code-grounded review flagged my Exp 10–11 conclusions as overstated. Corrected:
+
+- **"The faithful fix is a firm/employment structure" — retracted.** "Society
+  needs companies to sustain production" is the same kind of overclaim as the
+  earlier "needs banks." The de-adoption is an artifact of **three modeling
+  choices**, not an economic necessity: (a) savings is **bounded/satiable**
+  (`MAX_SAVE_UNITS = 60`) — but real consumption *recurs*, so an artisan never
+  permanently retires; (b) role adoption is keyed only to a new *future-money*
+  want (`recipe_adoption_pays_for_money` → `bundle.rs`), not to recurring
+  consumption or standing demand; (c) the producer pool is **fixed** — a hungry
+  gatherer/consumer never becomes the replacement baker.
+- **"Once satiated, retires forever" — too strong.** The code permits
+  re-adoption (spend savings → reopen the want → re-adopt). Exp 11 only *looked*
+  permanent because producers earned, savings filled, food was advanced without
+  draining their money, and no new artisan could enter.
+- **"Any mechanism that makes a producer earn makes it retire" — only shown for
+  this bounded-savings / fixed-pool / future-money-keyed setup.**
+- **"Welfare is solved" → producer *feeding* is solved in that scenario.** Exp 10
+  is a valid **subsistence** result, not a solved production economy.
+- **"Input advance refuted" → refuted *as implemented*, not as an institution.**
+
+### The bigger reframe: the goal was over-specified
+
+The most important correction: a self-sustaining grain→bread *market chain* is
+likely the **wrong target for a primitive colony**. A stable subsistence /
+household base *should* precede market specialization; the chain should matter
+only once bread carries a real premium, there is genuine surplus, and the
+division of labor beats household subsistence. So **Experiment 10 (the fed
+subsistence colony) is not a failure — it is the correct stone-age baseline**, and
+the production chain is a later-era feature, not the primitive default.
+
+### The faithful fix (when specialization *is* warranted) — no firms
+
+A **recurring owner-operator motive**, keeping self-employment: a producer adopts
+if the recipe's expected net proceeds can fund its *next-period* subsistence need
+(live prices), not only if it fills a new savings want — plus **replacement /
+re-entry** so a hungry colonist can take up an unserved trade. Falsifiable:
+`grain.input > 0` past t300, bread through t800, hunger ≪ 8, producers stay
+adopted **or churn with replacements**, conserved, no fiat. (Raising the savings
+cap merely *hides* the retirement wall — not the real fix.) The current best
+playable baseline remains the in-kind subsistence colony (Experiment 10):
+sustainably fed and conserved.
