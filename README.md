@@ -1393,10 +1393,24 @@ with **no chain-specific global placement**. Sliced per `docs/impl-endogenous-sp
       conservation, and deterministic canonical bytes all hold.
 - [x] acceptance suite (`sim/tests/provisioning_at_scale.rs`: the eight named tests) + S6.1/S6.2 slice
       tests (`sim/tests/productive_reentry.rs`) + the viewer `scaling` scenario.
+- [x] **S7 — producible capital goods** (`SettlementConfig::frontier_capital`, the `capital` scenario):
+      two default-off, gated steps that let the **tooled** chain grow. S7.1 relaxes role-choice so a
+      colonist that *holds* the required tool is admitted to the adoption appraisal (and anchors the
+      tool so it is never sold before it adopts); S7.2 adds a per-agent BuildMill/BuildOven project — a
+      fed, non-latent colonist appraises that a durable mill/oven's multi-period proceeds repay its
+      build cost, commits its own WOOD + labor (a conserved project booked WOOD→`consumed_as_input` at
+      start, tool→`produced` at completion), then adopts and produces. The appraisal is demand-anchored
+      (it builds the chain's capacity bottleneck only while the final good is clearing) and
+      self-correcting (building stops once demand is met), so on a larger colony `capital` ends with more
+      tools, more producers, and higher non-declining bread than the same colony with the gates off — no
+      planner tool placement, no runaway over-build, conservation every tick.
+- [x] acceptance suite (`sim/tests/producible_capital.rs`: the eight named tests) + S7.1/S7.2 mechanism
+      and digest tests (in `sim/src/settlement.rs`) + the viewer `capital` scenario.
 
 The curated-placement scenarios (`in-kind-advance`, `input-advance`, `economy`) and their flags are
-**kept for comparison**; the S5/S6 DoDs pass with them off. The `endogenous` scenario keeps productive
-re-entry off for comparison, while `scaling` turns it on to address the stranded high-hunger tail.
+**kept for comparison**; the S5/S6/S7 DoDs pass with them off. The `endogenous` scenario keeps productive
+re-entry off for comparison, `scaling` turns it on to address the stranded high-hunger tail, and
+`capital` adds producible capital so the tooled chain itself scales with demand.
 
 **Honest scope of the claim.** What is proven: the chain *acquires its inputs by real market trade*
 and *keeps producing through tick 1600* with no global food/input placement and no per-tick capital
@@ -1410,8 +1424,10 @@ path** (productive re-entry) without collapsing the bread chain or WOOD supply. 
 re-entry is a hunger-threshold survival rule (direct self-provisioning), not a market/value-scale-
 derived choice. The tests prove the *reduction and boundedness*; the live run shows the *mean*
 improvement (tail mean ~1.3 at pop 40 vs ~4.1 at pop 26). "Provisioning at scale" is scoped to
-**untooled subsistence** through tick 1600 — the **tooled** grain→flour→bread chain itself does not
-scale (mills/ovens are seeded-only, never produced; that is S7).
+**untooled subsistence** through tick 1600 — the **tooled** grain→flour→bread chain is scaled
+separately by **S7 producible capital** (the `capital` scenario), where colonists *build* new
+mills/ovens from saved WOOD + labor under unmet bread demand, so the chain's capacity is no longer
+hard-capped at the seeded tool count.
 
 ## Build and test
 
@@ -1441,6 +1457,7 @@ cargo run -p viewer -- run barter-camp-control --ticks 40     # G5a: no saleabil
 cargo run -p viewer -- run frontier --ticks 80                # G5b: money emerges, then roles adopt, with demography
 cargo run -p viewer -- run endogenous --ticks 1600           # endogenous specialization: the chain self-organizes on a subsistence base and sustains, no curated placement
 cargo run -p viewer -- run scaling --ticks 1600              # S6: productive re-entry provisions the stranded tail while preserving the endogenous chain
+cargo run -p viewer -- run capital --ticks 1600              # S7: colonists build mills/ovens under unmet demand — more tools + higher bread than scaling
 #                                                              # G6a: the frontier/barter-camp dashboards show an era
 #                                                              #      banner + per-tick era column (forager → … → capital)
 cargo run -p viewer -- run research --ticks 60                # G6b: Knowledge accrues, tier 2 unlocks, pastry is produced

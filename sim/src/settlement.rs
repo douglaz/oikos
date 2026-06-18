@@ -2625,6 +2625,48 @@ impl SettlementConfig {
         cfg
     }
 
+    /// THE CAPITAL ECONOMY (the S7 DoD): the scaling economy
+    /// ([`Self::frontier_endogenous_scaling`]) plus **producible capital goods** — the
+    /// tooled grain→flour→bread chain can now GROW, not just the untooled gathering
+    /// base. Under the larger colony's sustained unmet bread demand a fed, non-latent
+    /// colonist appraises that building a mill/oven will pay, invests its own saved
+    /// WOOD + labor in a conserved build (S7.2), then — holding the new tool — is
+    /// admitted to the adoption appraisal (S7.1), adopts, buys its input on the real
+    /// market, and produces. So bread output tracks demand rather than flat-lining at
+    /// the seeded tool count, with NO planner placement of tools and NO over-building
+    /// (capital formation stops when demand is met). Everything else is the scaling
+    /// economy: re-entry still provisions the untooled tail, and the chain still
+    /// self-organizes on real market trade.
+    pub fn frontier_capital() -> Self {
+        let mut cfg = Self::frontier_endogenous_scaling();
+        if let Some(chain) = cfg.chain.as_mut() {
+            // S7.1: a colonist that holds a mill/oven is admitted to the adoption
+            // appraisal (and anchors the tool so it is never sold before it adopts).
+            chain.tool_acquisition_eligibility = true;
+            // S7.2: the per-builder BuildMill/BuildOven phase, on. A modest WOOD/labor
+            // cost (a WOOD-gatherer or a hearth-provisioned lineage member can save it)
+            // amortized over a generous payback window, so building pays under genuine
+            // unmet bread demand yet stops once the spread thins (the overinvestment
+            // guard). A fed colonist (hunger at/below the comfortable revert level)
+            // invests; a hungry one feeds first.
+            chain.producible_capital = true;
+            chain.capital_payback_cycles = 8;
+            chain.tool_build_wood = 6;
+            chain.tool_build_labor = 4;
+            chain.capital_build_hunger_max = 4;
+        }
+        // A larger consumer base than `scaling` — more mouths than the seeded
+        // grain→flour→bread chain (3 latent millers + 3 latent bakers) can feed — so
+        // bread demand genuinely OUTRUNS the seeded tool count and there is real room
+        // for built capital to raise output. Without producible capital this same colony
+        // (the test control) leaves bread demand unmet; with it, builders add the
+        // bottleneck producers until demand is met. The extra WOOD gatherers keep the
+        // builders' WOOD (and the warmth battery) supplied as capital is committed.
+        cfg.consumers = 16;
+        cfg.gatherers = 16;
+        cfg
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).
