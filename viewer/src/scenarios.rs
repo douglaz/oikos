@@ -162,7 +162,7 @@ const SCENARIOS: &[Scenario] = &[
     Scenario {
         name: "capital",
         description:
-            "S7: producible capital goods — the scaling economy where the TOOLED chain can grow. Under unmet bread demand a fed colonist appraises that building a mill/oven will pay, invests its own WOOD + labor in a conserved build, then adopts the trade and produces — so more tools and higher bread output than `scaling`, with NO planner tool placement and no runaway over-building (it stops when demand is met).",
+            "S7: producible capital goods — the scaling economy where the TOOLED chain can grow. Under unmet bread demand a gated phase appraises a demand-anchored real-resource investment (a tool's multi-period proceeds vs its build cost) and funds one build from the selected fed builder's own WOOD + labor (a conserved project, no planner tool placement); that builder then adopts and produces — so more tools and higher, non-declining bread than `scaling`, with no runaway over-build in the tested run.",
         build: build_capital,
     },
     Scenario {

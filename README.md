@@ -1396,21 +1396,29 @@ with **no chain-specific global placement**. Sliced per `docs/impl-endogenous-sp
 - [x] **S7 — producible capital goods** (`SettlementConfig::frontier_capital`, the `capital` scenario):
       two default-off, gated steps that let the **tooled** chain grow. S7.1 relaxes role-choice so a
       colonist that *holds* the required tool is admitted to the adoption appraisal (and anchors the
-      tool so it is never sold before it adopts); S7.2 adds a per-agent BuildMill/BuildOven project — a
-      fed, non-latent colonist appraises that a durable mill/oven's multi-period proceeds repay its
-      build cost, commits its own WOOD + labor (a conserved project booked WOOD→`consumed_as_input` at
-      start, tool→`produced` at completion), then adopts and produces. The appraisal is demand-anchored
-      (it builds the chain's capacity bottleneck only while the final good is clearing) and
-      self-correcting (building stops once demand is met), so on a larger colony `capital` ends with more
-      tools, more producers, and higher non-declining bread than the same colony with the gates off — no
-      planner tool placement, no runaway over-build, conservation every tick.
+      tool so it is never sold before it adopts); S7.2 adds a per-agent BuildMill/BuildOven project. A
+      gated settlement phase appraises a **demand-anchored real-resource investment** — when the
+      chain's bottleneck final good is clearing and a durable tool's multi-period proceeds
+      (`margin_per_run × capital_payback_cycles`) exceed its WOOD + labor build cost, it funds **one**
+      build from the **selected fed builder's own WOOD + labor** (a conserved project booked
+      WOOD→`consumed_as_input` at start, tool→`produced` at completion); that builder then adopts and
+      produces. It is not a planner handout (no tool placement; the builder pays from its own
+      endowment), but it is a settlement-level heuristic, **not yet a per-colonist ordinal-scale
+      appraisal** (a noted follow-on). On a larger colony `capital` ends with more tools, more
+      producers, and higher, non-declining bread than the same colony with the gates off, with **no
+      runaway over-build in the tested 1600-tick run** (the heuristic's brakes — bottleneck choice,
+      one build in flight, idle-tool slack — bound it; a general stop theorem is not proven) and
+      conservation every tick.
 - [x] acceptance suite (`sim/tests/producible_capital.rs`: the eight named tests) + S7.1/S7.2 mechanism
       and digest tests (in `sim/src/settlement.rs`) + the viewer `capital` scenario.
 
 The curated-placement scenarios (`in-kind-advance`, `input-advance`, `economy`) and their flags are
 **kept for comparison**; the S5/S6/S7 DoDs pass with them off. The `endogenous` scenario keeps productive
 re-entry off for comparison, `scaling` turns it on to address the stranded high-hunger tail, and
-`capital` adds producible capital so the tooled chain itself scales with demand.
+`capital` adds producible capital so the tooled chain grows with demand in the tested run. (The
+S5/S6/S7 result is "self-organizing" only in the scoped sense of this stack — a household/subsistence
+base + productive re-entry + project-aware input bids + the demand-anchored build heuristic — not a
+market-alone economy.)
 
 **Honest scope of the claim.** What is proven: the chain *acquires its inputs by real market trade*
 and *keeps producing through tick 1600* with no global food/input placement and no per-tick capital

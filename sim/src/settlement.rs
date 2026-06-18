@@ -6588,9 +6588,13 @@ impl Settlement {
             return true;
         }
 
-        // ---- 2. START new builds for eligible, fed builders that appraise it pays.
-        // The opportunity is the same for everyone (it depends only on prices), so the
-        // better-paying tool is appraised once; each builder still decides for itself.
+        // ---- 2. START a new build when a demand-anchored real-resource investment
+        // appraisal clears. This is a settlement-level heuristic, NOT a per-colonist
+        // ordinal-scale appraisal: the opportunity depends only on prices, so the
+        // better-paying stage is appraised once (scalar margin x payback vs build cost);
+        // it is then funded by the first eligible fed builder from its OWN WOOD + labor
+        // (no tool placement, no quota). A fully individual ordinal appraisal is a
+        // follow-on; here each eligible fed builder with enough WOOD can take the build.
         let wood_price = self
             .society
             .realized_price(WOOD)
