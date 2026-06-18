@@ -6111,10 +6111,12 @@ impl Settlement {
             if colonist.household.is_some() || colonist.latent.is_some() {
                 continue;
             }
-            // Only colonists whose HOME is an untooled spatial role (an idle consumer
-            // or a gatherer) re-enter; this leaves a seeded producer alone even if a
-            // future role-choice churns it through `Unassigned`, and is what a
-            // re-entrant reverts to once fed.
+            // Re-enter only colonists whose HOME is an untooled spatial role: an idle
+            // Consumer, a Gatherer, or a non-latent Unassigned (the spec's stranded
+            // idle worker). Latent/seeded producers were already skipped above, so the
+            // `Unassigned` arm never catches one of those; it stays for the non-latent
+            // stranded case even though current generation produces no such colonist,
+            // and is the home a fed re-entrant reverts to once relieved.
             if !matches!(
                 colonist.home_vocation,
                 Vocation::Consumer | Vocation::Gatherer | Vocation::Unassigned
@@ -6154,7 +6156,15 @@ impl Settlement {
 
     fn productive_reentry_can_run(&self) -> bool {
         self.chain.as_ref().is_some_and(|chain| {
-            chain.productive_reentry && self.known.subsistence == Some(chain.content.grain())
+            let grain = chain.content.grain();
+            // Mirror every runtime guard in `run_productive_reentry` exactly: the gate
+            // is on, raw grain is the edible subsistence fallback, AND a grain-yielding
+            // node exists. Without the node the phase returns before mutating, so a
+            // config meeting the first two but lacking a grain node is inert and must
+            // not serialize its thresholds/home (else two inert configs digest apart).
+            chain.productive_reentry
+                && self.known.subsistence == Some(grain)
+                && self.node_for_good(grain).is_some()
         })
     }
 
@@ -7307,13 +7317,13 @@ impl Settlement {
             out.push(u8::from(chain.input_advance));
             out.extend_from_slice(&chain.perishable_decay_bps.to_le_bytes());
             // The S6 productive-re-entry state steers future ticks only while the
-            // phase can actually feed a colonist: the gate is on AND raw grain is the
-            // subsistence fallback. Without edible grain the runtime phase exits
-            // before mutating, so the gate and thresholds must not split otherwise
-            // behavior-identical configs.
-            let reentry_serialized = self.productive_reentry_can_run();
-            out.push(u8::from(reentry_serialized));
-            if reentry_serialized {
+            // phase can actually feed a colonist: the gate is on, raw grain is the
+            // subsistence fallback, AND a grain-yielding node exists. When it cannot
+            // run, omit these bytes entirely (no marker) — like every other gated
+            // block here (latent pool, research, the per-colonist home below) — so a
+            // re-entry-OFF or inert config stays byte-identical to the pre-S6 stream
+            // and two behavior-identical configs never digest apart.
+            if self.productive_reentry_can_run() {
                 out.extend_from_slice(&chain.reentry_hunger_in.to_le_bytes());
                 out.extend_from_slice(&chain.reentry_hunger_out.to_le_bytes());
             }
