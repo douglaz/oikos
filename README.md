@@ -1439,6 +1439,56 @@ hard-capped at the seeded tool count. The shipped S7 throttle intentionally keep
 in flight at a time, so this proves demand-responsive capital formation through the tested frontier
 scale, not an unbounded colony-wide construction rate.
 
+## Status: S8 (money co-emergence with the specialized economy) — complete, with a principled finding
+
+S5/S6/S7 run on **designated GOLD** — the colony is *handed* a money good and only then calculates,
+bids, and builds. This milestone removes that scaffold: money, the grain→flour→bread division of
+labor, and capital all **co-emerge in one run** from a no-money barter start. Sliced per
+`docs/impl-money-coemergence.md`:
+
+- [x] **S8.0 — the emergence probe** (`Settlement::emergence_acceptances` / `producer_cash` /
+      `bread_for_salt_volume` / `peak_pre_promotion_hunger` / `critical_ticks_before_promotion`,
+      surfaced in the viewer's emergence-probe panel): read-only diagnostics that separate a
+      *principled* failure from a *tuning* one — the promotion tick, per-candidate barter saleability,
+      each producer's working capital, the bread-for-SALT leg, and the pre-promotion hunger trough.
+      Pure read-back, absent from `canonical_bytes`, deterministic (`sim/tests/emergence_probe.rs`).
+- [x] **S8.1–S8.3 — the co-emergent base** (`SettlementConfig::frontier_coemergent`, the `coemergent`
+      scenario): built from `frontier()` (the barter-start emergent base — `barter = Some(..)`, the
+      SALT medium, **every gold endowment zero**), composing the S5 sustain stack and the S7 capital
+      phase on the **emerged** unit. SALT promotes endogenously (~tick 20) by saleability from real
+      indirect exchange — no designated money, zero gold at generation; the chain waits on money (no
+      producer/no chain output before promotion); inputs clear by real `Society::trade` across the
+      cutover; bread sustains through tick 1600; hunger is bounded (mean ~7, p95 ~12); ≥1 mill/oven is
+      **built** (`produced`) after promotion by a formerly-non-latent colonist; everything conserves
+      every tick (incl. the promotion sink) and is byte-deterministic.
+- [x] acceptance suite (`sim/tests/money_coemergence.rs`: the eleven named tests) + the viewer
+      `coemergent` scenario (the era column climbs `barter → money → specialist → capital`). All edits
+      additive/gated: the G5a/G5b goldens, the six econ conformance goldens, and the S5/S6/S7 suites
+      stay byte-identical/green; `frontier_coemergent` reuses only existing serialized knobs (no new
+      `canonical_bytes` surface) and does not alter the `frontier`/`frontier_endogenous` builders.
+
+**Honest scope of the claim.** What is proven: money + the specialized chain + capital co-emerge and
+the chain **sustains** on the emerged unit, with no designated money, no seeded gold, and no curated
+placement — a genuine Mengerian-money composition the prior 13 experiments never reached (the bare
+`frontier` froze ~tick 150). What it rests on (disclosed): two *circulation* parameter findings, not
+subsidies — a **partial** producer-subsistence hearth (so a fed producer recirculates its margin
+instead of hoarding) and a **lean** demographic hearth (so a fed lineage does not mint a surplus it
+sells and hoards, a money sink that worsens with more money) — plus the same local hearths and
+cold-start buffers as S5, and a modest colony (provisioning-at-scale under emergence is deferred to
+S9, where the raw-grain floor would crowd out the bread-for-SALT trade that monetizes SALT).
+
+**The principled finding (Tension B), reported as a passing diagnostic — not papered over.** The
+spec hypothesized the cutover working capital would be *barter-earned* SALT. It is not: the universal
+medium want makes SALT promote on want-breadth, not trade volume — it crosses the threshold with
+almost no SALT changing hands (consumers retain ~318 of 320 units), so latent producers earn ~zero
+barter SALT and hold zero converted gold at promotion (robust across tuning). The chain survives the
+cutover **anyway** — producers fund working capital by selling their seeded output into the real
+*money* market post-promotion (earned, not endowed). `tension_b_working_capital_is_earned_post_
+promotion_not_in_barter` asserts this observed mechanism via the S8.0 probe rather than forcing a
+pass with designated gold or a curated advance. Because the chain does not freeze, the sustain and
+capital tests still pass — so the only deviation from the specified DoD is *which faithful source*
+capitalizes the producers across the cutover.
+
 ## Build and test
 
 ```bash
@@ -1468,6 +1518,7 @@ cargo run -p viewer -- run frontier --ticks 80                # G5b: money emerg
 cargo run -p viewer -- run endogenous --ticks 1600           # endogenous specialization: the chain self-organizes on a subsistence base and sustains, no curated placement
 cargo run -p viewer -- run scaling --ticks 1600              # S6: productive re-entry provisions the stranded tail while preserving the endogenous chain
 cargo run -p viewer -- run capital --ticks 1600              # S7: colonists build mills/ovens under unmet demand — more tools + higher bread than scaling
+cargo run -p viewer -- run coemergent --ticks 1600          # S8: money + chain + capital CO-EMERGE from a no-money barter start (era goes barter → money, then bread sustains)
 #                                                              # G6a: the frontier/barter-camp dashboards show an era
 #                                                              #      banner + per-tick era column (forager → … → capital)
 cargo run -p viewer -- run research --ticks 60                # G6b: Knowledge accrues, tier 2 unlocks, pastry is produced

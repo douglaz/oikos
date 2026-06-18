@@ -538,3 +538,213 @@ fn hunger_bounded_under_coemergence() {
         "hunger mean should not drift, got {m_first} -> {m_last}"
     );
 }
+
+/// 9. `capital_forms_on_emerged_money` — at least one mill/oven is BUILT (`produced`)
+///    AFTER promotion under emerged-money prices, conserving — the S7 build runs on the
+///    emerged SALT unit. The hard "new capital entered the chain" check: a
+///    formerly-non-latent colonist built a PRODUCED tool, adopted, and BOUGHT its recipe
+///    input by a real `Society::trade` (buyer != seller), so it is not a seeded artifact.
+#[test]
+fn capital_forms_on_emerged_money() {
+    let config = coemergent();
+    let g = chain_goods(&config);
+    let mut s = Settlement::generate(1, &config);
+    let seeded_tools = s.whole_system_total(g.mill) + s.whole_system_total(g.oven);
+
+    let mut promotion_tick = None;
+    let mut tool_produced_after_promotion = 0u64;
+    let mut wood_consumed_as_input = 0u64;
+    let mut input_trade_by_built_adopter = false;
+    let mut chain_output_produced = 0u64;
+    let mut seen = 0usize;
+    for tick in 0..1600u64 {
+        let was_barter = s.current_money_good().is_none();
+        let report = s.econ_tick();
+        assert!(
+            report.conserves(),
+            "conservation broke across a build at tick {tick}"
+        );
+        if was_barter && s.current_money_good().is_some() {
+            promotion_tick = Some(tick);
+        }
+        if promotion_tick.is_some() {
+            tool_produced_after_promotion +=
+                report.produced_of(g.mill) + report.produced_of(g.oven);
+            // WOOD is consumed_as_input ONLY by a capital build (no recipe consumes WOOD).
+            wood_consumed_as_input += report.consumed_as_input_of(WOOD);
+            chain_output_produced += report.produced_of(g.flour) + report.produced_of(g.bread);
+            let trades = &s.society().trades;
+            for trade in &trades[seen..] {
+                if trade.buyer == trade.seller {
+                    continue;
+                }
+                let Some(slot) =
+                    (0..s.population()).find(|&i| s.colonist_id(i) == Some(trade.buyer))
+                else {
+                    continue;
+                };
+                if !s.acquired_tool_of(slot) {
+                    continue;
+                }
+                let bought_input = (trade.good == g.grain
+                    && s.vocation_of(slot) == Some(Vocation::Miller))
+                    || (trade.good == g.flour && s.vocation_of(slot) == Some(Vocation::Baker));
+                if bought_input {
+                    input_trade_by_built_adopter = true;
+                }
+            }
+            seen = trades.len();
+        }
+    }
+
+    let promotion_tick = promotion_tick.expect("money must emerge");
+    assert!(s.promoted_at_tick() == Some(promotion_tick));
+    assert!(
+        s.tools_built() > 0,
+        "a builder must complete at least one tool on the emerged money, got {}",
+        s.tools_built()
+    );
+    assert!(
+        tool_produced_after_promotion > 0,
+        "the tool must be PRODUCED after promotion (under emerged-money prices), got \
+         {tool_produced_after_promotion}"
+    );
+    assert!(
+        wood_consumed_as_input > 0,
+        "the build must book its WOOD to consumed_as_input, got {wood_consumed_as_input}"
+    );
+    assert!(
+        s.whole_system_total(g.mill) + s.whole_system_total(g.oven) > seeded_tools,
+        "the whole-system tool count must rise above the seeded count"
+    );
+    assert!(
+        (0..s.population()).any(|i| s.acquired_tool_of(i)),
+        "a formerly-non-latent colonist must have built a produced tool"
+    );
+    assert!(
+        input_trade_by_built_adopter,
+        "a built-tool adopter must have bought its recipe input by a real Society::trade"
+    );
+    assert!(
+        chain_output_produced > 0,
+        "the built capital must have transformed its input (the chain produced output)"
+    );
+}
+
+/// 10. `coemergence_conserves` — whole-system conservation every tick, including the
+///     promotion sink (`report.promoted`) and all chain/capital flows. Non-vacuous: the
+///     promotion mint, production, and a capital build all actually occur over the run.
+#[test]
+fn coemergence_conserves() {
+    let config = coemergent();
+    let g = chain_goods(&config);
+    let mut s = Settlement::generate(1, &config);
+
+    let mut prev_gold = s.total_gold();
+    let mut promotions = 0u32;
+    let mut any_produced = 0u64;
+    for tick in 0..1600u64 {
+        let report = s.econ_tick();
+        assert!(
+            report.conserves(),
+            "whole-system conservation broke at tick {tick}"
+        );
+
+        // Money conservation: a closed balance except the 1-for-1 promotion mint.
+        let gold = s.total_gold();
+        let minted: u64 = report.promoted.values().sum();
+        assert_eq!(
+            gold.0,
+            prev_gold.0 + minted,
+            "money conservation broke at tick {tick} (minted {minted})"
+        );
+        if minted > 0 {
+            promotions += 1;
+            let (&winner, &units) = report.promoted.iter().next().expect("a promotion good");
+            assert_eq!(units, minted, "more than one good promoted at once");
+            assert_eq!(winner, SALT, "SALT is the emerged money good");
+            assert_eq!(
+                s.econ_stock_total(winner),
+                0,
+                "the promoted stock did not convert"
+            );
+        }
+        prev_gold = gold;
+        any_produced += report.produced_of(g.bread) + report.produced_of(g.flour);
+    }
+
+    assert_eq!(promotions, 1, "exactly one promotion must have occurred");
+    assert!(any_produced > 0, "no recipe output — production never ran");
+    assert!(
+        s.tools_built() > 0,
+        "no capital build — the S7 flow never ran"
+    );
+}
+
+/// 11. `goldens_unchanged` — the engine's conformance scenarios still replay
+///     byte-identically (the six econ goldens are untouched — every S8 edit lives in
+///     `sim`, additive and gated), and the new `frontier_coemergent` builder does not
+///     mutate the existing `frontier`/`frontier_endogenous` builders. (The full G5a/G5b
+///     emergence goldens, the S5/S6/S7 acceptance suites, the `canonical_bytes_include_*`
+///     digest regressions, clippy `-D warnings`, and fmt `--check` are the workspace
+///     gate that enforces the rest.)
+#[test]
+fn goldens_unchanged() {
+    for name in [
+        ScenarioName::MarketBarterishGold,
+        ScenarioName::MarketPriceDiscovery,
+        ScenarioName::MengerSaltMoney,
+        ScenarioName::MengerGoldMoney,
+    ] {
+        let scenario = builtin_market_scenario(name);
+        let periods = scenario.periods;
+        let mut first = Society::from_scenario(scenario);
+        first.run(periods);
+        let mut second = Society::from_scenario(builtin_market_scenario(name));
+        second.run(periods);
+        assert_eq!(
+            first.records, second.records,
+            "{name:?} did not replay deterministically"
+        );
+        assert_eq!(
+            first.v2_records, second.v2_records,
+            "{name:?} V2 records diverged"
+        );
+    }
+
+    // The co-emergent builder is additive: it does not mutate the existing builders it
+    // is NOT derived from. `frontier` (G5b) keeps its barter-start defaults (no S5
+    // sustain stack, full hearth provisions); `frontier_endogenous` (S5) keeps its
+    // designated-GOLD regime (`barter = None`).
+    let frontier = SettlementConfig::frontier();
+    let fchain = frontier.chain.as_ref().expect("chain");
+    assert!(
+        !fchain.recurring_motive && !fchain.project_input_bids && fchain.producer_subsistence == 0,
+        "frontier must keep its bare barter-start chain (no S5 sustain stack)"
+    );
+    assert!(
+        frontier
+            .demography
+            .as_ref()
+            .expect("demography")
+            .households
+            .iter()
+            .all(|h| h.food_provision == 3),
+        "frontier must keep its full hearth provisions (the lean trim is co-emergent-only)"
+    );
+    let endogenous = SettlementConfig::frontier_endogenous();
+    assert!(
+        endogenous.barter.is_none(),
+        "frontier_endogenous stays designated-GOLD"
+    );
+    // And the co-emergent base is genuinely a distinct, emergent regime.
+    let coemergent = coemergent();
+    assert!(
+        coemergent.barter.is_some(),
+        "frontier_coemergent is barter-start emergent"
+    );
+    assert!(
+        coemergent.chain.as_ref().unwrap().producible_capital,
+        "frontier_coemergent composes the S7 capital phase"
+    );
+}
