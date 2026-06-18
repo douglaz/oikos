@@ -1385,19 +1385,27 @@ with **no chain-specific global placement**. Sliced per `docs/impl-endogenous-sp
       `inputs_acquired_by_market_trade` requiring an actual `Society::trade` by an active producer plus
       downstream recipe consumption with no placement counter) + the S1/S2/S3/S4 slice tests + the
       viewer `endogenous` scenario.
+- [x] **S6 — provisioning at scale via productive re-entry** (`SettlementConfig::frontier_endogenous_scaling`,
+      the `scaling` scenario): the endogenous economy plus a default-off, gated re-entry phase that lets
+      hungry spatial non-lineage consumers and WOOD gatherers adopt edible-grain gathering, then return
+      home through hysteresis once fed. The larger roster and household cap exercise the growing-colony
+      case while preserving S5: bread production, Miller/Baker adoption, real input trades, WOOD supply,
+      conservation, and deterministic canonical bytes all hold.
+- [x] acceptance suite (`sim/tests/provisioning_at_scale.rs`: the eight named tests) + S6.1/S6.2 slice
+      tests (`sim/tests/productive_reentry.rs`) + the viewer `scaling` scenario.
 
 The curated-placement scenarios (`in-kind-advance`, `input-advance`, `economy`) and their flags are
-**kept for comparison**; the DoD passes with them off. **S6 (scaling / churn — replacement producers
-so output tracks a growing population) is deferred.**
+**kept for comparison**; the S5/S6 DoDs pass with them off. The `endogenous` scenario keeps productive
+re-entry off for comparison, while `scaling` turns it on to address the stranded high-hunger tail.
 
 **Honest scope of the claim.** What is proven: the chain *acquires its inputs by real market trade*
 and *keeps producing through tick 1600* with no global food/input placement and no per-tick capital
 loan, on a designated-GOLD colony. What it rests on (disclosed, not "market alone"): a *local
 producer-subsistence hearth* that mints each producer's staple + WOOD (a household garden, never the
 chain inputs grain/flour), seeded *cold-start buffers* for the first prices, and *designated gold* —
-so this does **not** re-prove Mengerian money emergence. The colony is well-fed in the mean (tail
-hunger ~3) but the worst-off 5% run hotter (~12), and per-capita output is bounded but bursty — the
-even-provisioning-at-scale work is S6.
+so this does **not** re-prove Mengerian money emergence. The `endogenous` colony is well-fed in the
+mean but leaves a stranded high-hunger tail; the `scaling` scenario proves that tail can feed itself
+through productive re-entry without collapsing the bread chain or WOOD supply.
 
 ## Build and test
 
@@ -1426,6 +1434,7 @@ cargo run -p viewer -- run barter-camp --ticks 40             # G5a: money emerg
 cargo run -p viewer -- run barter-camp-control --ticks 40     # G5a: no saleability differential → stays in barter
 cargo run -p viewer -- run frontier --ticks 80                # G5b: money emerges, then roles adopt, with demography
 cargo run -p viewer -- run endogenous --ticks 1600           # endogenous specialization: the chain self-organizes on a subsistence base and sustains, no curated placement
+cargo run -p viewer -- run scaling --ticks 1600              # S6: productive re-entry provisions the stranded tail while preserving the endogenous chain
 #                                                              # G6a: the frontier/barter-camp dashboards show an era
 #                                                              #      banner + per-tick era column (forager → … → capital)
 cargo run -p viewer -- run research --ticks 60                # G6b: Knowledge accrues, tier 2 unlocks, pastry is produced
