@@ -154,6 +154,12 @@ const SCENARIOS: &[Scenario] = &[
         build: build_endogenous,
     },
     Scenario {
+        name: "scaling",
+        description:
+            "S6: provisioning at scale — the endogenous economy with PRODUCTIVE RE-ENTRY: a hungry, unprovisioned colonist adopts edible-grain gathering on its own value scale (no permanently-stranded tail), and a larger/growing colony shows provisioning keeps pace.",
+        build: build_scaling,
+    },
+    Scenario {
         name: "millisats-1x",
         description:
             "EXPERIMENT: frontier at coarse (x1) money precision — the unit-starved baseline that freezes (~320 money units)",
@@ -337,6 +343,10 @@ fn build_recurring_only() -> SettlementConfig {
 
 fn build_endogenous() -> SettlementConfig {
     SettlementConfig::frontier_endogenous()
+}
+
+fn build_scaling() -> SettlementConfig {
+    SettlementConfig::frontier_endogenous_scaling()
 }
 
 fn build_millisats_1x() -> SettlementConfig {

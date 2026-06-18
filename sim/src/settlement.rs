@@ -2508,6 +2508,40 @@ impl SettlementConfig {
         cfg
     }
 
+    /// THE SCALING ECONOMY (the S6 DoD): the endogenous economy
+    /// ([`Self::frontier_endogenous`]) plus **productive re-entry** turned ON, so no
+    /// hungry, unprovisioned colonist is left permanently stranded. A hungry spatial
+    /// non-lineage colonist — an idle consumer or a WOOD-mis-allocated gatherer —
+    /// adopts edible-grain gathering on its own value scale and feeds itself, and a
+    /// fed re-entrant resumes WOOD gathering (the S6.2 hysteresis keeps WOOD alive).
+    /// To exercise *growth* (not just the fixed stranded set), it also seeds a
+    /// **larger colony** (more consumers + gatherers) and raises the household-size
+    /// cap so population climbs further while provisioning keeps pace. Everything else
+    /// is the endogenous economy: the grain→flour→bread chain still self-organizes and
+    /// sustains on real market trade, with NO chain-specific global placement.
+    pub fn frontier_endogenous_scaling() -> Self {
+        let mut cfg = Self::frontier_endogenous();
+        if let Some(chain) = cfg.chain.as_mut() {
+            // The gated phase, ON. Re-enter at chronic hunger (the stranded tail sits
+            // at the need ceiling) and revert once comfortably fed — a wide band so a
+            // re-entrant holds its node for many ticks rather than thrashing.
+            chain.productive_reentry = true;
+            chain.reentry_hunger_in = 8;
+            chain.reentry_hunger_out = 4;
+        }
+        // A larger non-lineage base — the stranded set re-entry must provision — so
+        // the metric is exercised at scale, not only on the fixed 4 consumers + 4 WOOD
+        // gatherers of the endogenous roster.
+        cfg.consumers = 8;
+        cfg.gatherers = 12;
+        // Let the lineages grow further so total population climbs above the
+        // endogenous plateau (the "tracks a growing population" half of the DoD).
+        if let Some(demo) = cfg.demography.as_mut() {
+            demo.max_household_size = 8;
+        }
+        cfg
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).
