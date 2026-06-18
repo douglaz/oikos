@@ -6051,8 +6051,6 @@ impl Settlement {
     ///   colonist inside it holds its current node, so the phase does not thrash
     ///   node-to-node every tick.
     ///
-    /// Returns whether any colonist's vocation/node changed.
-    ///
     /// Scope (Base Fact 4): only colonists with a **world agent** and `household ==
     /// None` whose HOME is an untooled spatial role are touched. Lineage members are
     /// hearth-fed (`deliver_demography_provisions`); the latent/seeded **tooled** chain
@@ -6065,29 +6063,28 @@ impl Settlement {
     /// It mints nothing: a re-entrant feeds by gathering grain (the existing conserved
     /// node-regen source) and eating it (`subsistence_on_grain`).
     ///
-    /// A no-op (returns `false`, touches nothing) unless
-    /// [`ChainConfig::productive_reentry`] is set AND raw grain is edible (so the
-    /// gathered grain actually relieves hunger), so every existing run is
-    /// byte-identical. Deterministic: slot-ordered, integer thresholds, nothing drawn.
-    fn run_productive_reentry(&mut self) -> bool {
+    /// A no-op unless [`ChainConfig::productive_reentry`] is set AND raw grain is
+    /// edible (so the gathered grain actually relieves hunger), so every existing
+    /// run is byte-identical. Deterministic: slot-ordered, integer thresholds,
+    /// nothing drawn.
+    fn run_productive_reentry(&mut self) {
         let Some(chain) = &self.chain else {
-            return false;
+            return;
         };
         if !chain.productive_reentry {
-            return false;
+            return;
         }
         // Without an edible-grain fallback the gathered grain would not feed anyone,
         // so re-entry would relabel without provisioning — stay inert.
         if self.known.subsistence.is_none() {
-            return false;
+            return;
         }
         let grain = chain.content.grain();
         let h_in = chain.reentry_hunger_in;
         let h_out = chain.reentry_hunger_out;
         let Some(grain_node) = self.node_for_good(grain) else {
-            return false;
+            return;
         };
-        let mut changed = false;
         for &slot in &self.live_colonist_slots {
             let colonist = &self.colonists[slot];
             // Lineage members are hearth-fed; the tooled chain producers (latent or
@@ -6114,6 +6111,9 @@ impl Settlement {
                 // Hungry and not yet feeding on grain: adopt grain gathering.
                 (Vocation::Gatherer, Some(grain_node))
             } else if hunger < h_out && displaced {
+                if !self.reentry_revert_ready(colonist.id) {
+                    continue;
+                }
                 // Fed re-entrant: revert to the home role it was displaced from.
                 (colonist.home_vocation, colonist.home_node)
             } else {
@@ -6124,10 +6124,13 @@ impl Settlement {
             if colonist.vocation != next_vocation || colonist.node != next_node {
                 colonist.vocation = next_vocation;
                 colonist.node = next_node;
-                changed = true;
             }
         }
-        changed
+    }
+
+    fn reentry_revert_ready(&self, id: AgentId) -> bool {
+        self.world.agent_status(id) == Some(AgentStatus::Idle)
+            && self.world.agent_carry_total(id) == 0
     }
 
     /// The resource node whose harvested good is `good`, in node-id order (the

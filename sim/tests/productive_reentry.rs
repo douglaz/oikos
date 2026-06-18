@@ -16,6 +16,7 @@
 //! grain).
 
 use sim::{NodeId, Settlement, SettlementConfig, Vocation, WOOD};
+use world::{AgentStatus, Pos};
 
 /// `frontier_endogenous` with the S6 re-entry phase turned ON, at the default
 /// hysteresis band (entry 8, exit 4). The economy is otherwise the endogenous one,
@@ -206,6 +207,64 @@ fn reentry_is_sticky_and_does_not_thrash() {
         max_flips * 4 < window,
         "re-entry must be sticky (no per-tick thrash): a colonist changed node {max_flips} \
          times over {window} tail ticks (flips={flips:?})"
+    );
+}
+
+#[test]
+fn reentry_reverts_only_after_in_flight_gathering_settles() {
+    // A fed re-entrant must not return to its non-gatherer home while a grain
+    // harvest/deposit cycle is still in flight. Otherwise the next fast loop can
+    // deposit grain into the exchange while the depositor is no longer a Gatherer,
+    // leaving the exchange unit without attribution.
+    let mut config = reentry_on();
+    let grain = config.chain.as_ref().unwrap().content.grain();
+    config.chain.as_mut().unwrap().reentry_hunger_out = 7;
+    for node in &mut config.nodes {
+        if node.good == grain {
+            node.pos = Pos::new(10, 0);
+        }
+    }
+
+    let h_out = config.chain.as_ref().unwrap().reentry_hunger_out;
+    let n_consumers = usize::from(config.consumers);
+    let mut s = Settlement::generate(1, &config);
+    let grain_node = s.grain_node().expect("a grain node");
+    let mut saw_delayed_revert = false;
+    let mut saw_consumer_revert = false;
+
+    for tick in 0..700u64 {
+        let report = s.econ_tick();
+        assert!(report.conserves(), "re-entry must conserve at tick {tick}");
+        assert_eq!(
+            s.world().stockpile_get(s.exchange(), grain),
+            0,
+            "grain delivered to the exchange must be attributed and transferred at tick {tick}"
+        );
+
+        for i in 0..n_consumers {
+            let Some(id) = s.colonist_id(i) else {
+                continue;
+            };
+            let hunger = s.need_of(i).map(|n| n.hunger).unwrap_or_default();
+            let on_grain =
+                s.vocation_of(i) == Some(Vocation::Gatherer) && s.node_of(i) == Some(grain_node);
+            let spatial_busy = s.world().agent_status(id) != Some(AgentStatus::Idle);
+            if on_grain && hunger < h_out && (spatial_busy || s.carry_of(i, grain) > 0) {
+                saw_delayed_revert = true;
+            }
+            if saw_delayed_revert && s.vocation_of(i) == Some(Vocation::Consumer) {
+                saw_consumer_revert = true;
+            }
+        }
+    }
+
+    assert!(
+        saw_delayed_revert,
+        "the long-distance run must exercise a fed re-entrant with unsettled spatial work"
+    );
+    assert!(
+        saw_consumer_revert,
+        "a settled, fed consumer re-entrant must still return to its home role"
     );
 }
 
