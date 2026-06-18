@@ -2765,9 +2765,12 @@ struct Colonist {
     /// generation. Re-entry temporarily overrides `vocation`/`node` to send a hungry
     /// non-lineage colonist to the edible grain node; once it is fed again it reverts
     /// to this home role (a WOOD gatherer resumes WOOD, an idle consumer goes idle).
-    /// Immutable after generation — a pure function of (seed, config), already
-    /// captured implicitly by the digest, so it needs no own term. Equal to
-    /// `vocation`/`node` for every colonist, so a re-entry-off run never reads it.
+    /// Immutable after generation. Because it decides the revert *target*, it is part of
+    /// the future-behaviour identity: [`Settlement::canonical_bytes`] serializes it
+    /// whenever re-entry can run (gated on [`ChainConfig::productive_reentry`]), so two
+    /// states with identical current `vocation`/`node` but different homes digest apart.
+    /// A re-entry-OFF run never reads it and never serializes it, keeping the pre-S6
+    /// per-colonist layout byte-identical.
     home_vocation: Vocation,
     home_node: Option<NodeId>,
     need: NeedState,
@@ -3745,6 +3748,15 @@ impl Settlement {
                      not the ContentSet id {id:?}"
                 );
             }
+            // S6 hysteresis invariant: the exit threshold must sit strictly below the
+            // entry threshold, else a re-entrant would satisfy `hunger < h_out` the same
+            // tick it crossed `hunger >= h_in` and thrash grain↔home every tick. The
+            // shipped configs all hold it; assert in debug so a future misconfig trips
+            // loudly rather than churning silently.
+            debug_assert!(
+                !chain.productive_reentry || chain.reentry_hunger_out < chain.reentry_hunger_in,
+                "re-entry hysteresis requires reentry_hunger_out < reentry_hunger_in"
+            );
             ChainRuntime {
                 content: chain.content.clone(),
                 throughput: chain.throughput,
@@ -6082,6 +6094,12 @@ impl Settlement {
         let grain = chain.content.grain();
         let h_in = chain.reentry_hunger_in;
         let h_out = chain.reentry_hunger_out;
+        // Single canonical edible node: `node_for_good` resolves the lowest-id node
+        // yielding grain, and the shipped frontier seeds exactly one grain node, so
+        // `grain_node`/`on_grain` below are unambiguous. A future config that seeded two
+        // grain-yielding nodes would read a gatherer home-assigned to the second as "not
+        // on grain" and re-point it to the first (still edible, but it abandons its home
+        // node) — revisit this resolution and `on_grain` before adding such configs.
         let Some(grain_node) = self.node_for_good(grain) else {
             return;
         };
@@ -7620,6 +7638,15 @@ impl Settlement {
             .colonists
             .iter()
             .any(|colonist| colonist.estate_destination.is_some());
+        // The S6 re-entry home (vocation+node) decides the revert *target* of a
+        // displaced re-entrant, so it steers future ticks ONLY while the re-entry phase
+        // can run. Gate its per-colonist bytes on the same `productive_reentry` flag as
+        // the thresholds above: a re-entry-OFF config (incl. `endogenous`) never reads
+        // the home and keeps its pre-S6 per-colonist layout byte-identical.
+        let reentry_serialized = self
+            .chain
+            .as_ref()
+            .is_some_and(|chain| chain.productive_reentry);
         out.extend_from_slice(&(self.colonists.len() as u32).to_le_bytes());
         for colonist in &self.colonists {
             out.extend_from_slice(&colonist.id.0.to_le_bytes());
@@ -7643,6 +7670,20 @@ impl Settlement {
                     out.extend_from_slice(&node.0.to_le_bytes());
                 }
                 None => out.push(0),
+            }
+            if reentry_serialized {
+                // The home vocation+node the colonist reverts to once fed
+                // (`run_productive_reentry`). Two states with identical CURRENT
+                // vocation/node but different homes diverge on the revert path, so the
+                // home is part of the future-behaviour identity whenever re-entry runs.
+                out.push(colonist.home_vocation.tag());
+                match colonist.home_node {
+                    Some(node) => {
+                        out.push(1);
+                        out.extend_from_slice(&node.0.to_le_bytes());
+                    }
+                    None => out.push(0),
+                }
             }
             if has_latent_pool {
                 // The latent specialty (G3b) steers each tick's role-choice
@@ -10292,6 +10333,64 @@ mod tests {
             off_bytes,
             Settlement::generate(7, &off_thresholds).canonical_bytes(),
             "with re-entry off, the unused thresholds must not steer the digest"
+        );
+    }
+
+    #[test]
+    fn canonical_bytes_include_reentry_home() {
+        // S6: with re-entry ON, a colonist's HOME vocation+node decide whether and where
+        // a displaced re-entrant reverts once fed (`run_productive_reentry`). Two states
+        // with identical CURRENT vocation/node but different homes diverge on the revert
+        // path, so the home is part of the future-behaviour identity — `canonical_bytes`
+        // must read it. With re-entry OFF the home is never consulted, so it must NOT
+        // steer the digest (the `endogenous` byte-identity tripwire).
+        let mut on = SettlementConfig::frontier_endogenous();
+        on.chain.as_mut().expect("chain").productive_reentry = true;
+        let on_bytes = Settlement::generate(7, &on).canonical_bytes();
+
+        // Re-entry ON: perturbing a colonist's home NODE must split the digest.
+        let mut on_node = Settlement::generate(7, &on);
+        let node_slot = on_node
+            .colonists
+            .iter()
+            .position(|c| c.home_node.is_some())
+            .expect("a spatial gatherer with a home node");
+        on_node.colonists[node_slot].home_node = None;
+        assert_ne!(
+            on_bytes,
+            on_node.canonical_bytes(),
+            "with re-entry on, the home node must be part of the digest"
+        );
+
+        // Re-entry ON: perturbing a colonist's home VOCATION must split the digest.
+        let mut on_voc = Settlement::generate(7, &on);
+        let voc_slot = on_voc
+            .colonists
+            .iter()
+            .position(|c| c.home_vocation == Vocation::Consumer)
+            .expect("a non-lineage consumer with a Consumer home");
+        on_voc.colonists[voc_slot].home_vocation = Vocation::Gatherer;
+        assert_ne!(
+            on_bytes,
+            on_voc.canonical_bytes(),
+            "with re-entry on, the home vocation must be part of the digest"
+        );
+
+        // Re-entry OFF: the same home perturbation must NOT split the digest, or the
+        // pre-S6 per-colonist layout (and the `endogenous` byte-identity) would break.
+        let off = SettlementConfig::frontier_endogenous();
+        let off_bytes = Settlement::generate(7, &off).canonical_bytes();
+        let mut off_node = Settlement::generate(7, &off);
+        let off_slot = off_node
+            .colonists
+            .iter()
+            .position(|c| c.home_node.is_some())
+            .expect("a spatial gatherer with a home node");
+        off_node.colonists[off_slot].home_node = None;
+        assert_eq!(
+            off_bytes,
+            off_node.canonical_bytes(),
+            "with re-entry off, the home must not steer the digest"
         );
     }
 
