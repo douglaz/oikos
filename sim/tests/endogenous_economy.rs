@@ -78,8 +78,15 @@ fn inputs_acquired_by_market_trade() {
             0,
             "no hearth should ever mint flour (tick {tick})"
         );
-        grain_consumed_as_input += report.consumed_as_input_of(grain);
-        flour_consumed_as_input += report.consumed_as_input_of(flour);
+        // Count input consumption only in the SAME tail window the qualifying
+        // trades fall in (tick >= 300). By then the seeded cold-start buffers are
+        // long gone and grain/flour are never minted (asserted above), so any input
+        // consumed here must have arrived through a market Trade — proving the
+        // tail-bought units are the ones being transformed, not pre-seeded stock.
+        if tick >= 300 {
+            grain_consumed_as_input += report.consumed_as_input_of(grain);
+            flour_consumed_as_input += report.consumed_as_input_of(flour);
+        }
 
         let trades = &settlement.society().trades;
         for trade in &trades[seen..] {
@@ -108,11 +115,13 @@ fn inputs_acquired_by_market_trade() {
         "after tick 300 an active producer must acquire its input through a real \
          order-book Trade from a different seller, got {producer_input_trades}"
     );
-    // The acquired inputs are actually transformed (consumed as recipe inputs).
+    // The TAIL-acquired inputs are actually transformed (consumed as recipe inputs
+    // after tick 300, when only market-sourced units exist).
     assert!(
         grain_consumed_as_input > 0 && flour_consumed_as_input > 0,
-        "the market-bought inputs must be consumed as recipe inputs (grain milled, \
-         flour baked), got grain={grain_consumed_as_input} flour={flour_consumed_as_input}"
+        "the market-bought inputs must be consumed as recipe inputs after tick 300 \
+         (grain milled, flour baked), got grain={grain_consumed_as_input} \
+         flour={flour_consumed_as_input}"
     );
 }
 
@@ -234,12 +243,17 @@ fn hunger_and_provisioning_are_stationary() {
     // (pop, hungerMean, hungerP95, sysBread, sysGrain).)
     let (_, m_first, _, _, _) = samples[0];
     let (_, m_last, p_last, _, _) = *samples.last().unwrap();
+    // The colony is well-fed in the mean (live tail mean ~3, far below the ~8
+    // chronic-hunger level), while the worst-off 5% run hotter (p95 ~12) — honest
+    // tail inequality from the churning non-lineage producers. Bound both so the
+    // test enforces a genuinely fed colony, not merely a non-exploding one.
     assert!(
-        m_last <= 12 && p_last <= 16,
-        "hunger should stay bounded (well-fed), got mean={m_last} p95={p_last}"
+        m_last <= 7 && p_last <= 13,
+        "hunger should stay bounded (mean well below chronic ~8; p95 tail capped), \
+         got mean={m_last} p95={p_last}"
     );
     assert!(
-        (m_first as i64 - m_last as i64).abs() <= 4,
+        (m_first as i64 - m_last as i64).abs() <= 3,
         "hunger mean should not drift, got {m_first} -> {m_last}"
     );
 

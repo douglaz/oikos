@@ -1362,10 +1362,13 @@ with **no chain-specific global placement**. Sliced per `docs/impl-endogenous-sp
       byte-identical (the disabled-hook regression is the tripwire).
 - [x] **S2 — project-aware producer bid** (`sim/src/settlement.rs`): the input bid price is the imputed
       reservation from the **project-bundle appraisal** (`imputed_input_reservation` reuses
-      `recipe_adoption_pays_for_money` / `appraise_project_bundle_for_money`), not a scalar heuristic —
-      the highest input price at which running the recipe-as-project still provisions the producer's
-      savings want, off the output's last realized price. The generic recipe-blind input want is
-      suppressed so the override is the sole input bid.
+      `recipe_adoption_pays_for_money` / `appraise_project_bundle_for_money`) — the highest input price
+      at which running the recipe-as-project still provisions the producer's savings want, off the
+      output's last realized price. When that savings want is already satiated, a **recurring**
+      owner-operator falls back to restocking at the Mengerian break-even `ceiling` (revenue −
+      operating cost per input unit) rather than dropping out — a scalar, but a deliberate
+      recurring-consumption motive, not the recipe-blind generic bid (which is suppressed so the
+      override is the sole input bid).
 - [x] **S3 — working-capital persistence**: real **retained earnings**, no per-tick planner loan
       (`capital_advance` off). A local **producer-subsistence hearth** (`producer_subsistence`) feeds
       each producer its staple + WOOD so its money frees entirely for inputs, and a **demand-responsive
@@ -1386,6 +1389,15 @@ with **no chain-specific global placement**. Sliced per `docs/impl-endogenous-sp
 The curated-placement scenarios (`in-kind-advance`, `input-advance`, `economy`) and their flags are
 **kept for comparison**; the DoD passes with them off. **S6 (scaling / churn — replacement producers
 so output tracks a growing population) is deferred.**
+
+**Honest scope of the claim.** What is proven: the chain *acquires its inputs by real market trade*
+and *keeps producing through tick 1600* with no global food/input placement and no per-tick capital
+loan, on a designated-GOLD colony. What it rests on (disclosed, not "market alone"): a *local
+producer-subsistence hearth* that mints each producer's staple + WOOD (a household garden, never the
+chain inputs grain/flour), seeded *cold-start buffers* for the first prices, and *designated gold* —
+so this does **not** re-prove Mengerian money emergence. The colony is well-fed in the mean (tail
+hunger ~3) but the worst-off 5% run hotter (~12), and per-capita output is bounded but bursty — the
+even-provisioning-at-scale work is S6.
 
 ## Build and test
 

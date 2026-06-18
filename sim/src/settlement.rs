@@ -7022,6 +7022,17 @@ impl Settlement {
             // showing up in generated holdings — the same identity contract as the
             // two knobs above, so it joins them unconditionally.
             out.push(u8::from(chain.recurring_motive));
+            // The capital-advance / in-kind-subsistence / in-kind-input / spoilage
+            // knobs each gate a future settlement phase (run_capital_advance,
+            // run_subsistence_advance, run_input_advance, run_spoilage) that runs for
+            // any chain regardless of a latent pool, so two configs differing only in
+            // one generate identically and then diverge — the same identity contract,
+            // joined unconditionally. (perishable_decay_bps is the spoilage rate, not
+            // a bool: 0 disables the phase, any other value steers it.)
+            out.push(u8::from(chain.capital_advance));
+            out.push(u8::from(chain.subsistence_advance));
+            out.push(u8::from(chain.input_advance));
+            out.extend_from_slice(&chain.perishable_decay_bps.to_le_bytes());
             // The staple mapping steers the next needs/scale phase for *any* chain,
             // role-choice or not, so it is included whenever a chain is active. The
             // G3b no-spread control shares the emergent config's physical state but
@@ -9966,6 +9977,42 @@ mod tests {
             base.canonical_bytes(),
             edible.canonical_bytes(),
             "the edible-grain subsistence fallback must be part of the chain config identity"
+        );
+    }
+
+    #[test]
+    fn canonical_bytes_include_phase_gating_flags() {
+        // capital_advance / subsistence_advance / input_advance / perishable_decay_bps
+        // each gate a future settlement phase that runs for any chain, so a config
+        // differing only in one steers later ticks while generating identically — the
+        // determinism digest must split them or it would call two non-equivalent
+        // configs equal. Flip each in isolation from a common base.
+        let base = SettlementConfig::emergent_chain();
+        let base_bytes = Settlement::generate(7, &base).canonical_bytes();
+        let flip = |mutate: &dyn Fn(&mut ChainConfig)| {
+            let mut cfg = SettlementConfig::emergent_chain();
+            mutate(cfg.chain.as_mut().expect("chain"));
+            Settlement::generate(7, &cfg).canonical_bytes()
+        };
+        assert_ne!(
+            base_bytes,
+            flip(&|c| c.capital_advance = !c.capital_advance),
+            "the capital-advance flag must be part of the chain config identity"
+        );
+        assert_ne!(
+            base_bytes,
+            flip(&|c| c.subsistence_advance = !c.subsistence_advance),
+            "the in-kind subsistence-advance flag must be part of the chain config identity"
+        );
+        assert_ne!(
+            base_bytes,
+            flip(&|c| c.input_advance = !c.input_advance),
+            "the in-kind input-advance flag must be part of the chain config identity"
+        );
+        assert_ne!(
+            base_bytes,
+            flip(&|c| c.perishable_decay_bps = c.perishable_decay_bps.wrapping_add(50)),
+            "the spoilage decay rate must be part of the chain config identity"
         );
     }
 
