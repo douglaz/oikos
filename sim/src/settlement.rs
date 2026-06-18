@@ -851,6 +851,17 @@ pub struct ChainConfig {
     /// node-to-node every tick, and fed colonists return to WOOD gathering, keeping
     /// the WOOD supply alive. Only consulted when [`Self::productive_reentry`] is set.
     pub reentry_hunger_out: u16,
+    /// PRODUCIBLE CAPITAL — tool-acquisition eligibility (S7.1): when `true`, a
+    /// colonist that **holds** the required tool (a mill / an oven) is admitted to
+    /// the role-choice adoption appraisal even when its seeded
+    /// [`latent`](Colonist::latent) is `None`, and its regenerated scale carries the
+    /// durable tool's anchor so it never posts the just-acquired capital as surplus
+    /// (the phase-order trap). The existing spread appraisal then decides whether it
+    /// adopts Miller/Baker — so a colonist that builds (S7.2) or is handed a tool can
+    /// become a producer, lifting the chain's hard cap at the seeded tool count.
+    /// `false` (every existing config) keeps the seeded-`latent`-only gate, so the
+    /// pre-S7 role-choice path and the conformance goldens are byte-identical.
+    pub tool_acquisition_eligibility: bool,
     /// Per-producer, per-econ-tick cap on recipe applications — a deterministic
     /// throughput bound (nothing is drawn). A producer applies its recipe up to
     /// this many times, limited by the input it holds.
@@ -947,6 +958,10 @@ impl ChainConfig {
             productive_reentry: false,
             reentry_hunger_in: 8,
             reentry_hunger_out: 4,
+            // Producible capital off by default (S7): the relaxed tool-acquisition
+            // gate is inert, so every existing config and its goldens are
+            // byte-identical (a non-latent tool-holder never appears without it).
+            tool_acquisition_eligibility: false,
             throughput: 2,
             miller_grain_buffer: 16,
             baker_flour_buffer: 16,
@@ -1006,6 +1021,7 @@ impl ChainConfig {
             productive_reentry: false,
             reentry_hunger_in: 8,
             reentry_hunger_out: 4,
+            tool_acquisition_eligibility: false,
             throughput: 2,
             miller_grain_buffer: 16,
             baker_flour_buffer: 16,
@@ -2810,6 +2826,15 @@ struct Colonist {
     /// The settlement destination recorded once this colonist dies and its estate
     /// is collected. `None` while alive.
     estate_destination: Option<EstateDestination>,
+    /// S7 observability (read-only, NOT serialized): set `true` the tick a colonist
+    /// that was NOT seeded latent (`latent == None`) comes to hold a **produced**
+    /// chain tool it built itself (S7.2). It lets a test tie a produced tool to a
+    /// formerly-non-latent adopter (acceptance test 6) without inferring it from
+    /// holdings. Purely diagnostic — no phase reads it, so it steers no future tick
+    /// and is deliberately absent from [`Settlement::canonical_bytes`] (a derived
+    /// marker, not behaviour state). Deterministic: set on a deterministic build
+    /// completion.
+    acquired_tool: bool,
 }
 
 /// A settlement of generated colonists driven over a real `world` + `econ`.
@@ -3073,6 +3098,10 @@ struct ChainRuntime {
     productive_reentry: bool,
     reentry_hunger_in: u16,
     reentry_hunger_out: u16,
+    /// S7.1: the relaxed tool-acquisition eligibility gate (see
+    /// [`ChainConfig::tool_acquisition_eligibility`]). `false` for every existing
+    /// config, so the seeded-`latent`-only role-choice path is byte-identical.
+    tool_acquisition_eligibility: bool,
 }
 
 impl Settlement {
@@ -3462,6 +3491,7 @@ impl Settlement {
                 lifespan: None,
                 seed: 0,
                 estate_destination: None,
+                acquired_tool: false,
             });
         }
 
@@ -3510,6 +3540,7 @@ impl Settlement {
                         lifespan: Some(demo.lifespan_ticks(seed)),
                         seed,
                         estate_destination: None,
+                        acquired_tool: false,
                     });
                 }
             }
@@ -3776,6 +3807,7 @@ impl Settlement {
                 productive_reentry: chain.productive_reentry,
                 reentry_hunger_in: chain.reentry_hunger_in,
                 reentry_hunger_out: chain.reentry_hunger_out,
+                tool_acquisition_eligibility: chain.tool_acquisition_eligibility,
             }
         });
 
@@ -5241,6 +5273,7 @@ impl Settlement {
                 lifespan: Some(lifespan),
                 seed: cseed,
                 estate_destination: None,
+                acquired_tool: false,
             });
             let child_slot = self.colonists.len() - 1;
             self.live_colonist_slots.push(child_slot);
@@ -5274,25 +5307,52 @@ impl Settlement {
                 // G3b — also bids `throughput` units of its input each tick. The
                 // latent/active split keeps a latent producer from autonomously
                 // pricing the intermediate good (load-bearing for the control).
-                if let Some((tool, input)) =
-                    production_specialty(colonist.vocation, colonist.latent, &chain.content)
-                {
-                    let input_wants = match colonist.vocation {
-                        // Active producers (G3a seeded, G3b adopted) bid `throughput`
-                        // units of input each tick. S2: when the project-aware
-                        // override drives input acquisition, suppress this generic
-                        // (recipe-blind, low-ranked) input want so the producer posts
-                        // no DUPLICATE bid — the override is the sole input bid.
-                        Vocation::Miller | Vocation::Baker if chain.project_input_bids => 0,
-                        Vocation::Miller | Vocation::Baker => chain.throughput.max(1),
-                        // G6b: a scholar/confectioner reserves (and tops up) its FULL
-                        // input buffer, so research / tier-2 production runs from seeded
-                        // stock and the buffer is neither dumped nor eaten.
-                        Vocation::Scholar => chain.scholar_grain_buffer.max(1),
-                        Vocation::Confectioner => chain.confectioner_flour_buffer.max(1),
-                        // A latent producer (Unassigned) posts NO input bid — load-bearing
-                        // for the G3b control (it must not price the intermediate good).
-                        _ => 0,
+                let mut specialty =
+                    production_specialty(colonist.vocation, colonist.latent, &chain.content);
+                // S7.1: a non-producer that has ACQUIRED a chain tool (it holds a
+                // mill/oven but is not seeded latent and has not yet adopted) gets the
+                // tool anchor too — so the durable capital it just built/was handed is
+                // never posted as surplus and sold on the market step before role-choice
+                // adopts it (the phase-order trap). It anchors ONLY the tool (no input
+                // bid); the input wants come once it adopts and `production_specialty`
+                // keys off its Miller/Baker vocation. Gated on the eligibility flag, so
+                // every pre-S7 scale is byte-identical.
+                let mut anchor_only = false;
+                if specialty.is_none() && chain.tool_acquisition_eligibility {
+                    if let Some(agent) = self.society.agents.get(colonist.id) {
+                        if agent.stock.get(chain.content.mill()) > 0 {
+                            specialty = Some((chain.content.mill(), chain.content.grain()));
+                            anchor_only = true;
+                        } else if agent.stock.get(chain.content.oven()) > 0 {
+                            specialty = Some((chain.content.oven(), chain.content.flour()));
+                            anchor_only = true;
+                        }
+                    }
+                }
+                if let Some((tool, input)) = specialty {
+                    let input_wants = if anchor_only {
+                        // An acquired-but-not-adopted tool-holder posts NO input bid (it
+                        // is not yet producing) — just the anchor that protects the tool.
+                        0
+                    } else {
+                        match colonist.vocation {
+                            // Active producers (G3a seeded, G3b adopted) bid `throughput`
+                            // units of input each tick. S2: when the project-aware
+                            // override drives input acquisition, suppress this generic
+                            // (recipe-blind, low-ranked) input want so the producer posts
+                            // no DUPLICATE bid — the override is the sole input bid.
+                            Vocation::Miller | Vocation::Baker if chain.project_input_bids => 0,
+                            Vocation::Miller | Vocation::Baker => chain.throughput.max(1),
+                            // G6b: a scholar/confectioner reserves (and tops up) its FULL
+                            // input buffer, so research / tier-2 production runs from seeded
+                            // stock and the buffer is neither dumped nor eaten.
+                            Vocation::Scholar => chain.scholar_grain_buffer.max(1),
+                            Vocation::Confectioner => chain.confectioner_flour_buffer.max(1),
+                            // A latent producer (Unassigned) posts NO input bid —
+                            // load-bearing for the G3b control (it must not price the
+                            // intermediate good).
+                            _ => 0,
+                        }
                     };
                     producer_scale_extension(&mut scale, tool, input, input_wants);
                 }
@@ -5986,16 +6046,35 @@ impl Settlement {
         let grain = chain.content.grain();
         let flour = chain.content.flour();
         let bread = chain.content.bread();
+        let mill_good = chain.content.mill();
+        let oven_good = chain.content.oven();
         let operating_cost = chain.operating_cost;
         let recurring_motive = chain.recurring_motive;
+        // S7.1: when tool-acquisition eligibility is on, a colonist that HOLDS the
+        // required tool is admitted to this appraisal even with no seeded `latent`.
+        let tool_eligibility = chain.tool_acquisition_eligibility;
         let tick = self.society.tick.0;
         let mut changed = false;
 
         for &slot in &self.live_colonist_slots {
             let colonist = &self.colonists[slot];
-            // Only latent colonists re-appraise; a `None` latent (gatherer,
-            // consumer, or seeded G3a producer) keeps its vocation untouched.
-            let Some(latent) = colonist.latent else {
+            // The recipe this colonist may adopt: its seeded `latent`, or — under
+            // S7.1 — the recipe whose durable tool it now HOLDS (a built or handed
+            // mill/oven), even when `latent` is `None` (so an adopted tool-holder is
+            // also re-appraised each tick and can de-adopt when the spread collapses).
+            // A colonist that is neither latent nor a tool-holder keeps its vocation
+            // untouched. With the gate off this is exactly `colonist.latent`, so the
+            // pre-S7 role-choice path is byte-identical.
+            let latent = match colonist.latent {
+                Some(recipe) => Some(recipe),
+                None if tool_eligibility => match self.society.agents.get(colonist.id) {
+                    Some(agent) if agent.stock.get(mill_good) > 0 => Some(RecipeId::Mill),
+                    Some(agent) if agent.stock.get(oven_good) > 0 => Some(RecipeId::Bake),
+                    _ => None,
+                },
+                None => None,
+            };
+            let Some(latent) = latent else {
                 continue;
             };
             let (recipe, output_price, input_price, adopted) = match latent {
@@ -6038,7 +6117,21 @@ impl Settlement {
             let pays = pays
                 || (recurring_motive
                     && recipe_is_profitable(recipe, output_price, input_price, operating_cost));
-            let next = if pays { adopted } else { Vocation::Unassigned };
+            // When the spread does not pay: a seeded latent or an adopted producer
+            // reverts to Unassigned (the pre-S7 behaviour — it holds its tool, idle).
+            // An S7 tool-holder that is still feeding itself by gathering/consuming
+            // (it acquired a tool but has not yet adopted) keeps that survival role
+            // rather than being stranded Unassigned — it tries again next tick.
+            let next = if pays {
+                adopted
+            } else {
+                match self.colonists[slot].vocation {
+                    Vocation::Miller | Vocation::Baker | Vocation::Unassigned => {
+                        Vocation::Unassigned
+                    }
+                    other => other,
+                }
+            };
             if self.colonists[slot].vocation != next {
                 self.colonists[slot].vocation = next;
                 changed = true;
@@ -6166,6 +6259,17 @@ impl Settlement {
                 && self.known.subsistence == Some(grain)
                 && self.node_for_good(grain).is_some()
         })
+    }
+
+    /// S7.1: whether the relaxed tool-acquisition eligibility gate is active for this
+    /// settlement — the role-choice digest block (operating cost + per-colonist latent)
+    /// must widen to fire on this too, since role-choice now acts on a tool-holder even
+    /// with no seeded latent pool. A pure function of the chain flag, so a config with
+    /// it off serializes exactly the pre-S7 stream.
+    fn tool_acquisition_can_run(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(|chain| chain.tool_acquisition_eligibility)
     }
 
     /// The resource node whose harvested good is `good`, in node-id order (the
@@ -7027,6 +7131,39 @@ impl Settlement {
         self.node_for_good(grain)
     }
 
+    /// S7.1: whether the colonist at generation `index` is ELIGIBLE to adopt a chain
+    /// vocation in the role-choice appraisal — either it is seeded `latent`, or (when
+    /// [`ChainConfig::tool_acquisition_eligibility`] is on) it now HOLDS the required
+    /// tool (a built or handed mill/oven). A read-only mirror of the relaxed
+    /// `run_role_choice` entry gate, so a test can confirm a tool-holder became
+    /// eligible without the gate being a relabel. Always `false` for a non-chain
+    /// settlement, and — with the flag off — exactly "is seeded latent".
+    pub fn is_tool_acquisition_eligible(&self, index: usize) -> bool {
+        let Some(colonist) = self.colonists.get(index) else {
+            return false;
+        };
+        if colonist.latent.is_some() {
+            return true;
+        }
+        let Some(chain) = &self.chain else {
+            return false;
+        };
+        if !chain.tool_acquisition_eligibility {
+            return false;
+        }
+        self.society.agents.get(colonist.id).is_some_and(|agent| {
+            agent.stock.get(chain.content.mill()) > 0 || agent.stock.get(chain.content.oven()) > 0
+        })
+    }
+
+    /// S7 observability: whether the colonist at generation `index` built a chain tool
+    /// it did not start latent with (the `acquired_tool` marker — acceptance test 6).
+    /// Read-only; `false` for every colonist until S7.2 capital formation completes a
+    /// build for it.
+    pub fn acquired_tool_of(&self, index: usize) -> bool {
+        self.colonists.get(index).is_some_and(|c| c.acquired_tool)
+    }
+
     /// Living colonists of a vocation.
     pub fn living_count(&self, vocation: Vocation) -> usize {
         self.live_colonist_slots
@@ -7277,15 +7414,23 @@ impl Settlement {
             .colonists
             .iter()
             .any(|colonist| colonist.latent.is_some());
+        // S7.1: with tool-acquisition eligibility on, role-choice acts on a colonist
+        // that merely HOLDS a tool — so the role-choice appraisal can steer a future
+        // tick even with no seeded latent pool. Widen the role-choice digest gate to
+        // "a latent pool OR S7 eligibility on", so the operating cost and the
+        // per-colonist latent block below serialize in that case too. With the gate
+        // off this is exactly `has_latent_pool`, so every pre-S7 stream is unchanged.
+        let role_choice_active = has_latent_pool || self.tool_acquisition_can_run();
         if let Some(chain) = &self.chain {
             out.extend_from_slice(&chain.throughput.to_le_bytes());
             // The G3b operating cost steers nothing but the role-choice appraisal, so
-            // it is part of the future-behaviour identity only when a latent pool can
-            // run that appraisal. Without one (a seeded G3a chain) two settlements
-            // differing only in it behave identically, so it is omitted — keeping the
-            // tripwire's "byte-identical iff future behaviour identical" contract
-            // honest rather than splitting equivalent seeded chains apart.
-            if has_latent_pool {
+            // it is part of the future-behaviour identity only when that appraisal can
+            // run — a latent pool OR S7 tool-acquisition eligibility (the widened
+            // gate). Without either (a seeded G3a chain) two settlements differing only
+            // in it behave identically, so it is omitted — keeping the tripwire's
+            // "byte-identical iff future behaviour identical" contract honest rather
+            // than splitting equivalent seeded chains apart.
+            if role_choice_active {
                 out.extend_from_slice(&chain.operating_cost.to_le_bytes());
             }
             // The S2/S5 endogenous knobs steer future ticks but never show up in the
@@ -7326,6 +7471,14 @@ impl Settlement {
             if self.productive_reentry_can_run() {
                 out.extend_from_slice(&chain.reentry_hunger_in.to_le_bytes());
                 out.extend_from_slice(&chain.reentry_hunger_out.to_le_bytes());
+            }
+            // S7.1: the tool-acquisition eligibility gate relaxes role-choice and adds
+            // the acquired-tool scale anchor, steering every future tick for any chain
+            // once a colonist comes to hold a tool. It is emitted only when on, so a
+            // pre-S7 (flag-off) chain stays byte-identical to the pre-S7 stream — the
+            // same gated-block discipline as the re-entry thresholds above.
+            if self.tool_acquisition_can_run() {
+                out.push(1);
             }
             // The staple mapping steers the next needs/scale phase for *any* chain,
             // role-choice or not, so it is included whenever a chain is active. The
@@ -7695,11 +7848,14 @@ impl Settlement {
                     None => out.push(0),
                 }
             }
-            if has_latent_pool {
+            if role_choice_active {
                 // The latent specialty (G3b) steers each tick's role-choice
                 // re-appraisal, so it is part of the future-behavior identity. This
-                // block is omitted entirely when no latent pool exists, preserving
-                // the pre-G3b canonical layout for plain and seeded-only configs.
+                // block is omitted entirely when role-choice cannot run (no latent pool
+                // AND no S7 eligibility), preserving the pre-G3b canonical layout for
+                // plain and seeded-only configs. Under S7 eligibility it serializes the
+                // latent (mostly `None`) for every colonist, since role-choice now acts
+                // on a tool-holder even with an empty seeded latent pool.
                 match colonist.latent {
                     Some(recipe) => {
                         out.push(1);
@@ -10218,6 +10374,159 @@ mod tests {
             dearer.canonical_bytes(),
             "an operating cost no latent pool can read must not split the digest"
         );
+    }
+
+    #[test]
+    fn canonical_bytes_include_tool_acquisition_eligibility() {
+        // S7.1: the tool-acquisition eligibility gate relaxes role-choice and adds the
+        // acquired-tool scale anchor, steering future ticks for any chain — so two
+        // chains differing only in it must digest apart.
+        let mut off = SettlementConfig::frontier_endogenous();
+        off.chain
+            .as_mut()
+            .expect("chain")
+            .tool_acquisition_eligibility = false;
+        let mut on = SettlementConfig::frontier_endogenous();
+        on.chain
+            .as_mut()
+            .expect("chain")
+            .tool_acquisition_eligibility = true;
+        assert_ne!(
+            Settlement::generate(7, &off).canonical_bytes(),
+            Settlement::generate(7, &on).canonical_bytes(),
+            "the tool-acquisition eligibility gate must be part of the chain config identity"
+        );
+
+        // The widened role-choice gate: even a SEEDED chain with no latent pool now
+        // serializes the operating cost when eligibility is on (role-choice can act on
+        // a tool-holder), so a chain that the latent-pool gate alone would have left
+        // operating-cost-blind splits on the operating cost under eligibility.
+        let mut elig = SettlementConfig::grain_flour_bread_chain();
+        elig.chain
+            .as_mut()
+            .expect("chain")
+            .tool_acquisition_eligibility = true;
+        let mut elig_dearer = elig.clone();
+        elig_dearer.chain.as_mut().expect("chain").operating_cost += 1;
+        assert_ne!(
+            Settlement::generate(7, &elig).canonical_bytes(),
+            Settlement::generate(7, &elig_dearer).canonical_bytes(),
+            "with eligibility on, the operating cost must steer the digest even with no latent pool"
+        );
+
+        // Tripwire: with eligibility OFF, the same seeded chain stays
+        // operating-cost-blind (the pre-S7 contract) — proven by
+        // `seeded_chain_digest_ignores_unused_operating_cost`, re-checked here against
+        // the eligibility-on twin so the widening is the ONLY thing that flips it.
+        let base = SettlementConfig::grain_flour_bread_chain();
+        let mut base_dearer = base.clone();
+        base_dearer.chain.as_mut().expect("chain").operating_cost += 1;
+        assert_eq!(
+            Settlement::generate(7, &base).canonical_bytes(),
+            Settlement::generate(7, &base_dearer).canonical_bytes(),
+            "with eligibility off, the seeded chain must stay operating-cost-blind"
+        );
+    }
+
+    #[test]
+    fn tool_acquisition_admits_a_non_latent_tool_holder() {
+        // S7.1 (the keystone): a colonist that is NOT seeded latent but is handed a
+        // mill mid-run is admitted to the adoption appraisal, DOES NOT sell the mill on
+        // the market step, adopts Miller, and actually produces flour. With the gate
+        // OFF the same handed mill changes nothing — a non-latent colonist holding a
+        // mill is not eligible, never adopts, and never mills.
+        let mut on = SettlementConfig::frontier_endogenous();
+        on.chain
+            .as_mut()
+            .expect("chain")
+            .tool_acquisition_eligibility = true;
+        let off = SettlementConfig::frontier_endogenous();
+        let mill = on.chain.as_ref().expect("chain").content.mill();
+        let flour = on.chain.as_ref().expect("chain").content.flour();
+
+        // The first spatial, non-latent, non-producer colonist (a gatherer/consumer).
+        // Deterministic, so the same index is picked across runs of the same config.
+        let pick = |s: &Settlement| -> usize {
+            (0..s.population())
+                .find(|&i| {
+                    s.is_alive(i)
+                        && !s.is_tool_acquisition_eligible(i)
+                        && matches!(
+                            s.vocation_of(i),
+                            Some(Vocation::Gatherer) | Some(Vocation::Consumer)
+                        )
+                })
+                .expect("a non-latent, non-producer spatial colonist")
+        };
+
+        // Gate ON: hand the mill once prices have formed, then run.
+        let mut s = Settlement::generate(42, &on);
+        s.run(400);
+        let idx = pick(&s);
+        let id = s.colonist_id(idx).expect("a living colonist id");
+        let mill_before = s.whole_system_total(mill);
+        assert!(s.society_mut().credit_stock(id, mill, 1), "mill credited");
+        // It is now eligible the very next appraisal — the gate relaxation, not a relabel.
+        assert!(
+            s.is_tool_acquisition_eligible(idx),
+            "holding the mill must make the non-latent colonist eligible"
+        );
+        let mut flour_made = 0u64;
+        for _ in 0..200 {
+            let report = s.econ_tick();
+            flour_made += report.produced_of(flour);
+        }
+        assert_eq!(
+            s.vocation_of(idx),
+            Some(Vocation::Miller),
+            "the eligible tool-holder must adopt Miller"
+        );
+        assert!(
+            s.society().agents.get(id).expect("agent").stock.get(mill) >= 1,
+            "the eligible tool-holder must still hold its mill (not sold before adoption)"
+        );
+        assert!(
+            s.whole_system_total(mill) > mill_before,
+            "the handed mill must remain in the whole system (the tool count did not drop)"
+        );
+        assert!(
+            flour_made > 0,
+            "the adopted tool-holder must actually produce flour, got {flour_made}"
+        );
+
+        // Gate OFF: the same handed mill at the same point changes nothing — the colonist
+        // is not eligible, never adopts, and never mills.
+        let mut s_off = Settlement::generate(42, &off);
+        s_off.run(400);
+        let off_idx = pick(&s_off);
+        let off_id = s_off.colonist_id(off_idx).expect("id");
+        let voc_before = s_off.vocation_of(off_idx);
+        assert!(s_off.society_mut().credit_stock(off_id, mill, 1));
+        assert!(
+            !s_off.is_tool_acquisition_eligible(off_idx),
+            "with the gate off, holding a mill must not make a non-latent colonist eligible"
+        );
+        s_off.run(200);
+        assert_eq!(
+            s_off.vocation_of(off_idx),
+            voc_before,
+            "with the gate off a handed mill must not turn a non-latent colonist into a producer"
+        );
+    }
+
+    #[test]
+    fn tool_acquisition_off_is_byte_identical() {
+        // S7.1 inertness: with the gate OFF, flipping the (unused) eligibility flag in
+        // isolation is a no-op — the gate never fires without a non-latent tool-holder,
+        // and generation is untouched, so a fresh run is byte-identical. (The autonomous
+        // path that would create such a holder is S7.2, gated separately.)
+        let off = SettlementConfig::frontier_endogenous();
+        let mut a = Settlement::generate(0xC0FFEE, &off);
+        let mut b = Settlement::generate(0xC0FFEE, &off);
+        a.run(600);
+        b.run(600);
+        assert_eq!(a.canonical_bytes(), b.canonical_bytes());
+        assert_eq!(a.digest(), b.digest());
     }
 
     #[test]
