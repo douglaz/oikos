@@ -60,6 +60,18 @@ pub enum ProjectTemplateId {
     /// out of [`builtin_project_templates`] and the conformance goldens are
     /// byte-identical.
     BuildRoad,
+    /// S7 producible capital: a **per-agent** project that mints a **mill** (a durable
+    /// `required_tool` for the Mill recipe) from saved WOOD + labor. Like [`BuildNet`]
+    /// it outputs a real tool — proof a project can mint production capital — but it is
+    /// driven by the `sim` per-builder capital-formation phase (one builder, its own
+    /// WOOD via [`start_project`], its own labor), never by the lab planner, so it is
+    /// kept out of [`builtin_project_templates`] and the conformance goldens are
+    /// byte-identical.
+    BuildMill,
+    /// S7 producible capital: the per-agent project that mints an **oven** (the Bake
+    /// recipe's `required_tool`) from saved WOOD + labor. The baker-side twin of
+    /// [`BuildMill`]; game-only, absent from [`builtin_project_templates`].
+    BuildOven,
 }
 
 #[derive(Clone, Debug)]
@@ -180,6 +192,64 @@ pub fn build_road_template(output_good: GoodId, required_labor: u32) -> ProjectT
         output_qty: 0,
         salvage_bps: 0,
     }
+}
+
+/// S7 producible capital: a **tool-minting** per-agent project template — `wood_qty`
+/// units of saved WOOD plus `required_labor` labor produce one durable `tool`
+/// (a mill or an oven), with **no partial-build salvage** (`salvage_bps: 0`).
+///
+/// `salvage_bps` is `0` deliberately: the conserved WOOD is committed up front by
+/// [`start_project`] (the `sim` capital-formation phase books it to
+/// `consumed_as_input` at the START tick) and the built tool is booked to `produced`
+/// at completion, so the build conserves end-to-end with no work-in-progress source
+/// to account; an abandoned build simply forfeits its committed WOOD (already
+/// consumed). The tool itself is a `required_tool` for its recipe (the Mill needs a
+/// mill, the Bake an oven), exactly like [`build_net_template`]'s NET — proof a
+/// project mints production capital.
+///
+/// Game-only: built by the `sim` per-builder phase, never by the lab planner, and
+/// absent from [`builtin_project_templates`], so adding it leaves every conformance
+/// golden byte-identical.
+pub fn build_tool_template(
+    id: ProjectTemplateId,
+    name: &'static str,
+    tool: GoodId,
+    wood_qty: u32,
+    required_labor: u32,
+) -> ProjectTemplate {
+    ProjectTemplate {
+        id,
+        name,
+        input_goods: vec![(WOOD, wood_qty)],
+        required_labor,
+        output_good: tool,
+        output_qty: 1,
+        salvage_bps: 0,
+    }
+}
+
+/// The S7 [`ProjectTemplateId::BuildMill`] template — a [`build_tool_template`] that
+/// mints the given `mill` tool from `wood_qty` WOOD + `required_labor` labor.
+pub fn build_mill_template(mill: GoodId, wood_qty: u32, required_labor: u32) -> ProjectTemplate {
+    build_tool_template(
+        ProjectTemplateId::BuildMill,
+        "BuildMill",
+        mill,
+        wood_qty,
+        required_labor,
+    )
+}
+
+/// The S7 [`ProjectTemplateId::BuildOven`] template — a [`build_tool_template`] that
+/// mints the given `oven` tool from `wood_qty` WOOD + `required_labor` labor.
+pub fn build_oven_template(oven: GoodId, wood_qty: u32, required_labor: u32) -> ProjectTemplate {
+    build_tool_template(
+        ProjectTemplateId::BuildOven,
+        "BuildOven",
+        oven,
+        wood_qty,
+        required_labor,
+    )
 }
 
 pub fn builtin_project_templates() -> Vec<ProjectTemplate> {
@@ -308,11 +378,12 @@ pub fn abandon_project(project: &mut Project, stock: &mut Stock) -> CapitalLoss 
 #[cfg(test)]
 mod tests {
     use super::{
-        abandon_project, advance_project, advance_project_by, build_net_template,
-        build_road_template, builtin_project_templates, complete_project_if_ready, start_project,
-        CapitalLoss, ProjectId, ProjectState, ProjectTemplateId, Tick,
+        abandon_project, advance_project, advance_project_by, build_mill_template,
+        build_net_template, build_oven_template, build_road_template, builtin_project_templates,
+        complete_project_if_ready, start_project, CapitalLoss, ProjectId, ProjectState,
+        ProjectTemplateId, Tick,
     };
-    use crate::good::{Stock, WOOD};
+    use crate::good::{GoodId, Stock, WOOD};
 
     #[test]
     fn advance_project_by_equals_looping_advance_project() {
@@ -389,6 +460,99 @@ mod tests {
         assert!(builtin_project_templates()
             .iter()
             .all(|t| t.id == ProjectTemplateId::BuildNet));
+    }
+
+    #[test]
+    fn tool_templates_are_game_only_not_builtins() {
+        // S7: the mill/oven capital-build templates are driven by the `sim` per-agent
+        // capital-formation phase, never the lab planner, so they must stay OUT of the
+        // builtin set — the conformance goldens (produced_of(mill)==0 in the lab
+        // scenarios) stay byte-identical only because no lab project ever mints a tool.
+        assert!(builtin_project_templates()
+            .iter()
+            .all(|t| t.id == ProjectTemplateId::BuildNet));
+    }
+
+    #[test]
+    fn tool_template_mints_the_tool_consuming_saved_wood() {
+        // S7 conservation contract in miniature: a mill build commits its WOOD up front
+        // (the sim phase books it to consumed_as_input there), advances over several
+        // ticks of labor, and on completion mints exactly one durable tool (the sim
+        // phase books it to produced). salvage_bps is 0: the input is fully committed.
+        let mill = GoodId(42);
+        let template = build_mill_template(mill, 5, 3);
+        assert_eq!(template.id, ProjectTemplateId::BuildMill);
+        assert_eq!(template.input_goods, vec![(WOOD, 5)]);
+        assert_eq!(template.output_good, mill);
+        assert_eq!(template.output_qty, 1);
+        assert_eq!(template.salvage_bps, 0);
+
+        let mut stock = Stock::new(WOOD.0);
+        stock.add(WOOD, 5);
+        let mut project = start_project(&template, &mut stock, ProjectId(1), Tick(0))
+            .expect("the saved WOOD funds the build");
+        // start_project committed the WOOD up front (the consumed_as_input the sim
+        // phase books at the start tick); no tool exists yet.
+        assert_eq!(stock.get(WOOD), 0);
+        assert_eq!(stock.get(mill), 0);
+
+        // Under the labor cost the build does not complete...
+        for _ in 0..2 {
+            assert!(advance_project(&mut project));
+            assert!(!complete_project_if_ready(
+                &mut project,
+                &template,
+                &mut stock
+            ));
+            assert_eq!(stock.get(mill), 0);
+        }
+        // ...the labor unit that meets the cost mints exactly one mill.
+        assert!(advance_project(&mut project));
+        assert!(complete_project_if_ready(
+            &mut project,
+            &template,
+            &mut stock
+        ));
+        assert_eq!(project.state, ProjectState::Complete);
+        assert_eq!(
+            stock.get(mill),
+            1,
+            "the completed build mints one durable tool"
+        );
+
+        // The oven twin mints its own tool from its own WOOD.
+        let oven = GoodId(43);
+        let oven_template = build_oven_template(oven, 4, 1);
+        assert_eq!(oven_template.id, ProjectTemplateId::BuildOven);
+        let mut oven_stock = Stock::new(oven.0);
+        oven_stock.add(WOOD, 4);
+        let mut oven_project =
+            start_project(&oven_template, &mut oven_stock, ProjectId(2), Tick(0))
+                .expect("the saved WOOD funds the oven build");
+        assert!(advance_project(&mut oven_project));
+        assert!(complete_project_if_ready(
+            &mut oven_project,
+            &oven_template,
+            &mut oven_stock
+        ));
+        assert_eq!(oven_stock.get(oven), 1);
+    }
+
+    #[test]
+    fn abandoned_tool_build_forfeits_its_committed_wood() {
+        // salvage_bps 0: abandoning a partial tool build returns no WOOD — the
+        // committed input is forfeit (already consumed at the start tick), so there is
+        // no work-in-progress source to account and the sim build conserves end-to-end.
+        let mill = GoodId(42);
+        let template = build_mill_template(mill, 6, 4);
+        let mut stock = Stock::new(mill.0);
+        stock.add(WOOD, 6);
+        let mut project = start_project(&template, &mut stock, ProjectId(1), Tick(0)).unwrap();
+        advance_project(&mut project);
+        let loss = abandon_project(&mut project, &mut stock);
+        assert_eq!(stock.get(WOOD), 0, "no salvage is returned");
+        assert_eq!(loss.goods_consumed, 6);
+        assert_eq!(loss.labor_consumed, 1);
     }
 
     #[test]

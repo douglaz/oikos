@@ -160,6 +160,12 @@ const SCENARIOS: &[Scenario] = &[
         build: build_scaling,
     },
     Scenario {
+        name: "capital",
+        description:
+            "S7: producible capital goods — the scaling economy where the TOOLED chain can grow. Under unmet bread demand a fed colonist appraises that building a mill/oven will pay, invests its own WOOD + labor in a conserved build, then adopts the trade and produces — so more tools and higher bread output than `scaling`, with NO planner tool placement and no runaway over-building (it stops when demand is met).",
+        build: build_capital,
+    },
+    Scenario {
         name: "millisats-1x",
         description:
             "EXPERIMENT: frontier at coarse (x1) money precision — the unit-starved baseline that freezes (~320 money units)",
@@ -347,6 +353,10 @@ fn build_endogenous() -> SettlementConfig {
 
 fn build_scaling() -> SettlementConfig {
     SettlementConfig::frontier_endogenous_scaling()
+}
+
+fn build_capital() -> SettlementConfig {
+    SettlementConfig::frontier_capital()
 }
 
 fn build_millisats_1x() -> SettlementConfig {
