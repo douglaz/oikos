@@ -2667,6 +2667,99 @@ impl SettlementConfig {
         cfg
     }
 
+    /// THE CO-EMERGENT ECONOMY (the S8 DoD): money, the grain→flour→bread division
+    /// of labor, and capital all CO-EMERGE in one run — with NO designated money and
+    /// NO curated placement. Unlike [`Self::frontier_endogenous`] (which is HANDED
+    /// designated GOLD and only then calculates, bids, and builds), this starts from
+    /// the barter-start emergent base [`Self::frontier`] — `barter = Some(..)`, the
+    /// SALT medium, **every gold endowment zero** — and lets SALT promote by
+    /// saleability from real indirect exchange. After promotion the (money-good-
+    /// agnostic) S5 sustain stack and the S7 capital phase run on the EMERGED unit.
+    ///
+    /// What it adds to [`Self::frontier`] (all of which thread `current_money_good`,
+    /// never hard-coded GOLD — Base Fact 1):
+    /// - the S5 sustain stack: `recurring_motive` (an owner-operator keeps producing
+    ///   while profitable), `project_input_bids` (producers BUY recipe inputs at the
+    ///   imputed reservation, S1/S2), and threshold spoilage (`perishable_decay_bps`)
+    ///   so a satiated holder's bread/grain pile decays and demand recurs;
+    /// - the local `producer_subsistence` hearth set to a **partial** floor (2, not
+    ///   the endogenous economy's 4): enough to free a producer's emerged money for
+    ///   inputs across the cutover, but NOT so much that a fully-fed producer hoards
+    ///   its whole margin and drains the (scarce) emerged money out of circulation —
+    ///   the balance that lets the chain *sustain* on emerged money rather than freeze
+    ///   once the post-promotion money pulse is absorbed (see the S8 finding below);
+    /// - a **lean demographic hearth** (`food_provision`/`wood_provision` = 1, not 3):
+    ///   a hearth-fed lineage that mints a large staple/WOOD *surplus* sells it for the
+    ///   emerged money and — being fed — hoards the cash, a money sink that scales with
+    ///   the supply and starves the productive loop. Trimming the surplus keeps the
+    ///   scarce emerged money circulating (the colony is still hearth-fed and still
+    ///   reproduces; it just no longer pumps money into idle savings).
+    ///
+    /// What it deliberately does NOT do (Base Fact 6 / the two tensions):
+    /// - `subsistence_on_grain` stays OFF — a raw-grain floor would thin the
+    ///   bread-for-SALT trade that monetizes SALT (Tension A), so it would starve
+    ///   promotion; S6 productive re-entry stays OFF too (it is inert without the
+    ///   grain floor and would re-enable the crowd-out with it);
+    /// - it seeds NO money: `producer_gold` stays 0 and every gold endowment is zero
+    ///   (the barter overlay asserts it at generation). A producer's working capital
+    ///   across the cutover is EARNED — it sells its seeded cold-start output into the
+    ///   real money market post-promotion, no curated advance (the S8.2 finding: the
+    ///   `frontier` saleability hub concentrates SALT in consumers who barely spend it
+    ///   before the fast promotion, so producers earn ~no *barter* SALT — Base Fact 5 —
+    ///   yet the chain survives the cutover on these post-promotion earnings anyway).
+    /// - NO curated placement (`subsistence_advance`/`input_advance`/`capital_advance`
+    ///   all off). A modest colony (≈ the endogenous size, not the S6 scaling colony):
+    ///   provisioning-at-scale under emergence is deferred (S9).
+    pub fn frontier_coemergent() -> Self {
+        let mut cfg = Self::frontier();
+        if let Some(chain) = cfg.chain.as_mut() {
+            // The S5 sustain stack on emerged money (the only GOLD-hardcoded path,
+            // the unused `recipe_adoption_pays` wrapper, is never called here).
+            chain.recurring_motive = true;
+            chain.project_input_bids = true;
+            // Threshold carrying cost on the staple + raw-grain HOARDS (working stock
+            // under the free-storage floor is exempt): satiated piles decay so hunger
+            // recurs, demand stays alive, and stocks stay bounded — the same lever the
+            // endogenous economy uses, here keeping the post-promotion chain churning.
+            chain.perishable_decay_bps = 1_500;
+            // A PARTIAL local producer hearth (staple + WOOD): each active producer
+            // feeds mostly from its own hearth so its emerged money frees for recipe
+            // inputs — but not fully (2, vs the endogenous 4), so it still buys some
+            // food and recirculates its margin rather than hoarding it. And (unlike
+            // `subsistence_on_grain`) it adds no raw-grain consumer floor that would
+            // crowd out the bread-for-SALT trade (Base Fact 6).
+            chain.producer_subsistence = 2;
+            // S8.3 — the S7 producible-capital phase, composed onto the EMERGED money:
+            // a colonist holding a mill/oven is admitted to adoption (S7.1) and a fed
+            // colonist can BUILD a mill/oven from its own WOOD + labor (S7.2), all
+            // priced in the emerged unit. The build cost is DEARER than the S7 scaling
+            // colony's (12 WOOD, not 6) over a longer payback window (32, not 16): the
+            // small co-emergent colony's high producer margins would otherwise justify
+            // runaway building, so a higher real-resource bar keeps capital formation
+            // modest and demand-anchored (a few tools, then it stops) rather than an
+            // over-build that drains WOOD and destabilizes the chain.
+            chain.tool_acquisition_eligibility = true;
+            chain.producible_capital = true;
+            chain.capital_payback_cycles = 32;
+            chain.tool_build_wood = 12;
+            chain.tool_build_labor = 4;
+            chain.capital_build_hunger_max = 4;
+            // `subsistence_on_grain`, `productive_reentry`, `producer_gold = 0`, and
+            // every gold endowment stay at the `frontier` (barter-start) defaults.
+        }
+        // Trim the demographic hearth to a lean floor (1, not 3): the hearth still
+        // feeds and reproduces the lineage, but no longer mints a large surplus the
+        // fed lineage sells and hoards — the money sink that otherwise drains the
+        // scarce emerged supply out of the productive loop.
+        if let Some(demo) = cfg.demography.as_mut() {
+            for household in &mut demo.households {
+                household.food_provision = 1;
+                household.wood_provision = 1;
+            }
+        }
+        cfg
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).

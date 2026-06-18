@@ -166,6 +166,12 @@ const SCENARIOS: &[Scenario] = &[
         build: build_capital,
     },
     Scenario {
+        name: "coemergent",
+        description:
+            "S8: money co-emergence — money, the grain→flour→bread division of labor, and capital all CO-EMERGE in one run from a NO-money barter start (no designated GOLD, every gold endowment zero). SALT promotes by saleability from real indirect exchange; then the S5 sustain stack and the S7 capital phase run on the EMERGED unit. Watch the era go barter→money (the `*` promotion tick), then bread sustain and a tool or two build on emerged money. The emergence-probe panel reports per-candidate acceptances, producer working capital, and the bread-for-SALT leg.",
+        build: build_coemergent,
+    },
+    Scenario {
         name: "millisats-1x",
         description:
             "EXPERIMENT: frontier at coarse (x1) money precision — the unit-starved baseline that freezes (~320 money units)",
@@ -357,6 +363,10 @@ fn build_scaling() -> SettlementConfig {
 
 fn build_capital() -> SettlementConfig {
     SettlementConfig::frontier_capital()
+}
+
+fn build_coemergent() -> SettlementConfig {
+    SettlementConfig::frontier_coemergent()
 }
 
 fn build_millisats_1x() -> SettlementConfig {
