@@ -310,7 +310,6 @@ fn bread_scales_with_capital() {
         let mut early = 0u64;
         let mut late = 0u64;
         let mut producer_tail = 0u64;
-        let mut tail_samples = 0u64;
         for tick in 0..1600u64 {
             let report = s.econ_tick();
             total += report.produced_of(bread);
@@ -323,11 +322,9 @@ fn bread_scales_with_capital() {
             if tick >= 1000 && tick % 10 == 0 {
                 producer_tail +=
                     (s.living_count(Vocation::Miller) + s.living_count(Vocation::Baker)) as u64;
-                tail_samples += 1;
             }
         }
         let pop = living(&s).max(1) as u64;
-        let _ = tail_samples;
         (
             total,
             early,
@@ -463,7 +460,6 @@ fn no_overinvestment_in_capital() {
         wood_c * 2 >= wood_a,
         "whole-system WOOD must not be drained by building, got {wood_a} -> {wood_b} -> {wood_c}"
     );
-    let _ = (prod_b, wood_b);
 }
 
 #[test]

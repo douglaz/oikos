@@ -6242,79 +6242,100 @@ impl Settlement {
 
         for &slot in &self.live_colonist_slots {
             let colonist = &self.colonists[slot];
-            // The recipe this colonist may adopt: its seeded `latent`, or — under
-            // S7.1 — the recipe whose durable tool it now HOLDS (a built or handed
-            // mill/oven), even when `latent` is `None` (so an adopted tool-holder is
-            // also re-appraised each tick and can de-adopt when the spread collapses).
-            // A colonist that is neither latent nor a tool-holder keeps its vocation
-            // untouched. With the gate off this is exactly `colonist.latent`, so the
-            // pre-S7 role-choice path is byte-identical.
-            let latent = match colonist.latent {
-                Some(recipe) => Some(recipe),
-                None if tool_eligibility => match self.society.agents.get(colonist.id) {
-                    Some(agent) if agent.stock.get(mill_good) > 0 => Some(RecipeId::Mill),
-                    Some(agent) if agent.stock.get(oven_good) > 0 => Some(RecipeId::Bake),
-                    _ => None,
-                },
-                None => None,
-            };
-            let Some(latent) = latent else {
+            // The recipe(s) this colonist may (re)appraise this tick, in deterministic
+            // mill-before-oven order. A seeded `latent` yields exactly its one specialty
+            // (the pre-S7 path; with the gate off this is the only branch, so role-choice
+            // is byte-identical). Under S7.1 a colonist with no seeded `latent` yields the
+            // recipe whose durable tool it now HOLDS (a built or handed mill/oven) — and
+            // BOTH, when an estate transfer or inheritance leaves it holding a mill and an
+            // oven, so the oven is appraised too instead of being stranded behind a
+            // hard-coded mill-first pick. A colonist that is neither latent nor a
+            // tool-holder keeps its vocation untouched. Re-appraising an already-adopted
+            // tool-holder each tick is what lets it de-adopt when its spread collapses.
+            let mut candidates: [Option<RecipeId>; 2] = [None, None];
+            match colonist.latent {
+                Some(recipe) => candidates[0] = Some(recipe),
+                None if tool_eligibility => {
+                    if let Some(agent) = self.society.agents.get(colonist.id) {
+                        if agent.stock.get(mill_good) > 0 {
+                            candidates[0] = Some(RecipeId::Mill);
+                        }
+                        if agent.stock.get(oven_good) > 0 {
+                            candidates[1] = Some(RecipeId::Bake);
+                        }
+                    }
+                }
+                None => {}
+            }
+            if candidates.iter().all(Option::is_none) {
                 continue;
-            };
-            let (recipe, output_price, input_price, adopted) = match latent {
-                RecipeId::Mill => (
-                    &mill_recipe,
-                    self.society.realized_price(flour),
-                    self.society.realized_price(grain),
-                    Vocation::Miller,
-                ),
-                RecipeId::Bake => (
-                    &bake_recipe,
-                    self.society.realized_price(bread),
-                    self.society.realized_price(flour),
-                    Vocation::Baker,
-                ),
-                // No other recipe is a latent specialty (set only at generation).
-                _ => continue,
-            };
+            }
             let id = colonist.id;
-            let pays = {
-                let agent = self
-                    .society
-                    .agents
-                    .get(id)
-                    .expect("living colonist resolves in the arena");
-                recipe_adoption_pays_for_money(
-                    agent,
-                    recipe,
-                    output_price,
-                    input_price,
-                    tick,
-                    operating_cost,
-                    money_good,
-                )
-            };
-            // Recurring owner-operator motive: also keep the role while the recipe
-            // is simply profitable at realized prices, so a producer whose savings
-            // ladder is full does not retire (consumption recurs — it keeps
-            // producing to keep eating). A no-op unless enabled.
-            let pays = pays
-                || (recurring_motive
-                    && recipe_is_profitable(recipe, output_price, input_price, operating_cost));
-            // When the spread does not pay: a seeded latent or an adopted producer
-            // reverts to Unassigned (the pre-S7 behaviour — it holds its tool, idle).
-            // An S7 tool-holder that is still feeding itself by gathering/consuming
-            // (it acquired a tool but has not yet adopted) keeps that survival role
-            // rather than being stranded Unassigned — it tries again next tick.
-            let next = if pays {
-                adopted
-            } else {
-                match self.colonists[slot].vocation {
+            // Adopt the FIRST candidate whose recipe pays on this colonist's own scale
+            // (mill before oven). A colonist runs ONE vocation, so a holder of both tools
+            // commits to one recipe; appraising both means the oven is chosen when the
+            // milling spread does not pay (and vice versa) rather than the mill always
+            // winning by position. For a seeded latent (one candidate) this is the
+            // pre-S7 appraisal unchanged.
+            let mut adoption: Option<Vocation> = None;
+            for recipe_id in candidates.iter().flatten().copied() {
+                let (recipe, output_price, input_price, adopted) = match recipe_id {
+                    RecipeId::Mill => (
+                        &mill_recipe,
+                        self.society.realized_price(flour),
+                        self.society.realized_price(grain),
+                        Vocation::Miller,
+                    ),
+                    RecipeId::Bake => (
+                        &bake_recipe,
+                        self.society.realized_price(bread),
+                        self.society.realized_price(flour),
+                        Vocation::Baker,
+                    ),
+                    // No other recipe is a latent specialty (set only at generation).
+                    _ => continue,
+                };
+                let pays = {
+                    let agent = self
+                        .society
+                        .agents
+                        .get(id)
+                        .expect("living colonist resolves in the arena");
+                    recipe_adoption_pays_for_money(
+                        agent,
+                        recipe,
+                        output_price,
+                        input_price,
+                        tick,
+                        operating_cost,
+                        money_good,
+                    )
+                };
+                // Recurring owner-operator motive: also keep the role while the recipe
+                // is simply profitable at realized prices, so a producer whose savings
+                // ladder is full does not retire (consumption recurs — it keeps
+                // producing to keep eating). A no-op unless enabled.
+                let pays = pays
+                    || (recurring_motive
+                        && recipe_is_profitable(recipe, output_price, input_price, operating_cost));
+                if pays {
+                    adoption = Some(adopted);
+                    break;
+                }
+            }
+            // When no candidate pays: a seeded latent or an adopted producer reverts to
+            // Unassigned (the pre-S7 behaviour — it holds its tool, idle). An S7
+            // tool-holder that is still feeding itself by gathering/consuming (it
+            // acquired a tool but has not yet adopted) keeps that survival role rather
+            // than being stranded Unassigned — it tries again next tick.
+            let next = match adoption {
+                Some(adopted) => adopted,
+                None => match self.colonists[slot].vocation {
                     Vocation::Miller | Vocation::Baker | Vocation::Unassigned => {
                         Vocation::Unassigned
                     }
                     other => other,
-                }
+                },
             };
             if self.colonists[slot].vocation != next {
                 self.colonists[slot].vocation = next;
@@ -6587,16 +6608,19 @@ impl Settlement {
         // higher-margin-wins rule floods mills on a stale flour price and starves the
         // baker side. The chosen tool's own output must also have traded recently, and
         // its amortized margin must clear the payback bar.
-        // The bottleneck is read from usable installed CAPACITY (tools held by live
-        // colonists), not active-producer counts and not whole-system conserved totals:
-        // active counts loop (a just-built tool whose holder has not yet adopted would
-        // read as zero capacity and drive an endless build of the same stage), while a
-        // tool settled to the commons is conserved but inaccessible and must not suppress
-        // replacement builds. The market clears one seller-side lot per producer per tick,
-        // so the practical throughput ratio is one live mill holder to one live oven
-        // holder even when the milling recipe emits a multi-unit flour batch.
-        let held_mills = self.live_colonist_stock_total(mill_good);
-        let held_ovens = self.live_colonist_stock_total(oven_good);
+        // The bottleneck is read from usable installed CAPACITY (the count of live
+        // colonists HOLDING a tool), not active-producer counts and not whole-system
+        // conserved totals: active counts loop (a just-built tool whose holder has not
+        // yet adopted would read as zero capacity and drive an endless build of the same
+        // stage), while a tool settled to the commons is conserved but inaccessible and
+        // must not suppress replacement builds. Counting holders, not raw units, also
+        // means a colonist that came to hold two tools of a kind (an inherited/transferred
+        // stack) cannot overstate capacity: it still runs one vocation, one throughput.
+        // The market clears one seller-side lot per producer per tick, so the practical
+        // throughput ratio is one live mill holder to one live oven holder even when the
+        // milling recipe emits a multi-unit flour batch.
+        let held_mills = self.live_colonist_holder_count(mill_good);
+        let held_ovens = self.live_colonist_holder_count(oven_good);
         let active_millers = self.living_count(Vocation::Miller) as u64;
         let active_bakers = self.living_count(Vocation::Baker) as u64;
         let oven_capacity = held_ovens;
@@ -6834,16 +6858,20 @@ impl Settlement {
             .sum()
     }
 
-    /// Total of `good` held by living colonists only. Unlike
-    /// [`Self::whole_system_total`], this intentionally excludes the world, resident
-    /// traders, and the commons; S7 capital-capacity decisions need usable tools, not
-    /// every conserved unit.
-    fn live_colonist_stock_total(&self, good: GoodId) -> u64 {
+    /// Count of LIVE colonists each holding **at least one** `good` — the usable
+    /// capital CAPACITY of `good`, not a raw unit sum. A colonist has one vocation and
+    /// one producer throughput, so extra units concentrated in a single holder (e.g. an
+    /// inherited or transferred estate that stacks two ovens on one heir) add no
+    /// capacity; counting holders, not units, keeps the bottleneck and idle-tool guards
+    /// honest under such concentration. Unlike [`Self::whole_system_total`], this
+    /// intentionally excludes the world, resident traders, and the commons; S7
+    /// capital-capacity decisions need wieldable tools, not every conserved unit.
+    fn live_colonist_holder_count(&self, good: GoodId) -> u64 {
         self.live_colonist_slots
             .iter()
             .filter_map(|&slot| self.society.agents.get(self.colonists[slot].id))
-            .map(|agent| u64::from(agent.stock.get(good)))
-            .sum()
+            .filter(|agent| agent.stock.get(good) > 0)
+            .count() as u64
     }
 
     /// Units of `good` held in the settlement commons — the conserved sink for
@@ -11329,20 +11357,53 @@ mod tests {
         let cfg = capital_test_config();
         let mill = cfg.chain.as_ref().expect("chain").content.mill();
         let mut s = Settlement::generate(1, &cfg);
-        let live_before = s.live_colonist_stock_total(mill);
+        let holders_before = s.live_colonist_holder_count(mill);
         let whole_before = s.whole_system_total(mill);
 
+        // Commons tools are conserved (whole-system) but inaccessible — never usable
+        // capital capacity.
         s.commons_stock.insert(mill, 10);
-
         assert_eq!(
-            s.live_colonist_stock_total(mill),
-            live_before,
+            s.live_colonist_holder_count(mill),
+            holders_before,
             "commons tools are conserved but not usable capital capacity"
         );
         assert_eq!(
             s.whole_system_total(mill),
             whole_before + 10,
             "whole-system conservation still includes commons tools"
+        );
+
+        // Concentration cannot overstate capacity: stacking a SECOND mill on a colonist
+        // that already holds one (an inherited/transferred estate) adds a conserved unit
+        // but no capacity — the holder still runs one vocation, one throughput, so the
+        // bottleneck/idle-tool guards must count holders, not raw units.
+        let stacked = s
+            .live_colonist_slots
+            .iter()
+            .map(|&slot| s.colonists[slot].id)
+            .find(|&id| {
+                s.society
+                    .agents
+                    .get(id)
+                    .is_some_and(|a| a.stock.get(mill) > 0)
+            })
+            .expect("the seeded latent pool holds at least one mill");
+        s.society
+            .agents
+            .get_mut(stacked)
+            .expect("the stacked holder resolves")
+            .stock
+            .add(mill, 1);
+        assert_eq!(
+            s.live_colonist_holder_count(mill),
+            holders_before,
+            "a second tool stacked on one holder must not raise usable capacity"
+        );
+        assert_eq!(
+            s.whole_system_total(mill),
+            whole_before + 11,
+            "the stacked unit is still conserved in the whole-system total"
         );
     }
 
