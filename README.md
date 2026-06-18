@@ -1404,8 +1404,14 @@ loan, on a designated-GOLD colony. What it rests on (disclosed, not "market alon
 producer-subsistence hearth* that mints each producer's staple + WOOD (a household garden, never the
 chain inputs grain/flour), seeded *cold-start buffers* for the first prices, and *designated gold* —
 so this does **not** re-prove Mengerian money emergence. The `endogenous` colony is well-fed in the
-mean but leaves a stranded high-hunger tail; the `scaling` scenario proves that tail can feed itself
-through productive re-entry without collapsing the bread chain or WOOD supply.
+mean but leaves a stranded high-hunger tail; the `scaling` scenario gives that tail a **subsistence
+path** (productive re-entry) without collapsing the bread chain or WOOD supply. The tail is
+**materially reduced, not eliminated** — severe hunger can still occur (observed tail max ~11) — and
+re-entry is a hunger-threshold survival rule (direct self-provisioning), not a market/value-scale-
+derived choice. The tests prove the *reduction and boundedness*; the live run shows the *mean*
+improvement (tail mean ~1.3 at pop 40 vs ~4.1 at pop 26). "Provisioning at scale" is scoped to
+**untooled subsistence** through tick 1600 — the **tooled** grain→flour→bread chain itself does not
+scale (mills/ovens are seeded-only, never produced; that is S7).
 
 ## Build and test
 

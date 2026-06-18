@@ -142,9 +142,13 @@ fn no_colonist_is_permanently_stranded() {
                     s.vocation_of(i),
                     Some(Vocation::Miller) | Some(Vocation::Baker)
                 );
-            // "feeding": on the edible node and actually holding/gathering grain, or
-            // fed by a hearth. A relabeled grain gatherer that never holds grain does
-            // NOT count.
+            // "feeding": fed by a hearth, or on the edible node having actually held
+            // grain at least once (grain_seen is sticky to tolerate the haul cycle, so
+            // this proves the colonist has a real food PATH and is not merely
+            // relabeled — NOT that its hunger is currently zero). "Stranded" below
+            // therefore means "high-hunger with no food path", not "any high hunger":
+            // the tail is materially reduced, not eliminated (severe hunger can still
+            // occur — see hunger_tail_is_reduced_not_moved for the p95/max/count drop).
             let feeding = hearth_fed || (on_grain && grain_seen[i]);
             if hunger >= threshold {
                 hi_run[i] += 1;

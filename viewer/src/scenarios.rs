@@ -156,7 +156,7 @@ const SCENARIOS: &[Scenario] = &[
     Scenario {
         name: "scaling",
         description:
-            "S6: provisioning at scale — the endogenous economy with PRODUCTIVE RE-ENTRY: a hungry, unprovisioned colonist adopts edible-grain gathering on its own value scale (no permanently-stranded tail), and a larger/growing colony shows provisioning keeps pace.",
+            "S6: provisioning at scale — the endogenous economy with PRODUCTIVE RE-ENTRY: a hungry, unprovisioned colonist adopts edible-grain gathering as a survival action (a hunger-threshold rule), giving the previously-stranded tail a subsistence path. The tail is materially reduced (not eliminated) and a larger colony keeps provisioning bounded — untooled subsistence only; the tooled chain does not scale (S7).",
         build: build_scaling,
     },
     Scenario {
