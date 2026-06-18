@@ -7017,6 +7017,11 @@ impl Settlement {
             // there is no behaviour-identical config pair they would falsely split.
             out.extend_from_slice(&chain.producer_subsistence.to_le_bytes());
             out.push(u8::from(chain.project_input_bids));
+            // `recurring_motive` keeps an owner-operator adopted while the recipe
+            // stays profitable, steering future role-choice ticks without ever
+            // showing up in generated holdings — the same identity contract as the
+            // two knobs above, so it joins them unconditionally.
+            out.push(u8::from(chain.recurring_motive));
             // The staple mapping steers the next needs/scale phase for *any* chain,
             // role-choice or not, so it is included whenever a chain is active. The
             // G3b no-spread control shares the emergent config's physical state but
@@ -7024,6 +7029,18 @@ impl Settlement {
             out.extend_from_slice(&self.known.hunger.0.to_le_bytes());
             out.extend_from_slice(&self.known.warmth.0.to_le_bytes());
             out.extend_from_slice(&self.known.savings.0.to_le_bytes());
+            // `subsistence_on_grain` is realised at construction as
+            // `known.subsistence` (a directly-edible staple fallback) and steers the
+            // needs/scale phase (settlement.rs:4586, 5750) exactly like the three
+            // mappings above, so it joins their identity. Encode the Option as a
+            // presence byte plus the good id when set.
+            match self.known.subsistence {
+                Some(good) => {
+                    out.push(1);
+                    out.extend_from_slice(&good.0.to_le_bytes());
+                }
+                None => out.push(0),
+            }
             let entries = chain.content.good_entries();
             out.extend_from_slice(&(entries.len() as u32).to_le_bytes());
             for (name, id) in entries {
@@ -9913,6 +9930,42 @@ mod tests {
             base.canonical_bytes(),
             bidding.canonical_bytes(),
             "the project-aware input bid flag must be part of the chain config identity"
+        );
+    }
+
+    #[test]
+    fn canonical_bytes_include_recurring_motive() {
+        // `recurring_motive` keeps an owner-operator adopted while the recipe stays
+        // profitable — a runtime knob that steers future role-choice ticks without
+        // changing generation, so two chains differing only in it must digest apart.
+        let mut base = SettlementConfig::emergent_chain();
+        base.chain.as_mut().expect("chain").recurring_motive = false;
+        let mut motivated = SettlementConfig::emergent_chain();
+        motivated.chain.as_mut().expect("chain").recurring_motive = true;
+        let base = Settlement::generate(7, &base);
+        let motivated = Settlement::generate(7, &motivated);
+        assert_ne!(
+            base.canonical_bytes(),
+            motivated.canonical_bytes(),
+            "the recurring-motive flag must be part of the chain config identity"
+        );
+    }
+
+    #[test]
+    fn canonical_bytes_include_subsistence_on_grain() {
+        // `subsistence_on_grain` is realised as `known.subsistence`, a directly
+        // edible staple fallback that steers the future needs/scale phase yet leaves
+        // generation untouched, so two chains differing only in it must digest apart.
+        let mut base = SettlementConfig::emergent_chain();
+        base.chain.as_mut().expect("chain").subsistence_on_grain = false;
+        let mut edible = SettlementConfig::emergent_chain();
+        edible.chain.as_mut().expect("chain").subsistence_on_grain = true;
+        let base = Settlement::generate(7, &base);
+        let edible = Settlement::generate(7, &edible);
+        assert_ne!(
+            base.canonical_bytes(),
+            edible.canonical_bytes(),
+            "the edible-grain subsistence fallback must be part of the chain config identity"
         );
     }
 
