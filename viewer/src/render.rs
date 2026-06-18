@@ -214,6 +214,25 @@ pub struct DashboardBanners<'a> {
     pub cycle: Option<&'a CycleSummary>,
     pub tender: Option<&'a TenderSummary>,
     pub tax: Option<&'a TaxSummary>,
+    pub probe: Option<&'a EmergenceProbeSummary>,
+}
+
+/// S8.0 emergence-probe summary: the read-only diagnostics that separate a
+/// *principled* co-emergence failure from a tuning one — the promotion tick, the
+/// per-candidate barter saleability (acceptances + acceptor breadth), the
+/// bread-for-SALT leg that monetizes SALT, the chain producers' working capital
+/// (free gold by role, the Tension-B trace), and the pre-promotion hunger trough
+/// (Tension A). A read-only digest rendered above the dashboard for an emergent
+/// settlement; `None` for a designated-money settlement.
+pub struct EmergenceProbeSummary {
+    pub promoted_at_tick: Option<u64>,
+    pub bread_for_salt_volume: u64,
+    pub peak_pre_promotion_hunger: u16,
+    pub critical_ticks: u64,
+    /// `(good name, acceptances, distinct acceptors)` per money candidate.
+    pub candidates: Vec<(String, u64, usize)>,
+    /// `(role label, count, total free gold)` per chain-producer role present.
+    pub producer_cash: Vec<(&'static str, usize, u64)>,
 }
 
 /// G8c-1 credit-cycle summary: the demonstration kind, the final regime rung, and the
@@ -402,6 +421,37 @@ pub fn format_dashboard(
             format!(" — {}", timeline.join(" → "))
         };
         let _ = writeln!(out, "era: {}{trail}", era.current);
+    }
+    // S8.0 emergence-probe banner: the diagnostics that tell a principled co-emergence
+    // failure from a tuning one — the promotion tick, the per-candidate barter
+    // saleability, the bread-for-SALT monetizing leg, the producers' working capital
+    // (Tension B), and the pre-promotion hunger trough (Tension A). Shown only for an
+    // emergent settlement, so non-emergent dashboards are unchanged.
+    if let Some(probe) = banners.probe {
+        let promo = probe
+            .promoted_at_tick
+            .map_or("—".to_string(), |t| format!("@{t}"));
+        let _ = writeln!(
+            out,
+            "emergence-probe: promoted {promo} · bread-for-salt {} · peak-hunger {} (critical {} ticks)",
+            probe.bread_for_salt_volume, probe.peak_pre_promotion_hunger, probe.critical_ticks
+        );
+        if !probe.candidates.is_empty() {
+            let candidates: Vec<String> = probe
+                .candidates
+                .iter()
+                .map(|(name, acc, acceptors)| format!("{name} {acc}×({acceptors} acc)"))
+                .collect();
+            let _ = writeln!(out, "  candidates: {}", candidates.join(" · "));
+        }
+        if !probe.producer_cash.is_empty() {
+            let cash: Vec<String> = probe
+                .producer_cash
+                .iter()
+                .map(|(role, count, free)| format!("{role} {count}×=free {free}"))
+                .collect();
+            let _ = writeln!(out, "  producer capital: {}", cash.join(" · "));
+        }
     }
     // G6b research banner: the earned Knowledge, the current tech tier, and the tick
     // tier 2 unlocked — "capabilities are earned by research, not unlocked by a timer".

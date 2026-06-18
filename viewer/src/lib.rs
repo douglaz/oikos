@@ -360,6 +360,44 @@ pub fn run_dashboard(scenario: &str, ticks: u64, seed: u64) -> Result<String, St
         None
     };
 
+    // S8.0 emergence-probe banner: the read-only co-emergence diagnostics (promotion
+    // tick, per-candidate barter saleability, the bread-for-SALT leg, producer working
+    // capital, pre-promotion hunger trough). Shown only for an emergent settlement, so
+    // every designated-money dashboard is unchanged.
+    let probe_summary = settlement.is_emergent().then(|| {
+        let good_name = |g: GoodId| settlement.society().good_name(g).to_string();
+        let candidates = settlement
+            .emergence_acceptances()
+            .into_iter()
+            .map(|c| (good_name(c.good), c.acceptances, c.acceptor_agents))
+            .collect();
+        // Fold per-producer working capital into (role, count, total free gold) rows.
+        let mut producer_cash: Vec<(&'static str, usize, u64)> = Vec::new();
+        for cash in settlement.producer_cash() {
+            let label = match cash.role {
+                sim::ProducerRole::Miller => "Miller",
+                sim::ProducerRole::Baker => "Baker",
+                sim::ProducerRole::LatentMiller => "latent-Miller",
+                sim::ProducerRole::LatentBaker => "latent-Baker",
+            };
+            match producer_cash.iter_mut().find(|(role, ..)| *role == label) {
+                Some(entry) => {
+                    entry.1 += 1;
+                    entry.2 = entry.2.saturating_add(cash.free_gold);
+                }
+                None => producer_cash.push((label, 1, cash.free_gold)),
+            }
+        }
+        render::EmergenceProbeSummary {
+            promoted_at_tick: settlement.promoted_at_tick(),
+            bread_for_salt_volume: settlement.bread_for_salt_volume(),
+            peak_pre_promotion_hunger: settlement.peak_pre_promotion_hunger(),
+            critical_ticks: settlement.critical_ticks_before_promotion(),
+            candidates,
+            producer_cash,
+        }
+    });
+
     let banners = render::DashboardBanners {
         era: era_summary.as_ref(),
         research: research_summary.as_ref(),
@@ -368,6 +406,7 @@ pub fn run_dashboard(scenario: &str, ticks: u64, seed: u64) -> Result<String, St
         cycle: cycle_summary.as_ref(),
         tender: tender_summary.as_ref(),
         tax: tax_summary.as_ref(),
+        probe: probe_summary.as_ref(),
     };
     Ok(render::format_dashboard(
         &settlement,

@@ -2881,6 +2881,52 @@ pub struct OrderStat {
     pub best_ask: Option<u64>,
 }
 
+/// S8.0 emergence probe: one money candidate's accumulated barter saleability —
+/// the acceptances it has won and the breadth of distinct acceptors and
+/// counterpart goods behind them (the volume + breadth econ's Mengerian promotion
+/// rule reads). A read-only view of the saleability tracker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CandidateAcceptances {
+    pub good: GoodId,
+    pub acceptances: u64,
+    pub acceptor_agents: usize,
+    pub counterpart_goods: usize,
+}
+
+/// S8.0 emergence probe: a chain producer's role for the working-capital trace —
+/// an ACTIVE producer already running its recipe, or a LATENT one (an
+/// `Unassigned` colonist holding the tool, waiting on money to adopt). Tension B
+/// asks whether a latent producer holds free gold the tick after promotion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProducerRole {
+    Miller,
+    Baker,
+    LatentMiller,
+    LatentBaker,
+}
+
+impl ProducerRole {
+    /// `true` for the latent (pre-adoption) roles — the producers Tension B turns
+    /// on (they must hold free gold the tick after promotion to win an input bid).
+    pub fn is_latent(self) -> bool {
+        matches!(self, ProducerRole::LatentMiller | ProducerRole::LatentBaker)
+    }
+}
+
+/// S8.0 emergence probe: one chain producer's working capital, the heart of
+/// Tension B — the barter MEDIUM (SALT) it holds pre-promotion, its GOLD, and its
+/// FREE (non-reserved) gold available to fund an input bid. Read right after the
+/// promotion tick, a latent producer's `gold` is exactly its converted-SALT
+/// capital (it held no gold before promotion) and `free_gold` is what it can put
+/// behind its input bid before the chain freezes (the S8.2 cutover metric).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProducerCash {
+    pub role: ProducerRole,
+    pub medium: u64,
+    pub gold: u64,
+    pub free_gold: u64,
+}
+
 struct Colonist {
     id: AgentId,
     vocation: Vocation,
@@ -3018,6 +3064,14 @@ pub struct Settlement {
     /// built via S7.2 over the run — lets a test assert new capital entered the chain
     /// (acceptance tests 4/6). Diagnostic only; no phase reads it.
     tools_built: u64,
+    /// S8.0 emergence probe (read-only, NOT serialized): the highest hunger any
+    /// living colonist reached on a pre-promotion econ tick, and the count of
+    /// pre-promotion ticks at least one colonist sat at/over the critical-hunger
+    /// ceiling — the starvation pressure the emergence window must survive (Tension
+    /// A). Frozen once a money good promotes. Deterministic; no phase reads them, so
+    /// they steer no future tick and are deliberately absent from `canonical_bytes`.
+    peak_pre_promotion_hunger: u16,
+    critical_ticks_pre_promotion: u64,
     econ_tick: u64,
     last_report: EconTickReport,
     /// The settlement **commons** (G4a real death): the conserved sink that holds a
@@ -3997,6 +4051,8 @@ impl Settlement {
             capital_builds: Vec::new(),
             next_capital_project_id: 0,
             tools_built: 0,
+            peak_pre_promotion_hunger: 0,
+            critical_ticks_pre_promotion: 0,
             econ_tick: 0,
             last_report: EconTickReport::default(),
             commons_gold: Gold::ZERO,
@@ -4153,6 +4209,8 @@ impl Settlement {
             capital_builds: Vec::new(),
             next_capital_project_id: 0,
             tools_built: 0,
+            peak_pre_promotion_hunger: 0,
+            critical_ticks_pre_promotion: 0,
             econ_tick: 0,
             last_report: EconTickReport::default(),
             commons_gold: Gold::ZERO,
@@ -4182,6 +4240,11 @@ impl Settlement {
     /// [`EconTickReport`].
     pub fn econ_tick(&mut self) -> EconTickReport {
         self.shadow_cycle_cache.get_mut().take();
+        // S8.0 emergence probe: whether the colony has not yet promoted a money good
+        // as of the start of this tick (the promotion itself happens in the market
+        // step below). The pre-promotion hunger pressure is accumulated end-of-tick
+        // while this holds, so it freezes on the promotion tick (inclusive).
+        let was_pre_promotion = self.promoted_at_tick().is_none();
         let mut report = EconTickReport {
             econ_tick: self.econ_tick,
             fast_ticks: FAST_TICKS_PER_ECON_TICK,
@@ -4444,6 +4507,24 @@ impl Settlement {
             "whole-system conservation broke at econ tick {}",
             self.econ_tick
         );
+
+        // S8.0 emergence probe: while the colony is still pre-promotion, track the
+        // hunger trough the emergence window must survive (Tension A) — the peak
+        // hunger reached and the count of ticks at/over the critical ceiling. Pure
+        // read-back of end-of-tick need state; not serialized, so determinism and the
+        // goldens are untouched.
+        if was_pre_promotion {
+            let critical = self.dynamics.hunger_critical;
+            let mut at_critical = false;
+            for &slot in &self.live_colonist_slots {
+                let hunger = self.colonists[slot].need.hunger;
+                self.peak_pre_promotion_hunger = self.peak_pre_promotion_hunger.max(hunger);
+                at_critical |= hunger >= critical;
+            }
+            if at_critical {
+                self.critical_ticks_pre_promotion += 1;
+            }
+        }
 
         self.econ_tick += 1;
         self.last_report = report.clone();
@@ -7970,6 +8051,102 @@ impl Settlement {
             .map(|&slot| self.colonists[slot].need.hunger)
             .max()
             .unwrap_or(0)
+    }
+
+    /// S8.0 emergence probe (read-only): the barter saleability accumulated by each
+    /// money candidate — its acceptances and the count of distinct acceptors and
+    /// counterpart goods behind them. This is the breadth+volume econ's Mengerian
+    /// promotion rule reads; empty for a non-emergent (designated-money) settlement.
+    /// Reads only, so the goldens are untouched.
+    pub fn emergence_acceptances(&self) -> Vec<CandidateAcceptances> {
+        let Some(emergence) = self.society.emergence() else {
+            return Vec::new();
+        };
+        emergence
+            .tracker()
+            .candidate_saleability()
+            .map(|c| CandidateAcceptances {
+                good: c.good,
+                acceptances: c.acceptances,
+                acceptor_agents: c.acceptor_agents.len(),
+                counterpart_goods: c.counterpart_goods.len(),
+            })
+            .collect()
+    }
+
+    /// S8.0 emergence probe (read-only): the working capital of every living chain
+    /// producer — active (Miller/Baker) and latent (an `Unassigned` colonist holding
+    /// a mill/oven, distinguished into latent Miller/Baker by its latent recipe). For
+    /// each: the barter MEDIUM it holds (SALT, its pre-promotion working capital), its
+    /// GOLD, and its FREE (non-reserved) gold. This is the Tension-B probe: read right
+    /// after the promotion tick, a latent producer's gold is its converted-SALT
+    /// capital and `free_gold` is what it can put behind its input bid before the
+    /// chain freezes. Empty for a settlement with no production chain. Reads only.
+    pub fn producer_cash(&self) -> Vec<ProducerCash> {
+        let medium_good = self.barter_medium.map(|(good, _)| good);
+        let mut out = Vec::new();
+        for &slot in &self.live_colonist_slots {
+            let colonist = &self.colonists[slot];
+            let role = match (colonist.vocation, colonist.latent) {
+                (Vocation::Miller, _) => ProducerRole::Miller,
+                (Vocation::Baker, _) => ProducerRole::Baker,
+                (Vocation::Unassigned, Some(RecipeId::Mill)) => ProducerRole::LatentMiller,
+                (Vocation::Unassigned, Some(RecipeId::Bake)) => ProducerRole::LatentBaker,
+                _ => continue,
+            };
+            let Some(agent) = self.society.agents.get(colonist.id) else {
+                continue;
+            };
+            let medium = medium_good
+                .map(|good| u64::from(agent.stock.get(good)))
+                .unwrap_or(0);
+            out.push(ProducerCash {
+                role,
+                medium,
+                gold: agent.gold.0,
+                free_gold: self.society.free_gold_after_all_reserves(colonist.id).0,
+            });
+        }
+        out
+    }
+
+    /// S8.0 emergence probe (read-only): the cumulative units of the chain staple
+    /// (bread) exchanged against the barter MEDIUM (SALT) over the run — the
+    /// bread-for-SALT leg of indirect exchange that actually monetizes SALT. Derived
+    /// from the society's retained barter-trade log (which survives the promotion
+    /// barter-book wipe), so it is the realized volume, not an estimate. `0` for a
+    /// settlement with no chain or no barter medium. Reads only.
+    pub fn bread_for_salt_volume(&self) -> u64 {
+        let (Some((medium, _)), Some(content)) = (self.barter_medium, self.content()) else {
+            return 0;
+        };
+        let staple = content.bread();
+        self.society
+            .barter_trades
+            .iter()
+            .filter(|trade| {
+                (trade.a_gives == staple && trade.b_gives == medium)
+                    || (trade.a_gives == medium && trade.b_gives == staple)
+            })
+            .map(|trade| u64::from(trade.qty))
+            .sum()
+    }
+
+    /// S8.0 emergence probe (read-only): the highest hunger any living colonist
+    /// reached while the colony was still in barter, before any money promoted — the
+    /// starvation pressure the emergence window has to survive (Tension A). Frozen at
+    /// the promotion tick; for a settlement that never promotes it tracks the whole
+    /// run. Diagnostic only, never serialized.
+    pub fn peak_pre_promotion_hunger(&self) -> u16 {
+        self.peak_pre_promotion_hunger
+    }
+
+    /// S8.0 emergence probe (read-only): the count of pre-promotion econ ticks on
+    /// which at least one living colonist sat at or above the critical-hunger ceiling
+    /// — the depth of the hunger trough the colony crosses before money emerges
+    /// (Tension A). Frozen at the promotion tick. Diagnostic only, never serialized.
+    pub fn critical_ticks_before_promotion(&self) -> u64 {
+        self.critical_ticks_pre_promotion
     }
 
     // ---- determinism surface -------------------------------------------
