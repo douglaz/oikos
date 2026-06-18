@@ -6338,6 +6338,9 @@ impl Settlement {
                 },
             };
             if self.colonists[slot].vocation != next {
+                if !self.role_choice_switch_ready(id, self.colonists[slot].vocation, next) {
+                    continue;
+                }
                 self.colonists[slot].vocation = next;
                 changed = true;
             }
@@ -6457,6 +6460,14 @@ impl Settlement {
     }
 
     fn reentry_revert_ready(&self, id: AgentId) -> bool {
+        self.world.agent_status(id) == Some(AgentStatus::Idle)
+            && self.world.agent_carry_total(id) == 0
+    }
+
+    fn role_choice_switch_ready(&self, id: AgentId, current: Vocation, next: Vocation) -> bool {
+        if current != Vocation::Gatherer || !matches!(next, Vocation::Miller | Vocation::Baker) {
+            return true;
+        }
         self.world.agent_status(id) == Some(AgentStatus::Idle)
             && self.world.agent_carry_total(id) == 0
     }
@@ -11189,6 +11200,94 @@ mod tests {
             s_off.vocation_of(off_idx),
             voc_before,
             "with the gate off a handed mill must not turn a non-latent colonist into a producer"
+        );
+    }
+
+    #[test]
+    fn tool_acquisition_waits_for_gatherer_spatial_state_to_settle() {
+        // A non-latent gatherer handed a tool must finish any world-side haul before
+        // switching to Miller/Baker. Otherwise its later deposit would not be attributed
+        // by the fast loop, because deposits are tracked only for current gatherers.
+        let mut cfg = SettlementConfig::frontier_endogenous();
+        cfg.chain
+            .as_mut()
+            .expect("chain")
+            .tool_acquisition_eligibility = true;
+        let mill = cfg.chain.as_ref().expect("chain").content.mill();
+
+        let mut s = Settlement::generate(42, &cfg);
+        s.run(400);
+        let idx = (0..s.population())
+            .find(|&i| {
+                s.is_alive(i)
+                    && !s.is_tool_acquisition_eligible(i)
+                    && s.vocation_of(i) == Some(Vocation::Gatherer)
+                    && s.node_of(i).is_some()
+            })
+            .expect("a non-latent gatherer");
+        let id = s.colonist_id(idx).expect("id");
+        let node = s.node_of(idx).expect("gatherer node");
+        let carried_good = s.world().node(node).expect("node").good;
+
+        assert!(s.world.assign_task(id, Task::GoHarvest(node, s.carry_cap)));
+        for _ in 0..64 {
+            s.world.tick();
+            if s.world.agent_carry_total(id) > 0 {
+                break;
+            }
+        }
+        assert!(
+            s.world.agent_carry_total(id) > 0,
+            "test setup must put a real harvested load in carry"
+        );
+        assert!(s.world.assign_task(id, Task::GoTo(Pos::new(48, 0))));
+        for _ in 0..64 {
+            s.world.tick();
+            if s.world.agent_pos(id) == Some(Pos::new(48, 0)) {
+                break;
+            }
+        }
+        assert_eq!(
+            s.world.agent_pos(id),
+            Some(Pos::new(48, 0)),
+            "test setup must park the loaded gatherer far from the exchange"
+        );
+        assert!(s.world.assign_task(id, Task::GoDeposit(s.exchange)));
+        assert_eq!(s.world.agent_status(id), Some(AgentStatus::Moving));
+        assert!(s.society_mut().credit_stock(id, mill, 1));
+
+        let mut saw_unsettled_wait = false;
+        let mut adopted = false;
+        for tick in 0..200u64 {
+            let report = s.econ_tick();
+            assert!(report.conserves(), "tick {tick} must conserve");
+            assert_eq!(
+                s.world().stockpile_get(s.exchange(), carried_good),
+                0,
+                "each deposit must be attributed and transferred at tick {tick}"
+            );
+            let unsettled = s.world().agent_status(id) != Some(AgentStatus::Idle)
+                || s.world().agent_carry_total(id) > 0;
+            if unsettled {
+                saw_unsettled_wait = true;
+                assert_eq!(
+                    s.vocation_of(idx),
+                    Some(Vocation::Gatherer),
+                    "a gatherer must not adopt while its haul is unsettled at tick {tick}"
+                );
+            }
+            if s.vocation_of(idx) == Some(Vocation::Miller) {
+                adopted = true;
+                break;
+            }
+        }
+        assert!(
+            saw_unsettled_wait,
+            "the regression must exercise a tool-holder with unsettled spatial state"
+        );
+        assert!(
+            adopted,
+            "the settled tool-holder must still adopt once the appraisal pays"
         );
     }
 
