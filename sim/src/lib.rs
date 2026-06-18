@@ -119,6 +119,10 @@ pub use econ::ledger::MoneyStock;
 pub use econ::market::Trade;
 pub use econ::society::Society;
 pub use life::NeedState;
+/// The `world` resource-node id — the return type of [`Settlement::node_of`] /
+/// [`Settlement::grain_node`], so the S6 acceptance suite can name a colonist's
+/// assigned node through `sim` alone. A pure re-export (no behavior change).
+pub use world::NodeId;
 
 /// Re-exports of the econ **tender** enums and their stable lowercase labels — the
 /// G8c-2 tender-policy levers and the names the viewer renders. Pure re-exports of

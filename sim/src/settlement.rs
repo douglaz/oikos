@@ -823,6 +823,24 @@ pub struct ChainConfig {
     /// `report.endowment`, eaten in the consume phase like any provision. `0`
     /// (every existing config) mints nothing, so the run is byte-identical.
     pub producer_subsistence: u32,
+    /// PRODUCTIVE RE-ENTRY (S6 — provisioning at scale): when `true` *and* raw
+    /// grain is edible (`subsistence_on_grain`), a gated `econ_tick` phase
+    /// (`run_productive_reentry`, before the market) lets a hungry **spatial
+    /// non-lineage** colonist adopt edible-grain gathering on its own value scale:
+    /// an idle [`Consumer`](Vocation::Consumer) (no node, produces nothing) and a
+    /// [`Gatherer`](Vocation::Gatherer) mis-allocated to a non-edible (WOOD) node
+    /// each become a grain [`Gatherer`](Vocation::Gatherer) once hunger reaches
+    /// [`Self::reentry_hunger_in`], so the permanently-stranded underclass can feed
+    /// itself instead of starving forever (`hunger_critical = need_max + 1` keeps it
+    /// alive). It never touches lineage members (hearth-fed) or the latent/seeded
+    /// **tooled** chain producers (the S7 path); it mints nothing — gathering is the
+    /// existing conserved node-regen source. `false` (every existing config) skips
+    /// the phase, byte-identical.
+    pub productive_reentry: bool,
+    /// S6 re-entry entry threshold: a non-lineage colonist re-enters edible-grain
+    /// gathering once its hunger reaches this level. Only consulted when
+    /// [`Self::productive_reentry`] is set.
+    pub reentry_hunger_in: u16,
     /// Per-producer, per-econ-tick cap on recipe applications — a deterministic
     /// throughput bound (nothing is drawn). A producer applies its recipe up to
     /// this many times, limited by the input it holds.
@@ -913,6 +931,11 @@ impl ChainConfig {
             recurring_motive: false,
             project_input_bids: false,
             producer_subsistence: 0,
+            // Re-entry off by default (S6): the gated phase is inert, so every existing
+            // config and its goldens are byte-identical. The threshold is consulted
+            // only when the flag is on.
+            productive_reentry: false,
+            reentry_hunger_in: 8,
             throughput: 2,
             miller_grain_buffer: 16,
             baker_flour_buffer: 16,
@@ -969,6 +992,8 @@ impl ChainConfig {
             recurring_motive: false,
             project_input_bids: false,
             producer_subsistence: 0,
+            productive_reentry: false,
+            reentry_hunger_in: 8,
             throughput: 2,
             miller_grain_buffer: 16,
             baker_flour_buffer: 16,
@@ -2985,6 +3010,10 @@ struct ChainRuntime {
     /// household hearth mints fresh each tick (see
     /// [`ChainConfig::producer_subsistence`]). `0` for every existing config.
     producer_subsistence: u32,
+    /// S6: the productive-re-entry phase gate + entry threshold (see
+    /// [`ChainConfig::productive_reentry`]). `false`/unused for every existing config.
+    productive_reentry: bool,
+    reentry_hunger_in: u16,
 }
 
 impl Settlement {
@@ -3669,6 +3698,8 @@ impl Settlement {
                 recurring_motive: chain.recurring_motive,
                 project_input_bids: chain.project_input_bids,
                 producer_subsistence: chain.producer_subsistence,
+                productive_reentry: chain.productive_reentry,
+                reentry_hunger_in: chain.reentry_hunger_in,
             }
         });
 
@@ -3953,6 +3984,18 @@ impl Settlement {
         if self.run_role_choice() {
             self.regenerate_scales();
         }
+
+        // ---- 4b-bis. PRODUCTIVE RE-ENTRY (S6): a hungry spatial non-lineage
+        // colonist adopts edible-grain gathering on its own value scale (an idle
+        // consumer / a WOOD-mis-allocated gatherer becomes a grain gatherer), and a
+        // fed re-entrant reverts to its home role (the hysteresis). After role-choice
+        // (so this tick's vocations are settled) and before the market. The flip is
+        // between two untooled spatial roles whose econ scale is identical, so it
+        // perturbs no resting quote and needs no scale regeneration — it only steers
+        // the NEXT fast loop's `assign_idle_gatherer_tasks`. Mints nothing; a no-op
+        // unless `ChainConfig::productive_reentry` is set, so every other run is
+        // byte-identical.
+        self.run_productive_reentry();
 
         // ---- 4b'. CAPITAL ADVANCE (EXPERIMENT): a conserved working-capital
         // advance — move real money from the richest saver to any cashless active
@@ -5925,6 +5968,89 @@ impl Settlement {
         changed
     }
 
+    /// PRODUCTIVE RE-ENTRY (S6 — provisioning at scale). A gated, default-OFF
+    /// `econ_tick` phase: each live **spatial non-lineage** colonist that is hungry
+    /// at or above [`ChainConfig::reentry_hunger_in`] and is **not already feeding
+    /// itself on the edible grain node** adopts edible-grain gathering on its own
+    /// value scale — an idle [`Consumer`](Vocation::Consumer) (no node, produces
+    /// nothing) becomes a grain [`Gatherer`](Vocation::Gatherer), and a `Gatherer`
+    /// mis-allocated to a non-edible (WOOD) node is re-pointed to the edible grain
+    /// node (a hungry actor gathers food before wood — hunger outranks
+    /// wood-for-trade on its scale). Returns whether any colonist's vocation/node
+    /// changed. (S6.2 adds the reverse: a fed re-entrant resumes its home role.)
+    ///
+    /// Scope (Base Fact 4): only colonists with a **world agent** and `household ==
+    /// None` are touched. Lineage members are hearth-fed
+    /// (`deliver_demography_provisions`); the latent/seeded **tooled** chain
+    /// producers (Miller/Baker/Scholar/Confectioner and the latent pool) feed from
+    /// `run_producer_subsistence` and belong to the S7 capital-goods milestone, never
+    /// re-entry. The vocation flip is between two **untooled** spatial roles whose
+    /// econ value scale is identical (`production_specialty` is `None` for both
+    /// `Consumer` and `Gatherer`), so it perturbs no resting quote and needs no scale
+    /// regeneration — it only steers the next fast loop's `assign_idle_gatherer_tasks`.
+    /// It mints nothing: a re-entrant feeds by gathering grain (the existing conserved
+    /// node-regen source) and eating it (`subsistence_on_grain`).
+    ///
+    /// A no-op (returns `false`, touches nothing) unless
+    /// [`ChainConfig::productive_reentry`] is set AND raw grain is edible (so the
+    /// gathered grain actually relieves hunger), so every existing run is
+    /// byte-identical. Deterministic: slot-ordered, integer threshold, nothing drawn.
+    fn run_productive_reentry(&mut self) -> bool {
+        let Some(chain) = &self.chain else {
+            return false;
+        };
+        if !chain.productive_reentry {
+            return false;
+        }
+        // Without an edible-grain fallback the gathered grain would not feed anyone,
+        // so re-entry would relabel without provisioning — stay inert.
+        if self.known.subsistence.is_none() {
+            return false;
+        }
+        let grain = chain.content.grain();
+        let h_in = chain.reentry_hunger_in;
+        let Some(grain_node) = self.node_for_good(grain) else {
+            return false;
+        };
+        let mut changed = false;
+        for &slot in &self.live_colonist_slots {
+            let colonist = &self.colonists[slot];
+            // Lineage members are hearth-fed; the tooled chain producers (latent or
+            // active Miller/Baker/Scholar/Confectioner) are the S7 path — skip both.
+            if colonist.household.is_some() || colonist.latent.is_some() {
+                continue;
+            }
+            // Only the untooled spatial roster re-enters: an idle consumer or a
+            // gatherer. Anyone else (a seeded producer) is left to its own hearth.
+            if !matches!(
+                colonist.vocation,
+                Vocation::Consumer | Vocation::Gatherer | Vocation::Unassigned
+            ) {
+                continue;
+            }
+            let on_grain =
+                colonist.vocation == Vocation::Gatherer && colonist.node == Some(grain_node);
+            // Hungry and not yet feeding on grain: adopt grain gathering.
+            if colonist.need.hunger >= h_in && !on_grain {
+                let colonist = &mut self.colonists[slot];
+                colonist.vocation = Vocation::Gatherer;
+                colonist.node = Some(grain_node);
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// The resource node whose harvested good is `good`, in node-id order (the
+    /// settlement's nodes are added in config order, so this is stable). `None` if no
+    /// node yields `good`. Read-only; used by the S6 re-entry phase to resolve the
+    /// edible grain node and by the `grain_node` accessor.
+    fn node_for_good(&self, good: GoodId) -> Option<NodeId> {
+        (0..self.world.node_count())
+            .map(|i| NodeId(i as u32))
+            .find(|&id| self.world.node(id).map(|node| node.good) == Some(good))
+    }
+
     fn slot_for_id(&self, id: AgentId) -> Option<usize> {
         self.colonist_slot_by_id.get(&id).copied()
     }
@@ -6744,6 +6870,36 @@ impl Settlement {
             .unwrap_or(0)
     }
 
+    /// Units of `good` the colonist at generation `index` holds in **econ stock**
+    /// (its deposited, market-tradeable balance — distinct from [`Self::carry_of`],
+    /// which is the world delivery escrow that oscillates as the colonist harvests
+    /// and deposits). The S6 re-entry acceptance metric reads this to prove a flipped
+    /// colonist is *actually accumulating* the grain it gathers, not merely relabeled.
+    pub fn stock_of(&self, index: usize, good: GoodId) -> u64 {
+        self.colonists
+            .get(index)
+            .and_then(|c| self.society.agents.get(c.id))
+            .map(|agent| u64::from(agent.stock.get(good)))
+            .unwrap_or(0)
+    }
+
+    /// The resource node the colonist at generation `index` is currently assigned to
+    /// harvest, or `None` (a non-gatherer / idle consumer has no node). The S6
+    /// acceptance suite reads this to prove a re-entered colonist is on the **edible
+    /// grain node** (`node_of(i) == grain_node()`), not merely flipped to `Gatherer`.
+    pub fn node_of(&self, index: usize) -> Option<NodeId> {
+        self.colonists.get(index).and_then(|c| c.node)
+    }
+
+    /// The resource node that yields the chain's raw grain (the edible subsistence
+    /// good), or `None` (no chain / no grain node). The fixed target the S6 re-entry
+    /// phase sends hungry colonists to; the acceptance suite compares
+    /// [`Self::node_of`] against it.
+    pub fn grain_node(&self) -> Option<NodeId> {
+        let grain = self.chain.as_ref()?.content.grain();
+        self.node_for_good(grain)
+    }
+
     /// Living colonists of a vocation.
     pub fn living_count(&self, vocation: Vocation) -> usize {
         self.live_colonist_slots
@@ -7033,6 +7189,19 @@ impl Settlement {
             out.push(u8::from(chain.subsistence_advance));
             out.push(u8::from(chain.input_advance));
             out.extend_from_slice(&chain.perishable_decay_bps.to_le_bytes());
+            // The S6 productive-re-entry flag gates `run_productive_reentry`, which
+            // steers future ticks for any chain (it flips spatial colonists' vocations
+            // and re-points their gather nodes), so two configs differing only in it
+            // generate identically and then diverge — joined unconditionally like the
+            // phase-gating flags above. The entry threshold steers behaviour ONLY while
+            // the phase runs, so — exactly like the latent-pool-gated operating cost —
+            // it extends the digest only when re-entry is on; without it two configs
+            // differing only in the threshold behave identically and must not split,
+            // keeping the "byte-identical iff future behaviour identical" contract honest.
+            out.push(u8::from(chain.productive_reentry));
+            if chain.productive_reentry {
+                out.extend_from_slice(&chain.reentry_hunger_in.to_le_bytes());
+            }
             // The staple mapping steers the next needs/scale phase for *any* chain,
             // role-choice or not, so it is included whenever a chain is active. The
             // G3b no-spread control shares the emergent config's physical state but
@@ -9977,6 +10146,47 @@ mod tests {
             base.canonical_bytes(),
             edible.canonical_bytes(),
             "the edible-grain subsistence fallback must be part of the chain config identity"
+        );
+    }
+
+    #[test]
+    fn canonical_bytes_include_reentry_flags() {
+        // S6: `productive_reentry` gates the re-entry phase that flips spatial
+        // colonists' vocations/nodes — it steers future ticks while leaving
+        // generation untouched, so two chains differing only in it must digest apart.
+        // The entry threshold steers behaviour ONLY while the phase runs, so it joins
+        // the digest when (and only when) re-entry is on: two phase-ON chains differing
+        // in the threshold split, but two phase-OFF chains differing only in it stay
+        // byte-identical (the honest "byte-identical iff future behaviour identical"
+        // contract — same shape as the latent-pool-gated operating cost).
+        let mut off = SettlementConfig::frontier_endogenous();
+        off.chain.as_mut().expect("chain").productive_reentry = false;
+        let mut on = SettlementConfig::frontier_endogenous();
+        on.chain.as_mut().expect("chain").productive_reentry = true;
+        let off_bytes = Settlement::generate(7, &off).canonical_bytes();
+        assert_ne!(
+            off_bytes,
+            Settlement::generate(7, &on).canonical_bytes(),
+            "the re-entry phase gate must be part of the chain config identity"
+        );
+
+        // Phase ON: a different entry threshold must split the digest.
+        let mut on_hi = on.clone();
+        on_hi.chain.as_mut().expect("chain").reentry_hunger_in = 6;
+        assert_ne!(
+            Settlement::generate(7, &on).canonical_bytes(),
+            Settlement::generate(7, &on_hi).canonical_bytes(),
+            "with re-entry on, the entry threshold must be part of the digest"
+        );
+
+        // Phase OFF: the (unused) entry threshold must NOT split the digest, or the
+        // tripwire would call two behaviour-identical configs unequal.
+        let mut off_hi = off.clone();
+        off_hi.chain.as_mut().expect("chain").reentry_hunger_in = 6;
+        assert_eq!(
+            off_bytes,
+            Settlement::generate(7, &off_hi).canonical_bytes(),
+            "with re-entry off, the unused entry threshold must not steer the digest"
         );
     }
 
