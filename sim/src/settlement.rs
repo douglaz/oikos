@@ -3748,13 +3748,14 @@ impl Settlement {
                      not the ContentSet id {id:?}"
                 );
             }
-            // S6 hysteresis invariant: the exit threshold must sit strictly below the
-            // entry threshold, else a re-entrant would satisfy `hunger < h_out` the same
-            // tick it crossed `hunger >= h_in` and thrash grain↔home every tick. The
-            // shipped configs all hold it; assert in debug so a future misconfig trips
-            // loudly rather than churning silently.
-            debug_assert!(
-                !chain.productive_reentry || chain.reentry_hunger_out < chain.reentry_hunger_in,
+            // S6 hysteresis invariant: for an active re-entry phase, the exit
+            // threshold must sit strictly below the entry threshold. Otherwise a
+            // re-entrant can satisfy both sides of the band and churn between grain
+            // and its home role.
+            assert!(
+                !chain.productive_reentry
+                    || !chain.subsistence_on_grain
+                    || chain.reentry_hunger_out < chain.reentry_hunger_in,
                 "re-entry hysteresis requires reentry_hunger_out < reentry_hunger_in"
             );
             ChainRuntime {
@@ -6086,12 +6087,12 @@ impl Settlement {
         if !chain.productive_reentry {
             return;
         }
+        let grain = chain.content.grain();
         // Without an edible-grain fallback the gathered grain would not feed anyone,
         // so re-entry would relabel without provisioning — stay inert.
-        if self.known.subsistence.is_none() {
+        if self.known.subsistence != Some(grain) {
             return;
         }
-        let grain = chain.content.grain();
         let h_in = chain.reentry_hunger_in;
         let h_out = chain.reentry_hunger_out;
         // Single canonical edible node: `node_for_good` resolves the lowest-id node
@@ -6149,6 +6150,12 @@ impl Settlement {
     fn reentry_revert_ready(&self, id: AgentId) -> bool {
         self.world.agent_status(id) == Some(AgentStatus::Idle)
             && self.world.agent_carry_total(id) == 0
+    }
+
+    fn productive_reentry_can_run(&self) -> bool {
+        self.chain.as_ref().is_some_and(|chain| {
+            chain.productive_reentry && self.known.subsistence == Some(chain.content.grain())
+        })
     }
 
     /// The resource node whose harvested good is `good`, in node-id order (the
@@ -7299,18 +7306,14 @@ impl Settlement {
             out.push(u8::from(chain.subsistence_advance));
             out.push(u8::from(chain.input_advance));
             out.extend_from_slice(&chain.perishable_decay_bps.to_le_bytes());
-            // The S6 productive-re-entry flag gates `run_productive_reentry`, which
-            // steers future ticks for any chain (it flips spatial colonists' vocations
-            // and re-points their gather nodes), so two configs differing only in it
-            // generate identically and then diverge — joined unconditionally like the
-            // phase-gating flags above. The two hysteresis thresholds steer behaviour
-            // ONLY while the phase runs, so — exactly like the latent-pool-gated
-            // operating cost — they extend the digest only when re-entry is on; without
-            // it two configs differing only in a threshold behave identically and must
-            // not split, keeping the "byte-identical iff future behaviour identical"
-            // contract honest.
-            out.push(u8::from(chain.productive_reentry));
-            if chain.productive_reentry {
+            // The S6 productive-re-entry state steers future ticks only while the
+            // phase can actually feed a colonist: the gate is on AND raw grain is the
+            // subsistence fallback. Without edible grain the runtime phase exits
+            // before mutating, so the gate and thresholds must not split otherwise
+            // behavior-identical configs.
+            let reentry_serialized = self.productive_reentry_can_run();
+            out.push(u8::from(reentry_serialized));
+            if reentry_serialized {
                 out.extend_from_slice(&chain.reentry_hunger_in.to_le_bytes());
                 out.extend_from_slice(&chain.reentry_hunger_out.to_le_bytes());
             }
@@ -7638,15 +7641,12 @@ impl Settlement {
             .colonists
             .iter()
             .any(|colonist| colonist.estate_destination.is_some());
-        // The S6 re-entry home (vocation+node) decides the revert *target* of a
-        // displaced re-entrant, so it steers future ticks ONLY while the re-entry phase
-        // can run. Gate its per-colonist bytes on the same `productive_reentry` flag as
-        // the thresholds above: a re-entry-OFF config (incl. `endogenous`) never reads
-        // the home and keeps its pre-S6 per-colonist layout byte-identical.
-        let reentry_serialized = self
-            .chain
-            .as_ref()
-            .is_some_and(|chain| chain.productive_reentry);
+        // The S6 re-entry home (vocation+node) decides the revert target of a
+        // displaced re-entrant, so it steers future ticks only while the phase can run.
+        // Gate its per-colonist bytes on the same active-phase predicate as the
+        // thresholds above: a re-entry-OFF or non-edible config never reads the home
+        // and keeps its pre-S6 per-colonist layout byte-identical.
+        let reentry_serialized = self.productive_reentry_can_run();
         out.extend_from_slice(&(self.colonists.len() as u32).to_le_bytes());
         for colonist in &self.colonists {
             out.extend_from_slice(&colonist.id.0.to_le_bytes());
@@ -10287,13 +10287,12 @@ mod tests {
     #[test]
     fn canonical_bytes_include_reentry_flags() {
         // S6: `productive_reentry` gates the re-entry phase that flips spatial
-        // colonists' vocations/nodes — it steers future ticks while leaving
-        // generation untouched, so two chains differing only in it must digest apart.
-        // The two hysteresis thresholds steer behaviour ONLY while the phase runs, so
-        // they join the digest when (and only when) re-entry is on: two phase-ON chains
-        // differing in a threshold split, but two phase-OFF chains differing only in
-        // one stay byte-identical (the honest "byte-identical iff future behaviour
-        // identical" contract — same shape as the latent-pool-gated operating cost).
+        // colonists' vocations/nodes. It steers future ticks while leaving generation
+        // untouched only when raw grain is edible, so two active chains differing only
+        // in it must digest apart. The two hysteresis thresholds steer behaviour only
+        // while the phase runs, so they join the digest when (and only when) re-entry
+        // is active: two active chains differing in a threshold split, but inactive
+        // chains differing only in a threshold stay byte-identical.
         let mut off = SettlementConfig::frontier_endogenous();
         off.chain.as_mut().expect("chain").productive_reentry = false;
         let mut on = SettlementConfig::frontier_endogenous();
@@ -10333,6 +10332,26 @@ mod tests {
             off_bytes,
             Settlement::generate(7, &off_thresholds).canonical_bytes(),
             "with re-entry off, the unused thresholds must not steer the digest"
+        );
+
+        // Phase ON but no edible-grain fallback: the runtime phase exits before
+        // mutating, so the flag and thresholds must serialize as a no-op.
+        let inert = SettlementConfig::grain_flour_bread_chain();
+        assert!(
+            !inert.chain.as_ref().expect("chain").subsistence_on_grain,
+            "the seeded chain does not make raw grain directly edible"
+        );
+        let mut inert_on = inert.clone();
+        {
+            let c = inert_on.chain.as_mut().expect("chain");
+            c.productive_reentry = true;
+            c.reentry_hunger_in = 6;
+            c.reentry_hunger_out = 2;
+        }
+        assert_eq!(
+            Settlement::generate(7, &inert).canonical_bytes(),
+            Settlement::generate(7, &inert_on).canonical_bytes(),
+            "without edible grain, re-entry is behavior-identical and must not split the digest"
         );
     }
 
@@ -10392,6 +10411,39 @@ mod tests {
             off_node.canonical_bytes(),
             "with re-entry off, the home must not steer the digest"
         );
+
+        // Re-entry ON but raw grain not edible: the phase is inert, so the home also
+        // must not steer the digest.
+        let mut inert = SettlementConfig::grain_flour_bread_chain();
+        inert.chain.as_mut().expect("chain").productive_reentry = true;
+        let inert_bytes = Settlement::generate(7, &inert).canonical_bytes();
+        let mut inert_node = Settlement::generate(7, &inert);
+        let inert_slot = inert_node
+            .colonists
+            .iter()
+            .position(|c| c.home_node.is_some())
+            .expect("a spatial gatherer with a home node");
+        inert_node.colonists[inert_slot].home_node = None;
+        assert_eq!(
+            inert_bytes,
+            inert_node.canonical_bytes(),
+            "without edible grain, re-entry home state must not steer the digest"
+        );
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "re-entry hysteresis requires reentry_hunger_out < reentry_hunger_in"
+    )]
+    fn active_reentry_rejects_invalid_hysteresis() {
+        let mut cfg = SettlementConfig::frontier_endogenous();
+        {
+            let c = cfg.chain.as_mut().expect("chain");
+            c.productive_reentry = true;
+            c.reentry_hunger_in = 4;
+            c.reentry_hunger_out = 4;
+        }
+        let _ = Settlement::generate(7, &cfg);
     }
 
     #[test]
