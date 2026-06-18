@@ -132,7 +132,7 @@ const CAPITAL_BUILD_RECENCY: u64 = 8;
 /// absorbs the emergent chain's adoption churn while keeping built capital bounded
 /// near the producers that actually run it (the structural overinvestment guard).
 /// Fixed (not a config knob): it gates only the gated S7.2 phase.
-const CAPITAL_IDLE_SLACK: u64 = 3;
+const CAPITAL_IDLE_SLACK: u64 = 1;
 
 /// The id of the (single) bank a G8b settlement charters. Settlements run at most
 /// one bank, so a fixed id keeps the bank phase, the canonical bytes, and the
@@ -2650,7 +2650,7 @@ impl SettlementConfig {
             // guard). A fed colonist (hunger at/below the comfortable revert level)
             // invests; a hungry one feeds first.
             chain.producible_capital = true;
-            chain.capital_payback_cycles = 8;
+            chain.capital_payback_cycles = 16;
             chain.tool_build_wood = 6;
             chain.tool_build_labor = 4;
             chain.capital_build_hunger_max = 4;
@@ -2662,8 +2662,8 @@ impl SettlementConfig {
         // (the test control) leaves bread demand unmet; with it, builders add the
         // bottleneck producers until demand is met. The extra WOOD gatherers keep the
         // builders' WOOD (and the warmth battery) supplied as capital is committed.
-        cfg.consumers = 16;
-        cfg.gatherers = 16;
+        cfg.consumers = 44;
+        cfg.gatherers = 24;
         cfg
     }
 
@@ -4253,7 +4253,8 @@ impl Settlement {
         // tool-anchor into the market step (the phase-order trap — it must not post the
         // just-built capital as surplus). A no-op unless `producible_capital` is on, so
         // every other run is byte-identical.
-        if self.run_capital_formation(&mut report) {
+        let mut capital_labor_used = Vec::new();
+        if self.run_capital_formation(&mut report, &mut capital_labor_used) {
             self.regenerate_scales();
         }
 
@@ -4358,6 +4359,9 @@ impl Settlement {
                 .step_rejecting_v2_money_goods(&self.money_rejection_goods);
         } else {
             self.society.step();
+        }
+        for (agent, labor) in capital_labor_used {
+            self.society.record_external_labor_used(agent, labor);
         }
         // ---- 5b. CAPITAL-ADVANCE REPAYMENT (EXPERIMENT): borrowers repay their
         // revolving working-capital loans from this tick's sales, staying
@@ -6381,7 +6385,16 @@ impl Settlement {
             let colonist = &self.colonists[slot];
             // Lineage members are hearth-fed; the tooled chain producers (latent or
             // active Miller/Baker/Scholar/Confectioner) are the S7 path — skip both.
-            if colonist.household.is_some() || colonist.latent.is_some() {
+            // This includes a formerly non-latent tool-holder that adopted Miller/Baker
+            // earlier this same tick: its home role is still spatial, but re-entry must
+            // not revert an active capital holder before market/production.
+            if colonist.household.is_some()
+                || colonist.latent.is_some()
+                || matches!(
+                    colonist.vocation,
+                    Vocation::Miller | Vocation::Baker | Vocation::Scholar | Vocation::Confectioner
+                )
+            {
                 continue;
             }
             // Re-enter only colonists whose HOME is an untooled spatial role: an idle
@@ -6455,7 +6468,11 @@ impl Settlement {
     /// scales — the fresh tool-holder must carry its tool-anchor into the market step).
     /// A no-op unless [`ChainConfig::producible_capital`] is on and money has emerged,
     /// so every other run is byte-identical. Deterministic: slot-ordered, integer state.
-    fn run_capital_formation(&mut self, report: &mut EconTickReport) -> bool {
+    fn run_capital_formation(
+        &mut self,
+        report: &mut EconTickReport,
+        labor_used: &mut Vec<(AgentId, u32)>,
+    ) -> bool {
         let Some(chain) = &self.chain else {
             return false;
         };
@@ -6480,8 +6497,6 @@ impl Settlement {
         let wood_qty = chain.tool_build_wood;
         let build_labor = chain.tool_build_labor;
         let hunger_max = chain.capital_build_hunger_max;
-        let mill_out_qty = mill_recipe.output_qty;
-        let bake_in_qty = bake_recipe.input_good.map_or(0, |(_, qty)| qty);
         let tick = self.society.tick.0;
 
         let mut built = false;
@@ -6503,17 +6518,24 @@ impl Settlement {
                 continue;
             }
             // Advance with the builder's own labor (one unit per tick), then try to
-            // complete it against the builder's own stock.
-            advance_project(&mut self.capital_builds[bi].project);
-            let template = self.capital_builds[bi].template.clone();
+            // complete it against the builder's own stock. A project already at its
+            // required labor completes without an extra advance, so a one-labor build
+            // started last tick is never charged N+1 units.
+            {
+                let build = &mut self.capital_builds[bi];
+                if build.project.labor_advanced < build.template.required_labor
+                    && advance_project(&mut build.project)
+                {
+                    labor_used.push((builder, 1));
+                }
+            }
             let tool = self.capital_builds[bi].project.output_good;
             let qty = self.capital_builds[bi].project.output_qty;
             let completed = match self.society.agents.get_mut(builder) {
-                Some(agent) => complete_project_if_ready(
-                    &mut self.capital_builds[bi].project,
-                    &template,
-                    &mut agent.stock,
-                ),
+                Some(agent) => {
+                    let build = &mut self.capital_builds[bi];
+                    complete_project_if_ready(&mut build.project, &build.template, &mut agent.stock)
+                }
                 None => false,
             };
             if completed {
@@ -6529,6 +6551,9 @@ impl Settlement {
         }
         for &bi in finished.iter().rev() {
             self.capital_builds.remove(bi);
+        }
+        if built {
+            return true;
         }
 
         // ---- 2. START new builds for eligible, fed builders that appraise it pays.
@@ -6562,19 +6587,20 @@ impl Settlement {
         // higher-margin-wins rule floods mills on a stale flour price and starves the
         // baker side. The chosen tool's own output must also have traded recently, and
         // its amortized margin must clear the payback bar.
-        // The bottleneck is read from installed CAPACITY (the whole-system mill/oven
-        // counts), not the active-producer counts: capacity is stable, whereas active
-        // counts loop (a just-built tool whose holder has not yet adopted would read as
-        // zero capacity and drive an endless build of the same stage). One mill yields
-        // `mill_out_qty` flour, one oven consumes `bake_in_qty`; the stages balance when
-        // `ovens × bake_in_qty == mills × mill_out_qty`, i.e. roughly `mill_out_qty /
-        // bake_in_qty` ovens per mill (3:1 for the default 3-flour mill, 1-flour oven).
-        let held_mills = self.whole_system_total(mill_good);
-        let held_ovens = self.whole_system_total(oven_good);
+        // The bottleneck is read from usable installed CAPACITY (tools held by live
+        // colonists), not active-producer counts and not whole-system conserved totals:
+        // active counts loop (a just-built tool whose holder has not yet adopted would
+        // read as zero capacity and drive an endless build of the same stage), while a
+        // tool settled to the commons is conserved but inaccessible and must not suppress
+        // replacement builds. The market clears one seller-side lot per producer per tick,
+        // so the practical throughput ratio is one live mill holder to one live oven
+        // holder even when the milling recipe emits a multi-unit flour batch.
+        let held_mills = self.live_colonist_stock_total(mill_good);
+        let held_ovens = self.live_colonist_stock_total(oven_good);
         let active_millers = self.living_count(Vocation::Miller) as u64;
         let active_bakers = self.living_count(Vocation::Baker) as u64;
-        let oven_capacity = held_ovens.saturating_mul(u64::from(bake_in_qty.max(1)));
-        let mill_capacity = held_mills.saturating_mul(u64::from(mill_out_qty.max(1)));
+        let oven_capacity = held_ovens;
+        let mill_capacity = held_mills;
         // Utilization guard against idle-tool overbuild: only add a tool of a kind while
         // the kind already in the colony is close to fully employed — held tools at most
         // the active producers plus a small slack. The slack absorbs the emergent chain's
@@ -6582,12 +6608,17 @@ impl Settlement {
         // productive tool), so building is not stalled by a transient dip, while idle
         // tools cannot accumulate without bound: built capital tracks the active producer
         // count, the structural half of the overinvestment guard.
-        let choice: Option<(GoodId, ProjectTemplateId)> = if !self
-            .good_traded_within(bread, CAPITAL_BUILD_RECENCY)
-        {
+        let bread_signal = self.good_traded_within(bread, CAPITAL_BUILD_RECENCY)
+            || (held_ovens == 0 && bread_price.is_some());
+        let flour_signal = self.good_traded_within(flour, CAPITAL_BUILD_RECENCY)
+            || (held_mills == 0 && flour_price.is_some());
+        let choice: Option<(GoodId, ProjectTemplateId)> = if !bread_signal {
             // Build only while the chain's FINAL good (bread) is actually clearing —
             // real demand for the chain's output. When bread demand is met it stops
-            // clearing / its spread thins and building stops (the demand brake).
+            // clearing / its spread thins and building stops (the demand brake). If a
+            // stage has collapsed to ZERO usable capacity, a prior realized price is
+            // enough to restart replacement building; no observed price still means no
+            // appraisal basis.
             None
         } else if oven_capacity < mill_capacity {
             // Flour-milling capacity outruns baking capacity: add an OVEN to turn the
@@ -6601,11 +6632,10 @@ impl Settlement {
             // MILL is the bottleneck — gated on mills not already sitting idle, on
             // flour actually clearing (so the mill's output has a real buyer), and on
             // the milling spread paying.
-            (held_mills <= active_millers.saturating_add(CAPITAL_IDLE_SLACK)
-                && self.good_traded_within(flour, CAPITAL_BUILD_RECENCY))
-            .then(|| capital_build_surplus(&mill_recipe, flour_price, grain_price, &appraisal))
-            .flatten()
-            .map(|_| (mill_good, ProjectTemplateId::BuildMill))
+            (held_mills <= active_millers.saturating_add(CAPITAL_IDLE_SLACK) && flour_signal)
+                .then(|| capital_build_surplus(&mill_recipe, flour_price, grain_price, &appraisal))
+                .flatten()
+                .map(|_| (mill_good, ProjectTemplateId::BuildMill))
         };
         let Some((tool, template_id)) = choice else {
             return built;
@@ -6661,22 +6691,39 @@ impl Settlement {
             let pid = ProjectId(self.next_capital_project_id);
             // Commit the builder's own WOOD up front (booked consumed_as_input), then
             // advance one labor unit — mirroring the lab World BuildNet path (start then
-            // advance). Completion is handled by the advance loop above on a later tick,
-            // keeping the produced/consumed booking in one place.
+            // advance). If that satisfies the labor requirement, complete immediately
+            // so required_labor counts exact contributed units, not an extra wait tick.
             let started = match self.society.agents.get_mut(id) {
                 Some(agent) => start_project(&template, &mut agent.stock, pid, Tick(tick)),
                 None => None,
             };
             if let Some(mut project) = started {
                 *report.consumed_as_input.entry(WOOD).or_insert(0) += u64::from(wood_qty);
-                advance_project(&mut project);
+                if project.labor_advanced < template.required_labor && advance_project(&mut project)
+                {
+                    labor_used.push((id, 1));
+                }
                 self.next_capital_project_id = self.next_capital_project_id.wrapping_add(1);
-                self.capital_builds.push(CapitalBuild {
-                    builder: id,
-                    slot,
-                    template,
-                    project,
-                });
+                let completed = match self.society.agents.get_mut(id) {
+                    Some(agent) => {
+                        complete_project_if_ready(&mut project, &template, &mut agent.stock)
+                    }
+                    None => false,
+                };
+                if completed {
+                    let qty = project.output_qty;
+                    *report.produced.entry(project.output_good).or_insert(0) += u64::from(qty);
+                    self.tools_built = self.tools_built.saturating_add(u64::from(qty));
+                    self.colonists[slot].acquired_tool = true;
+                    built = true;
+                } else {
+                    self.capital_builds.push(CapitalBuild {
+                        builder: id,
+                        slot,
+                        template,
+                        project,
+                    });
+                }
                 // One new build per tick (the gradual-accumulation pacing above).
                 break;
             }
@@ -6784,6 +6831,18 @@ impl Settlement {
             .agents
             .iter()
             .map(|a| u64::from(a.stock.get(good)))
+            .sum()
+    }
+
+    /// Total of `good` held by living colonists only. Unlike
+    /// [`Self::whole_system_total`], this intentionally excludes the world, resident
+    /// traders, and the commons; S7 capital-capacity decisions need usable tools, not
+    /// every conserved unit.
+    fn live_colonist_stock_total(&self, good: GoodId) -> u64 {
+        self.live_colonist_slots
+            .iter()
+            .filter_map(|&slot| self.society.agents.get(self.colonists[slot].id))
+            .map(|agent| u64::from(agent.stock.get(good)))
             .sum()
     }
 
@@ -7971,6 +8030,7 @@ impl Settlement {
                 out.extend_from_slice(&chain.tool_build_wood.to_le_bytes());
                 out.extend_from_slice(&chain.tool_build_labor.to_le_bytes());
                 out.extend_from_slice(&chain.capital_build_hunger_max.to_le_bytes());
+                out.extend_from_slice(&self.next_capital_project_id.to_le_bytes());
                 // The in-flight per-builder builds are live state two runs through the
                 // build can differ in (which builder, how much labor it has advanced),
                 // so they are part of the future-behaviour identity. Serialized in the
@@ -7979,6 +8039,9 @@ impl Settlement {
                 out.extend_from_slice(&(self.capital_builds.len() as u32).to_le_bytes());
                 for build in &self.capital_builds {
                     out.extend_from_slice(&build.builder.0.to_le_bytes());
+                    out.extend_from_slice(&build.project.id.0.to_le_bytes());
+                    out.push(project_template_id_tag(build.project.template));
+                    out.extend_from_slice(&build.project.started_at.0.to_le_bytes());
                     out.extend_from_slice(&build.project.output_good.0.to_le_bytes());
                     out.extend_from_slice(&build.project.output_qty.to_le_bytes());
                     out.extend_from_slice(&build.template.required_labor.to_le_bytes());
@@ -8761,8 +8824,8 @@ pub fn recipe_is_profitable(
 ///
 /// Demand-driven and self-correcting: once bread demand is met the realized output
 /// price falls, the per-run margin drops, and the surplus goes non-positive — so no
-/// tool is built (the overinvestment guard). Returns a comparable surplus so the phase
-/// can pick the better-paying of a mill vs an oven.
+/// tool is built (the overinvestment guard). The current caller uses the returned
+/// surplus as a strict pay/no-pay gate, then chooses the stage by capacity bottleneck.
 fn capital_build_surplus(
     recipe: &Recipe,
     output_price: Option<Gold>,
@@ -9756,6 +9819,15 @@ fn m2_project_state_tag(state: M2ProjectState) -> u8 {
     }
 }
 
+fn project_template_id_tag(id: ProjectTemplateId) -> u8 {
+    match id {
+        ProjectTemplateId::BuildNet => 0,
+        ProjectTemplateId::BuildRoad => 1,
+        ProjectTemplateId::BuildMill => 2,
+        ProjectTemplateId::BuildOven => 3,
+    }
+}
+
 fn debt_state_tag(state: DebtState) -> u8 {
     match state {
         DebtState::Open => 0,
@@ -10052,6 +10124,11 @@ mod tests {
         assert_eq!(bench_surface_tag(BenchSurface::Debt), 1);
         assert_eq!(bench_surface_tag(BenchSurface::BankRepayment), 2);
         assert_eq!(bench_surface_tag(BenchSurface::IssuerRepayment), 3);
+
+        assert_eq!(project_template_id_tag(ProjectTemplateId::BuildNet), 0);
+        assert_eq!(project_template_id_tag(ProjectTemplateId::BuildRoad), 1);
+        assert_eq!(project_template_id_tag(ProjectTemplateId::BuildMill), 2);
+        assert_eq!(project_template_id_tag(ProjectTemplateId::BuildOven), 3);
     }
 
     /// The G8c-2 tender policy emits a `SetXTender` event **only** for a knob that
@@ -11088,6 +11165,49 @@ mod tests {
     }
 
     #[test]
+    fn reentry_does_not_revert_an_adopted_tool_holder() {
+        // A non-latent spatial colonist that adopts from a held tool keeps its producer
+        // role through the later same-tick re-entry phase. Its home role remains spatial,
+        // but active tool producers are outside the S6 re-entry path.
+        let mut cfg = SettlementConfig::frontier_endogenous_scaling();
+        {
+            let chain = cfg.chain.as_mut().expect("chain");
+            chain.tool_acquisition_eligibility = true;
+            chain.producible_capital = false;
+        }
+        let mill = cfg.chain.as_ref().expect("chain").content.mill();
+        let mut s = Settlement::generate(42, &cfg);
+        s.run(400);
+        let idx = (0..s.population())
+            .find(|&i| {
+                s.is_alive(i)
+                    && !s.is_tool_acquisition_eligible(i)
+                    && matches!(
+                        s.vocation_of(i),
+                        Some(Vocation::Gatherer) | Some(Vocation::Consumer)
+                    )
+            })
+            .expect("a non-latent spatial colonist");
+        let id = s.colonist_id(idx).expect("id");
+        assert!(s.society_mut().credit_stock(id, mill, 1));
+
+        let slot = s.slot_for_id(id).expect("slot");
+        let mut adopted = false;
+        for _ in 0..200 {
+            s.colonists[slot].need.hunger = 0;
+            s.econ_tick();
+            if s.vocation_of(idx) == Some(Vocation::Miller) {
+                adopted = true;
+                break;
+            }
+        }
+        assert!(
+            adopted,
+            "re-entry must not revert an active tool-holder back to its spatial home role"
+        );
+    }
+
+    #[test]
     fn tool_acquisition_off_is_byte_identical() {
         // S7.1 inertness: with the gate OFF, flipping the (unused) eligibility flag in
         // isolation is a no-op — the gate never fires without a non-latent tool-holder,
@@ -11112,9 +11232,13 @@ mod tests {
             let c = cfg.chain.as_mut().expect("chain");
             c.tool_acquisition_eligibility = true;
             c.producible_capital = true;
+            c.capital_payback_cycles = 16;
+            c.tool_build_wood = 6;
+            c.tool_build_labor = 4;
+            c.capital_build_hunger_max = 4;
         }
-        cfg.consumers = 16;
-        cfg.gatherers = 16;
+        cfg.consumers = 44;
+        cfg.gatherers = 24;
         cfg
     }
 
@@ -11167,6 +11291,104 @@ mod tests {
             off_bytes,
             Settlement::generate(7, &off_tweaked).canonical_bytes(),
             "with producible capital off, the unused build knobs must not steer the digest"
+        );
+
+        let id_a = Settlement::generate(7, &on);
+        let mut id_b = Settlement::generate(7, &on);
+        id_b.next_capital_project_id = id_b.next_capital_project_id.saturating_add(1);
+        assert_ne!(
+            id_a.canonical_bytes(),
+            id_b.canonical_bytes(),
+            "the next capital project id steers future project ids and must be serialized"
+        );
+
+        let build_cfg = capital_test_config();
+        let mut build_state = Settlement::generate(7, &build_cfg);
+        for _ in 0..900 {
+            build_state.econ_tick();
+            if !build_state.capital_builds.is_empty() {
+                break;
+            }
+        }
+        assert!(
+            !build_state.capital_builds.is_empty(),
+            "the capital config should produce an in-flight build for the digest check"
+        );
+        let before = build_state.canonical_bytes();
+        build_state.capital_builds[0].project.id =
+            ProjectId(build_state.capital_builds[0].project.id.0.saturating_add(1));
+        assert_ne!(
+            before,
+            build_state.canonical_bytes(),
+            "an in-flight capital project's id must be serialized"
+        );
+    }
+
+    #[test]
+    fn capital_capacity_counts_only_live_tool_holders() {
+        let cfg = capital_test_config();
+        let mill = cfg.chain.as_ref().expect("chain").content.mill();
+        let mut s = Settlement::generate(1, &cfg);
+        let live_before = s.live_colonist_stock_total(mill);
+        let whole_before = s.whole_system_total(mill);
+
+        s.commons_stock.insert(mill, 10);
+
+        assert_eq!(
+            s.live_colonist_stock_total(mill),
+            live_before,
+            "commons tools are conserved but not usable capital capacity"
+        );
+        assert_eq!(
+            s.whole_system_total(mill),
+            whole_before + 10,
+            "whole-system conservation still includes commons tools"
+        );
+    }
+
+    #[test]
+    fn one_labor_capital_build_completes_on_start_and_records_labor() {
+        let mut cfg = capital_test_config();
+        cfg.chain.as_mut().expect("chain").tool_build_labor = 1;
+        let mill = cfg.chain.as_ref().expect("chain").content.mill();
+        let oven = cfg.chain.as_ref().expect("chain").content.oven();
+        let mut s = Settlement::generate(1, &cfg);
+
+        let mut builder = None;
+        for tick in 0..900u64 {
+            let report = s.econ_tick();
+            let tool_produced = report.produced_of(mill) + report.produced_of(oven);
+            if report.consumed_as_input_of(WOOD) > 0 {
+                assert!(
+                    tool_produced > 0,
+                    "a one-labor capital build must complete on its start tick, failed at {tick}"
+                );
+                assert_eq!(
+                    s.active_capital_builds(),
+                    0,
+                    "a completion tick must not immediately start the next capital build"
+                );
+                builder = (0..s.population())
+                    .find(|&i| s.acquired_tool_of(i))
+                    .and_then(|i| s.colonist_id(i).map(|id| (i, id)));
+                break;
+            }
+        }
+        let (builder_index, builder_id) = builder.expect("a one-labor build completed");
+        assert!(
+            s.society
+                .labor_used_last_tick()
+                .iter()
+                .any(|&(id, labor)| id == builder_id && labor > 0),
+            "capital build labor must be recorded in the society labor log"
+        );
+
+        let builder_slot = s.slot_for_id(builder_id).expect("builder slot");
+        s.colonists[builder_slot].need.rest = 0;
+        s.econ_tick();
+        assert!(
+            s.need_of(builder_index).expect("builder need").rest > 0,
+            "recorded capital labor must feed the next needs update"
         );
     }
 

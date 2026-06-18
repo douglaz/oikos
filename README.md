@@ -1427,7 +1427,9 @@ improvement (tail mean ~1.3 at pop 40 vs ~4.1 at pop 26). "Provisioning at scale
 **untooled subsistence** through tick 1600 — the **tooled** grain→flour→bread chain is scaled
 separately by **S7 producible capital** (the `capital` scenario), where colonists *build* new
 mills/ovens from saved WOOD + labor under unmet bread demand, so the chain's capacity is no longer
-hard-capped at the seeded tool count.
+hard-capped at the seeded tool count. The shipped S7 throttle intentionally keeps one capital build
+in flight at a time, so this proves demand-responsive capital formation through the tested frontier
+scale, not an unbounded colony-wide construction rate.
 
 ## Build and test
 

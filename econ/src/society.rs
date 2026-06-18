@@ -3847,6 +3847,18 @@ impl Society {
         &self.tick_labor_used
     }
 
+    /// Record labor performed by a driver-owned phase outside [`Society::step`].
+    ///
+    /// The spatial settlement uses this for conserved project labor that must happen
+    /// before the market step for phase-order reasons, then replays the receipt after
+    /// `step()` so the next needs readback sees the same tick-local labor log as
+    /// direct recipe production. Existing econ scenarios never call it.
+    pub fn record_external_labor_used(&mut self, agent: AgentId, labor: u32) {
+        if labor > 0 {
+            self.add_tick_labor_used(agent, labor);
+        }
+    }
+
     /// Cancel any resting spot quotes for `agent` whose reservation no longer
     /// matches its current scale, holdings, or tender state.
     ///
