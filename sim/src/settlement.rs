@@ -6492,9 +6492,9 @@ impl Settlement {
                 chain.recurring_motive,
                 chain.producer_subsistence,
                 // S11: the producer imputes its input reservation against its own fallible
-                // OUTPUT forecast (an over-optimist bids more for input, overpaying against
-                // the seller's real ask — a real selection channel); the FILL still clears
-                // at the seller's real ask, so the market price is forecast-independent.
+                // OUTPUT forecast. The posted bid limit is still anchored to the observed
+                // input price below, so a resting optimistic bid cannot become a new
+                // forecast-inflated input price.
                 chain.entrepreneurial_forecasts,
             ),
             _ => return,
@@ -6556,13 +6556,17 @@ impl Settlement {
             ) else {
                 continue;
             };
-            // Bid at the imputed reservation: econ caps the posted limit by the
-            // producer's own free gold and tender, and the willing seller's resting
-            // ask sets the fill price (the producer captures the spread when the
-            // seller's ask rests first — the id-ordered book's normal case, since
-            // gatherers/millers precede the producer that buys from them).
+            // The reservation carries the producer's max willingness to buy input. With
+            // forecasts on, the posted limit is capped at the observed input price when
+            // one exists: the forecast can make the producer willing to buy, but cannot
+            // by itself raise the realized input quote if its bid rests first.
+            let limit = project_input_bid_limit(
+                reservation,
+                self.society.realized_price(input),
+                entrepreneurial,
+            );
             self.society
-                .set_bid_override(producer_id, input, reservation, reservation);
+                .set_bid_override(producer_id, input, reservation, limit);
         }
     }
 
@@ -10563,6 +10567,23 @@ fn preserved_provisioning_above(before: &[bool], after: &[bool], target: usize) 
         .all(|(was, now)| !*was || *now)
 }
 
+/// S11: cap an entrepreneurial project-input bid's posted limit at the observed input
+/// price. The reservation may be higher because the producer forecasts dear output, but
+/// the CDA fill price is the resting order's limit, so the posted limit must not become a
+/// forecast-inflated input-price anchor. With forecasts off, or before any input price
+/// exists, keep the legacy reservation-as-limit behavior.
+fn project_input_bid_limit(
+    reservation: Gold,
+    observed_input_price: Option<Gold>,
+    entrepreneurial: bool,
+) -> Gold {
+    if entrepreneurial {
+        observed_input_price.map_or(reservation, |price| reservation.min(price))
+    } else {
+        reservation
+    }
+}
+
 /// The producer's imputed reservation for ONE unit of its recipe input (S2),
 /// derived by REUSING the project-bundle appraisal rather than a scalar profit.
 ///
@@ -13332,6 +13353,34 @@ mod tests {
         );
         // No belief AND no realized price → no forecast (the decision is skipped).
         assert_eq!(forecast_output_price(&agent, WOOD, None, 10_000), None);
+    }
+
+    #[test]
+    fn project_input_bid_limit_anchors_forecast_bid_to_observed_input_price() {
+        // S11: the forecast-inflated reservation can make a producer willing to buy input,
+        // but the posted limit stays at the observed input price when one exists. That
+        // keeps a resting producer bid from setting a higher input price solely because its
+        // output forecast was optimistic.
+        assert_eq!(
+            project_input_bid_limit(Gold(9), Some(Gold(4)), true),
+            Gold(4),
+            "an optimistic reservation is capped at the observed input price"
+        );
+        assert_eq!(
+            project_input_bid_limit(Gold(3), Some(Gold(4)), true),
+            Gold(3),
+            "the cap never raises a conservative reservation"
+        );
+        assert_eq!(
+            project_input_bid_limit(Gold(9), None, true),
+            Gold(9),
+            "without an observed input price, the first discovery bid keeps its reservation"
+        );
+        assert_eq!(
+            project_input_bid_limit(Gold(9), Some(Gold(4)), false),
+            Gold(9),
+            "with forecasts off, the legacy reservation-as-limit path is byte-identical"
+        );
     }
 
     #[test]

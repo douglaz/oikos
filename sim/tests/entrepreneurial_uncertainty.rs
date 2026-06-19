@@ -284,11 +284,15 @@ fn forecasts_can_be_wrong() {
     let mut saw_material_forecast_gap = false;
     let mut saw_optimist_above_realized = false;
     let mut saw_belief_adapt = false;
+    let mut saw_realized_proceeds = false;
     for _ in 0..400u64 {
         s.econ_tick();
         for (i, snap) in belief_snapshot.iter().enumerate() {
             if !s.belief_observed_of(i, bread) {
                 continue;
+            }
+            if s.realized_proceeds_of(i) > 0 {
+                saw_realized_proceeds = true;
             }
             if s.belief_expected_of(i, bread) != *snap {
                 saw_belief_adapt = true;
@@ -324,6 +328,10 @@ fn forecasts_can_be_wrong() {
     assert!(
         saw_belief_adapt,
         "beliefs must ADAPT toward realized over time (observe() is live)"
+    );
+    assert!(
+        saw_realized_proceeds,
+        "the realized-proceeds accessor must expose the realized side of profit/loss"
     );
 }
 
