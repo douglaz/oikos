@@ -93,8 +93,8 @@ use econ::society::Society;
 use econ::timemarket::{DebtContract, DebtId, DebtState};
 
 use life::{
-    regenerate_scale, regenerate_scale_for_capital, CultureParams, KnownGoods, NeedDynamics,
-    NeedIntake, NeedState,
+    max_savings_ladder_horizon, regenerate_scale, regenerate_scale_for_capital, CultureParams,
+    KnownGoods, NeedDynamics, NeedIntake, NeedState,
 };
 
 use world::{AgentStatus, Grid, NodeId, Pos, ResourceNode, Stockpile, StockpileId, Task, World};
@@ -929,8 +929,10 @@ pub struct ChainConfig {
     /// S7.2: the labor a single mill/oven build requires (the project's
     /// `required_labor`) — the builder advances it one unit per tick from its own
     /// labor, so the tool completes this many ticks after it starts. Its opportunity
-    /// cost (`labor × operating_cost`) is charged in the build appraisal. Consulted
-    /// only when [`Self::producible_capital`] is on.
+    /// cost (`labor × operating_cost`) is charged in the legacy build appraisal.
+    /// In per-agent mode the dated receipt stream starts after this gestation, so
+    /// values at or beyond the deepest savings horizon leave no appraisable future
+    /// receipt. Consulted only when [`Self::producible_capital`] is on.
     pub tool_build_labor: u32,
     /// S7.2: the highest hunger at which a colonist will START a build — a fed colonist
     /// with surplus invests in capital, a hungry one gathers/feeds first (hunger above
@@ -4270,6 +4272,11 @@ impl Settlement {
                 !chain.per_agent_capital || chain.producible_capital,
                 "per-agent capital (S10) requires producible capital (S7.2)"
             );
+            assert!(
+                !chain.per_agent_capital
+                    || u64::from(chain.tool_build_labor) < max_savings_ladder_horizon(),
+                "per-agent capital requires tool_build_labor below the deepest savings horizon"
+            );
             ChainRuntime {
                 content: chain.content.clone(),
                 throughput: chain.throughput,
@@ -6930,6 +6937,9 @@ impl Settlement {
         let tick = self.society.tick.0;
 
         let mut built = false;
+        if per_agent {
+            self.last_capital_decisions.clear();
+        }
 
         // ---- 1. ADVANCE + COMPLETE in-flight builds (each its own labor).
         let mut finished: Vec<usize> = Vec::new();
@@ -7216,12 +7226,24 @@ impl Settlement {
         let Some(money_good) = self.current_money_good() else {
             return false;
         };
-        // The two tool candidates with their realized recipe prices, ordered by net margin
-        // DESC so each colonist prefers the more rewarding roundabout investment (Menger's
-        // imputation — a per-agent choice, not a global stage choice); ties by tool id.
-        let flour_price = self.society.realized_price(params.flour);
+        // The two tool candidates with their RECENT realized recipe prices, ordered by net
+        // margin DESC so each colonist prefers the more rewarding roundabout investment
+        // (Menger's imputation — a per-agent choice, not a global stage choice); ties by tool
+        // id. Output prices are demand signals, so stale last-ever prices are unavailable to
+        // the appraisal just as in the legacy builder.
+        let raw_flour_price = self.society.realized_price(params.flour);
         let grain_price = self.society.realized_price(params.grain);
-        let bread_price = self.society.realized_price(params.bread);
+        let raw_bread_price = self.society.realized_price(params.bread);
+        let held_mills = self.live_colonist_holder_count(params.mill_good);
+        let held_ovens = self.live_colonist_holder_count(params.oven_good);
+        let bread_signal = self.good_traded_within(params.bread, CAPITAL_BUILD_RECENCY)
+            || (held_ovens == 0 && raw_bread_price.is_some());
+        let flour_signal = self.good_traded_within(params.flour, CAPITAL_BUILD_RECENCY)
+            || (held_mills == 0 && raw_flour_price.is_some());
+        let bread_price = bread_signal.then_some(raw_bread_price).flatten();
+        let flour_price = (bread_signal && flour_signal)
+            .then_some(raw_flour_price)
+            .flatten();
         let mut tool_candidates = [
             ToolCandidate {
                 tool: params.oven_good,
@@ -12846,6 +12868,149 @@ mod tests {
             t.last_capital_decisions().is_empty(),
             "the per-agent diagnostic must be empty on the S7 heuristic path"
         );
+    }
+
+    #[test]
+    fn per_agent_capital_ignores_stale_output_prices() {
+        let mut cfg = capital_test_config();
+        {
+            let c = cfg.chain.as_mut().expect("chain");
+            c.per_agent_capital = true;
+            c.tool_build_labor = 1;
+        }
+        cfg.consumers = 20;
+        cfg.gatherers = 12;
+        let chain = cfg.chain.as_ref().expect("chain");
+        let bread = chain.content.bread();
+        let flour = chain.content.flour();
+        let grain = chain.content.grain();
+        let mill = chain.content.mill();
+        let oven = chain.content.oven();
+        let wood_qty = chain.tool_build_wood;
+        let mut s = Settlement::generate(1, &cfg);
+
+        for _ in 0..500u64 {
+            s.econ_tick();
+            if s.society.tick.0 > CAPITAL_BUILD_RECENCY + 2
+                && s.realized_price(bread).is_some()
+                && s.realized_price(flour).is_some()
+                && s.realized_price(grain).is_some()
+            {
+                break;
+            }
+        }
+        assert!(
+            s.realized_price(bread).is_some()
+                && s.realized_price(flour).is_some()
+                && s.realized_price(grain).is_some(),
+            "test setup must establish realized recipe prices"
+        );
+
+        let old_tick = s.society.tick.0.saturating_sub(CAPITAL_BUILD_RECENCY + 2);
+        for trade in &mut s.society.trades {
+            trade.tick = old_tick;
+        }
+        assert!(!s.good_traded_within(bread, CAPITAL_BUILD_RECENCY));
+        assert!(!s.good_traded_within(flour, CAPITAL_BUILD_RECENCY));
+
+        let mut eligible = 0u32;
+        for &slot in &s.live_colonist_slots {
+            let colonist = &mut s.colonists[slot];
+            if colonist.latent.is_some()
+                || !matches!(
+                    colonist.vocation,
+                    Vocation::Gatherer | Vocation::Consumer | Vocation::Unassigned
+                )
+            {
+                continue;
+            }
+            colonist.need.hunger = 0;
+            colonist.need.warmth = 0;
+            colonist.need.rest = 0;
+            let Some(agent) = s.society.agents.get_mut(colonist.id) else {
+                continue;
+            };
+            if agent.stock.get(mill) != 0 || agent.stock.get(oven) != 0 {
+                continue;
+            }
+            let held = agent.stock.get(WOOD);
+            if held < wood_qty {
+                agent.stock.add(WOOD, wood_qty - held);
+            }
+            eligible += 1;
+        }
+        assert!(eligible > 0, "test setup must leave eligible builders");
+
+        let built_before = s.tools_built();
+        s.econ_tick();
+        let decisions = s.last_capital_decisions();
+        assert!(
+            !decisions.is_empty(),
+            "test setup must exercise per-agent appraisals"
+        );
+        assert!(
+            decisions
+                .iter()
+                .all(|d| !d.accepted && d.reason == CapitalDeclineReason::NoPrices),
+            "stale output prices must not support per-agent builds: {decisions:?}"
+        );
+        assert_eq!(
+            s.tools_built(),
+            built_before,
+            "no tool may be built from stale realized output prices"
+        );
+    }
+
+    #[test]
+    fn per_agent_capital_clears_decisions_on_completion_ticks() {
+        let mut cfg = capital_test_config();
+        cfg.chain.as_mut().expect("chain").per_agent_capital = true;
+        cfg.consumers = 20;
+        cfg.gatherers = 12;
+        let mill = cfg.chain.as_ref().expect("chain").content.mill();
+        let oven = cfg.chain.as_ref().expect("chain").content.oven();
+        let mut s = Settlement::generate(1, &cfg);
+
+        let mut saw_started_build = false;
+        for _ in 0..700u64 {
+            s.econ_tick();
+            if s.active_capital_builds() > 0
+                && s.last_capital_decisions().iter().any(|d| d.accepted)
+            {
+                saw_started_build = true;
+                break;
+            }
+        }
+        assert!(
+            saw_started_build,
+            "test setup must start an in-flight per-agent build"
+        );
+
+        for _ in 0..16u64 {
+            let report = s.econ_tick();
+            if report.produced_of(mill) + report.produced_of(oven) > 0 {
+                assert!(
+                    s.last_capital_decisions().is_empty(),
+                    "a completion-only tick must not expose stale per-agent decisions"
+                );
+                return;
+            }
+        }
+        panic!("test setup did not reach a capital completion tick");
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "per-agent capital requires tool_build_labor below the deepest savings horizon"
+    )]
+    fn per_agent_capital_build_labor_must_fit_the_savings_horizon() {
+        let mut cfg = capital_test_config();
+        {
+            let c = cfg.chain.as_mut().expect("chain");
+            c.per_agent_capital = true;
+            c.tool_build_labor = u32::try_from(max_savings_ladder_horizon()).unwrap_or(u32::MAX);
+        }
+        let _ = Settlement::generate(1, &cfg);
     }
 
     #[test]

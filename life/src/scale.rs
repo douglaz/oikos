@@ -353,6 +353,11 @@ pub fn savings_ladder_depth(time_preference_bps: u16) -> u8 {
     1 + u8::try_from(extra).unwrap_or(MAX_LADDER_DEPTH - 1)
 }
 
+/// The deepest `Later(n)` horizon the gated multi-horizon savings ladder can emit.
+pub fn max_savings_ladder_horizon() -> u64 {
+    u64::from(FUTURE_HORIZON) * u64::from(MAX_LADDER_DEPTH)
+}
+
 /// The saving target (count of unit savings wants) as a function of time
 /// preference: patience (low bps) raises it from [`MIN_SAVE_UNITS`] toward
 /// [`MAX_SAVE_UNITS`]. A present-biased colonist saves little — it fills its
@@ -379,8 +384,8 @@ fn want(kind: WantKind, horizon: Horizon) -> Want {
 #[cfg(test)]
 mod tests {
     use super::{
-        regenerate_scale, regenerate_scale_for_capital, savings_ladder_depth, KnownGoods,
-        MAX_LADDER_DEPTH,
+        max_savings_ladder_horizon, regenerate_scale, regenerate_scale_for_capital,
+        savings_ladder_depth, KnownGoods, FUTURE_HORIZON, MAX_LADDER_DEPTH,
     };
     use crate::culture::CultureParams;
     use crate::need::NeedState;
@@ -438,6 +443,11 @@ mod tests {
             savings_ladder_depth(0),
             MAX_LADDER_DEPTH,
             "max patience -> full"
+        );
+        assert_eq!(
+            max_savings_ladder_horizon(),
+            u64::from(FUTURE_HORIZON) * u64::from(MAX_LADDER_DEPTH),
+            "the exported maximum horizon must match the ladder constants"
         );
         // Present-biased (8000): only the base Later(4) horizon (depth 1).
         assert_eq!(savings_ladder_depth(8_000), 1);
