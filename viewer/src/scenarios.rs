@@ -178,6 +178,12 @@ const SCENARIOS: &[Scenario] = &[
         build: build_strong_emergence,
     },
     Scenario {
+        name: "originary",
+        description:
+            "S10: ORIGINARY INTEREST — the strong-bar co-emergent colony where capital forms by a PER-AGENT intertemporal choice (per_agent_capital on). Money still EMERGES (SALT promotes from real saleability), then each eligible colonist decides ON ITS OWN VALUE SCALE whether to commit present WOOD + forgone leisure to build a durable mill/oven whose recipe-margin receipt stream provisions one of its OWN future-money savings wants — no global stage choice, no first-eligible-builder assignment. Capital formation tracks each colonist's time preference (the savings ladder deepens with patience), with NO cardinal discount: patient colonists invest in the roundabout tooled chain, present-biased ones do not. Compare tool counts to a present-biased variant.",
+        build: build_originary,
+    },
+    Scenario {
         name: "millisats-1x",
         description:
             "EXPERIMENT: frontier at coarse (x1) money precision — the unit-starved baseline that freezes (~320 money units)",
@@ -377,6 +383,10 @@ fn build_coemergent() -> SettlementConfig {
 
 fn build_strong_emergence() -> SettlementConfig {
     SettlementConfig::frontier_coemergent_strong()
+}
+
+fn build_originary() -> SettlementConfig {
+    SettlementConfig::frontier_coemergent_strong_originary()
 }
 
 fn build_millisats_1x() -> SettlementConfig {

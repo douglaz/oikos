@@ -1539,6 +1539,56 @@ money, is given); weak one-target indirect breadth; lean hearth provisioning; co
 the scalar S7 capital heuristic. Money emergence is now non-circular; several *other* mechanisms remain
 parameter-supported.
 
+## Status: S10 (per-agent intertemporal capital choice — originary interest) — complete
+
+S9 left the **capital** decision as the least authentic major mechanism: S7's build was a
+*settlement-level* heuristic — one global stage choice by capacity bottleneck, a scalar `margin ×
+capital_payback_cycles` test, and a first-eligible-fed-builder assignment. That is "build if the math
+beats cost", not Böhm-Bawerk/Mises capital: an *individual* actor choosing to sacrifice present
+goods/labor for a future, more-roundabout return, on its own value scale, with its own time preference.
+S10 moves the decision from the planner into the colonist. Sliced per `docs/impl-originary-interest.md`:
+
+- [x] **S10.1 — the per-agent ordinal build appraisal** (`appraise_capital_tool_bundle_for_money`,
+      `sim/src/settlement.rs`), behind a default-off `ChainConfig::per_agent_capital`. The PRESENT side
+      is the WOOD removed from the builder's own stock + the labor sacrifice as forgone Leisure (the
+      build displaces the agent's `Leisure` want at its scale rank — not S7's scalar `operating_cost ×
+      tool_build_labor`); the FUTURE side is the tool's recipe net margin as a **generalized dated
+      receivable stream**; ACCEPTANCE (the gate) is that the altered temporal endowment newly provisions
+      one of the agent's own future-money savings wants while preserving every higher-ranked want (the
+      `bundle_accepts_due`/`preserved_above_target` test generalized) AND outranks the displaced leisure.
+      HORIZON: a **multi-horizon savings ladder** (`Later(4), Later(8), …`, depth set by the agent's own
+      `time_preference_bps` — `life::savings_ladder_depth`), gated to the per-agent path, so a tool's
+      gestation-delayed receipts provision the *deeper* wants via the **unchanged** `future_capacity_due_by`
+      due-by logic. The S7 Part-2 planner (stage choice + single-in-flight gate + first-eligible
+      assignment) is replaced behind the gate; the per-builder substrate
+      (`start_project`/`advance_project`/`complete_project_if_ready`) is reused unchanged. A per-tick
+      decision diagnostic (`Settlement::last_capital_decisions`) records each candidate's accept/reject,
+      target savings want rank, and decline reason.
+- [x] **S10.2 — the originary-interest response (the falsifiable core)**, tested two ways:
+      (a) a **microtest** — two otherwise-identical colonists differing ONLY in `time_preference_bps`:
+      the patient one (depth ≥ 2) ACCEPTS the build, the present-biased one (depth 1) REJECTS it
+      (`NoFutureProvision` — the gestation-delayed receipts reach no savings want), strict and
+      deterministic; (b) a **live aggregate** — a present-biased colony forms materially-less / non-more
+      capital than a patient one over the run.
+- [x] **S10.3 — the `originary` scenario** (`frontier_coemergent_strong_originary`, derived from
+      `frontier_coemergent_strong` with `per_agent_capital` on). Live (seed 1, pop ~18): money still
+      EMERGES (SALT promotes at **tick 479**, identically to the strong-bar base — the savings ladder
+      does not gate promotion), then **18 tools are built by individuals on their own scales** (the
+      builders become Millers/Bakers), bread sustains to t1600, conserved every tick.
+- [x] acceptance suite (`sim/tests/originary_interest.rs`: seven named tests). All additive/gated: with
+      `per_agent_capital` off the S5–S9 scenarios + the six econ + the g5a/g5b/coemergence emergence
+      goldens are byte-identical (`capital_payback_cycles` is digested only in the legacy path; the gate
+      is serialized in the per-agent path — `canonical_bytes_include_per_agent_capital`).
+
+**Does time preference actually drive capital formation? Yes.** Holding the SALT-emergence machinery
+fixed, a uniformly patient colony builds **22 tools** while a uniformly present-biased one builds **0**
+— and money emerges (tick 479) in *both*, so the difference is the capital response to time preference,
+not a money-emergence artifact. The decision genuinely reads the ordinal scale: originary interest is
+**emergent** from each colonist's own savings ladder, with no cardinal discount rate anywhere (the
+engine has none by design). The honest scope: `capital_payback_cycles` is now inert in the per-agent
+mode; the WHICH-tool choice still orders the two candidates by realized margin (a per-agent profit
+preference, not a planner stage choice); the rest of the disclosed S9 artifacts are unchanged.
+
 ## Build and test
 
 ```bash
@@ -1569,6 +1619,8 @@ cargo run -p viewer -- run endogenous --ticks 1600           # endogenous specia
 cargo run -p viewer -- run scaling --ticks 1600              # S6: productive re-entry provisions the stranded tail while preserving the endogenous chain
 cargo run -p viewer -- run capital --ticks 1600              # S7: colonists build mills/ovens under unmet demand — more tools + higher bread than scaling
 cargo run -p viewer -- run coemergent --ticks 1600          # S8: money + chain + capital CO-EMERGE from a no-money barter start (era goes barter → money, then bread sustains)
+cargo run -p viewer -- run strong-emergence --ticks 1600    # S9: strong-bar emergence — money emerges from real indirect-exchange breadth (no configured medium want)
+cargo run -p viewer -- run originary --ticks 1600           # S10: originary interest — capital forms by a PER-AGENT intertemporal choice; patient colonists build, present-biased ones do not
 #                                                              # G6a: the frontier/barter-camp dashboards show an era
 #                                                              #      banner + per-tick era column (forager → … → capital)
 cargo run -p viewer -- run research --ticks 60                # G6b: Knowledge accrues, tier 2 unlocks, pastry is produced
