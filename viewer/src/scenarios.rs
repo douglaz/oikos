@@ -168,7 +168,7 @@ const SCENARIOS: &[Scenario] = &[
     Scenario {
         name: "coemergent",
         description:
-            "S8: money co-emergence — money, the grain→flour→bread division of labor, and capital all CO-EMERGE in one run from a NO-money barter start (no designated GOLD, every gold endowment zero). SALT promotes by saleability from real indirect exchange; then the S5 sustain stack and the S7 capital phase run on the EMERGED unit. Watch the era go barter→money (the `*` promotion tick), then bread sustain and a tool or two build on emerged money. The emergence-probe panel reports per-candidate acceptances, producer working capital, and the bread-for-SALT leg.",
+            "S8: money co-emergence — money, the grain→flour→bread division of labor, and capital all CO-EMERGE in one run from a NO-money barter start (no designated GOLD, every gold endowment zero). SALT promotes from real barter acceptances under a configured universal SALT demand; then the S5 sustain stack and the S7 capital phase run on the EMERGED unit. Watch the era go barter→money (the `*` promotion tick), then bread sustain and a tool or two build on emerged money. (Narrow bar: removes designated gold; NOT yet fully authentic indirect-exchange money — the colony is semi-hungry and parameter-supported; healthy provisioning-at-scale is S9.) The emergence-probe panel reports per-candidate acceptances, producer working capital, and the bread-for-SALT leg.",
         build: build_coemergent,
     },
     Scenario {

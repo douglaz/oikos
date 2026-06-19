@@ -477,13 +477,18 @@ fn specialization_sustains_on_emerged_money() {
     }
     // The money it sustained on is the EMERGED SALT, not designated gold.
     assert_eq!(s.current_money_good(), Some(SALT));
+    // Require a real production RATE, not merely non-zero (a trickle): seed 1 makes
+    // ~450 bread in each 100-tick window, so a floor of 100 proves a sustained chain
+    // with comfortable headroom rather than just "not collapsed".
     assert!(
-        made_700_800 > 0,
-        "the chain should still produce bread approaching tick 800, got {made_700_800}"
+        made_700_800 >= 100,
+        "the chain should still produce bread at a real rate approaching tick 800, \
+         got {made_700_800}"
     );
     assert!(
-        made_1500_1600 > 0,
-        "the chain should still produce bread approaching tick 1600, got {made_1500_1600}"
+        made_1500_1600 >= 100,
+        "the chain should still produce bread at a real rate approaching tick 1600, \
+         got {made_1500_1600}"
     );
 }
 
