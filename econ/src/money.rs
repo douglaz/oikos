@@ -95,6 +95,29 @@ pub struct MengerianConfig {
     pub min_counterpart_goods: u16,
     pub stability_ticks: u32,
     pub indirect_min_acceptance_share_bps: u16,
+    /// S9 strong-bar gate: the minimum INDIRECT acceptances (a good taken
+    /// instrumentally, `IndirectFor`, to re-trade) a candidate must accrue before it
+    /// can promote. `0` (default) is inert — a pre-S9 config promotes on total
+    /// acceptances/share/breadth alone, exactly as before. The strong scenario sets
+    /// it so a good monetizes only after REAL indirect exchange, not direct-want
+    /// churn.
+    pub min_indirect_acceptances: u32,
+    /// S9 strong-bar gate: the minimum DISTINCT agents that must have accepted the
+    /// candidate indirectly — breadth of who re-trades it, not just how often (a raw
+    /// count is gameable by a few agents churning one pair). `0` (default) inert.
+    pub min_indirect_acceptor_agents: u16,
+    /// S9 strong-bar gate: the minimum DISTINCT final target goods the indirect
+    /// acceptors were pursuing — proof the good is taken as a GENERAL medium toward
+    /// many ends, not one repeated purpose. `0` (default) inert.
+    pub min_indirect_target_goods: u16,
+    /// S9 control knob: whether agents may post INDIRECT barter offers for the
+    /// provisional leader at all. `true` (default) keeps the existing
+    /// indirect-acceptance machinery on. A gated `false` is the clean
+    /// no-indirect-acceptance control — the leader still leads and still trades
+    /// directly, but no indirect volume can accrue, so under a positive indirect gate
+    /// it cannot monetize. Does NOT lower the leader floor (that would disable
+    /// leadership itself).
+    pub allow_indirect_acceptance: bool,
 }
 
 impl Default for MengerianConfig {
@@ -108,6 +131,10 @@ impl Default for MengerianConfig {
             min_counterpart_goods: 2,
             stability_ticks: 2,
             indirect_min_acceptance_share_bps: 3_000,
+            min_indirect_acceptances: 0,
+            min_indirect_acceptor_agents: 0,
+            min_indirect_target_goods: 0,
+            allow_indirect_acceptance: true,
         }
     }
 }

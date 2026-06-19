@@ -1,7 +1,7 @@
 //! Saleability tracking for Mengerian commodity-money emergence.
 
 use crate::agent::AgentId;
-use crate::barter::BarterTrade;
+use crate::barter::{BarterReason, BarterTrade};
 use crate::good::GoodId;
 use crate::money::MengerianConfig;
 
@@ -53,12 +53,21 @@ pub struct SaleabilityLeader {
 /// capture the full future-behaviour identity — a later acceptance only advances
 /// the eligibility counts when its acceptor/counterpart is new, so two trackers
 /// with equal counts but different members can still diverge on a future tick.
+///
+/// The `indirect_*` members are the S9 strong-bar surface: the subset of those
+/// acceptances where the acceptor took this good INDIRECTLY (`IndirectFor`, i.e.
+/// instrumentally, to re-trade it for an end other than the good itself), with the
+/// distinct indirect acceptor agents and distinct indirect target goods behind
+/// them. They are what the breadth gate reads, so they ride in the digest too.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CandidateSaleability<'a> {
     pub good: GoodId,
     pub acceptances: u64,
     pub acceptor_agents: &'a [AgentId],
     pub counterpart_goods: &'a [GoodId],
+    pub indirect_acceptances: u64,
+    pub indirect_acceptor_agents: &'a [AgentId],
+    pub indirect_target_goods: &'a [GoodId],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -67,6 +76,16 @@ struct CandidateStats {
     acceptances: u64,
     acceptor_agents: Vec<AgentId>,
     counterpart_goods: Vec<GoodId>,
+    /// S9: of `acceptances`, the count taken INDIRECTLY (`IndirectFor`) — the
+    /// real indirect-exchange volume the strong-bar gate requires.
+    indirect_acceptances: u64,
+    /// S9: the DISTINCT agents that accepted this good indirectly (breadth of who
+    /// re-trades it, not just how often).
+    indirect_acceptor_agents: Vec<AgentId>,
+    /// S9: the DISTINCT final target goods those indirect acceptors were pursuing —
+    /// the ends this good was used to reach. Breadth here proves it is accepted as a
+    /// general medium, not churned for one purpose.
+    indirect_target_goods: Vec<GoodId>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -99,6 +118,9 @@ impl SaleabilityTracker {
                     acceptances: 0,
                     acceptor_agents: Vec::new(),
                     counterpart_goods: Vec::new(),
+                    indirect_acceptances: 0,
+                    indirect_acceptor_agents: Vec::new(),
+                    indirect_target_goods: Vec::new(),
                 })
                 .collect(),
             total_acceptances: 0,
@@ -118,13 +140,21 @@ impl SaleabilityTracker {
             acceptances: stats.acceptances,
             acceptor_agents: &stats.acceptor_agents,
             counterpart_goods: &stats.counterpart_goods,
+            indirect_acceptances: stats.indirect_acceptances,
+            indirect_acceptor_agents: &stats.indirect_acceptor_agents,
+            indirect_target_goods: &stats.indirect_target_goods,
         })
     }
 
     pub fn observe_trade(&mut self, trade: &BarterTrade) {
         self.total_acceptances = self.total_acceptances.saturating_add(2);
-        self.observe_acceptance(trade.b_gives, trade.a, trade.a_gives);
-        self.observe_acceptance(trade.a_gives, trade.b, trade.b_gives);
+        // Each side accepts the good the OTHER gave, for that side's OWN reason
+        // (`a` receives `b_gives` under `a_reason`; `b` receives `a_gives` under
+        // `b_reason`). Pairing the accepted good with the acceptor's reason is what
+        // lets the tracker tell a DIRECT acceptance (the good is wanted for itself)
+        // from an INDIRECT one (the good is taken instrumentally to re-trade).
+        self.observe_acceptance(trade.b_gives, trade.a, trade.a_gives, trade.a_reason);
+        self.observe_acceptance(trade.a_gives, trade.b, trade.b_gives, trade.b_reason);
     }
 
     pub fn acceptance_share_bps(&self, good: GoodId) -> Option<u16> {
@@ -183,7 +213,13 @@ impl SaleabilityTracker {
         Some(leader.good)
     }
 
-    fn observe_acceptance(&mut self, accepted: GoodId, acceptor: AgentId, counterpart: GoodId) {
+    fn observe_acceptance(
+        &mut self,
+        accepted: GoodId,
+        acceptor: AgentId,
+        counterpart: GoodId,
+        reason: BarterReason,
+    ) {
         let Some(stats) = self
             .candidates
             .iter_mut()
@@ -194,6 +230,14 @@ impl SaleabilityTracker {
         stats.acceptances = stats.acceptances.saturating_add(1);
         insert_unique_sorted(&mut stats.acceptor_agents, acceptor);
         insert_unique_sorted(&mut stats.counterpart_goods, counterpart);
+        // S9: an INDIRECT acceptance — the acceptor took `accepted` not for itself
+        // but as an instrument to reach `target`. Record the volume plus the
+        // DISTINCT acceptor and target breadth the strong-bar gate reads.
+        if let BarterReason::IndirectFor { target } = reason {
+            stats.indirect_acceptances = stats.indirect_acceptances.saturating_add(1);
+            insert_unique_sorted(&mut stats.indirect_acceptor_agents, acceptor);
+            insert_unique_sorted(&mut stats.indirect_target_goods, target);
+        }
     }
 
     fn stats(&self, good: GoodId) -> Option<&CandidateStats> {
@@ -214,6 +258,15 @@ impl SaleabilityTracker {
             && share >= config.promotion_threshold_bps
             && len_to_u16(stats.acceptor_agents.len()) >= config.min_acceptor_agents
             && len_to_u16(stats.counterpart_goods.len()) >= config.min_counterpart_goods
+            // S9 strong-bar gate: real INDIRECT-exchange breadth — enough indirect
+            // acceptances, by enough DISTINCT indirect acceptors, for enough DISTINCT
+            // targets. All three default to 0 (inert), so a pre-S9 config promotes
+            // exactly as before; the strong scenario sets them so a good monetizes
+            // only after genuine indirect use, not direct-want churn alone.
+            && stats.indirect_acceptances >= u64::from(config.min_indirect_acceptances)
+            && len_to_u16(stats.indirect_acceptor_agents.len())
+                >= config.min_indirect_acceptor_agents
+            && len_to_u16(stats.indirect_target_goods.len()) >= config.min_indirect_target_goods
     }
 
     pub fn leader_shares(&self) -> Option<SaleabilityLeader> {
@@ -442,6 +495,10 @@ mod tests {
             min_counterpart_goods: 2,
             stability_ticks: 1,
             indirect_min_acceptance_share_bps: 3_000,
+            min_indirect_acceptances: 0,
+            min_indirect_acceptor_agents: 0,
+            min_indirect_target_goods: 0,
+            allow_indirect_acceptance: true,
         });
 
         emergence.observe_trade(&trade(1, 2, FOOD, SALT));
@@ -462,6 +519,10 @@ mod tests {
             min_counterpart_goods: 0,
             stability_ticks: 1,
             indirect_min_acceptance_share_bps: 0,
+            min_indirect_acceptances: 0,
+            min_indirect_acceptor_agents: 0,
+            min_indirect_target_goods: 0,
+            allow_indirect_acceptance: true,
         };
         let mut tracker = SaleabilityTracker::new(config.candidate_goods.clone());
 
@@ -485,6 +546,10 @@ mod tests {
             min_counterpart_goods: 1,
             stability_ticks: 2,
             indirect_min_acceptance_share_bps: 1_000,
+            min_indirect_acceptances: 0,
+            min_indirect_acceptor_agents: 0,
+            min_indirect_target_goods: 0,
+            allow_indirect_acceptance: true,
         });
 
         emergence.observe_trade(&trade(1, 2, ORE, SALT));
@@ -507,6 +572,10 @@ mod tests {
             min_counterpart_goods: 1,
             stability_ticks: 2,
             indirect_min_acceptance_share_bps: 1_000,
+            min_indirect_acceptances: 0,
+            min_indirect_acceptor_agents: 0,
+            min_indirect_target_goods: 0,
+            allow_indirect_acceptance: true,
         });
 
         emergence.observe_trade(&trade(1, 2, ORE, SALT));
@@ -556,6 +625,10 @@ mod tests {
             min_counterpart_goods: 1,
             stability_ticks: 2,
             indirect_min_acceptance_share_bps: 1_000,
+            min_indirect_acceptances: 0,
+            min_indirect_acceptor_agents: 0,
+            min_indirect_target_goods: 0,
+            allow_indirect_acceptance: true,
         });
 
         // No barter yet: nothing latched.
@@ -573,6 +646,128 @@ mod tests {
         assert_eq!(emergence.end_tick(2), Some(SALT));
         assert_eq!(emergence.stable_winner(), Some(SALT));
         assert_eq!(emergence.stable_winner_ticks(), 2);
+    }
+
+    #[test]
+    fn indirect_acceptance_breadth_is_recorded() {
+        // S9: a side's OWN reason is paired with the good it accepted. Two distinct
+        // agents take SALT indirectly to reach two distinct ends; the tracker records
+        // the indirect volume plus the distinct indirect acceptor/target breadth,
+        // separate from (and bounded by) the total acceptances.
+        let config = config(&[SALT, FOOD]);
+        let mut tracker = SaleabilityTracker::new(config.candidate_goods.clone());
+
+        // Agent 1 accepts SALT (b_gives) indirectly for CLOTH, giving WOOD.
+        tracker.observe_trade(&indirect_trade(1, 2, WOOD, SALT, CLOTH));
+        // Agent 3 accepts SALT indirectly for ORE, giving FOOD.
+        tracker.observe_trade(&indirect_trade(3, 4, FOOD, SALT, ORE));
+        // A plain DIRECT SALT acceptance — counted in `acceptances` but NOT indirect.
+        tracker.observe_trade(&trade(5, 6, WOOD, SALT));
+
+        let salt = tracker
+            .candidate_saleability()
+            .find(|c| c.good == SALT)
+            .expect("SALT is a candidate");
+        assert_eq!(
+            salt.acceptances, 3,
+            "all three SALT acceptances are counted"
+        );
+        assert_eq!(
+            salt.indirect_acceptances, 2,
+            "only the two IndirectFor acceptances are indirect"
+        );
+        assert_eq!(
+            salt.indirect_acceptor_agents,
+            &[AgentId(1), AgentId(3)],
+            "the distinct indirect acceptors are recorded sorted"
+        );
+        assert_eq!(
+            salt.indirect_target_goods,
+            &[CLOTH, ORE],
+            "the distinct indirect target ends are recorded sorted by id"
+        );
+    }
+
+    #[test]
+    fn breadth_gate_withholds_promotion_until_indirect_breadth_accrues() {
+        // S9: with the indirect-breadth gate set, direct-want churn — even past the
+        // total/share/breadth floors — does NOT promote; promotion fires only once
+        // enough indirect acceptances, by enough distinct indirect acceptors, for
+        // enough distinct targets, have accrued.
+        let mut emergence = MengerianEmergence::new(MengerianConfig {
+            candidate_goods: vec![SALT, FOOD],
+            min_total_acceptances: 2,
+            promotion_threshold_bps: 1,
+            lead_margin_bps: 1,
+            min_acceptor_agents: 1,
+            min_counterpart_goods: 1,
+            stability_ticks: 1,
+            indirect_min_acceptance_share_bps: 1,
+            min_indirect_acceptances: 2,
+            min_indirect_acceptor_agents: 2,
+            min_indirect_target_goods: 2,
+            allow_indirect_acceptance: true,
+        });
+
+        // Plenty of DIRECT SALT acceptances — SALT clearly leads, but the indirect
+        // gate is unmet, so it must not promote.
+        emergence.observe_trade(&trade(1, 2, WOOD, SALT));
+        emergence.observe_trade(&trade(3, 4, ORE, SALT));
+        emergence.observe_trade(&trade(5, 6, CLOTH, SALT));
+        assert_eq!(emergence.end_tick(1), None, "direct churn must not promote");
+        assert_eq!(emergence.current_money_good(), None);
+
+        // One indirect acceptance, one acceptor, one target — still short of the gate.
+        emergence.observe_trade(&indirect_trade(7, 8, WOOD, SALT, FOOD));
+        assert_eq!(
+            emergence.end_tick(2),
+            None,
+            "one indirect end is not breadth"
+        );
+
+        // A second distinct acceptor for a second distinct target clears all three
+        // indirect dimensions; SALT promotes.
+        emergence.observe_trade(&indirect_trade(9, 10, ORE, SALT, CLOTH));
+        assert_eq!(emergence.end_tick(3), Some(SALT));
+        assert_eq!(emergence.current_money_good(), Some(SALT));
+    }
+
+    #[test]
+    fn repeated_indirect_pair_does_not_satisfy_acceptor_breadth() {
+        // S9 (Codex): a raw indirect count is gameable by one agent churning the same
+        // pair. The DISTINCT-acceptor floor rules it out — many indirect acceptances
+        // from a SINGLE acceptor never satisfy `min_indirect_acceptor_agents`.
+        let mut emergence = MengerianEmergence::new(MengerianConfig {
+            candidate_goods: vec![SALT, FOOD],
+            min_total_acceptances: 2,
+            promotion_threshold_bps: 1,
+            lead_margin_bps: 1,
+            min_acceptor_agents: 1,
+            min_counterpart_goods: 1,
+            stability_ticks: 1,
+            indirect_min_acceptance_share_bps: 1,
+            min_indirect_acceptances: 2,
+            min_indirect_acceptor_agents: 2,
+            min_indirect_target_goods: 1,
+            allow_indirect_acceptance: true,
+        });
+
+        // Agent 1 takes SALT indirectly many times against agent 2 — high volume, one
+        // acceptor. The acceptances/target dimensions clear, but acceptor breadth does
+        // not, so no promotion.
+        for tick in 1..=4 {
+            emergence.observe_trade(&indirect_trade(1, 2, WOOD, SALT, FOOD));
+            assert_eq!(
+                emergence.end_tick(tick),
+                None,
+                "a single-acceptor churn must never satisfy the breadth gate"
+            );
+        }
+        assert_eq!(emergence.current_money_good(), None);
+
+        // A second distinct acceptor finally clears the acceptor-breadth floor.
+        emergence.observe_trade(&indirect_trade(3, 4, ORE, SALT, FOOD));
+        assert_eq!(emergence.end_tick(5), Some(SALT));
     }
 
     #[test]
@@ -619,6 +814,10 @@ mod tests {
             min_counterpart_goods: 1,
             stability_ticks: 1,
             indirect_min_acceptance_share_bps: 1,
+            min_indirect_acceptances: 0,
+            min_indirect_acceptor_agents: 0,
+            min_indirect_target_goods: 0,
+            allow_indirect_acceptance: true,
         }
     }
 
@@ -631,6 +830,28 @@ mod tests {
             b_gives,
             qty: 1,
             a_reason: BarterReason::DirectWant,
+            b_reason: BarterReason::DirectWant,
+        }
+    }
+
+    /// A trade where `a` accepts `b_gives` INDIRECTLY (to reach `a_target`) and `b`
+    /// accepts `a_gives` directly — the shape `generate_indirect_barter_offers`
+    /// clears once a provisional leader exists.
+    fn indirect_trade(
+        a: u32,
+        b: u32,
+        a_gives: GoodId,
+        b_gives: GoodId,
+        a_target: GoodId,
+    ) -> BarterTrade {
+        BarterTrade {
+            tick: 0,
+            a: AgentId(u64::from(a)),
+            b: AgentId(u64::from(b)),
+            a_gives,
+            b_gives,
+            qty: 1,
+            a_reason: BarterReason::IndirectFor { target: a_target },
             b_reason: BarterReason::DirectWant,
         }
     }

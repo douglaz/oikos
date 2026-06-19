@@ -1164,6 +1164,10 @@ fn menger_salt_money() -> MarketScenario {
             min_counterpart_goods: 2,
             stability_ticks: 2,
             indirect_min_acceptance_share_bps: 3_000,
+            min_indirect_acceptances: 0,
+            min_indirect_acceptor_agents: 0,
+            min_indirect_target_goods: 0,
+            allow_indirect_acceptance: true,
         }),
     }
 }
@@ -1269,6 +1273,10 @@ fn menger_gold_money() -> MarketScenario {
             min_counterpart_goods: 2,
             stability_ticks: 2,
             indirect_min_acceptance_share_bps: 3_000,
+            min_indirect_acceptances: 0,
+            min_indirect_acceptor_agents: 0,
+            min_indirect_target_goods: 0,
+            allow_indirect_acceptance: true,
         }),
     }
 }

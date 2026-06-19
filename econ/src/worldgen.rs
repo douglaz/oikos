@@ -577,6 +577,13 @@ fn build_scenario(
         min_counterpart_goods: tuning.min_counterpart_goods.unwrap_or(2),
         stability_ticks: tuning.stability_ticks.unwrap_or(2),
         indirect_min_acceptance_share_bps: tuning.indirect_min_share_bps.unwrap_or(3_000),
+        // S9 strong-bar gate stays inert in the generated-world envelope (no
+        // indirect-volume requirement, indirect acceptance on), so the calibration
+        // floors are unchanged.
+        min_indirect_acceptances: 0,
+        min_indirect_acceptor_agents: 0,
+        min_indirect_target_goods: 0,
+        allow_indirect_acceptance: true,
     };
 
     MarketScenario {

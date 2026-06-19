@@ -2091,6 +2091,14 @@ impl Society {
         let Some(leader) = provisional_leader else {
             return;
         };
+        // S9 control: with indirect acceptance gated off, no agent posts an
+        // `IndirectFor` offer — the leader still leads and still trades DIRECTLY, but
+        // no indirect volume can accrue. Under a positive indirect-breadth gate this
+        // is the clean no-indirect-acceptance control (it cannot monetize), without
+        // lowering the leader floor (which would disable leadership itself).
+        if !self.allow_indirect_acceptance() {
+            return;
+        }
         for order_pos in 0..self.agent_order.len() {
             let agent_index = self.agent_order[order_pos];
             let agent_id = self.agents[agent_index].id;
@@ -2221,6 +2229,16 @@ impl Society {
         match &self.money {
             MarketMoneyState::Emergent(emergence) => emergence.provisional_leader(),
             MarketMoneyState::Designated(_) => None,
+        }
+    }
+
+    /// S9: whether the emergence envelope permits posting indirect barter offers.
+    /// Defaults to `true` (the existing behaviour); a designated-money society has
+    /// no barter phase, so the answer is moot but defaults `true`.
+    fn allow_indirect_acceptance(&self) -> bool {
+        match &self.money {
+            MarketMoneyState::Emergent(emergence) => emergence.config().allow_indirect_acceptance,
+            MarketMoneyState::Designated(_) => true,
         }
     }
 
@@ -8010,6 +8028,10 @@ mod tests {
                 min_counterpart_goods: 2,
                 stability_ticks: 2,
                 indirect_min_acceptance_share_bps: 3_000,
+                min_indirect_acceptances: 0,
+                min_indirect_acceptor_agents: 0,
+                min_indirect_target_goods: 0,
+                allow_indirect_acceptance: true,
             }),
         });
         assert!(society.barter_book.post_offer(
@@ -8076,6 +8098,10 @@ mod tests {
                 min_counterpart_goods: 2,
                 stability_ticks: 2,
                 indirect_min_acceptance_share_bps: 3_000,
+                min_indirect_acceptances: 0,
+                min_indirect_acceptor_agents: 0,
+                min_indirect_target_goods: 0,
+                allow_indirect_acceptance: true,
             }),
         });
         assert!(society.barter_book.post_offer(

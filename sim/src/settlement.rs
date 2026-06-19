@@ -3012,6 +3012,12 @@ pub struct CandidateAcceptances {
     pub acceptances: u64,
     pub acceptor_agents: usize,
     pub counterpart_goods: usize,
+    /// S9: of `acceptances`, the count taken INDIRECTLY (`IndirectFor`), plus the
+    /// distinct indirect acceptor agents and distinct indirect target goods behind
+    /// them — the real indirect-exchange breadth the strong-bar gate reads.
+    pub indirect_acceptances: u64,
+    pub indirect_acceptor_agents: usize,
+    pub indirect_target_goods: usize,
 }
 
 /// S8.0 emergence probe: a chain producer's role for the working-capital trace —
@@ -8231,6 +8237,9 @@ impl Settlement {
                 acceptances: c.acceptances,
                 acceptor_agents: c.acceptor_agents.len(),
                 counterpart_goods: c.counterpart_goods.len(),
+                indirect_acceptances: c.indirect_acceptances,
+                indirect_acceptor_agents: c.indirect_acceptor_agents.len(),
+                indirect_target_goods: c.indirect_target_goods.len(),
             })
             .collect()
     }
@@ -10294,6 +10303,19 @@ fn push_emergence_runtime_bytes(out: &mut Vec<u8>, emergence: &MengerianEmergenc
         for good in candidate.counterpart_goods {
             out.extend_from_slice(&good.0.to_le_bytes());
         }
+        // S9: the indirect-exchange breadth (volume + distinct indirect acceptors +
+        // distinct indirect targets) the strong-bar gate reads. A future acceptance
+        // only advances the gate when its acceptor/target is new, so the member sets
+        // — not just their counts — are part of the future-behaviour identity.
+        out.extend_from_slice(&candidate.indirect_acceptances.to_le_bytes());
+        out.extend_from_slice(&(candidate.indirect_acceptor_agents.len() as u32).to_le_bytes());
+        for agent in candidate.indirect_acceptor_agents {
+            out.extend_from_slice(&agent.0.to_le_bytes());
+        }
+        out.extend_from_slice(&(candidate.indirect_target_goods.len() as u32).to_le_bytes());
+        for good in candidate.indirect_target_goods {
+            out.extend_from_slice(&good.0.to_le_bytes());
+        }
     }
 }
 
@@ -10309,6 +10331,14 @@ fn push_mengerian_config_bytes(out: &mut Vec<u8>, menger: &MengerianConfig) {
     out.extend_from_slice(&menger.min_counterpart_goods.to_le_bytes());
     out.extend_from_slice(&menger.stability_ticks.to_le_bytes());
     out.extend_from_slice(&menger.indirect_min_acceptance_share_bps.to_le_bytes());
+    // S9 strong-bar gate: these steer the future promotion decision (they withhold
+    // promotion until indirect breadth accrues / disable indirect acceptance), so
+    // they are part of the future-behaviour identity. Appended last so every pre-S9
+    // Mengerian config's prefix is unchanged.
+    out.extend_from_slice(&menger.min_indirect_acceptances.to_le_bytes());
+    out.extend_from_slice(&menger.min_indirect_acceptor_agents.to_le_bytes());
+    out.extend_from_slice(&menger.min_indirect_target_goods.to_le_bytes());
+    out.push(u8::from(menger.allow_indirect_acceptance));
 }
 
 fn push_demography_config_bytes(out: &mut Vec<u8>, demo: &DemographyConfig) {
@@ -12461,6 +12491,91 @@ mod tests {
                 .windows(expected.len())
                 .any(|window| window == expected.as_slice()),
             "the accumulated emergence runtime is missing from the canonical bytes"
+        );
+    }
+
+    /// A barter config with the heterogeneous SALT direct use + the indirect-breadth
+    /// gate armed (the strong-bar shape), derived inline from `frontier_coemergent`
+    /// so the S9.2 digest regressions do not depend on the S9.3 builder.
+    #[cfg(test)]
+    fn strong_bar_barter_config() -> SettlementConfig {
+        let mut cfg = SettlementConfig::frontier_coemergent();
+        let barter = cfg.barter.as_mut().expect("barter overlay");
+        barter.medium_want_qty = 0;
+        barter.salt_direct_use_qty = 1;
+        barter.salt_direct_use_period = 8;
+        barter.menger.min_indirect_acceptances = 12;
+        barter.menger.min_indirect_acceptor_agents = 6;
+        barter.menger.min_indirect_target_goods = 1;
+        cfg
+    }
+
+    #[test]
+    fn canonical_bytes_include_indirect_breadth_gate() {
+        // S9: each strong-bar gate knob steers the future promotion decision, so all
+        // four ride in the determinism identity before the first tick.
+        let base = SettlementConfig::frontier_coemergent();
+
+        let knobs: [fn(&mut MengerianConfig); 4] = [
+            |m| m.min_indirect_acceptances += 1,
+            |m| m.min_indirect_acceptor_agents += 1,
+            |m| m.min_indirect_target_goods += 1,
+            |m| m.allow_indirect_acceptance = false,
+        ];
+        let base_bytes = Settlement::generate(7, &base).canonical_bytes();
+        for knob in knobs {
+            let mut cfg = SettlementConfig::frontier_coemergent();
+            knob(&mut cfg.barter.as_mut().expect("barter overlay").menger);
+            assert_ne!(
+                base_bytes,
+                Settlement::generate(7, &cfg).canonical_bytes(),
+                "an indirect-breadth gate knob must be part of the Mengerian config identity"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_bytes_include_indirect_acceptance_runtime() {
+        // S9: a strong-bar run accumulates per-candidate INDIRECT breadth (the
+        // distinct indirect acceptors/targets behind the gate) that steers the future
+        // promotion tick. Reconstruct the runtime bytes from econ's accessors and
+        // assert they appear verbatim in the digest input.
+        let mut s = Settlement::generate(1, &strong_bar_barter_config());
+        // Advance into barter far enough that indirect acceptance has accrued but
+        // stop before promotion so the tracker is still live.
+        for _ in 0..120 {
+            if !s.in_barter_phase() {
+                break;
+            }
+            s.econ_tick();
+        }
+        assert!(
+            s.in_barter_phase(),
+            "the run must still be bartering so the tracker is live"
+        );
+        let emergence = s
+            .society
+            .emergence()
+            .expect("a strong-bar run uses econ's emergence");
+        let salt_indirect = emergence
+            .tracker()
+            .candidate_saleability()
+            .find(|c| c.good == SALT)
+            .map(|c| c.indirect_acceptances)
+            .unwrap_or(0);
+        assert!(
+            salt_indirect > 0,
+            "the test is vacuous — no indirect acceptance was observed"
+        );
+
+        let mut expected = Vec::new();
+        push_emergence_runtime_bytes(&mut expected, emergence);
+        let bytes = s.canonical_bytes();
+        assert!(
+            bytes
+                .windows(expected.len())
+                .any(|window| window == expected.as_slice()),
+            "the accumulated indirect-acceptance runtime is missing from the canonical bytes"
         );
     }
 
