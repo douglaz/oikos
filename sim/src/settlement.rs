@@ -1170,6 +1170,30 @@ pub struct BarterConfig {
     /// surplus FOOD/WOOD for it, accumulating the acceptances the saleability rule
     /// reads. Zero in the control: no medium to monetize.
     pub consumer_medium_endowment: u32,
+    /// S9 — the **heterogeneous real direct use** of the medium good (SALT). How
+    /// many fixed `Good(medium)/Now` consumption wants the SELECTED subset of
+    /// colonists carries each pre-promotion tick (injected like
+    /// [`medium_scale_extension`], but representing CONSUMPTION, not a "hold the
+    /// medium" savings demand). This is the Mengerian regression-theorem seed: a
+    /// commodity with a real non-monetary use that some actors directly want, which
+    /// lets SALT accrue saleability from real direct trades BEFORE it is money — the
+    /// replacement for the circular universal medium want. The want is consumed into
+    /// the `consumed` bucket and is active only while no money good has emerged.
+    /// Default `0`: off — every pre-S9 scenario keeps its medium-want path unchanged
+    /// and is byte-identical. Paired with [`Self::salt_direct_use_period`], which
+    /// makes the demand HETEROGENEOUS (a universal direct want would suppress
+    /// indirect acceptance — `generate_indirect_barter_offers` skips an agent that
+    /// directly wants the leader).
+    pub salt_direct_use_qty: u32,
+    /// S9 — the heterogeneity selector for [`Self::salt_direct_use_qty`]: a colonist
+    /// directly wants SALT this tick iff its stable id index is `0 mod period`. A
+    /// `period` of 2 gives every other colonist the direct want, 3 one in three, and
+    /// so on; `1` would be universal (deliberately avoidable — universality is the
+    /// trap Base Fact 6 warns against). The non-selected colonists never carry the
+    /// direct want, so they remain eligible to accept SALT INDIRECTLY (the breadth
+    /// the strong-bar gate requires). Default `0`: off (no colonist is selected even
+    /// if a qty were set), keeping every pre-S9 scenario byte-identical.
+    pub salt_direct_use_period: u16,
 }
 
 /// The G8b **bank charter** overlay (deposits + fiduciary credit), requiring the
@@ -2042,6 +2066,8 @@ impl SettlementConfig {
                 medium_want_qty: 6,
                 gatherer_medium_endowment: gatherer_salt,
                 consumer_medium_endowment: consumer_salt,
+                salt_direct_use_qty: 0,
+                salt_direct_use_period: 0,
             }),
             bank: None,
             cycle: None,
@@ -2287,6 +2313,8 @@ impl SettlementConfig {
                 medium_want_qty: 6,
                 gatherer_medium_endowment: 0,
                 consumer_medium_endowment: 80,
+                salt_direct_use_qty: 0,
+                salt_direct_use_period: 0,
             }),
             bank: None,
             cycle: None,
@@ -3206,6 +3234,17 @@ pub struct Settlement {
     /// medium). Dropped once a money good has emerged — the post-promotion scale
     /// is pure need-driven (the money market clears in GOLD like G2b).
     barter_medium: Option<(GoodId, u32)>,
+    /// S9 — the emergent medium's **heterogeneous real direct use**
+    /// `(good, qty, period)`, or `None` when off. While the settlement is still in
+    /// barter, the SELECTED subset of colonists (stable id index `0 mod period`) has
+    /// its scale extended with `qty` fixed `Good(good)/Now` CONSUMPTION wants — the
+    /// real non-monetary demand that seeds SALT's pre-monetary saleability without a
+    /// circular "want it as money" demand. Heterogeneous by construction (`period`),
+    /// so the non-selected colonists stay free to accept SALT indirectly. Consumed
+    /// into the `consumed` bucket; dropped once a money good has emerged (SALT then
+    /// delists to money). `None` for every pre-S9 scenario, so their scale
+    /// generation — and canonical layout — is unchanged.
+    salt_direct_use: Option<(GoodId, u32, u16)>,
     /// G6b: the settlement's accumulated **Knowledge** — produced by scholar labor,
     /// monotonic, never traded or consumed. It is OUTSIDE the goods-conservation
     /// ledger (it is not a good, not in [`Settlement::goods`]); the per-tick
@@ -4167,6 +4206,16 @@ impl Settlement {
                     barter.gatherer_medium_endowment > 0 || barter.consumer_medium_endowment > 0;
                 supplied.then_some((barter.medium_good, barter.medium_want_qty))
             }),
+            // S9: the heterogeneous real direct use of the medium (SALT). Active only
+            // when both the consumption quantity and the heterogeneity period are set
+            // (default off — `None` — for every pre-S9 scenario).
+            salt_direct_use: config.barter.as_ref().and_then(|barter| {
+                (barter.salt_direct_use_qty > 0 && barter.salt_direct_use_period > 0).then_some((
+                    barter.medium_good,
+                    barter.salt_direct_use_qty,
+                    barter.salt_direct_use_period,
+                ))
+            }),
             // G6b: Knowledge starts at zero and tier 2 starts locked. A non-research
             // settlement never touches either (no scholar runs, the threshold is 0),
             // so its digest is byte-identical.
@@ -4315,6 +4364,7 @@ impl Settlement {
             old_age_deaths_total: 0,
             barter: None,
             barter_medium: None,
+            salt_direct_use: None,
             knowledge: 0,
             tier2_unlocked_at: None,
             bank: None,
@@ -5726,6 +5776,24 @@ impl Settlement {
             if let Some((medium, qty)) = self.barter_medium {
                 if self.society.current_money_good().is_none() {
                     medium_scale_extension(&mut scale, medium, qty);
+                }
+            }
+            // S9: the medium's HETEROGENEOUS real direct use. A SELECTED subset of
+            // colonists (stable id index `0 mod period`) carries `qty` fixed
+            // `Good(SALT)/Now` CONSUMPTION wants — the real non-monetary demand that
+            // lets SALT accrue saleability from direct trades before it is money (the
+            // Mengerian regression-theorem seed, replacing the circular medium want).
+            // The non-selected colonists never carry it, so they stay eligible to
+            // accept SALT INDIRECTLY (the breadth the strong-bar gate needs). Active
+            // only pre-promotion (SALT delists to money on promotion); consumed into
+            // the `consumed` bucket by the existing `Horizon::Now` consume arm. Pure
+            // and deterministic; draws no randomness.
+            if let Some((good, qty, period)) = self.salt_direct_use {
+                if self.society.current_money_good().is_none()
+                    && period > 0
+                    && colonist.id.index().is_multiple_of(u32::from(period))
+                {
+                    direct_use_scale_extension(&mut scale, good, qty);
                 }
             }
             self.society
@@ -9521,6 +9589,32 @@ fn medium_scale_extension(scale: &mut Vec<Want>, medium: GoodId, qty: u32) {
     scale.extend(tail);
 }
 
+/// S9: extend a colonist's need scale with `qty` fixed `Good(good)/Now` direct
+/// CONSUMPTION wants for the medium (SALT) — the heterogeneous real direct use
+/// that seeds SALT's pre-monetary saleability. Unlike [`medium_scale_extension`]
+/// (a `Horizon::Next` "hold the medium" SAVINGS demand), these are `Horizon::Now`
+/// wants the consume arm eats into the `consumed` bucket: a real non-monetary use,
+/// not a demand to hold SALT as money. Each is a SINGLE unit so the per-offer
+/// (`qty == 1`) barter machinery can acquire them one at a time, exactly like the
+/// medium wants. Inserted just below the present survival block (after the last
+/// `Now` good want, before the savings ladder) — the colonist warms and feeds
+/// first, then barters surplus for its SALT ration. Pure and deterministic; no RNG.
+fn direct_use_scale_extension(scale: &mut Vec<Want>, good: GoodId, qty: u32) {
+    if qty == 0 {
+        return;
+    }
+    let insert_at = scale_input_insert_position(scale);
+    let direct_wants = (0..qty).map(|_| Want {
+        kind: WantKind::Good(good),
+        horizon: Horizon::Now,
+        qty: 1,
+        satisfied: false,
+    });
+    let tail = scale.split_off(insert_at);
+    scale.extend(direct_wants);
+    scale.extend(tail);
+}
+
 /// Build a resident-trader agent (G2c caravans) from its endowment: working gold,
 /// an initial physical stock, an **empty** value scale (so it posts no orders
 /// until the `Region` activates it), and the [`Role::Trader`]. Draws no
@@ -9565,6 +9659,12 @@ fn push_barter_config_bytes(out: &mut Vec<u8>, barter: &BarterConfig) {
     out.extend_from_slice(&barter.medium_want_qty.to_le_bytes());
     out.extend_from_slice(&barter.gatherer_medium_endowment.to_le_bytes());
     out.extend_from_slice(&barter.consumer_medium_endowment.to_le_bytes());
+    // S9: the heterogeneous direct-use seed steers which colonists barter for SALT
+    // pre-promotion (and thus the saleability the promotion reads), so both knobs
+    // are part of the future-behaviour identity. Appended last so every pre-S9
+    // barter config's prefix is unchanged.
+    out.extend_from_slice(&barter.salt_direct_use_qty.to_le_bytes());
+    out.extend_from_slice(&barter.salt_direct_use_period.to_le_bytes());
 }
 
 fn push_money_system_bytes(out: &mut Vec<u8>, money_system: &econ::ledger::MoneySystem) {
@@ -10532,6 +10632,81 @@ mod tests {
         let before = empty.clone();
         medium_scale_extension(&mut empty, WOOD, 0);
         assert_eq!(empty, before);
+    }
+
+    #[test]
+    fn direct_use_scale_extension_inserts_now_consumption_wants_below_survival() {
+        // S9: the heterogeneous direct use is a `Horizon::Now` CONSUMPTION want (not
+        // a `Horizon::Next` savings want like the medium). It lands between the
+        // survival present wants and the savings ladder, exactly like the medium
+        // block, but tagged `Now` so the consume arm eats it into the `consumed`
+        // bucket.
+        let mut scale = vec![
+            Want {
+                kind: WantKind::Good(FOOD),
+                horizon: Horizon::Now,
+                qty: 1,
+                satisfied: false,
+            },
+            Want {
+                kind: WantKind::Good(GOLD),
+                horizon: Horizon::Later(4),
+                qty: 1,
+                satisfied: false,
+            },
+        ];
+        direct_use_scale_extension(&mut scale, SALT, 2);
+        assert_eq!(scale.len(), 4, "two direct-use wants were added");
+        // Survival (the Now food want) stays first.
+        assert_eq!(scale[0].kind, WantKind::Good(FOOD));
+        assert!(matches!(scale[0].horizon, Horizon::Now));
+        // The two SALT direct-use wants follow as single-unit `Now` consumption
+        // wants, before the Later savings want.
+        assert_eq!(scale[1].kind, WantKind::Good(SALT));
+        assert_eq!(scale[1].horizon, Horizon::Now);
+        assert_eq!(scale[1].qty, 1);
+        assert_eq!(scale[2].kind, WantKind::Good(SALT));
+        assert_eq!(scale[2].horizon, Horizon::Now);
+        assert!(matches!(scale[3].horizon, Horizon::Later(_)));
+
+        // Zero qty is a no-op.
+        let mut empty = scale.clone();
+        let before = empty.clone();
+        direct_use_scale_extension(&mut empty, SALT, 0);
+        assert_eq!(empty, before);
+    }
+
+    #[test]
+    fn canonical_bytes_include_salt_direct_use() {
+        // S9: the heterogeneous direct-use seed steers which colonists barter for
+        // SALT pre-promotion (and thus the saleability the promotion reads), so both
+        // knobs are part of the determinism identity before the first tick.
+        let base = SettlementConfig::frontier_coemergent();
+
+        let mut with_qty = SettlementConfig::frontier_coemergent();
+        let b = with_qty.barter.as_mut().expect("barter overlay");
+        b.salt_direct_use_qty = 1;
+        b.salt_direct_use_period = 8;
+
+        let mut other_period = SettlementConfig::frontier_coemergent();
+        let b = other_period.barter.as_mut().expect("barter overlay");
+        b.salt_direct_use_qty = 1;
+        b.salt_direct_use_period = 4;
+
+        let base = Settlement::generate(7, &base);
+        let with_qty = Settlement::generate(7, &with_qty);
+        let other_period = Settlement::generate(7, &other_period);
+
+        assert_ne!(
+            base.canonical_bytes(),
+            with_qty.canonical_bytes(),
+            "salt_direct_use_qty/period must be part of the barter config identity"
+        );
+        assert_ne!(
+            with_qty.canonical_bytes(),
+            other_period.canonical_bytes(),
+            "the heterogeneity period must be part of the barter config identity"
+        );
     }
 
     #[test]
