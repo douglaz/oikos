@@ -184,6 +184,12 @@ const SCENARIOS: &[Scenario] = &[
         build: build_originary,
     },
     Scenario {
+        name: "entrepreneurial",
+        description:
+            "S11: ENTREPRENEURIAL UNCERTAINTY — the S10 originary colony where every entrepreneurial decision (adopt a recipe, build a tool, bid for inputs) now weighs its OUTPUT revenue against a PER-AGENT FALLIBLE FORECAST instead of the shared last realized price: forecast = the colonist's own adaptive belief (once it has seen the good, else the public price) tilted by a heritable forecast bias. The market still clears at the REAL price, so a wrong forecast is borne as PROFIT/LOSS through CAPITAL — an over-optimist sinks WOOD into capital that underperforms and ends with less to invest, while an accurate/conservative forecaster accumulates. Selection operates on capital accumulation, NOT mortality (no starvation). Money still emerges and the multi-horizon ladder + per-agent capital are intact.",
+        build: build_entrepreneurial,
+    },
+    Scenario {
         name: "millisats-1x",
         description:
             "EXPERIMENT: frontier at coarse (x1) money precision — the unit-starved baseline that freezes (~320 money units)",
@@ -387,6 +393,10 @@ fn build_strong_emergence() -> SettlementConfig {
 
 fn build_originary() -> SettlementConfig {
     SettlementConfig::frontier_coemergent_strong_originary()
+}
+
+fn build_entrepreneurial() -> SettlementConfig {
+    SettlementConfig::frontier_coemergent_strong_entrepreneurial()
 }
 
 fn build_millisats_1x() -> SettlementConfig {

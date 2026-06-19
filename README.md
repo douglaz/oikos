@@ -1595,6 +1595,57 @@ profit preference, not a planner stage choice); the labor sacrifice is modeled a
 (first-Leisure-rank displacement, not a full multi-tick opportunity-cost of forgone gathering); demand
 response is bounded (no runaway/WOOD-drain), not proven optimal; the disclosed S9 artifacts are unchanged.
 
+## Status: S11 (entrepreneurial uncertainty + profit/loss selection) — complete
+
+S10 made the capital *decision* individual, but every entrepreneurial appraisal still read the **last
+realized price** as a *certain* point estimate, identical for everyone — a wrong call cost the actor
+nothing differential. Misesian entrepreneurship is action under **uncertainty**: actors *forecast*
+future prices, differ in their forecasts, can be **wrong**, and bear the **profit or loss**. S11 makes
+forecasts heterogeneous and fallible, and makes the loss *select* — through **capital, not mortality**.
+Sliced per `docs/impl-entrepreneurial-uncertainty.md`, behind a default-off
+`ChainConfig::entrepreneurial_forecasts`:
+
+- [x] **S11.1 — heterogeneous fallible forecasts feed decisions.** A heritable
+      `CultureParams::forecast_bias_bps` (u16 bps, neutral `10_000` = ×1.0, clamped exactly
+      `5_000..=20_000`), drawn at generation by a deterministic SplitMix that consumes no extra `Rng`
+      (so the generation sequence — and every flag-off golden — is byte-identical) and inherited via
+      `deterministic_mix64` with its own salt. `PriceBelief` gains an explicit `observed` flag (set on
+      `observe`/`nudge`) so the **grounded** forecast `forecast_price_for(agent, good)` uses the agent's
+      own `belief.expected` only once it has actually seen the good, else the public `realized_price`,
+      else skips the decision — distinguishing never-observed from a tick-0 observation (not
+      `last_seen == 0`). `forecast = base × forecast_bias`, routed into the role-choice adopt, the
+      per-agent capital build, and the project input-bid OUTPUT price; input/build costs stay observed.
+      The market still clears at the **real** price.
+- [x] **S11.2 — profit/loss realization + capital selection (the falsifiable core).** A net-worth
+      balance sheet `agent_capital(i) = gold + WOOD × realized_wood_price + tools × V`, where `V` is the
+      tool's realized liquidation price if tools ever trade **else ZERO** (tools don't trade — an idle
+      tool adds nothing, so a sunk-WOOD loss cannot hide in it), plus realized-proceeds / forecast /
+      belief accessors. **The negative-NPV microtest (test 3) — the tripwire — shows a clean signed
+      selection effect:** on a controlled chain where building does NOT pay at the real price, the
+      accurate forecaster **declines and preserves** capital while the over-optimist **builds, realizes
+      the real (lower) proceeds, and ends STRICTLY LOWER on `agent_capital`**.
+- [x] **S11.3 — shock → discoordination → recovery (a real chain shock).** A settlement-level
+      `set_bake_stage_enabled(false)` over `[A, B)` (the `maybe_unlock_tier_two` dual-flip path) — the
+      test first asserts the shock actually collapses bread output in `[A, B)` (not a no-op), then that
+      the production dip recovers to pre-shock bounds in the tail with no planner correction, conserving
+      every tick.
+- [x] **S11.4 — the `entrepreneurial` scenario** (`frontier_coemergent_strong_entrepreneurial`, derived
+      from the S10 originary base with `entrepreneurial_forecasts` on) + the acceptance suite
+      (`sim/tests/entrepreneurial_uncertainty.rs`: eight named tests). All additive/gated: with the flag
+      off the S5–S10 scenarios + the six econ + the g5a/g5b/coemergence emergence goldens are
+      byte-identical (the flag, the per-colonist `forecast_bias_bps`, and the per-belief `observed` flag
+      are serialized only under the flag — `canonical_bytes_include_forecast_bias` /
+      `canonical_bytes_include_entrepreneurial_flag_and_belief_observed`).
+
+**Does profit/loss selection actually bite? Yes.** On the controlled negative-NPV chain (uniform bias,
+seed 1), an all-accurate colony declines/preserves (it tools up minimally and keeps its WOOD/gold) while
+an all-optimist colony overbuilds and ends with **materially lower** total `agent_capital` — the
+over-optimist sinks real WOOD into capital that under-earns at the real price. Selection operates on
+**capital accumulation**, so no starvation is needed (`hunger_critical` stays disabled; every death in
+the flagship run is old age). The single clean lever is the **output-revenue** forecast; input-cost and
+build-cost forecasting, richer expectation (variance/confidence), and re-enabled mortality selection are
+noted follow-ons.
+
 ## Build and test
 
 ```bash
@@ -1627,6 +1678,7 @@ cargo run -p viewer -- run capital --ticks 1600              # S7: colonists bui
 cargo run -p viewer -- run coemergent --ticks 1600          # S8: money + chain + capital CO-EMERGE from a no-money barter start (era goes barter → money, then bread sustains)
 cargo run -p viewer -- run strong-emergence --ticks 1600    # S9: strong-bar emergence — money emerges from real indirect-exchange breadth (no configured medium want)
 cargo run -p viewer -- run originary --ticks 1600           # S10: originary interest — capital forms by a PER-AGENT intertemporal choice; patient colonists build, present-biased ones do not
+cargo run -p viewer -- run entrepreneurial --ticks 1600     # S11: entrepreneurial uncertainty — decisions weigh a PER-AGENT fallible forecast; a wrong forecast is borne as profit/loss through capital
 #                                                              # G6a: the frontier/barter-camp dashboards show an era
 #                                                              #      banner + per-tick era column (forager → … → capital)
 cargo run -p viewer -- run research --ticks 60                # G6b: Knowledge accrues, tier 2 unlocks, pastry is produced
