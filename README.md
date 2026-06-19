@@ -1460,7 +1460,7 @@ labor, and capital all **co-emerge in one run** from a no-money barter start. Sl
       finding below) — no designated money, zero gold at generation; the chain waits on money (no
       producer/no chain output before promotion); inputs clear by real `Society::trade` across the
       cutover; bread sustains through tick 1600 at a real rate (tail ~450/100-tick window); hunger is
-      bounded but the colony is **semi-hungry** (mean ~7.6, p95 ~12 — healthy provisioning is S9); ≥1
+      bounded but the colony is **semi-hungry** (mean ~7.6, p95 ~12 — healthy provisioning is S10); ≥1
       mill/oven is **built** (`produced`) after promotion by a formerly-non-latent colonist;
       everything conserves every tick (incl. the promotion sink) and is byte-deterministic.
 - [x] acceptance suite (`sim/tests/money_coemergence.rs`: the eleven named tests) + the viewer
@@ -1481,7 +1481,7 @@ further rests on (disclosed): exogenous, producer-only and household subsistence
 "market alone") — tuned **lean** (`producer_subsistence` 2 vs S5's 4; demographic `food/wood_provision`
 1 vs 3) so a fed agent recirculates rather than hoards (a money-sink avoidance, not a handout) — plus
 the same cold-start buffers as S5, and a modest, semi-hungry colony (healthy provisioning-at-scale
-under emergence is deferred to S9, where the raw-grain floor would crowd out the bread-for-SALT trade
+under emergence is deferred to S10, where the raw-grain floor would crowd out the bread-for-SALT trade
 that monetizes SALT).
 
 **The principled finding (Tension B), reported as a passing diagnostic — not papered over.** The
@@ -1496,6 +1496,48 @@ promotion_not_in_barter` asserts this observed mechanism via the S8.0 probe rath
 pass with designated gold or a curated advance. Because the chain does not freeze, the sustain and
 capital tests still pass — so the only deviation from the specified DoD is *which faithful source*
 capitalizes the producers across the cutover.
+
+## Status: S9 (strong-bar money emergence — the regression theorem) — complete (Codex: PASS on the strong bar)
+
+S8 left one circularity: SALT promoted because every colonist was *configured* to want it as a medium
+(`medium_want_qty`) — agents wanting SALT as money before it is money. S9 removes that and tests
+whether money emerges from **real saleability**. Sliced per `docs/impl-strong-bar-emergence.md`:
+
+- [x] **S9.1 — SALT's heterogeneous real direct use** (`BarterConfig::salt_direct_use_qty` /
+      `salt_direct_use_period`): a modest, **fixed** `Good(SALT)/Now` consumption want given to only
+      ~1-in-8 colonists at a time (heterogeneous — a *universal* want would suppress indirect
+      acceptance, since an agent that directly wants the leader posts no `IndirectFor` offer), consumed
+      into the `consumed` bucket, active pre-promotion only. **It is an *exogenously modeled* commodity
+      use — not circular money demand, and not itself emergent.**
+- [x] **S9.2 — indirect-exchange breadth gate** (`econ/src/menger.rs`): `observe_trade` now records,
+      per candidate, the count + **distinct acceptors** + distinct targets of acceptances tagged
+      `BarterReason::IndirectFor` (a side took SALT for an end other than SALT itself); `base_eligible`
+      withholds promotion until `min_indirect_acceptances` (12), `min_indirect_acceptor_agents` (6),
+      and `min_indirect_target_goods` (1) all clear. (Target breadth is the **weak** dimension — set
+      to 1; the 6-distinct-acceptor floor carries the anti-gaming breadth. No broad-target-diversity
+      claim is made.)
+- [x] **S9.3 — the `strong-emergence` scenario** (`frontier_coemergent_strong`, derived from
+      `frontier_coemergent`): `medium_want_qty = 0`, heterogeneous SALT direct use on, the breadth gate
+      on. Live (seed 1, pop 20): SALT promotes at **tick 443** (vs S8's tick 20 — it must *earn* it via
+      real saleability), era `forager → barter → money → capital`, SALT's direct use is consumed
+      pre-promotion (`salt.eaten`≈1/tick, `salt.made`=0 endowed), bread sustains (5250 total / 1797 tail),
+      ≥1 tool built on emerged money, conserved every tick.
+- [x] acceptance suite (`sim/tests/strong_bar_emergence.rs`: ten named tests) — incl. the **decisive
+      control** `no_indirect_acceptance_control_does_not_monetize` (SALT still becomes provisional
+      leader and trades *directly*, but with indirect acceptance off it does **not** monetize — proving
+      promotion depends on real indirect exchange, not configured SALT demand) and
+      `no_direct_use_control_does_not_monetize`. All additive/gated: the g5a/g5b/coemergence emergence
+      goldens + the six econ conformance goldens stay byte-identical (new fields default inert).
+
+**Honest scope (Codex-reviewed: PASS on the strong bar).** What is earned: **money emerges from real
+saleability inside this model** — SALT becomes money because actors discover it is the most marketable
+good (real indirect exchange), *not* because config says they want it as money. This is genuine
+Mengerian indirect-exchange emergence, not a renamed medium want (the no-indirect control proves it).
+What it does **not** earn: "fully authentic praxeology" in the global sense. The remaining modeled
+artifacts (disclosed): the SALT direct-use is an *exogenous* preference schedule (the use, not the
+money, is given); weak one-target indirect breadth; lean hearth provisioning; cold-start buffers; and
+the scalar S7 capital heuristic. Money emergence is now non-circular; several *other* mechanisms remain
+parameter-supported.
 
 ## Build and test
 
