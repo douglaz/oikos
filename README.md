@@ -1460,7 +1460,7 @@ labor, and capital all **co-emerge in one run** from a no-money barter start. Sl
       finding below) — no designated money, zero gold at generation; the chain waits on money (no
       producer/no chain output before promotion); inputs clear by real `Society::trade` across the
       cutover; bread sustains through tick 1600 at a real rate (tail ~450/100-tick window); hunger is
-      bounded but the colony is **semi-hungry** (mean ~7.6, p95 ~12 — healthy provisioning is S10); ≥1
+      bounded but the colony is **semi-hungry** (mean ~7.6, p95 ~12 — healthy provisioning is S11); ≥1
       mill/oven is **built** (`produced`) after promotion by a formerly-non-latent colonist;
       everything conserves every tick (incl. the promotion sink) and is byte-deterministic.
 - [x] acceptance suite (`sim/tests/money_coemergence.rs`: the eleven named tests) + the viewer
@@ -1481,7 +1481,7 @@ further rests on (disclosed): exogenous, producer-only and household subsistence
 "market alone") — tuned **lean** (`producer_subsistence` 2 vs S5's 4; demographic `food/wood_provision`
 1 vs 3) so a fed agent recirculates rather than hoards (a money-sink avoidance, not a handout) — plus
 the same cold-start buffers as S5, and a modest, semi-hungry colony (healthy provisioning-at-scale
-under emergence is deferred to S10, where the raw-grain floor would crowd out the bread-for-SALT trade
+under emergence is deferred to S11, where the raw-grain floor would crowd out the bread-for-SALT trade
 that monetizes SALT).
 
 **The principled finding (Tension B), reported as a passing diagnostic — not papered over.** The
@@ -1585,9 +1585,15 @@ fixed, a uniformly patient colony builds **22 tools** while a uniformly present-
 — and money emerges (tick 479) in *both*, so the difference is the capital response to time preference,
 not a money-emergence artifact. The decision genuinely reads the ordinal scale: originary interest is
 **emergent** from each colonist's own savings ladder, with no cardinal discount rate anywhere (the
-engine has none by design). The honest scope: `capital_payback_cycles` is now inert in the per-agent
-mode; the WHICH-tool choice still orders the two candidates by realized margin (a per-agent profit
-preference, not a planner stage choice); the rest of the disclosed S9 artifacts are unchanged.
+engine has none by design). The honest scope (Codex-reviewed: PASS, no P0/P1): the **microtest** is
+the clean per-build proof (two identical agents, only `time_preference_bps` differs → patient accepts,
+present-biased declines because the receipts reach no savings want); the **live 22-vs-0** aggregate
+also reflects the deeper ladder shaping broader savings/market behavior, not the build appraisal alone.
+`capital_payback_cycles` is now inert in the per-agent mode; the build/no-build **acceptance** is
+ordinal, but the WHICH-tool ordering still ranks the two candidates by realized margin (a per-agent
+profit preference, not a planner stage choice); the labor sacrifice is modeled as forgone Leisure
+(first-Leisure-rank displacement, not a full multi-tick opportunity-cost of forgone gathering); demand
+response is bounded (no runaway/WOOD-drain), not proven optimal; the disclosed S9 artifacts are unchanged.
 
 ## Build and test
 
