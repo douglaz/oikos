@@ -172,6 +172,12 @@ const SCENARIOS: &[Scenario] = &[
         build: build_coemergent,
     },
     Scenario {
+        name: "strong-emergence",
+        description:
+            "S9: STRONG-BAR money emergence — the co-emergent colony with the circular medium want REMOVED (no agent wants SALT as money before it is money). SALT instead has a modest HETEROGENEOUS real direct use (~1-in-8 colonists), and promotion is gated on genuine INDIRECT-exchange breadth (enough indirect acceptances, by enough distinct acceptors, for a real end). Result: money EMERGES from real saleability — SALT promotes, then the chain + capital sustain on the emerged unit. The emergence-probe panel reports indirect acceptances/acceptors/targets behind the promotion.",
+        build: build_strong_emergence,
+    },
+    Scenario {
         name: "millisats-1x",
         description:
             "EXPERIMENT: frontier at coarse (x1) money precision — the unit-starved baseline that freezes (~320 money units)",
@@ -367,6 +373,10 @@ fn build_capital() -> SettlementConfig {
 
 fn build_coemergent() -> SettlementConfig {
     SettlementConfig::frontier_coemergent()
+}
+
+fn build_strong_emergence() -> SettlementConfig {
+    SettlementConfig::frontier_coemergent_strong()
 }
 
 fn build_millisats_1x() -> SettlementConfig {

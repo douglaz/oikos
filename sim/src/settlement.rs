@@ -2788,6 +2788,54 @@ impl SettlementConfig {
         cfg
     }
 
+    /// S9 — the STRONG-BAR emergence experiment, derived from
+    /// [`Self::frontier_coemergent`] (never mutating it). It removes the remaining
+    /// circularity Codex flagged in S8: SALT promoted there only because every
+    /// colonist was configured to want SALT *as a medium* (`medium_want_qty`), i.e.
+    /// to desire it as money before it was money. Here that pre-monetary medium want
+    /// is **off** (`medium_want_qty = 0`); instead SALT is given a modest,
+    /// **heterogeneous real direct use** (a `Good(SALT)/Now` consumption want on a
+    /// subset of colonists, `salt_direct_use_period = 8` → ~1-in-8), and promotion is
+    /// gated on genuine **indirect-exchange breadth** — a good monetizes only after
+    /// enough indirect acceptances, by enough distinct indirect acceptors, for at
+    /// least one end other than the good's own use. The Mengerian chain runs forward:
+    /// heterogeneous direct use → saleability → provisional leader → indirect
+    /// acceptance by the OTHERS → breadth gate → promotion. No designated money, no
+    /// seeded gold, no re-added medium want.
+    ///
+    /// Observed result (`docs/impl-strong-bar-emergence.md`): money EMERGES — SALT
+    /// promotes from real saleability across seeds, then the S8 chain + capital
+    /// sustain on the emerged unit. The indirect demand concentrates on the staple
+    /// (bread) — the one near-universal unmet want the colony re-trades SALT to reach
+    /// — so the realized indirect-target breadth is one dominant end, which the gate
+    /// requires (`min_indirect_target_goods = 1`) while the distinct-acceptor floor
+    /// (`6`) rules out a few-agent churn.
+    pub fn frontier_coemergent_strong() -> Self {
+        let mut cfg = Self::frontier_coemergent();
+        if let Some(barter) = cfg.barter.as_mut() {
+            // Remove the circular pre-monetary medium want — SALT is no longer wanted
+            // AS money before it is money. (Its physical endowment stays, so SALT is
+            // still present to circulate and to convert 1:1 at promotion.)
+            barter.medium_want_qty = 0;
+            // The real, heterogeneous direct use that replaces it: one fixed
+            // `Good(SALT)/Now` consumption want on ~1-in-8 colonists (the band that
+            // both seeds saleability and leaves enough non-wanters to accept SALT
+            // indirectly — Base Fact 6; a denser want would suppress indirect offers).
+            barter.salt_direct_use_qty = 1;
+            barter.salt_direct_use_period = 8;
+            // The strong-bar promotion gate: real indirect-exchange breadth.
+            // Withholds promotion (which the weak S8 bar fires by ~tick 19 on direct
+            // churn alone) until SALT has accrued sustained indirect volume, spread
+            // across distinct acceptors, for an end other than its own use.
+            barter.menger.min_indirect_acceptances = 12;
+            barter.menger.min_indirect_acceptor_agents = 6;
+            barter.menger.min_indirect_target_goods = 1;
+            // Indirect acceptance stays ON (the headline path); the
+            // `allow_indirect_acceptance = false` control derives from here.
+        }
+        cfg
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).
