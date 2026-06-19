@@ -327,5 +327,113 @@ fn forecasts_can_be_wrong() {
     );
 }
 
-// Acceptance tests 5–7 are added with their slices (S11.3 — shock → discoordination →
-// recovery; the flagship conservation + non-mortality checks).
+#[test]
+fn shock_causes_discoordination_then_recovery() {
+    // Acceptance 5: a SETTLEMENT-LEVEL chain shock — disable the BAKE stage over [A, B)
+    // then re-enable. FIRST assert the shock actually changed chain output (bread collapses
+    // in [A, B) — not a no-op), THEN show the temporary production disruption RECOVERS to
+    // pre-shock bounds in the tail, with no planner correction (the chain re-coordinates on
+    // its own — beliefs re-learn, role-choice re-adopts). Whole-system conservation holds
+    // every tick across the shock (no goods are created or destroyed; production stops).
+    let cfg = entrepreneurial();
+    let bread = bread_good(&cfg);
+    let mut s = Settlement::generate(1, &cfg);
+    s.run(500); // warm up to a coordinated chain producing bread
+
+    let window = 80u64;
+
+    // Pre-shock baseline.
+    let mut pre_bread = 0u64;
+    for _ in 0..window {
+        let r = s.econ_tick();
+        assert!(r.conserves(), "pre-shock tick must conserve");
+        pre_bread += r.produced_of(bread);
+    }
+    assert!(pre_bread > 0, "the chain must be producing bread pre-shock");
+
+    // SHOCK over [A, B): disable the bake stage. No oven can fire, so bread production
+    // stops — but the tick still conserves (the shock moves no goods).
+    assert!(
+        s.set_bake_stage_enabled(false),
+        "the chain must carry a bake recipe to shock"
+    );
+    let mut shock_bread = 0u64;
+    for _ in 0..window {
+        let r = s.econ_tick();
+        assert!(r.conserves(), "the shock must conserve every tick");
+        shock_bread += r.produced_of(bread);
+    }
+    s.set_bake_stage_enabled(true);
+
+    // FIRST: the shock ACTUALLY changed chain output — bread collapsed during [A, B). With
+    // bake disabled no oven fires, so output is far below the pre-shock baseline (not a
+    // no-op econ event that never reached the sim chain).
+    assert!(
+        shock_bread * 2 < pre_bread,
+        "the bake-stage shock must collapse bread output in [A,B) (shock {shock_bread} vs \
+         pre {pre_bread}) — proving it actually perturbs the chain, not a no-op"
+    );
+
+    // Let the colony re-coordinate with NO planner correction — only the re-enable above;
+    // the chain re-forms through the ordinary econ-tick phases.
+    s.run(200);
+
+    // RECOVERY: bread output returns to pre-shock bounds in the tail.
+    let mut tail_bread = 0u64;
+    for _ in 0..window {
+        let r = s.econ_tick();
+        assert!(r.conserves(), "post-shock tick must conserve");
+        tail_bread += r.produced_of(bread);
+    }
+    assert!(
+        tail_bread * 2 >= pre_bread,
+        "bread must RECOVER to pre-shock bounds in the tail (tail {tail_bread} vs \
+         pre {pre_bread}) — temporary discoordination, then re-coordination"
+    );
+}
+
+#[test]
+fn selection_is_not_mortality() {
+    // Acceptance 6: confirm NO starvation deaths occur across a full flagship run — selection
+    // is through capital, not death (`hunger_critical` stays disabled at need_max+1). Any
+    // deaths are old age (the G4b demography overlay), kept distinct from the separate
+    // starvation milestone. Tracks the conservation identity: every colonist that left the
+    // living roster is accounted for by an old-age death.
+    let cfg = entrepreneurial();
+    let mut s = Settlement::generate(3, &cfg);
+
+    // Every death reported across the run (`report.deaths` = starvation + old age) must be
+    // accounted for by an OLD-AGE death — so the starvation count is exactly zero.
+    let mut total_deaths = 0u64;
+    for _ in 0..1600u64 {
+        let r = s.econ_tick();
+        total_deaths += u64::from(r.deaths);
+    }
+    assert_eq!(
+        total_deaths,
+        s.old_age_deaths_total(),
+        "every death must be OLD AGE — zero starvation deaths (total deaths {total_deaths} \
+         must equal old-age deaths {}); selection is capital, not mortality",
+        s.old_age_deaths_total()
+    );
+}
+
+#[test]
+fn entrepreneurial_conserves() {
+    // Acceptance 7: whole-system conservation holds every tick across the flagship run —
+    // forecasts move NO goods (only the decision changes; the real trade conserves as
+    // always). The build that DOES happen books WOOD → consumed_as_input and the tool →
+    // produced, exactly as in S10.
+    let mut s = Settlement::generate(7, &entrepreneurial());
+    for tick in 0..1300u64 {
+        let report = s.econ_tick();
+        assert!(
+            report.conserves(),
+            "whole-system conservation must hold every tick, broke at {tick}"
+        );
+    }
+    assert!(
+        s.tools_built() > 0,
+        "builds must have happened during the conserved run (else the test is vacuous)"
+    );
+}

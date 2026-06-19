@@ -8721,6 +8721,29 @@ impl Settlement {
             .sum()
     }
 
+    /// S11.3 (a settlement-level chain shock): disable or re-enable the BAKE stage
+    /// (flour → bread) on the society's LIVE recipe set, keeping the chain's own content
+    /// copy consistent — the same dual-flip [`Settlement::maybe_unlock_tier_two`] uses for
+    /// the tier-2 gate. A time-boxed disable over `[A, B)` demonstrably perturbs the
+    /// grain→flour→bread chain (bread output dips, since no oven can fire), letting a test
+    /// drive a real shock → discoordination → recovery rather than an econ `EventKind` that
+    /// may never reach the sim-side chain. Returns whether the chain carries a bake recipe
+    /// (`false` for a non-chain settlement). It mutates the recipe `enabled` flag — which
+    /// the digest already serializes — so it is real, conserved state (no goods are created
+    /// or destroyed; production simply stops while disabled); no existing phase calls it, so
+    /// every run that does not is byte-identical.
+    pub fn set_bake_stage_enabled(&mut self, enabled: bool) -> bool {
+        let recipe_id = match self.chain.as_ref() {
+            Some(chain) => chain.content.bake_recipe().id,
+            None => return false,
+        };
+        let found = self.society.set_recipe_enabled(recipe_id, enabled);
+        if let Some(chain) = self.chain.as_mut() {
+            chain.content.set_recipe_enabled(recipe_id, enabled);
+        }
+        found
+    }
+
     /// The destination a dead colonist's estate settled to, or `None` while alive.
     pub fn estate_destination_of(&self, index: usize) -> Option<EstateDestination> {
         self.colonists.get(index).and_then(|c| c.estate_destination)
