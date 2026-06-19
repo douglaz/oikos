@@ -1314,6 +1314,13 @@ pub struct SettlementConfig {
     /// for every config: with `entrepreneurial_forecasts` off the bias is never read
     /// or serialized, so a non-neutral base only matters for an entrepreneurial colony.
     pub forecast_bias_base_bps: u16,
+    /// S11: the half-width (bps) of the deterministic per-colonist jitter band around
+    /// [`Self::forecast_bias_base_bps`] at generation — a colonist's drawn bias lands in
+    /// `base ± forecast_bias_jitter_bps` (then clamped to `5_000..=20_000`). The flagship
+    /// keeps a wide band so optimists and accurate forecasters coexist (the selection
+    /// substrate); a controlled microtest sets `0` for a UNIFORM colony (every colonist at
+    /// the base). Consumes no `Rng` either way, so a flag-off run is byte-identical.
+    pub forecast_bias_jitter_bps: u16,
     pub dynamics: NeedDynamics,
     /// Permanent **resident traders** (G2c caravans), one econ agent each, added
     /// at generation **before** the colonist roster (taking the **lowest** ids, so
@@ -1454,6 +1461,7 @@ impl SettlementConfig {
             consumer_time_preference_base_bps: 500,
             leisure_weight_base_bps: 3_000,
             forecast_bias_base_bps: FORECAST_BIAS_NEUTRAL_BPS,
+            forecast_bias_jitter_bps: FORECAST_BIAS_GEN_JITTER_DEFAULT,
             dynamics: NeedDynamics::lab_default(),
             // A plain settlement has no resident traders; the `Region` adds them
             // for caravans (G2c). Empty here keeps every G2b config and the six
@@ -1786,6 +1794,7 @@ impl SettlementConfig {
             consumer_time_preference_base_bps: 500,
             leisure_weight_base_bps: 3_000,
             forecast_bias_base_bps: FORECAST_BIAS_NEUTRAL_BPS,
+            forecast_bias_jitter_bps: FORECAST_BIAS_GEN_JITTER_DEFAULT,
             dynamics: NeedDynamics::lab_default(),
             resident_traders: Vec::new(),
             chain: Some(chain),
@@ -1862,6 +1871,7 @@ impl SettlementConfig {
             consumer_time_preference_base_bps: 500,
             leisure_weight_base_bps: 3_000,
             forecast_bias_base_bps: FORECAST_BIAS_NEUTRAL_BPS,
+            forecast_bias_jitter_bps: FORECAST_BIAS_GEN_JITTER_DEFAULT,
             dynamics: NeedDynamics::lab_default(),
             resident_traders: Vec::new(),
             chain: Some(chain),
@@ -1978,6 +1988,7 @@ impl SettlementConfig {
             consumer_time_preference_base_bps: 500,
             leisure_weight_base_bps: 3_000,
             forecast_bias_base_bps: FORECAST_BIAS_NEUTRAL_BPS,
+            forecast_bias_jitter_bps: FORECAST_BIAS_GEN_JITTER_DEFAULT,
             dynamics: NeedDynamics::lab_default(),
             resident_traders: Vec::new(),
             chain: Some(chain),
@@ -2098,6 +2109,7 @@ impl SettlementConfig {
             consumer_time_preference_base_bps: 400,
             leisure_weight_base_bps: 3_000,
             forecast_bias_base_bps: FORECAST_BIAS_NEUTRAL_BPS,
+            forecast_bias_jitter_bps: FORECAST_BIAS_GEN_JITTER_DEFAULT,
             // Hunger-resilient (like `price_probe`): hunger never reaches the
             // critical ceiling, so the camp does not die off mid-emergence. The
             // milestone is the MONEY-EMERGENCE mechanism, not a survival race —
@@ -2343,6 +2355,7 @@ impl SettlementConfig {
             consumer_time_preference_base_bps: 400,
             leisure_weight_base_bps: 3_000,
             forecast_bias_base_bps: FORECAST_BIAS_NEUTRAL_BPS,
+            forecast_bias_jitter_bps: FORECAST_BIAS_GEN_JITTER_DEFAULT,
             // Hunger-resilient (like `barter_camp`): hunger never reaches the critical
             // ceiling, so the camp survives the emergence window and the only deaths are
             // old age (the demographic selection signal), not a mid-emergence die-off.
@@ -4003,6 +4016,7 @@ impl Settlement {
                 tp_base,
                 config.leisure_weight_base_bps,
                 config.forecast_bias_base_bps,
+                config.forecast_bias_jitter_bps,
             );
             let need = NeedState::rested();
             agents.push(build_agent(
@@ -4058,6 +4072,7 @@ impl Settlement {
                         spec.time_preference_base_bps,
                         config.leisure_weight_base_bps,
                         config.forecast_bias_base_bps,
+                        config.forecast_bias_jitter_bps,
                     );
                     let need = NeedState::rested();
                     agents.push(build_demography_agent(id, &need, &culture, &known, spec));
@@ -8608,6 +8623,104 @@ impl Settlement {
         self.colonists.get(index).map(|c| c.culture)
     }
 
+    /// S11: the heritable forecast bias of the colonist at generation `index` (bps;
+    /// `10_000` = ×1.0 neutral), or `None` for a non-colonist index. Read-only.
+    pub fn forecast_bias_of(&self, index: usize) -> Option<u16> {
+        self.colonists
+            .get(index)
+            .map(|c| c.culture.forecast_bias_bps)
+    }
+
+    /// S11: the colonist's live **grounded fallible forecast** of `good`'s OUTPUT price —
+    /// the entrepreneurial estimate the appraisals weigh: its belief `expected` once it has
+    /// observed the good, else the public realized price, each × its forecast bias; `None`
+    /// if it has neither an observed belief nor a realized price to ground on. The forecast
+    /// a test reads to show it can be WRONG (materially differs from the realized price).
+    pub fn forecast_price_for_good(&self, index: usize, good: GoodId) -> Option<Gold> {
+        let colonist = self.colonists.get(index)?;
+        let agent = self.society.agents.get(colonist.id)?;
+        forecast_output_price(
+            agent,
+            good,
+            self.realized_price(good),
+            colonist.culture.forecast_bias_bps,
+        )
+    }
+
+    /// S11: the colonist's adaptive belief level for `good` (its `PriceBelief.expected`),
+    /// or `None` for a non-colonist index. A test samples it across ticks to show beliefs
+    /// adapt toward realized (`observe()` is live) — forecasting under uncertainty, not
+    /// clairvoyance.
+    pub fn belief_expected_of(&self, index: usize, good: GoodId) -> Option<Gold> {
+        let colonist = self.colonists.get(index)?;
+        let agent = self.society.agents.get(colonist.id)?;
+        Some(agent_belief(agent, good).expected)
+    }
+
+    /// S11: whether the colonist has actually OBSERVED `good` (its belief was updated by a
+    /// trade/quote) — the grounding switch the forecast reads, distinct from a tick-0
+    /// `last_seen`. `false` for a non-colonist index.
+    pub fn belief_observed_of(&self, index: usize, good: GoodId) -> bool {
+        self.colonists
+            .get(index)
+            .and_then(|c| self.society.agents.get(c.id))
+            .is_some_and(|agent| agent_belief(agent, good).observed)
+    }
+
+    /// S11: total money proceeds the colonist has REALIZED from selling on the market —
+    /// `Σ price × qty` over every trade where it was the seller, across the whole run. The
+    /// realized side of profit/loss: an over-optimist that adopted/built on an inflated
+    /// forecast earns the real (lower) proceeds. Read-only over the trade tape.
+    pub fn realized_proceeds_of(&self, index: usize) -> u128 {
+        let Some(colonist) = self.colonists.get(index) else {
+            return 0;
+        };
+        let id = colonist.id;
+        self.society
+            .trades
+            .iter()
+            .filter(|t| t.seller == id)
+            .map(|t| u128::from(t.price.0) * u128::from(t.qty))
+            .sum()
+    }
+
+    /// S11: the colonist's NET-WORTH balance sheet —
+    /// `gold + WOOD × realized_wood_price + tools × V`, where `V` is the tool's realized
+    /// LIQUIDATION price if tools ever trade ELSE ZERO. Tools do not trade today, so an
+    /// idle/unproductive tool adds nothing (a *productive* tool's worth already shows up as
+    /// the gold it earned), so an optimist cannot hide a sunk-WOOD loss inside idle tools.
+    /// The capital-selection metric: a wrong forecast ends a colonist STRICTLY LOWER here.
+    /// `None` for a non-colonist / freed index.
+    pub fn agent_capital(&self, index: usize) -> Option<u128> {
+        let colonist = self.colonists.get(index)?;
+        let agent = self.society.agents.get(colonist.id)?;
+        let wood_price = self.realized_price(WOOD).map_or(0, |g| g.0);
+        let mut capital = u128::from(agent.gold.0);
+        capital += u128::from(agent.stock.get(WOOD)) * u128::from(wood_price);
+        if let Some(chain) = &self.chain {
+            for tool in [chain.content.mill(), chain.content.oven()] {
+                let units = u128::from(agent.stock.get(tool));
+                if units == 0 {
+                    continue;
+                }
+                // V = the tool's realized liquidation price (0 — tools never trade today).
+                let liquidation = self.realized_price(tool).map_or(0, |g| g.0);
+                capital += units * u128::from(liquidation);
+            }
+        }
+        Some(capital)
+    }
+
+    /// S11: the colony-wide total of [`Self::agent_capital`] over LIVING colonists — the
+    /// aggregate capital-selection metric (an optimist colony ends strictly lower than an
+    /// accurate one when the opportunity is negative-NPV at the real price).
+    pub fn total_agent_capital(&self) -> u128 {
+        self.live_colonist_slots
+            .iter()
+            .filter_map(|&slot| self.agent_capital(slot))
+            .sum()
+    }
+
     /// The destination a dead colonist's estate settled to, or `None` while alive.
     pub fn estate_destination_of(&self, index: usize) -> Option<EstateDestination> {
         self.colonists.get(index).and_then(|c| c.estate_destination)
@@ -9484,13 +9597,18 @@ fn draw_culture(
     time_preference_base: u16,
     leisure_base: u16,
     forecast_bias_base: u16,
+    forecast_bias_jitter: u16,
 ) -> CultureParams {
     let span = u16::try_from(rng.next_u64() % 500).unwrap_or(0);
     let time_preference_bps = time_preference_base.saturating_add(span);
     let leisure_weight_bps =
         leisure_base.saturating_add(u16::try_from(rng.next_u64() % 1_001).unwrap_or(0));
-    let forecast_bias_bps =
-        jitter_forecast_bias(forecast_bias_base, time_preference_bps, leisure_weight_bps);
+    let forecast_bias_bps = jitter_forecast_bias(
+        forecast_bias_base,
+        forecast_bias_jitter,
+        time_preference_bps,
+        leisure_weight_bps,
+    );
     CultureParams::new_with_forecast_bias(
         time_preference_bps,
         leisure_weight_bps,
@@ -9499,18 +9617,19 @@ fn draw_culture(
 }
 
 /// S11: a deterministic per-colonist forecast-bias draw — `base` jittered by up to
-/// ±`FORECAST_BIAS_JITTER` bps, derived from a SplitMix of the colonist's just-drawn
+/// ±`jitter` bps, derived from a SplitMix of the colonist's just-drawn
 /// time-preference/leisure values (so it is heterogeneous across colonists) and a fixed
-/// salt. Pure integer, draws no `Rng` (preserving the generation sequence). The caller's
-/// `new_with_forecast_bias` re-clamps to `5_000..=20_000`.
-fn jitter_forecast_bias(base: u16, tp_bps: u16, leisure_bps: u16) -> u16 {
-    /// The half-width of the generation jitter band (bps): a colonist's drawn bias lands
-    /// in `base ± FORECAST_BIAS_JITTER`, so a neutral base spans optimists and pessimists.
-    const FORECAST_BIAS_JITTER: u64 = 4_000;
-    let span = FORECAST_BIAS_JITTER * 2 + 1;
+/// salt. `jitter == 0` returns `base` for every colonist (a UNIFORM colony — the
+/// controlled-microtest path). Pure integer, draws no `Rng` (preserving the generation
+/// sequence). The caller's `new_with_forecast_bias` re-clamps to `5_000..=20_000`.
+fn jitter_forecast_bias(base: u16, jitter: u16, tp_bps: u16, leisure_bps: u16) -> u16 {
+    if jitter == 0 {
+        return base;
+    }
+    let span = u64::from(jitter) * 2 + 1;
     let seed = u64::from(tp_bps) ^ (u64::from(leisure_bps) << 20) ^ FORECAST_BIAS_GEN_SALT;
     let draw = deterministic_mix64(seed) % span;
-    let delta = draw as i64 - FORECAST_BIAS_JITTER as i64;
+    let delta = draw as i64 - i64::from(jitter);
     i64::from(base)
         .saturating_add(delta)
         .clamp(0, i64::from(u16::MAX)) as u16
@@ -9519,6 +9638,11 @@ fn jitter_forecast_bias(base: u16, tp_bps: u16, leisure_bps: u16) -> u16 {
 /// S11: the generation-time forecast-bias jitter salt (distinct from the inheritance
 /// salt in `life::culture`) — fixes the deterministic per-colonist draw.
 const FORECAST_BIAS_GEN_SALT: u64 = 0x00f0_8ca5_9e11_7e57;
+
+/// S11: the default half-width (bps) of the generation forecast-bias jitter band — wide
+/// enough that a neutral-base colony spans optimists and accurate forecasters (the
+/// selection substrate). A controlled microtest overrides it to `0` for a uniform colony.
+const FORECAST_BIAS_GEN_JITTER_DEFAULT: u16 = 4_000;
 
 /// S11: the agent's adaptive [`PriceBelief`] for `good`, or the neutral default belief
 /// (which is NOT observed) if the agent has no slot for the good — so a never-seen good

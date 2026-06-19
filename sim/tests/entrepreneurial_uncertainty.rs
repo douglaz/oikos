@@ -11,13 +11,32 @@
 //! named acceptance tests from `docs/impl-entrepreneurial-uncertainty.md`.
 
 use sim::{
-    capital_build_outcome_with_forecast, CapitalDeclineReason, CultureParams, Settlement,
-    SettlementConfig, FORECAST_BIAS_NEUTRAL_BPS, SALT,
+    capital_build_outcome_with_forecast, CapitalDeclineReason, CultureParams, Gold, GoodId,
+    Settlement, SettlementConfig, FORECAST_BIAS_NEUTRAL_BPS, SALT,
 };
 
 /// The flagship scenario: S10 originary + per-agent fallible forecasts.
 fn entrepreneurial() -> SettlementConfig {
     SettlementConfig::frontier_coemergent_strong_entrepreneurial()
+}
+
+/// A CONTROLLED negative-NPV variant of the flagship: a raised operating cost shrinks the
+/// chain's per-run margin so that at the REAL realized price building a tool does not pay
+/// (an accurate forecaster declines), and a UNIFORM forecast bias (jitter 0) so the colony
+/// is cleanly all-accurate or all-optimist — the falsifiability isolate for test 3.
+fn negative_npv_colony(forecast_bias_base_bps: u16) -> SettlementConfig {
+    let mut cfg = entrepreneurial();
+    cfg.forecast_bias_base_bps = forecast_bias_base_bps;
+    cfg.forecast_bias_jitter_bps = 0;
+    if let Some(chain) = cfg.chain.as_mut() {
+        chain.operating_cost = 3;
+    }
+    cfg
+}
+
+/// The chain's bread (final-good) id.
+fn bread_good(cfg: &SettlementConfig) -> GoodId {
+    cfg.chain.as_ref().expect("chain").content.bread()
 }
 
 #[test]
@@ -172,5 +191,141 @@ fn goldens_unchanged() {
     );
 }
 
-// Acceptance tests 3–7 are added with their slices (S11.2 — profit/loss selection;
-// S11.3 — shock → discoordination → recovery).
+#[test]
+fn optimist_overbuilds_and_ends_poorer() {
+    // Acceptance 3 — THE clean selection microtest (the falsifiability tripwire), a
+    // controlled NEGATIVE-NPV opportunity, tested two ways.
+
+    // (a) THE DECISION on the negative-NPV opportunity: building is unprofitable at the
+    // real price (margin 0 → the accurate forecaster DECLINES) but appears profitable at an
+    // inflated forecast (the over-optimist's ×2.0 revenue → it ACCEPTS). Deterministic,
+    // signed, isolates the mechanism: only `forecast_bias_bps` differs.
+    let accurate = CultureParams::new_with_forecast_bias(2_000, 3_000, FORECAST_BIAS_NEUTRAL_BPS);
+    let optimist = CultureParams::new_with_forecast_bias(2_000, 3_000, 20_000);
+    let accurate_decision =
+        capital_build_outcome_with_forecast(accurate, SALT, 0, 6, 3, 1, 2, 1, 6, 4, 1);
+    let optimist_decision =
+        capital_build_outcome_with_forecast(optimist, SALT, 0, 6, 3, 1, 2, 1, 6, 4, 1);
+    assert!(
+        !accurate_decision.accepted,
+        "the accurate forecaster declines the build that does not pay at the REAL price"
+    );
+    assert_eq!(
+        accurate_decision.reason,
+        CapitalDeclineReason::NonPositiveMargin
+    );
+    assert!(
+        optimist_decision.accepted,
+        "the over-optimist accepts the SAME build on its inflated forecast"
+    );
+
+    // (b) THE REALIZED OUTCOME on a live, conserved run: an all-accurate colony and an
+    // all-optimist colony on the SAME controlled negative-NPV chain. The accurate colony
+    // declines and PRESERVES (it tools up minimally and keeps its WOOD/gold); the optimist
+    // colony OVERBUILDS, realizes the real (lower) proceeds against its inflated forecast,
+    // and ends STRICTLY LOWER on the `agent_capital` balance sheet (gold + WOOD-at-realized
+    // + tools-at-realized-liquidation, which is 0 — so a sunk-WOOD loss cannot hide in idle
+    // tools). Deterministic and signed.
+    let accurate_cfg = negative_npv_colony(FORECAST_BIAS_NEUTRAL_BPS);
+    let optimist_cfg = negative_npv_colony(20_000);
+    let mut accurate_run = Settlement::generate(1, &accurate_cfg);
+    let mut optimist_run = Settlement::generate(1, &optimist_cfg);
+    accurate_run.run(1200);
+    optimist_run.run(1200);
+
+    let accurate_tools = accurate_run.tools_built();
+    let optimist_tools = optimist_run.tools_built();
+    let accurate_capital = accurate_run.total_agent_capital();
+    let optimist_capital = optimist_run.total_agent_capital();
+
+    // Money emerges in both (the forecast bias does not gate SALT promotion).
+    assert!(
+        accurate_run.promoted_at_tick().is_some() && optimist_run.promoted_at_tick().is_some(),
+        "money must emerge in both colonies"
+    );
+    // The accurate colony declines/preserves: it builds FAR fewer tools than the optimist.
+    assert!(
+        optimist_tools > accurate_tools,
+        "the over-optimist must OVERBUILD relative to the accurate forecaster \
+         (optimist {optimist_tools} vs accurate {accurate_tools})"
+    );
+    assert!(
+        accurate_tools * 2 <= optimist_tools,
+        "the accurate forecaster must build MATERIALLY less on the negative-NPV chain \
+         (accurate {accurate_tools} vs optimist {optimist_tools})"
+    );
+    // The selection bites: the optimist ends STRICTLY LOWER on the balance sheet.
+    assert!(
+        optimist_capital < accurate_capital,
+        "the over-optimist must end STRICTLY LOWER on agent_capital — profit/loss selection \
+         through capital (optimist {optimist_capital} vs accurate {accurate_capital})"
+    );
+}
+
+#[test]
+fn forecasts_can_be_wrong() {
+    // Acceptance 4: forecasting under uncertainty, not clairvoyance. There exist live
+    // decisions where an agent's forecast MATERIALLY differs from the realized price (an
+    // over-optimist standing above it), AND beliefs ADAPT toward realized over time
+    // (`observe()` is live), so the bias is a standing over-shoot on top of a tracking
+    // belief — not a permanent delusion and not perfect foresight.
+    let cfg = entrepreneurial();
+    let bread = bread_good(&cfg);
+    let mut s = Settlement::generate(1, &cfg);
+
+    // Snapshot every colonist's bread belief, then run on — beliefs that update from
+    // observed trades must MOVE (observe() is live, so the forecast tracks the level even
+    // as the bias holds it off-center).
+    s.run(100);
+    let pop = s.population();
+    let belief_snapshot: Vec<Option<Gold>> =
+        (0..pop).map(|i| s.belief_expected_of(i, bread)).collect();
+
+    let mut saw_material_forecast_gap = false;
+    let mut saw_optimist_above_realized = false;
+    let mut saw_belief_adapt = false;
+    for _ in 0..400u64 {
+        s.econ_tick();
+        for (i, snap) in belief_snapshot.iter().enumerate() {
+            if !s.belief_observed_of(i, bread) {
+                continue;
+            }
+            if s.belief_expected_of(i, bread) != *snap {
+                saw_belief_adapt = true;
+            }
+            let Some(realized) = s.realized_price(bread) else {
+                continue;
+            };
+            let Some(forecast) = s.forecast_price_for_good(i, bread) else {
+                continue;
+            };
+            // A material gap between an agent's forecast and the realized price.
+            if forecast.0.abs_diff(realized.0) * 5 >= realized.0 {
+                saw_material_forecast_gap = true;
+            }
+            // An over-optimist (bias > neutral) forecasts ABOVE the realized price.
+            if s.forecast_bias_of(i).unwrap_or(FORECAST_BIAS_NEUTRAL_BPS)
+                > FORECAST_BIAS_NEUTRAL_BPS
+                && forecast.0 > realized.0
+            {
+                saw_optimist_above_realized = true;
+            }
+        }
+    }
+
+    assert!(
+        saw_material_forecast_gap,
+        "some live forecast must materially differ from the realized price (forecasts can be wrong)"
+    );
+    assert!(
+        saw_optimist_above_realized,
+        "an over-optimist must systematically forecast ABOVE the realized price"
+    );
+    assert!(
+        saw_belief_adapt,
+        "beliefs must ADAPT toward realized over time (observe() is live)"
+    );
+}
+
+// Acceptance tests 5–7 are added with their slices (S11.3 — shock → discoordination →
+// recovery; the flagship conservation + non-mortality checks).
