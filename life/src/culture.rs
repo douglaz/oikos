@@ -6,6 +6,16 @@
 //! preserved — game-spec §5.4). In G1 they are per-colonist constants set at
 //! generation; G4 makes them heritable.
 
+/// S11: the neutral forecast bias — `×1.0`, so a default colonist forecasts the
+/// grounded output price unchanged. Every flag-off colonist carries this value,
+/// which is what keeps `entrepreneurial_forecasts`-off runs byte-identical.
+pub const FORECAST_BIAS_NEUTRAL_BPS: u16 = 10_000;
+/// S11: the clamp floor for [`CultureParams::forecast_bias_bps`] — `×0.5`. A
+/// pessimist cannot under-shoot below this (optimism is bounded, not delusional).
+pub const FORECAST_BIAS_MIN_BPS: u16 = 5_000;
+/// S11: the clamp ceiling for [`CultureParams::forecast_bias_bps`] — `×2.0`.
+pub const FORECAST_BIAS_MAX_BPS: u16 = 20_000;
+
 /// Per-colonist cultural value-shaping. Integer basis points only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CultureParams {
@@ -17,6 +27,19 @@ pub struct CultureParams {
     /// *sooner* (at a lower rest deficit). This is the cultural dial on how
     /// readily a colonist trades work for rest — labor supply stays emergent.
     pub leisure_weight_bps: u16,
+    /// S11: the per-colonist entrepreneurial **forecast bias** — a bps multiplier
+    /// on the *grounded* OUTPUT-price forecast an entrepreneurial decision appraises
+    /// (`forecast = base × forecast_bias_bps / 10_000`). Neutral
+    /// [`FORECAST_BIAS_NEUTRAL_BPS`] (`×1.0`); clamped to
+    /// `FORECAST_BIAS_MIN_BPS..=FORECAST_BIAS_MAX_BPS` (`×0.5..×2.0`) so optimism is
+    /// bounded. It is a *standing* multiplier: a biased colonist systematically
+    /// over/under-shoots even as its adaptive `PriceBelief` tracks the realized
+    /// level, so a wrong forecast bears the profit/loss. Heritable + deterministic
+    /// like the other fields (drawn at generation, inherited via
+    /// [`Self::inherit`]). Consulted and serialized only under the
+    /// `entrepreneurial_forecasts` flag, so a default (`10_000`) colonist keeps
+    /// every flag-off run byte-identical.
+    pub forecast_bias_bps: u16,
 }
 
 impl CultureParams {
@@ -26,15 +49,34 @@ impl CultureParams {
         Self {
             time_preference_bps: 5_000,
             leisure_weight_bps: 3_000,
+            forecast_bias_bps: FORECAST_BIAS_NEUTRAL_BPS,
         }
     }
 
     /// Construct from raw basis points, clamping each to `0..=10_000` so the
-    /// ordinal placement math stays in a well-defined range.
+    /// ordinal placement math stays in a well-defined range. The forecast bias is
+    /// left at its neutral default ([`FORECAST_BIAS_NEUTRAL_BPS`]) — use
+    /// [`Self::new_with_forecast_bias`] to set a non-neutral entrepreneurial bias.
     pub const fn new(time_preference_bps: u16, leisure_weight_bps: u16) -> Self {
+        Self::new_with_forecast_bias(
+            time_preference_bps,
+            leisure_weight_bps,
+            FORECAST_BIAS_NEUTRAL_BPS,
+        )
+    }
+
+    /// S11: construct with an explicit forecast bias, clamping `time_preference_bps`
+    /// / `leisure_weight_bps` to `0..=10_000` and `forecast_bias_bps` to exactly
+    /// `FORECAST_BIAS_MIN_BPS..=FORECAST_BIAS_MAX_BPS` (`×0.5..×2.0`).
+    pub const fn new_with_forecast_bias(
+        time_preference_bps: u16,
+        leisure_weight_bps: u16,
+        forecast_bias_bps: u16,
+    ) -> Self {
         Self {
             time_preference_bps: clamp_bps(time_preference_bps),
             leisure_weight_bps: clamp_bps(leisure_weight_bps),
+            forecast_bias_bps: clamp_forecast_bias(forecast_bias_bps),
         }
     }
 
@@ -54,7 +96,7 @@ impl CultureParams {
     /// `-max_delta_bps..=max_delta_bps`; [`Self::new`] re-clamps each field to
     /// `0..=10_000`, so an extreme parent cannot drift out of range.
     pub fn inherit(self, birth_seq: u64, max_delta_bps: u16) -> Self {
-        Self::new(
+        Self::new_with_forecast_bias(
             mutate_field(
                 self.time_preference_bps,
                 birth_seq,
@@ -67,15 +109,29 @@ impl CultureParams {
                 LEISURE_WEIGHT_SALT,
                 max_delta_bps,
             ),
+            // S11: the forecast bias is heritable on the SAME birth sequence but a
+            // distinct salt, so a lineage's optimism drifts but persists — the
+            // selection substrate for profit/loss. `new_with_forecast_bias`
+            // re-clamps to 5_000..=20_000, so a biased parent cannot drift out of
+            // range. With `max_delta_bps == 0` the child copies the parent exactly.
+            mutate_field(
+                self.forecast_bias_bps,
+                birth_seq,
+                FORECAST_BIAS_SALT,
+                max_delta_bps,
+            ),
         )
     }
 }
 
-/// Per-field salts so the two culture fields draw independent (but still fully
-/// deterministic) deltas from the same birth sequence — otherwise both fields
+/// Per-field salts so the culture fields draw independent (but still fully
+/// deterministic) deltas from the same birth sequence — otherwise the fields
 /// would always move together.
 const TIME_PREFERENCE_SALT: u64 = 0x1234_5678_9abc_def0;
 const LEISURE_WEIGHT_SALT: u64 = 0x0fed_cba9_8765_4321;
+/// S11: the forecast-bias inheritance salt — distinct from the two above so a
+/// child's optimism mutates independently of its time preference / leisure weight.
+const FORECAST_BIAS_SALT: u64 = 0x00f0_8ca5_7b1a_5a17;
 
 /// Nudge `field` by a bounded delta derived deterministically from
 /// `(field, birth_seq, salt)`. The delta is uniform over
@@ -118,15 +174,89 @@ const fn clamp_bps(bps: u16) -> u16 {
     }
 }
 
+/// S11: clamp a forecast bias to exactly `FORECAST_BIAS_MIN_BPS..=FORECAST_BIAS_MAX_BPS`
+/// (`×0.5..×2.0`) so optimism/pessimism is bounded, not delusional.
+const fn clamp_forecast_bias(bps: u16) -> u16 {
+    if bps < FORECAST_BIAS_MIN_BPS {
+        FORECAST_BIAS_MIN_BPS
+    } else if bps > FORECAST_BIAS_MAX_BPS {
+        FORECAST_BIAS_MAX_BPS
+    } else {
+        bps
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::CultureParams;
+    use super::{
+        CultureParams, FORECAST_BIAS_MAX_BPS, FORECAST_BIAS_MIN_BPS, FORECAST_BIAS_NEUTRAL_BPS,
+    };
 
     #[test]
     fn new_clamps_basis_points_to_range() {
         let params = CultureParams::new(60_000, 12_345);
         assert_eq!(params.time_preference_bps, 10_000);
         assert_eq!(params.leisure_weight_bps, 10_000);
+    }
+
+    #[test]
+    fn new_leaves_forecast_bias_neutral() {
+        // S11: the two-arg `new` keeps the entrepreneurial forecast bias neutral, so
+        // every pre-S11 caller (and a flag-off colony) carries ×1.0 — the byte-identity
+        // anchor.
+        let params = CultureParams::new(5_000, 3_000);
+        assert_eq!(params.forecast_bias_bps, FORECAST_BIAS_NEUTRAL_BPS);
+        assert_eq!(
+            CultureParams::lab_default().forecast_bias_bps,
+            FORECAST_BIAS_NEUTRAL_BPS
+        );
+    }
+
+    #[test]
+    fn forecast_bias_clamps_to_half_and_double() {
+        // Exactly 5_000..=20_000 (×0.5..×2.0): an extreme draw is pinned to the bounds.
+        assert_eq!(
+            CultureParams::new_with_forecast_bias(0, 0, 1).forecast_bias_bps,
+            FORECAST_BIAS_MIN_BPS
+        );
+        assert_eq!(
+            CultureParams::new_with_forecast_bias(0, 0, 60_000).forecast_bias_bps,
+            FORECAST_BIAS_MAX_BPS
+        );
+        // A value already in range passes through unchanged.
+        assert_eq!(
+            CultureParams::new_with_forecast_bias(0, 0, 12_500).forecast_bias_bps,
+            12_500
+        );
+    }
+
+    #[test]
+    fn inherit_carries_and_bounds_the_forecast_bias() {
+        // S11: the forecast bias is heritable on the birth sequence, stays in range,
+        // and explores both directions across a span of births.
+        let parent = CultureParams::new_with_forecast_bias(5_000, 3_000, 12_000);
+        let mut saw_up = false;
+        let mut saw_down = false;
+        let mut distinct = std::collections::BTreeSet::new();
+        for seq in 0..512u64 {
+            let child = parent.inherit(seq, 400);
+            assert!(child.forecast_bias_bps >= FORECAST_BIAS_MIN_BPS);
+            assert!(child.forecast_bias_bps <= FORECAST_BIAS_MAX_BPS);
+            if child.forecast_bias_bps > parent.forecast_bias_bps {
+                saw_up = true;
+            }
+            if child.forecast_bias_bps < parent.forecast_bias_bps {
+                saw_down = true;
+            }
+            distinct.insert(child.forecast_bias_bps);
+        }
+        assert!(saw_up && saw_down, "forecast bias must mutate both ways");
+        assert!(
+            distinct.len() > 8,
+            "forecast bias must vary with the sequence"
+        );
+        // Zero delta copies the parent's bias exactly.
+        assert_eq!(parent.inherit(9, 0).forecast_bias_bps, 12_000);
     }
 
     #[test]

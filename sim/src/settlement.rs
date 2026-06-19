@@ -93,8 +93,9 @@ use econ::society::Society;
 use econ::timemarket::{DebtContract, DebtId, DebtState};
 
 use life::{
-    max_savings_ladder_horizon, regenerate_scale, regenerate_scale_for_capital, CultureParams,
-    KnownGoods, NeedDynamics, NeedIntake, NeedState,
+    deterministic_mix64, max_savings_ladder_horizon, regenerate_scale,
+    regenerate_scale_for_capital, CultureParams, KnownGoods, NeedDynamics, NeedIntake, NeedState,
+    FORECAST_BIAS_NEUTRAL_BPS,
 };
 
 use world::{AgentStatus, Grid, NodeId, Pos, ResourceNode, Stockpile, StockpileId, Task, World};
@@ -913,6 +914,22 @@ pub struct ChainConfig {
     /// `false` (every existing config) keeps the S7 heuristic, so the conformance goldens
     /// are byte-identical.
     pub per_agent_capital: bool,
+    /// S11 (entrepreneurial uncertainty + profit/loss selection): when `true` *and*
+    /// money has emerged, every entrepreneurial appraisal weighs its OUTPUT-revenue
+    /// estimate against a **per-agent fallible forecast** instead of the shared last
+    /// realized price — `forecast = grounded_base × culture.forecast_bias_bps / 10_000`,
+    /// where the grounded base is the agent's own adaptive [`PriceBelief`] (once it has
+    /// observed the good) else the public realized price. The role-choice adopt, the
+    /// per-agent capital build, and the project input-bid all read this forecast for the
+    /// output price; INPUT/build costs stay at observed prices (one clean lever —
+    /// output optimism). The market still clears at the REAL price (forecasts move no
+    /// goods), so an over-optimist sinks WOOD/inputs into capital that underperforms and
+    /// bears the loss through CAPITAL accumulation — selection without mortality. With
+    /// the default `forecast_bias_bps == 10_000` (×1.0) the forecast equals the grounded
+    /// base, and the whole path is gated on this flag, so `false` (every existing config)
+    /// is byte-identical to the pre-S11 stream. Heterogeneity comes from the heritable
+    /// [`CultureParams::forecast_bias_bps`].
+    pub entrepreneurial_forecasts: bool,
     /// S7.2: the amortization horizon for the build appraisal — a durable tool is
     /// multi-period capital, so a colonist builds only when its expected per-run margin
     /// over this many cycles repays the build cost: `expected_margin_per_run × N >
@@ -1044,6 +1061,7 @@ impl ChainConfig {
             tool_acquisition_eligibility: false,
             producible_capital: false,
             per_agent_capital: false,
+            entrepreneurial_forecasts: false,
             capital_payback_cycles: 8,
             tool_build_wood: 6,
             tool_build_labor: 4,
@@ -1110,6 +1128,7 @@ impl ChainConfig {
             tool_acquisition_eligibility: false,
             producible_capital: false,
             per_agent_capital: false,
+            entrepreneurial_forecasts: false,
             capital_payback_cycles: 8,
             tool_build_wood: 6,
             tool_build_labor: 4,
@@ -1289,6 +1308,12 @@ pub struct SettlementConfig {
     /// scarce, lifting their bids — the price's scarcity response.
     pub consumer_time_preference_base_bps: u16,
     pub leisure_weight_base_bps: u16,
+    /// S11: the colony's base entrepreneurial **forecast bias** (bps), around which
+    /// each colonist's heritable [`CultureParams::forecast_bias_bps`] is jittered
+    /// deterministically at generation. Neutral [`FORECAST_BIAS_NEUTRAL_BPS`] (×1.0)
+    /// for every config: with `entrepreneurial_forecasts` off the bias is never read
+    /// or serialized, so a non-neutral base only matters for an entrepreneurial colony.
+    pub forecast_bias_base_bps: u16,
     pub dynamics: NeedDynamics,
     /// Permanent **resident traders** (G2c caravans), one econ agent each, added
     /// at generation **before** the colonist roster (taking the **lowest** ids, so
@@ -1428,6 +1453,7 @@ impl SettlementConfig {
             gatherer_time_preference_base_bps: 500,
             consumer_time_preference_base_bps: 500,
             leisure_weight_base_bps: 3_000,
+            forecast_bias_base_bps: FORECAST_BIAS_NEUTRAL_BPS,
             dynamics: NeedDynamics::lab_default(),
             // A plain settlement has no resident traders; the `Region` adds them
             // for caravans (G2c). Empty here keeps every G2b config and the six
@@ -1759,6 +1785,7 @@ impl SettlementConfig {
             gatherer_time_preference_base_bps: 500,
             consumer_time_preference_base_bps: 500,
             leisure_weight_base_bps: 3_000,
+            forecast_bias_base_bps: FORECAST_BIAS_NEUTRAL_BPS,
             dynamics: NeedDynamics::lab_default(),
             resident_traders: Vec::new(),
             chain: Some(chain),
@@ -1834,6 +1861,7 @@ impl SettlementConfig {
             gatherer_time_preference_base_bps: 500,
             consumer_time_preference_base_bps: 500,
             leisure_weight_base_bps: 3_000,
+            forecast_bias_base_bps: FORECAST_BIAS_NEUTRAL_BPS,
             dynamics: NeedDynamics::lab_default(),
             resident_traders: Vec::new(),
             chain: Some(chain),
@@ -1949,6 +1977,7 @@ impl SettlementConfig {
             gatherer_time_preference_base_bps: 500,
             consumer_time_preference_base_bps: 500,
             leisure_weight_base_bps: 3_000,
+            forecast_bias_base_bps: FORECAST_BIAS_NEUTRAL_BPS,
             dynamics: NeedDynamics::lab_default(),
             resident_traders: Vec::new(),
             chain: Some(chain),
@@ -2068,6 +2097,7 @@ impl SettlementConfig {
             gatherer_time_preference_base_bps: 400,
             consumer_time_preference_base_bps: 400,
             leisure_weight_base_bps: 3_000,
+            forecast_bias_base_bps: FORECAST_BIAS_NEUTRAL_BPS,
             // Hunger-resilient (like `price_probe`): hunger never reaches the
             // critical ceiling, so the camp does not die off mid-emergence. The
             // milestone is the MONEY-EMERGENCE mechanism, not a survival race —
@@ -2312,6 +2342,7 @@ impl SettlementConfig {
             gatherer_time_preference_base_bps: 400,
             consumer_time_preference_base_bps: 400,
             leisure_weight_base_bps: 3_000,
+            forecast_bias_base_bps: FORECAST_BIAS_NEUTRAL_BPS,
             // Hunger-resilient (like `barter_camp`): hunger never reaches the critical
             // ceiling, so the camp survives the emergence window and the only deaths are
             // old age (the demographic selection signal), not a mid-emergence die-off.
@@ -2901,6 +2932,34 @@ impl SettlementConfig {
             // higher-ranked warmth want, or the appraisal declines — the WOOD's present
             // use is one of the costs the future gain must outrank).
             chain.wood_buffer = 64;
+        }
+        cfg
+    }
+
+    /// S11 — THE ENTREPRENEURIAL-UNCERTAINTY ECONOMY (the flagship): the S10 originary
+    /// base ([`Self::frontier_coemergent_strong_originary`], never mutated) with
+    /// **per-agent fallible forecasts** on. Every entrepreneurial appraisal — the
+    /// role-choice adopt, the per-agent capital build, the project input-bid — now weighs
+    /// its OUTPUT-revenue estimate against the colonist's OWN grounded forecast (its
+    /// adaptive [`PriceBelief`] tilted by the heritable
+    /// [`CultureParams::forecast_bias_bps`]) instead of the shared last realized price.
+    /// The market still clears at the REAL price, so an over-optimist that adopts/builds
+    /// on an inflated forecast earns the real (lower) revenue: its committed WOOD/inputs
+    /// are sunk and it ends with LESS capital to invest, while an accurate/conservative
+    /// forecaster accumulates and expands — **profit/loss selection through capital, not
+    /// mortality** (`hunger_critical` stays disabled). Money still EMERGES and the S10
+    /// multi-horizon ladder + per-agent capital choice are intact (the originary base is
+    /// untouched); only the appraisal's price expectation becomes individual and fallible.
+    ///
+    /// Derived from the originary base by flipping a single flag
+    /// ([`ChainConfig::entrepreneurial_forecasts`]) — so with that flag reverted it is
+    /// byte-identical to `frontier_coemergent_strong_originary`. The per-colonist forecast
+    /// biases come from the heritable jitter around the neutral base
+    /// ([`SettlementConfig::forecast_bias_base_bps`], left neutral here).
+    pub fn frontier_coemergent_strong_entrepreneurial() -> Self {
+        let mut cfg = Self::frontier_coemergent_strong_originary();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.entrepreneurial_forecasts = true;
         }
         cfg
     }
@@ -3548,6 +3607,11 @@ struct ChainRuntime {
     /// build planner (see [`ChainConfig::per_agent_capital`]). `false` for every existing
     /// config, so the S7 heuristic is byte-identical.
     per_agent_capital: bool,
+    /// S11: per-agent fallible OUTPUT-price forecasts feed the entrepreneurial
+    /// appraisals (see [`ChainConfig::entrepreneurial_forecasts`]). `false` for every
+    /// existing config, so the appraisals read the raw realized price and the run is
+    /// byte-identical.
+    entrepreneurial_forecasts: bool,
     capital_payback_cycles: u32,
     tool_build_wood: u32,
     tool_build_labor: u32,
@@ -3934,7 +3998,12 @@ impl Settlement {
                     None,
                 )
             };
-            let culture = draw_culture(&mut rng, tp_base, config.leisure_weight_base_bps);
+            let culture = draw_culture(
+                &mut rng,
+                tp_base,
+                config.leisure_weight_base_bps,
+                config.forecast_bias_base_bps,
+            );
             let need = NeedState::rested();
             agents.push(build_agent(
                 id, &need, &culture, &known, vocation, latent, config,
@@ -3988,6 +4057,7 @@ impl Settlement {
                         &mut rng,
                         spec.time_preference_base_bps,
                         config.leisure_weight_base_bps,
+                        config.forecast_bias_base_bps,
                     );
                     let need = NeedState::rested();
                     agents.push(build_demography_agent(id, &need, &culture, &known, spec));
@@ -4298,6 +4368,7 @@ impl Settlement {
                 tool_acquisition_eligibility: chain.tool_acquisition_eligibility,
                 producible_capital: chain.producible_capital,
                 per_agent_capital: chain.per_agent_capital,
+                entrepreneurial_forecasts: chain.entrepreneurial_forecasts,
                 capital_payback_cycles: chain.capital_payback_cycles,
                 tool_build_wood: chain.tool_build_wood,
                 tool_build_labor: chain.tool_build_labor,
@@ -6385,20 +6456,34 @@ impl Settlement {
     /// override) unless enabled and money has emerged, so every other run is
     /// byte-identical.
     fn set_project_input_bid_overrides(&mut self) {
-        let (mill_recipe, bake_recipe, grain, flour, bread, operating_cost, recurring, subsistence) =
-            match self.chain.as_ref() {
-                Some(chain) if chain.project_input_bids => (
-                    chain.content.mill_recipe().clone(),
-                    chain.content.bake_recipe().clone(),
-                    chain.content.grain(),
-                    chain.content.flour(),
-                    chain.content.bread(),
-                    chain.operating_cost,
-                    chain.recurring_motive,
-                    chain.producer_subsistence,
-                ),
-                _ => return,
-            };
+        let (
+            mill_recipe,
+            bake_recipe,
+            grain,
+            flour,
+            bread,
+            operating_cost,
+            recurring,
+            subsistence,
+            entrepreneurial,
+        ) = match self.chain.as_ref() {
+            Some(chain) if chain.project_input_bids => (
+                chain.content.mill_recipe().clone(),
+                chain.content.bake_recipe().clone(),
+                chain.content.grain(),
+                chain.content.flour(),
+                chain.content.bread(),
+                chain.operating_cost,
+                chain.recurring_motive,
+                chain.producer_subsistence,
+                // S11: the producer imputes its input reservation against its own fallible
+                // OUTPUT forecast (an over-optimist bids more for input, overpaying against
+                // the seller's real ask — a real selection channel); the FILL still clears
+                // at the seller's real ask, so the market price is forecast-independent.
+                chain.entrepreneurial_forecasts,
+            ),
+            _ => return,
+        };
         let Some(money) = self.society.current_money_good() else {
             return;
         };
@@ -6416,11 +6501,20 @@ impl Settlement {
                 Vocation::Baker => (&bake_recipe, flour, bread),
                 _ => continue,
             };
-            // The output's last realized price is the imputation basis (S4 seeds it).
-            let Some(out_price) = self.society.realized_price(output) else {
+            // The output's last realized price is the imputation basis (S4 seeds it). S11:
+            // under entrepreneurial forecasts the producer imputes against its own grounded
+            // fallible forecast of that output price instead (input cost stays observed).
+            let realized_output = self.society.realized_price(output);
+            let forecast_bias = self.colonists[slot].culture.forecast_bias_bps;
+            let Some(agent) = self.society.agents.get(producer_id) else {
                 continue;
             };
-            let Some(agent) = self.society.agents.get(producer_id) else {
+            let out_price = if entrepreneurial {
+                forecast_output_price(agent, output, realized_output, forecast_bias)
+            } else {
+                realized_output
+            };
+            let Some(out_price) = out_price else {
                 continue;
             };
             // Demand-responsive restock (S3 working-capital discipline): do not buy
@@ -6641,6 +6735,9 @@ impl Settlement {
         // S7.1: when tool-acquisition eligibility is on, a colonist that HOLDS the
         // required tool is admitted to this appraisal even with no seeded `latent`.
         let tool_eligibility = chain.tool_acquisition_eligibility;
+        // S11: route each colonist's per-agent fallible OUTPUT-price forecast into the
+        // adopt appraisal instead of the raw realized price (input price stays observed).
+        let entrepreneurial = chain.entrepreneurial_forecasts;
         let tick = self.society.tick.0;
         let mut changed = false;
 
@@ -6675,6 +6772,9 @@ impl Settlement {
                 continue;
             }
             let id = colonist.id;
+            // S11: the colonist's heritable forecast bias (×1.0 = neutral). A Copy value,
+            // so no borrow is held into the appraisal below.
+            let forecast_bias = colonist.culture.forecast_bias_bps;
             // Adopt the FIRST candidate whose recipe pays on this colonist's own scale
             // (mill before oven). A colonist runs ONE vocation, so a holder of both tools
             // commits to one recipe; appraising both means the oven is chosen when the
@@ -6683,29 +6783,38 @@ impl Settlement {
             // pre-S7 appraisal unchanged.
             let mut adoption: Option<Vocation> = None;
             for recipe_id in candidates.iter().flatten().copied() {
-                let (recipe, output_price, input_price, adopted) = match recipe_id {
+                let (recipe, output_good, input_price, adopted) = match recipe_id {
                     RecipeId::Mill => (
                         &mill_recipe,
-                        self.society.realized_price(flour),
+                        flour,
                         self.society.realized_price(grain),
                         Vocation::Miller,
                     ),
                     RecipeId::Bake => (
                         &bake_recipe,
-                        self.society.realized_price(bread),
+                        bread,
                         self.society.realized_price(flour),
                         Vocation::Baker,
                     ),
                     // No other recipe is a latent specialty (set only at generation).
                     _ => continue,
                 };
+                // The OUTPUT-price estimate: the colonist's grounded fallible forecast when
+                // entrepreneurial forecasts are on, else the raw last realized price (the
+                // pre-S11 path). The market still clears at the REAL price either way.
+                let realized_output = self.society.realized_price(output_good);
                 let pays = {
                     let agent = self
                         .society
                         .agents
                         .get(id)
                         .expect("living colonist resolves in the arena");
-                    recipe_adoption_pays_for_money(
+                    let output_price = if entrepreneurial {
+                        forecast_output_price(agent, output_good, realized_output, forecast_bias)
+                    } else {
+                        realized_output
+                    };
+                    let base_pays = recipe_adoption_pays_for_money(
                         agent,
                         recipe,
                         output_price,
@@ -6713,15 +6822,20 @@ impl Settlement {
                         tick,
                         operating_cost,
                         money_good,
-                    )
+                    );
+                    // Recurring owner-operator motive: also keep the role while the recipe
+                    // is simply profitable at the appraised output price, so a producer
+                    // whose savings ladder is full does not retire (consumption recurs — it
+                    // keeps producing to keep eating). A no-op unless enabled.
+                    base_pays
+                        || (recurring_motive
+                            && recipe_is_profitable(
+                                recipe,
+                                output_price,
+                                input_price,
+                                operating_cost,
+                            ))
                 };
-                // Recurring owner-operator motive: also keep the role while the recipe
-                // is simply profitable at realized prices, so a producer whose savings
-                // ladder is full does not retire (consumption recurs — it keeps
-                // producing to keep eating). A no-op unless enabled.
-                let pays = pays
-                    || (recurring_motive
-                        && recipe_is_profitable(recipe, output_price, input_price, operating_cost));
                 if pays {
                     adoption = Some(adopted);
                     break;
@@ -7226,6 +7340,12 @@ impl Settlement {
         let Some(money_good) = self.current_money_good() else {
             return false;
         };
+        // S11: when entrepreneurial forecasts are on, each colonist appraises the OUTPUT
+        // price as its own grounded fallible forecast (re-derived per colonist below), so
+        // the build is a bet on its own price expectation. The demand-gating signals stay
+        // observed (a build still requires real current demand), and the INPUT price stays
+        // observed — only the output-revenue estimate is forecast.
+        let entrepreneurial = self.entrepreneurial_can_run();
         // The two tool candidates with their RECENT realized recipe prices, ordered by net
         // margin DESC so each colonist prefers the more rewarding roundabout investment
         // (Menger's imputation — a per-agent choice, not a global stage choice); ties by tool
@@ -7285,9 +7405,14 @@ impl Settlement {
             if self.capital_builds.iter().any(|build| build.builder == id) {
                 continue;
             }
+            // S11: the colonist's heritable forecast bias (×1.0 = neutral). A Copy value, so
+            // no borrow is held into the appraisal below.
+            let forecast_bias = self.colonists[slot].culture.forecast_bias_bps;
             // Holds no chain tool and enough saved WOOD to fund the build itself, then
             // appraises each tool on its own scale — all under one immutable agent borrow.
-            let appraised: Option<(CapitalDecision, Option<usize>)> = {
+            // The candidate array used for the appraisal is the SAME one indexed for the
+            // build template, so a per-agent forecast re-sort cannot desync them.
+            let appraised: Option<([ToolCandidate<'_>; 2], CapitalDecision, Option<usize>)> = {
                 let Some(agent) = self.society.agents.get(id) else {
                     continue;
                 };
@@ -7297,26 +7422,64 @@ impl Settlement {
                 {
                     None
                 } else {
-                    Some(appraise_capital_for_colonist(
+                    // The candidates this colonist appraises: under entrepreneurial forecasts
+                    // the OUTPUT price is the colonist's grounded fallible forecast of the
+                    // (still demand-gated) base price, re-sorted by its OWN per-agent margin
+                    // so an optimist prefers what IT thinks pays; the INPUT price stays the
+                    // observed gated price. Off the flag this is exactly the global
+                    // `tool_candidates` (byte-identical).
+                    let candidates = if entrepreneurial {
+                        let forecast = |good: GoodId, gated: Option<Gold>| -> Option<Gold> {
+                            gated.and_then(|_| {
+                                forecast_output_price(agent, good, gated, forecast_bias)
+                            })
+                        };
+                        let mut c = [
+                            ToolCandidate {
+                                tool: params.oven_good,
+                                recipe: params.bake_recipe,
+                                template_id: ProjectTemplateId::BuildOven,
+                                output_price: forecast(params.bread, bread_price),
+                                input_price: flour_price,
+                            },
+                            ToolCandidate {
+                                tool: params.mill_good,
+                                recipe: params.mill_recipe,
+                                template_id: ProjectTemplateId::BuildMill,
+                                output_price: forecast(params.flour, flour_price),
+                                input_price: grain_price,
+                            },
+                        ];
+                        c.sort_by(|a, b| {
+                            recipe_net_margin(b, params.operating_cost)
+                                .cmp(&recipe_net_margin(a, params.operating_cost))
+                                .then(a.tool.0.cmp(&b.tool.0))
+                        });
+                        c
+                    } else {
+                        tool_candidates
+                    };
+                    let (decision, chosen) = appraise_capital_for_colonist(
                         agent,
                         slot,
-                        &tool_candidates,
+                        &candidates,
                         params.wood_qty,
                         params.build_labor,
                         params.tick,
                         params.operating_cost,
                         money_good,
-                    ))
+                    );
+                    Some((candidates, decision, chosen))
                 }
             };
-            let Some((decision, chosen)) = appraised else {
+            let Some((candidates, decision, chosen)) = appraised else {
                 continue;
             };
             self.last_capital_decisions.push(decision);
             let Some(chosen_index) = chosen else {
                 continue;
             };
-            let candidate = tool_candidates[chosen_index];
+            let candidate = candidates[chosen_index];
 
             // Commit the build via the reused per-builder substrate: the builder's OWN
             // WOOD up front (booked consumed_as_input) + one labor advance, exactly the S7
@@ -7411,6 +7574,20 @@ impl Settlement {
         self.chain
             .as_ref()
             .is_some_and(|chain| chain.producible_capital && chain.per_agent_capital)
+    }
+
+    /// S11: whether per-agent fallible OUTPUT-price forecasts steer the entrepreneurial
+    /// appraisals — gated on the chain flag. When this holds, the role-choice adopt, the
+    /// per-agent capital build, and the project input-bid weigh each agent's
+    /// `forecast_output_price` instead of the raw realized price, and `canonical_bytes`
+    /// serializes the per-colonist `forecast_bias_bps` + the per-belief `observed` flag
+    /// (the new state that steers future ticks). A pure function of the chain flag; with
+    /// it off every appraisal reads the raw realized price and the stream is byte-identical
+    /// to pre-S11.
+    fn entrepreneurial_can_run(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(|chain| chain.entrepreneurial_forecasts)
     }
 
     /// S7.2: whether `good` has cleared a real trade within the last `window` econ ticks
@@ -8721,6 +8898,10 @@ impl Settlement {
         // per-colonist latent block below serialize in that case too. With the gate
         // off this is exactly `has_latent_pool`, so every pre-S7 stream is unchanged.
         let role_choice_active = has_latent_pool || self.tool_acquisition_can_run();
+        // S11: whether per-agent forecasts steer the appraisals — gates the per-belief
+        // `observed` flag and the per-colonist `forecast_bias_bps` below into the digest.
+        // Off the flag neither is emitted, so the pre-S11 stream is byte-identical.
+        let entrepreneurial_serialized = self.entrepreneurial_can_run();
         if let Some(chain) = &self.chain {
             out.extend_from_slice(&chain.throughput.to_le_bytes());
             // The G3b operating cost steers nothing but the role-choice appraisal, so
@@ -8815,6 +8996,15 @@ impl Settlement {
                     out.extend_from_slice(&build.template.required_labor.to_le_bytes());
                     out.extend_from_slice(&build.project.labor_advanced.to_le_bytes());
                 }
+            }
+            // S11: the entrepreneurial-forecasts gate steers every future tick once on
+            // (each appraisal weighs a per-agent forecast instead of the realized price),
+            // so it joins the identity when the phase can run. Emitted only when on (the
+            // same gated-block discipline as S7/S10 above + the per-colonist forecast bias
+            // and the per-belief `observed` flag below), so a flag-off chain stays
+            // byte-identical to the pre-S11 stream.
+            if self.entrepreneurial_can_run() {
+                out.push(1);
             }
             // The staple mapping steers the next needs/scale phase for *any* chain,
             // role-choice or not, so it is included whenever a chain is active. The
@@ -9132,6 +9322,14 @@ impl Settlement {
                 out.extend_from_slice(&belief.expected.0.to_le_bytes());
                 out.extend_from_slice(&belief.step.0.to_le_bytes());
                 out.extend_from_slice(&belief.last_seen.to_le_bytes());
+                // S11: the `observed` flag steers the grounded forecast (belief vs realized
+                // fallback) and is NOT derivable from `last_seen` (0 is ambiguous between
+                // never-observed and a tick-0 observation), so it is part of the
+                // future-behaviour identity once forecasts run. Emitted only under the flag,
+                // so a flag-off agent block is byte-identical to the pre-S11 stream.
+                if entrepreneurial_serialized {
+                    out.push(u8::from(belief.observed));
+                }
             }
         }
 
@@ -9163,6 +9361,13 @@ impl Settlement {
             // harvest target, so both belong in the future-behavior identity.
             out.extend_from_slice(&colonist.culture.time_preference_bps.to_le_bytes());
             out.extend_from_slice(&colonist.culture.leisure_weight_bps.to_le_bytes());
+            // S11: the heritable forecast bias steers every future entrepreneurial
+            // appraisal, so it joins the identity once forecasts run. Emitted only under
+            // the flag (the same gated-block discipline as the per-belief `observed`
+            // above), so a flag-off colonist block stays byte-identical to pre-S11.
+            if entrepreneurial_serialized {
+                out.extend_from_slice(&colonist.culture.forecast_bias_bps.to_le_bytes());
+            }
             match colonist.node {
                 Some(node) => {
                     out.push(1);
@@ -9265,12 +9470,96 @@ impl Settlement {
 /// preference within a small band above the vocation's base, and a leisure
 /// weight in a fixed band. Mirrors `life::Camp::draw_culture` so the same
 /// determinism discipline holds.
-fn draw_culture(rng: &mut Rng, time_preference_base: u16, leisure_base: u16) -> CultureParams {
+///
+/// S11: the entrepreneurial **forecast bias** is jittered around `forecast_bias_base`
+/// **without drawing any extra `Rng`** — it is a deterministic SplitMix of the two
+/// values just drawn (so it varies per colonist) and a fixed salt. Drawing from the
+/// `Rng` here would shift every later draw and break the byte-identical goldens; this
+/// keeps the `Rng` sequence (and thus a flag-off run) bit-for-bit unchanged while still
+/// giving each colonist its own heritable optimism. The result is clamped to
+/// `5_000..=20_000` by `CultureParams::new_with_forecast_bias`. With `forecast_bias_base
+/// == 10_000` and the jitter band, biases land symmetrically around ×1.0.
+fn draw_culture(
+    rng: &mut Rng,
+    time_preference_base: u16,
+    leisure_base: u16,
+    forecast_bias_base: u16,
+) -> CultureParams {
     let span = u16::try_from(rng.next_u64() % 500).unwrap_or(0);
     let time_preference_bps = time_preference_base.saturating_add(span);
     let leisure_weight_bps =
         leisure_base.saturating_add(u16::try_from(rng.next_u64() % 1_001).unwrap_or(0));
-    CultureParams::new(time_preference_bps, leisure_weight_bps)
+    let forecast_bias_bps =
+        jitter_forecast_bias(forecast_bias_base, time_preference_bps, leisure_weight_bps);
+    CultureParams::new_with_forecast_bias(
+        time_preference_bps,
+        leisure_weight_bps,
+        forecast_bias_bps,
+    )
+}
+
+/// S11: a deterministic per-colonist forecast-bias draw — `base` jittered by up to
+/// ±`FORECAST_BIAS_JITTER` bps, derived from a SplitMix of the colonist's just-drawn
+/// time-preference/leisure values (so it is heterogeneous across colonists) and a fixed
+/// salt. Pure integer, draws no `Rng` (preserving the generation sequence). The caller's
+/// `new_with_forecast_bias` re-clamps to `5_000..=20_000`.
+fn jitter_forecast_bias(base: u16, tp_bps: u16, leisure_bps: u16) -> u16 {
+    /// The half-width of the generation jitter band (bps): a colonist's drawn bias lands
+    /// in `base ± FORECAST_BIAS_JITTER`, so a neutral base spans optimists and pessimists.
+    const FORECAST_BIAS_JITTER: u64 = 4_000;
+    let span = FORECAST_BIAS_JITTER * 2 + 1;
+    let seed = u64::from(tp_bps) ^ (u64::from(leisure_bps) << 20) ^ FORECAST_BIAS_GEN_SALT;
+    let draw = deterministic_mix64(seed) % span;
+    let delta = draw as i64 - FORECAST_BIAS_JITTER as i64;
+    i64::from(base)
+        .saturating_add(delta)
+        .clamp(0, i64::from(u16::MAX)) as u16
+}
+
+/// S11: the generation-time forecast-bias jitter salt (distinct from the inheritance
+/// salt in `life::culture`) — fixes the deterministic per-colonist draw.
+const FORECAST_BIAS_GEN_SALT: u64 = 0x00f0_8ca5_9e11_7e57;
+
+/// S11: the agent's adaptive [`PriceBelief`] for `good`, or the neutral default belief
+/// (which is NOT observed) if the agent has no slot for the good — so a never-seen good
+/// falls back to the public realized price in [`forecast_output_price`].
+fn agent_belief(agent: &Agent, good: GoodId) -> PriceBelief {
+    agent
+        .expect
+        .get(usize::from(good.0))
+        .copied()
+        .unwrap_or_else(|| PriceBelief::new(Gold(1), Gold(1)))
+}
+
+/// S11: the per-agent **grounded fallible forecast** of `good`'s OUTPUT price — the
+/// entrepreneurial estimate the role-choice / capital-build / input-bid appraisals weigh
+/// instead of the raw realized price when `entrepreneurial_forecasts` is on.
+///
+/// `forecast = base × bias_bps / 10_000`, where `base` is GROUNDED (never the cold-start
+/// neutral belief default): the agent's own belief `expected` ONLY once it has actually
+/// observed the good (`belief.observed` — distinct from `last_seen == 0`, so a tick-0
+/// observation still grounds on the belief), else the public `realized` price; if neither
+/// exists (no trade ever cleared and the agent never observed) there is no forecast and
+/// the decision is skipped (`None`), exactly as today with a missing realized price.
+///
+/// The bias is a *standing* multiplier, so a biased agent systematically over/under-shoots
+/// even as its belief tracks the realized level — forecasting under uncertainty, never
+/// clairvoyance. Pure integer + deterministic (belief + bias are digested state).
+fn forecast_output_price(
+    agent: &Agent,
+    good: GoodId,
+    realized: Option<Gold>,
+    bias_bps: u16,
+) -> Option<Gold> {
+    let belief = agent_belief(agent, good);
+    let base = if belief.observed {
+        belief.expected
+    } else {
+        realized?
+    };
+    let forecast =
+        base.0.saturating_mul(u64::from(bias_bps)) / u64::from(FORECAST_BIAS_NEUTRAL_BPS);
+    Some(Gold(forecast))
 }
 
 fn build_agent(
@@ -9760,6 +10049,50 @@ pub fn capital_build_outcome_for_culture(
         0,
         operating_cost,
         savings_good,
+    )
+}
+
+/// S11 (the forecast microtest surface — the falsifiable bar): does a colonist with
+/// `culture` build the tool when it appraises the output revenue against its OWN
+/// **grounded fallible forecast** of `realized_output_price`, rather than the realized
+/// price itself? The forecaster carries no prior belief, so its grounded forecast is the
+/// public realized price tilted by its heritable bias:
+/// `forecast = realized_output_price × culture.forecast_bias_bps / 10_000`. The INPUT
+/// price stays observed (the one clean lever — output-revenue optimism).
+///
+/// This isolates the selection mechanism: hold everything else fixed and vary ONLY
+/// `forecast_bias_bps`, and an over-optimist (`> 10_000`) appraises an inflated revenue
+/// and ACCEPTS a build the accurate forecaster (`10_000`) DECLINES — the build a market
+/// that clears at `realized_output_price` will under-pay. With a neutral bias this is
+/// exactly [`capital_build_outcome_for_culture`] at the realized price.
+#[allow(clippy::too_many_arguments)]
+pub fn capital_build_outcome_with_forecast(
+    culture: CultureParams,
+    savings_good: GoodId,
+    gold: u64,
+    wood_held: u32,
+    realized_output_price: u64,
+    output_qty: u32,
+    input_price: u64,
+    input_qty: u32,
+    build_wood: u32,
+    build_labor: u32,
+    operating_cost: u64,
+) -> CapitalBuildOutcome {
+    let forecast = realized_output_price.saturating_mul(u64::from(culture.forecast_bias_bps))
+        / u64::from(FORECAST_BIAS_NEUTRAL_BPS);
+    capital_build_outcome_for_culture(
+        culture,
+        savings_good,
+        gold,
+        wood_held,
+        forecast,
+        output_qty,
+        input_price,
+        input_qty,
+        build_wood,
+        build_labor,
+        operating_cost,
     )
 }
 
@@ -12804,6 +13137,117 @@ mod tests {
                 "with per-agent capital on, the active build knobs must steer the digest"
             );
         }
+    }
+
+    #[test]
+    fn forecast_output_price_grounds_on_belief_then_realized() {
+        // S11: the grounded fallible forecast — belief.expected when observed (× bias),
+        // else the public realized price (× bias), else None. The bias is a standing
+        // multiplier, so a biased agent systematically over/under-shoots.
+        let mut agent = Agent {
+            id: AgentId(1),
+            scale: Vec::new(),
+            stock: Stock::new(NET.0),
+            gold: Gold::ZERO,
+            labor_capacity: 0,
+            hunger_deficit: 0,
+            roles: vec![Role::Household],
+            expect: belief_vec(),
+        };
+        // FOOD: an OBSERVED belief grounds the forecast on `expected`, IGNORING realized.
+        agent.expect[usize::from(FOOD.0)] = PriceBelief {
+            expected: Gold(10),
+            step: Gold(1),
+            last_seen: 0,
+            observed: true,
+        };
+        assert_eq!(
+            forecast_output_price(&agent, FOOD, Some(Gold(5)), 10_000),
+            Some(Gold(10)),
+            "neutral bias on an observed belief forecasts the belief level, not realized"
+        );
+        assert_eq!(
+            forecast_output_price(&agent, FOOD, Some(Gold(5)), 20_000),
+            Some(Gold(20)),
+            "an optimist over-shoots its belief by ×2"
+        );
+        assert_eq!(
+            forecast_output_price(&agent, FOOD, None, 5_000),
+            Some(Gold(5)),
+            "a pessimist under-shoots its belief by ×0.5 (realized absent is irrelevant)"
+        );
+        // WOOD: an UN-observed belief falls back to the public realized price.
+        assert!(!agent_belief(&agent, WOOD).observed);
+        assert_eq!(
+            forecast_output_price(&agent, WOOD, Some(Gold(6)), 20_000),
+            Some(Gold(12)),
+            "an un-observed good grounds on realized × bias"
+        );
+        // No belief AND no realized price → no forecast (the decision is skipped).
+        assert_eq!(forecast_output_price(&agent, WOOD, None, 10_000), None);
+    }
+
+    #[test]
+    fn canonical_bytes_include_forecast_bias() {
+        // S11: under entrepreneurial forecasts the per-colonist forecast bias steers every
+        // appraisal, so two configs whose forecast-bias base differs — and thus whose drawn
+        // per-colonist biases differ — digest apart.
+        let base = SettlementConfig::frontier_coemergent_strong_entrepreneurial();
+        let mut tilted = base.clone();
+        tilted.forecast_bias_base_bps = 15_000;
+        assert_ne!(
+            Settlement::generate(7, &base).canonical_bytes(),
+            Settlement::generate(7, &tilted).canonical_bytes(),
+            "forecast_bias must be part of the entrepreneurial identity"
+        );
+
+        // With the flag OFF the forecast bias is never serialized, so the SAME base change
+        // is invisible (byte-identical) — the additivity anchor.
+        let off = SettlementConfig::frontier_coemergent_strong_originary();
+        let mut off_tilted = off.clone();
+        off_tilted.forecast_bias_base_bps = 15_000;
+        assert_eq!(
+            Settlement::generate(7, &off).canonical_bytes(),
+            Settlement::generate(7, &off_tilted).canonical_bytes(),
+            "forecast bias must be invisible to the digest with forecasts off"
+        );
+    }
+
+    #[test]
+    fn canonical_bytes_include_entrepreneurial_flag_and_belief_observed() {
+        // S11: the entrepreneurial_forecasts flag is part of the chain config identity (it
+        // flips every appraisal from realized price to a per-agent forecast), so the
+        // flagship and the originary base it derives from digest apart at generation.
+        let on = SettlementConfig::frontier_coemergent_strong_entrepreneurial();
+        let off = SettlementConfig::frontier_coemergent_strong_originary();
+        assert_ne!(
+            Settlement::generate(7, &on).canonical_bytes(),
+            Settlement::generate(7, &off).canonical_bytes(),
+            "the entrepreneurial_forecasts flag must be part of the identity"
+        );
+
+        // The per-belief `observed` flag is in the digest under the flag (it steers the
+        // belief-vs-realized grounding) and is NOT derivable from `last_seen`. Flip one
+        // belief's `observed` and the digest must move under the flag…
+        let a = Settlement::generate(7, &on);
+        let mut b = Settlement::generate(7, &on);
+        assert_eq!(a.canonical_bytes(), b.canonical_bytes());
+        b.society.agents.as_mut_slice()[0].expect[usize::from(FOOD.0)].observed = true;
+        assert_ne!(
+            a.canonical_bytes(),
+            b.canonical_bytes(),
+            "the per-belief `observed` flag must be part of the entrepreneurial identity"
+        );
+
+        // …and must stay invisible with the flag off (byte-identical).
+        let c = Settlement::generate(7, &off);
+        let mut d = Settlement::generate(7, &off);
+        d.society.agents.as_mut_slice()[0].expect[usize::from(FOOD.0)].observed = true;
+        assert_eq!(
+            c.canonical_bytes(),
+            d.canonical_bytes(),
+            "the belief `observed` flag must be invisible to the digest with forecasts off"
+        );
     }
 
     #[test]

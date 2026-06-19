@@ -30,7 +30,10 @@ pub mod need;
 pub mod scale;
 
 pub use camp::{Camp, CampEnv, Vocation, TICKS_PER_YEAR};
-pub use culture::{deterministic_mix64, CultureParams};
+pub use culture::{
+    deterministic_mix64, CultureParams, FORECAST_BIAS_MAX_BPS, FORECAST_BIAS_MIN_BPS,
+    FORECAST_BIAS_NEUTRAL_BPS,
+};
 pub use need::{NeedDynamics, NeedIntake, NeedState};
 pub use scale::{
     max_savings_ladder_horizon, regenerate_scale, regenerate_scale_for_capital,

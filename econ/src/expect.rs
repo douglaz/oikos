@@ -7,6 +7,14 @@ pub struct PriceBelief {
     pub expected: Gold,
     pub step: Gold,
     pub last_seen: u64,
+    /// S11: whether this belief has ever been UPDATED from a market observation
+    /// (a trade the agent took part in / watched, or an unfilled live quote).
+    /// Distinct from `last_seen == 0`, which is ambiguous between "never observed"
+    /// and "observed at tick 0" — an entrepreneurial forecast must ground itself in
+    /// the belief ONLY once the agent has actually seen the good, else fall back to
+    /// the public realized price (see `forecast_price_for`). Set the moment the
+    /// belief first updates and never cleared.
+    pub observed: bool,
 }
 
 impl PriceBelief {
@@ -15,12 +23,14 @@ impl PriceBelief {
             expected,
             step,
             last_seen: 0,
+            observed: false,
         }
     }
 
     pub fn observe(&mut self, price: Gold, tick: u64) {
         self.expected = move_toward(self.expected, price, self.step);
         self.last_seen = tick;
+        self.observed = true;
     }
 
     pub fn shade_bid(self, reservation: Gold) -> Gold {
@@ -36,6 +46,7 @@ impl PriceBelief {
             self.expected = self.expected.saturating_add(self.step).min(reservation);
         }
         self.last_seen = tick;
+        self.observed = true;
     }
 
     pub fn nudge_unfilled_ask(&mut self, reservation: Gold, tick: u64) {
@@ -43,6 +54,7 @@ impl PriceBelief {
             self.expected = self.expected.saturating_sub(self.step).max(reservation);
         }
         self.last_seen = tick;
+        self.observed = true;
     }
 }
 
@@ -69,6 +81,27 @@ mod tests {
         assert_eq!(belief.shade_bid(Gold(9)), Gold(7));
         assert_eq!(belief.shade_ask(Gold(4)), Gold(4));
         assert_eq!(belief.shade_ask(Gold(1)), Gold(3));
+    }
+
+    #[test]
+    fn observed_distinguishes_never_seen_from_a_tick_zero_observation() {
+        // S11: a fresh belief is NOT observed even though its `last_seen` is 0; observing
+        // at tick 0 sets the flag, so the two are distinguishable (the forecast-grounding
+        // contract `last_seen == 0` cannot express).
+        let mut never = PriceBelief::new(Gold(2), Gold(1));
+        assert!(!never.observed);
+        assert_eq!(never.last_seen, 0);
+
+        let mut at_tick_zero = PriceBelief::new(Gold(2), Gold(1));
+        at_tick_zero.observe(Gold(2), 0);
+        assert!(at_tick_zero.observed);
+        assert_eq!(at_tick_zero.last_seen, 0);
+        // Same expected/step/last_seen, different `observed`.
+        assert_ne!(never, at_tick_zero);
+
+        // An unfilled live quote also counts as an observation.
+        never.nudge_unfilled_bid(Gold(5), 3);
+        assert!(never.observed);
     }
 
     #[test]

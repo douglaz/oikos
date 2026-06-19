@@ -95,12 +95,12 @@ pub use era::{
 };
 pub use region::{Region, RegionConfig, RegionTickReport, RoadPlan, Route};
 pub use settlement::{
-    capital_build_outcome_for_culture, recipe_adoption_pays, recipe_adoption_pays_for_money,
-    BankConfig, BarterConfig, BenchSurface, CandidateAcceptances, CapitalBuildOutcome,
-    CapitalDecision, CapitalDeclineReason, ChainConfig, CycleConfig, CycleKind, EconTickReport,
-    EstateDestination, LineageStats, NodeSpec, OrderStat, ProducerCash, ProducerRole, Settlement,
-    SettlementConfig, TaxLevy, TaxPolicy, TenderBench, TenderPolicy, TraderEndowment, Vocation,
-    ECON_TICKS_PER_YEAR, FAST_TICKS_PER_ECON_TICK,
+    capital_build_outcome_for_culture, capital_build_outcome_with_forecast, recipe_adoption_pays,
+    recipe_adoption_pays_for_money, BankConfig, BarterConfig, BenchSurface, CandidateAcceptances,
+    CapitalBuildOutcome, CapitalDecision, CapitalDeclineReason, ChainConfig, CycleConfig,
+    CycleKind, EconTickReport, EstateDestination, LineageStats, NodeSpec, OrderStat, ProducerCash,
+    ProducerRole, Settlement, SettlementConfig, TaxLevy, TaxPolicy, TenderBench, TenderPolicy,
+    TraderEndowment, Vocation, ECON_TICKS_PER_YEAR, FAST_TICKS_PER_ECON_TICK,
 };
 
 /// Read-only re-exports of the `econ`/`life` types that make up the settlement's
@@ -120,7 +120,10 @@ pub use econ::good::{Gold, GoodId, Horizon, FOOD, GOLD, SALT, WOOD};
 pub use econ::ledger::MoneyStock;
 pub use econ::market::Trade;
 pub use econ::society::Society;
-pub use life::{savings_ladder_depth, CultureParams, NeedState};
+pub use life::{
+    savings_ladder_depth, CultureParams, NeedState, FORECAST_BIAS_MAX_BPS, FORECAST_BIAS_MIN_BPS,
+    FORECAST_BIAS_NEUTRAL_BPS,
+};
 /// The `world` resource-node id — the return type of [`Settlement::node_of`] /
 /// [`Settlement::grain_node`], so the S6 acceptance suite can name a colonist's
 /// assigned node through `sim` alone. A pure re-export (no behavior change).
