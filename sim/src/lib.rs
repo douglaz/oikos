@@ -95,11 +95,12 @@ pub use era::{
 };
 pub use region::{Region, RegionConfig, RegionTickReport, RoadPlan, Route};
 pub use settlement::{
-    recipe_adoption_pays, recipe_adoption_pays_for_money, BankConfig, BarterConfig, BenchSurface,
-    CandidateAcceptances, ChainConfig, CycleConfig, CycleKind, EconTickReport, EstateDestination,
-    LineageStats, NodeSpec, OrderStat, ProducerCash, ProducerRole, Settlement, SettlementConfig,
-    TaxLevy, TaxPolicy, TenderBench, TenderPolicy, TraderEndowment, Vocation, ECON_TICKS_PER_YEAR,
-    FAST_TICKS_PER_ECON_TICK,
+    capital_build_outcome_for_culture, recipe_adoption_pays, recipe_adoption_pays_for_money,
+    BankConfig, BarterConfig, BenchSurface, CandidateAcceptances, CapitalBuildOutcome,
+    CapitalDecision, CapitalDeclineReason, ChainConfig, CycleConfig, CycleKind, EconTickReport,
+    EstateDestination, LineageStats, NodeSpec, OrderStat, ProducerCash, ProducerRole, Settlement,
+    SettlementConfig, TaxLevy, TaxPolicy, TenderBench, TenderPolicy, TraderEndowment, Vocation,
+    ECON_TICKS_PER_YEAR, FAST_TICKS_PER_ECON_TICK,
 };
 
 /// Read-only re-exports of the `econ`/`life` types that make up the settlement's
@@ -115,11 +116,11 @@ pub use settlement::{
 /// Keeping them on `sim` lets the viewer depend on `sim` alone — a thin binary
 /// over one crate — instead of reaching into `econ`/`life` directly.
 pub use econ::agent::{Agent, AgentId, Want, WantKind};
-pub use econ::good::{Gold, GoodId, Horizon, FOOD, WOOD};
+pub use econ::good::{Gold, GoodId, Horizon, FOOD, GOLD, SALT, WOOD};
 pub use econ::ledger::MoneyStock;
 pub use econ::market::Trade;
 pub use econ::society::Society;
-pub use life::NeedState;
+pub use life::{savings_ladder_depth, CultureParams, NeedState};
 /// The `world` resource-node id — the return type of [`Settlement::node_of`] /
 /// [`Settlement::grain_node`], so the S6 acceptance suite can name a colonist's
 /// assigned node through `sim` alone. A pure re-export (no behavior change).

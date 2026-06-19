@@ -55,6 +55,23 @@ const MIN_SAVE_UNITS: u16 = 4;
 const MAX_SAVE_UNITS: u16 = 60;
 /// Horizon assigned to future-provisioning wants.
 const FUTURE_HORIZON: u8 = 4;
+/// S10 (per-agent capital, gated): the deepest future-savings horizon **level** the
+/// multi-horizon ladder spans. Level `L` (1-indexed) emits savings wants at
+/// `Later(FUTURE_HORIZON * L)` — so `MAX_LADDER_DEPTH = 4` reaches `Later(16)`. Depth 1
+/// is the base [`FUTURE_HORIZON`]-only ladder every off-path scale keeps. Only the deep
+/// (`regenerate_scale_for_capital`) variant ever emits beyond level 1.
+const MAX_LADDER_DEPTH: u8 = 4;
+/// S10: savings units emitted at each DEEPER (`level >= 2`) horizon of the multi-horizon
+/// ladder — a lean mini-ladder (just the deep wants a built tool's late receipts can
+/// fill), kept small so the deep scale stays bounded. The base `Later(4)` level keeps
+/// its full [`save_units`] count, so the deep ladder's level-1 block is byte-identical to
+/// the single-horizon ladder.
+const DEEP_HORIZON_UNITS: u16 = 4;
+/// S10: a tiny per-level urgency nudge so a deeper horizon's `u`-th unit ranks just below
+/// the same unit of a shallower horizon — a deterministic tiebreak that keeps each
+/// horizon's top unit near the base urgency (so a patient colonist's deep savings want
+/// can still outrank its leisure), never a cardinal magnitude.
+const HORIZON_LEVEL_OFFSET: i64 = 1;
 /// Nominal level (in `URGENCY_UNIT`s) of the top future unit at zero present
 /// bias; `time_preference_bps` subtracts from here.
 const FUTURE_BASE_LEVEL: i64 = 3;
@@ -145,6 +162,33 @@ pub fn regenerate_scale(
     culture: &CultureParams,
     known: &KnownGoods,
 ) -> Vec<Want> {
+    regenerate_scale_inner(needs, culture, known, false)
+}
+
+/// S10 (per-agent capital, gated): a colonist's value scale with the savings ladder
+/// extended to **multiple future horizons** (`Later(4), Later(8), …`) up to a depth set
+/// by the colonist's own `time_preference_bps` ([`savings_ladder_depth`]). Identical to
+/// [`regenerate_scale`] except for the deeper savings wants: the `Later(4)` block is
+/// byte-identical, and a present-biased colonist (depth 1) gets no deeper wants at all,
+/// so the two only diverge when patience actually warrants a deeper horizon. The deep
+/// wants are what a durable tool's gestation-delayed receipt stream can fill — so a
+/// patient colonist's late-due savings can be provisioned by a build it appraises while a
+/// present-biased one's shallow near-savings cannot (the originary-interest response).
+/// Only the `per_agent_capital` path calls this, so every existing scale is unchanged.
+pub fn regenerate_scale_for_capital(
+    needs: &NeedState,
+    culture: &CultureParams,
+    known: &KnownGoods,
+) -> Vec<Want> {
+    regenerate_scale_inner(needs, culture, known, true)
+}
+
+fn regenerate_scale_inner(
+    needs: &NeedState,
+    culture: &CultureParams,
+    known: &KnownGoods,
+    deep_savings: bool,
+) -> Vec<Want> {
     let mut items: Vec<Item> = Vec::new();
 
     push_present_ladder(
@@ -176,7 +220,11 @@ pub fn regenerate_scale(
         WARMTH_OFFSET,
     );
     push_leisure_ladder(&mut items, needs.rest, culture);
-    push_future_ladder(&mut items, WantKind::Good(known.savings), culture);
+    if deep_savings {
+        push_multi_horizon_future_ladder(&mut items, WantKind::Good(known.savings), culture);
+    } else {
+        push_future_ladder(&mut items, WantKind::Good(known.savings), culture);
+    }
 
     // Strict descending urgency; the (channel, unit) key is unique per item, so
     // the order is a deterministic total order.
@@ -248,6 +296,63 @@ fn push_future_ladder(items: &mut Vec<Item>, kind: WantKind, culture: &CulturePa
     }
 }
 
+/// S10: the per-agent-capital **multi-horizon** savings ladder. Each horizon level
+/// `L` (1-indexed) emits savings wants at `Later(FUTURE_HORIZON * L)` — level 1 the full
+/// [`save_units`] count at the base `Later(4)` (byte-identical to [`push_future_ladder`]),
+/// deeper levels a lean [`DEEP_HORIZON_UNITS`] mini-ladder each. Every level restarts its
+/// urgency near the base (minus a tiny [`HORIZON_LEVEL_OFFSET`] per level), so a patient
+/// colonist's deep savings wants sit near the top of the savings block — able to outrank
+/// its leisure — while a present-biased colonist (depth 1) gets only the shallow base
+/// ladder. The ladder DEPTH tracks `time_preference_bps` ([`savings_ladder_depth`]): that
+/// is what makes a built tool's late-due receipts (which a [`FUTURE_HORIZON`]-deep
+/// gestation pushes past `Later(4)`) provision a patient colonist's deep want while
+/// missing a present-biased one's shallow one — the structural originary-interest bite.
+fn push_multi_horizon_future_ladder(
+    items: &mut Vec<Item>,
+    kind: WantKind,
+    culture: &CultureParams,
+) {
+    let penalty = (i64::from(culture.time_preference_bps) * URGENCY_UNIT) / 2_500;
+    let base_units = save_units(culture.time_preference_bps);
+    let depth = savings_ladder_depth(culture.time_preference_bps);
+    let mut unit_key: u16 = 0;
+    for level in 0..depth {
+        let horizon = FUTURE_HORIZON.saturating_mul(level + 1);
+        let units = if level == 0 {
+            base_units
+        } else {
+            DEEP_HORIZON_UNITS.min(base_units)
+        };
+        for unit in 0..units {
+            let urgency = FUTURE_BASE_LEVEL * URGENCY_UNIT
+                - penalty
+                - i64::from(unit) * URGENCY_UNIT
+                - i64::from(level) * HORIZON_LEVEL_OFFSET;
+            items.push(Item {
+                urgency,
+                channel: Channel::Savings,
+                unit: unit_key,
+                want: want(kind, Horizon::Later(horizon)),
+            });
+            unit_key = unit_key.saturating_add(1);
+        }
+    }
+}
+
+/// S10: the per-agent-capital savings-ladder DEPTH (count of future horizons) as a
+/// function of time preference: patience (low bps) raises it from `1` (a present-biased
+/// colonist — only the base `Later(4)`) toward [`MAX_LADDER_DEPTH`] (a patient colonist —
+/// `Later(4), Later(8), …`). Mirrors [`save_units`]'s patience math exactly (the same
+/// `10_000 − tp` patience scaled into an integer range), so the deep ladder a colonist
+/// carries — and therefore whether a built tool's late receipts can fill one of its
+/// savings wants — is a deterministic function of its own scale, never a cardinal
+/// discount. Pure and integer.
+pub fn savings_ladder_depth(time_preference_bps: u16) -> u8 {
+    let patience = 10_000u32.saturating_sub(u32::from(time_preference_bps.min(10_000)));
+    let extra = patience * (u32::from(MAX_LADDER_DEPTH) - 1) / 10_000;
+    1 + u8::try_from(extra).unwrap_or(MAX_LADDER_DEPTH - 1)
+}
+
 /// The saving target (count of unit savings wants) as a function of time
 /// preference: patience (low bps) raises it from [`MIN_SAVE_UNITS`] toward
 /// [`MAX_SAVE_UNITS`]. A present-biased colonist saves little — it fills its
@@ -273,11 +378,14 @@ fn want(kind: WantKind, horizon: Horizon) -> Want {
 
 #[cfg(test)]
 mod tests {
-    use super::{regenerate_scale, KnownGoods};
+    use super::{
+        regenerate_scale, regenerate_scale_for_capital, savings_ladder_depth, KnownGoods,
+        MAX_LADDER_DEPTH,
+    };
     use crate::culture::CultureParams;
     use crate::need::NeedState;
     use econ::agent::WantKind;
-    use econ::good::{FOOD, WOOD};
+    use econ::good::{Horizon, FOOD, GOLD, WOOD};
 
     fn first_rank(scale: &[econ::agent::Want], kind: WantKind) -> Option<usize> {
         scale.iter().position(|want| want.kind == kind)
@@ -314,5 +422,90 @@ mod tests {
             &KnownGoods::lab_default(),
         );
         assert!(scale.iter().any(|want| want.kind == WantKind::Good(WOOD)));
+    }
+
+    #[test]
+    fn savings_ladder_depth_tracks_time_preference() {
+        // S10: patience (low bps) deepens the ladder; the most present-biased colonist
+        // gets only the base horizon, the most patient the full depth — deterministic,
+        // monotone non-increasing in time preference.
+        assert_eq!(
+            savings_ladder_depth(10_000),
+            1,
+            "max present bias -> base only"
+        );
+        assert_eq!(
+            savings_ladder_depth(0),
+            MAX_LADDER_DEPTH,
+            "max patience -> full"
+        );
+        // Present-biased (8000): only the base Later(4) horizon (depth 1).
+        assert_eq!(savings_ladder_depth(8_000), 1);
+        // Patient (2000): a deeper ladder that reaches at least Later(8) (depth >= 2).
+        assert!(savings_ladder_depth(2_000) >= 2);
+        // Monotone: more present bias never deepens the ladder.
+        for tp in 0..=10_000u16 {
+            if tp > 0 {
+                assert!(savings_ladder_depth(tp) <= savings_ladder_depth(tp - 1));
+            }
+            assert!((1..=MAX_LADDER_DEPTH).contains(&savings_ladder_depth(tp)));
+        }
+    }
+
+    #[test]
+    fn deep_savings_ladder_preserves_the_base_and_adds_deeper_horizons() {
+        // S10: the deep variant's Later(4) block is byte-identical to the single-horizon
+        // ladder (the off-path scale is untouched), and a patient colonist additionally
+        // carries deeper-horizon savings wants the base ladder never emits.
+        let needs = NeedState::rested();
+        let known = KnownGoods::lab_default();
+
+        // Present-biased (depth 1): the deep variant equals the base variant exactly.
+        let biased = CultureParams::new(8_000, 3_000);
+        assert_eq!(
+            regenerate_scale(&needs, &biased, &known),
+            regenerate_scale_for_capital(&needs, &biased, &known),
+            "a depth-1 colonist's deep scale must equal its base scale"
+        );
+
+        // Patient (deep): the base Later(4) savings wants are all still present, and at
+        // least one deeper-horizon (Later(>4)) savings want is added.
+        let patient = CultureParams::new(400, 3_000);
+        let base = regenerate_scale(&needs, &patient, &known);
+        let deep = regenerate_scale_for_capital(&needs, &patient, &known);
+        let base_later4 = base
+            .iter()
+            .filter(|w| w.kind == WantKind::Good(GOLD) && w.horizon == Horizon::Later(4))
+            .count();
+        let deep_later4 = deep
+            .iter()
+            .filter(|w| w.kind == WantKind::Good(GOLD) && w.horizon == Horizon::Later(4))
+            .count();
+        assert_eq!(
+            deep_later4, base_later4,
+            "the base Later(4) ladder is preserved"
+        );
+        assert!(
+            deep.iter().any(|w| w.kind == WantKind::Good(GOLD)
+                && matches!(w.horizon, Horizon::Later(h) if h > 4)),
+            "a patient colonist's deep ladder must carry a deeper-than-Later(4) savings want"
+        );
+        // The deeper savings want sits near the TOP of the savings block (above leisure)
+        // — so a built tool's late receipts that provision it can still outrank the
+        // leisure the build sacrifices.
+        let first_deep = deep
+            .iter()
+            .position(|w| {
+                w.kind == WantKind::Good(GOLD) && matches!(w.horizon, Horizon::Later(h) if h > 4)
+            })
+            .expect("a deep savings want");
+        let first_leisure = deep
+            .iter()
+            .position(|w| w.kind == WantKind::Leisure)
+            .expect("leisure is always present");
+        assert!(
+            first_deep < first_leisure,
+            "a patient rested colonist's first deep savings want must outrank its leisure"
+        );
     }
 }

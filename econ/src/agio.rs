@@ -252,6 +252,20 @@ pub(crate) fn temporal_provisioning_bitmap_for_money(
     temporal_provisioning_for_money(scale, endowment, money_good).provided
 }
 
+/// The full per-want temporal-provisioning bitmap for `money_good` in one pass —
+/// element `i` is `true` iff the `i`-th want is provisioned by the endowment (present
+/// goods on hand, gold/receivables for money wants, due-by-horizon for `Later` money
+/// wants). Equivalent to calling [`want_provisioned_temporally_for_money`] at every
+/// index, but computed once (O(scale) rather than O(scale²)) — for callers that need the
+/// whole bitmap, such as S10's per-agent capital-tool appraisal.
+pub fn provisioning_bitmap_for_money(
+    scale: &[Want],
+    endowment: &TemporalEndowment<'_>,
+    money_good: GoodId,
+) -> Vec<bool> {
+    temporal_provisioning_bitmap_for_money(scale, endowment, money_good)
+}
+
 fn min_lending_future(ctx: &QuoteContext<'_>, present: Gold, horizon: u8) -> Option<Gold> {
     if present == Gold::ZERO || ctx.gold < present {
         return None;

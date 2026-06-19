@@ -61,6 +61,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use econ::agent::{Agent, AgentId, Role, Want, WantKind};
+use econ::agio::{provisioning_bitmap_for_money, TemporalEndowment};
 use econ::bank::{Bank, BankPolicy};
 use econ::bundle::{
     appraise_project_bundle_for_money, ProjectBundleCandidate, ProjectBundleEndowment,
@@ -89,9 +90,12 @@ use econ::scenario::{
 };
 use econ::shadow::run_credit_disabled_shadow;
 use econ::society::Society;
-use econ::timemarket::{DebtContract, DebtState};
+use econ::timemarket::{DebtContract, DebtId, DebtState};
 
-use life::{regenerate_scale, CultureParams, KnownGoods, NeedDynamics, NeedIntake, NeedState};
+use life::{
+    regenerate_scale, regenerate_scale_for_capital, CultureParams, KnownGoods, NeedDynamics,
+    NeedIntake, NeedState,
+};
 
 use world::{AgentStatus, Grid, NodeId, Pos, ResourceNode, Stockpile, StockpileId, Task, World};
 
@@ -892,6 +896,23 @@ pub struct ChainConfig {
     /// does not make the builder eligible). `false` (every existing config) skips the
     /// phase, so the conformance goldens (`produced_of(mill) == 0`) are byte-identical.
     pub producible_capital: bool,
+    /// S10 (per-agent intertemporal capital choice / originary interest): when `true`
+    /// *and* [`Self::producible_capital`] is on, the capital-formation phase replaces
+    /// S7's settlement-level build planner (one global stage choice by capacity
+    /// bottleneck + a scalar `margin × capital_payback_cycles` test + first-eligible-fed
+    /// builder assignment) with a **per-colonist ordinal** decision: each eligible
+    /// colonist runs [`appraise_capital_tool_bundle_for_money`] on its OWN value scale —
+    /// committing present WOOD + forgone leisure against the tool's recipe-margin receipt
+    /// stream provisioning one of its own future-money savings wants — and each colonist
+    /// its own appraisal accepts starts its own build (no global stage choice, no
+    /// first-eligible assignment, no single-in-flight gate). Capital formation then tracks
+    /// each colonist's `time_preference_bps` ordinally (the savings ladder deepens with
+    /// patience — [`life::savings_ladder_depth`]), with NO cardinal discount and
+    /// `capital_payback_cycles` left inert. The per-builder substrate
+    /// (`start_project`/`advance_project`/`complete_project_if_ready`) is reused unchanged.
+    /// `false` (every existing config) keeps the S7 heuristic, so the conformance goldens
+    /// are byte-identical.
+    pub per_agent_capital: bool,
     /// S7.2: the amortization horizon for the build appraisal — a durable tool is
     /// multi-period capital, so a colonist builds only when its expected per-run margin
     /// over this many cycles repays the build cost: `expected_margin_per_run × N >
@@ -1020,6 +1041,7 @@ impl ChainConfig {
             // consulted only when the phase is on.
             tool_acquisition_eligibility: false,
             producible_capital: false,
+            per_agent_capital: false,
             capital_payback_cycles: 8,
             tool_build_wood: 6,
             tool_build_labor: 4,
@@ -1085,6 +1107,7 @@ impl ChainConfig {
             reentry_hunger_out: 4,
             tool_acquisition_eligibility: false,
             producible_capital: false,
+            per_agent_capital: false,
             capital_payback_cycles: 8,
             tool_build_wood: 6,
             tool_build_labor: 4,
@@ -2836,6 +2859,50 @@ impl SettlementConfig {
         cfg
     }
 
+    /// S10 — THE ORIGINARY-INTEREST ECONOMY (the flagship): the strong-bar co-emergent
+    /// colony ([`Self::frontier_coemergent_strong`], never mutated) with **per-agent
+    /// intertemporal capital choice** on. Money still EMERGES (SALT promotes from real
+    /// indirect-exchange breadth), then the chain + capital sustain on the emerged unit —
+    /// but capital now forms through a **per-colonist ORDINAL** decision instead of S7's
+    /// settlement-level planner: each eligible colonist appraises, on its OWN value scale,
+    /// whether committing present WOOD + forgone leisure to build a durable mill/oven whose
+    /// recipe-margin receipt stream provisions one of its OWN future-money savings wants is
+    /// worth it ([`appraise_capital_tool_bundle_for_money`]). Capital formation then tracks
+    /// each colonist's `time_preference_bps` — patient colonists invest in the roundabout
+    /// tooled chain, present-biased ones do not — with NO cardinal discount (originary
+    /// interest expressed ordinally via the multi-horizon savings ladder), no global stage
+    /// choice, and no first-eligible-builder assignment.
+    ///
+    /// Derived from the strong-bar base (only the build seam changes): `per_agent_capital`
+    /// is switched on (which leaves `capital_payback_cycles` inert), the build's WOOD cost
+    /// is trimmed from the co-emergent 12 to 6 so a colonist that has saved a modest WOOD
+    /// surplus can fund it from its OWN endowment (the per-agent decision is the brake now,
+    /// not a dear real-resource bar), and gatherers carry a slightly larger WOOD battery so
+    /// a fed, rested saver actually accumulates the build's WOOD. Everything that makes SALT
+    /// emerge (the heterogeneous direct use, the breadth gate, the WOOD-poor consumer hub)
+    /// is untouched, so money still emerges from real saleability.
+    pub fn frontier_coemergent_strong_originary() -> Self {
+        let mut cfg = Self::frontier_coemergent_strong();
+        if let Some(chain) = cfg.chain.as_mut() {
+            // The per-agent ordinal decision replaces S7's build planner. The S7 gates
+            // (tool-acquisition eligibility + producible capital) stay on — per-agent mode
+            // steers the SAME per-builder substrate.
+            chain.per_agent_capital = true;
+            // Trim the build's WOOD cost (12 → 6): the per-agent appraisal is the brake
+            // now (a colonist builds only when the tool provisions its own deep savings
+            // want without breaking a higher one), so the build need not be made dear to
+            // hold capital formation in check — it just has to be fundable from a saver's
+            // own WOOD surplus.
+            chain.tool_build_wood = 6;
+            // A larger WOOD battery so a fed builder accumulates the build's WOOD without
+            // running its own warmth short (removing the committed WOOD must not break a
+            // higher-ranked warmth want, or the appraisal declines — the WOOD's present
+            // use is one of the costs the future gain must outrank).
+            chain.wood_buffer = 64;
+        }
+        cfg
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).
@@ -3239,6 +3306,14 @@ pub struct Settlement {
     /// built via S7.2 over the run — lets a test assert new capital entered the chain
     /// (acceptance tests 4/6). Diagnostic only; no phase reads it.
     tools_built: u64,
+    /// S10 observability (read-only, NOT serialized): the per-agent build decisions the
+    /// LAST per-agent capital-formation phase recorded — one per eligible candidate, with
+    /// accept/reject, the target savings want rank, and the decline reason. Cleared and
+    /// refilled each tick the per-agent phase runs; empty in the S7 heuristic path. Lets a
+    /// test prove the build is a per-colonist ordinal decision (an earlier-eligible
+    /// colonist declined on its own scale while a later one accepted). Steers no future
+    /// tick, so it is deliberately absent from [`Settlement::canonical_bytes`].
+    last_capital_decisions: Vec<CapitalDecision>,
     /// S8.0 emergence probe (read-only, NOT serialized): the highest hunger any
     /// living colonist reached on a pre-promotion econ tick, and the count of
     /// pre-promotion ticks at least one colonist sat at/over the critical-hunger
@@ -3467,6 +3542,10 @@ struct ChainRuntime {
     /// [`ChainConfig::producible_capital`]). `false`/unused for every existing config,
     /// so no tool is ever built and the goldens are byte-identical.
     producible_capital: bool,
+    /// S10: the per-agent intertemporal capital decision replaces S7's settlement-level
+    /// build planner (see [`ChainConfig::per_agent_capital`]). `false` for every existing
+    /// config, so the S7 heuristic is byte-identical.
+    per_agent_capital: bool,
     capital_payback_cycles: u32,
     tool_build_wood: u32,
     tool_build_labor: u32,
@@ -4184,6 +4263,13 @@ impl Settlement {
                 !chain.producible_capital || chain.tool_acquisition_eligibility,
                 "producible capital (S7.2) requires tool-acquisition eligibility (S7.1)"
             );
+            // S10: the per-agent intertemporal decision steers the SAME per-builder build
+            // substrate, so it requires the producible-capital phase to be on (the
+            // decision is meaningless without a build to start).
+            assert!(
+                !chain.per_agent_capital || chain.producible_capital,
+                "per-agent capital (S10) requires producible capital (S7.2)"
+            );
             ChainRuntime {
                 content: chain.content.clone(),
                 throughput: chain.throughput,
@@ -4204,6 +4290,7 @@ impl Settlement {
                 reentry_hunger_out: chain.reentry_hunger_out,
                 tool_acquisition_eligibility: chain.tool_acquisition_eligibility,
                 producible_capital: chain.producible_capital,
+                per_agent_capital: chain.per_agent_capital,
                 capital_payback_cycles: chain.capital_payback_cycles,
                 tool_build_wood: chain.tool_build_wood,
                 tool_build_labor: chain.tool_build_labor,
@@ -4237,6 +4324,7 @@ impl Settlement {
             capital_builds: Vec::new(),
             next_capital_project_id: 0,
             tools_built: 0,
+            last_capital_decisions: Vec::new(),
             peak_pre_promotion_hunger: 0,
             critical_ticks_pre_promotion: 0,
             econ_tick: 0,
@@ -4405,6 +4493,7 @@ impl Settlement {
             capital_builds: Vec::new(),
             next_capital_project_id: 0,
             tools_built: 0,
+            last_capital_decisions: Vec::new(),
             peak_pre_promotion_hunger: 0,
             critical_ticks_pre_promotion: 0,
             econ_tick: 0,
@@ -5757,9 +5846,21 @@ impl Settlement {
     /// no RNG is drawn here.
     fn regenerate_scales(&mut self) {
         let mut rewritten = Vec::new();
+        // S10: in the per-agent-capital path the savings ladder spans MULTIPLE future
+        // horizons (depth set by each colonist's own time preference), so a built tool's
+        // late-due receipts can provision a patient colonist's deep savings want. Gated,
+        // so every off-path scale keeps the single Later(4) ladder and stays byte-identical.
+        let deep_savings = self
+            .chain
+            .as_ref()
+            .is_some_and(|chain| chain.per_agent_capital);
         for &slot in &self.live_colonist_slots {
             let colonist = &self.colonists[slot];
-            let mut scale = regenerate_scale(&colonist.need, &colonist.culture, &self.known);
+            let mut scale = if deep_savings {
+                regenerate_scale_for_capital(&colonist.need, &colonist.culture, &self.known)
+            } else {
+                regenerate_scale(&colonist.need, &colonist.culture, &self.known)
+            };
             if let Some(chain) = &self.chain {
                 // A producer's tool/input wants follow its production specialty —
                 // its adopted vocation (Miller/Baker, seeded or chosen) or, for a
@@ -6825,6 +6926,7 @@ impl Settlement {
         let wood_qty = chain.tool_build_wood;
         let build_labor = chain.tool_build_labor;
         let hunger_max = chain.capital_build_hunger_max;
+        let per_agent = chain.per_agent_capital;
         let tick = self.society.tick.0;
 
         let mut built = false;
@@ -6884,9 +6986,35 @@ impl Settlement {
             return true;
         }
 
-        // ---- 2. START a new build when a demand-anchored real-resource investment
-        // appraisal clears. This is a settlement-level heuristic, NOT a per-colonist
-        // ordinal-scale appraisal: the opportunity depends only on prices, so the
+        // ---- 2. START new builds. S10 (per_agent_capital): each eligible colonist runs
+        // its OWN ordinal appraisal and any it accepts starts its own build — no global
+        // stage choice, no first-eligible assignment, no single-in-flight gate (the
+        // per-builder substrate is reused). Behind the gate; the S7 heuristic below is
+        // byte-identical for every existing config.
+        if per_agent {
+            return self.start_per_agent_builds(
+                report,
+                labor_used,
+                &PerAgentBuildParams {
+                    mill_recipe: &mill_recipe,
+                    bake_recipe: &bake_recipe,
+                    grain,
+                    flour,
+                    bread,
+                    mill_good,
+                    oven_good,
+                    operating_cost,
+                    wood_qty,
+                    build_labor,
+                    hunger_max,
+                    tick,
+                },
+            );
+        }
+
+        // ---- 2 (S7 heuristic). START a new build when a demand-anchored real-resource
+        // investment appraisal clears. This is a settlement-level heuristic, NOT a
+        // per-colonist ordinal-scale appraisal: the opportunity depends only on prices, so the
         // better-paying stage is appraised once (scalar margin x payback vs build cost);
         // it is then funded by the first eligible fed builder from its OWN WOOD + labor
         // (no tool placement, no quota). A fully individual ordinal appraisal is a
@@ -7067,6 +7195,154 @@ impl Settlement {
         built
     }
 
+    /// S10: START new builds by PER-AGENT ordinal appraisal (the `per_agent_capital`
+    /// path). Iterates live colonists in slot order (iteration order ONLY, never
+    /// selection); each eligible colonist (the S7 fed/idle/holds-WOOD/holds-no-tool
+    /// filter) runs [`appraise_capital_tool_bundle_for_money`] on its OWN scale for each
+    /// tool it could build, and any it accepts starts its own build from its OWN WOOD +
+    /// labor via the reused per-builder substrate ([`start_project`]) — no global stage
+    /// choice, no first-eligible assignment, no single-in-flight gate. Records one
+    /// per-candidate decision in `last_capital_decisions` (the diagnostic a test reads to
+    /// prove an earlier-eligible colonist declined on its own scale while a later one
+    /// accepted). Returns `true` if any build completed this tick. Deterministic:
+    /// slot-ordered, integer state.
+    fn start_per_agent_builds(
+        &mut self,
+        report: &mut EconTickReport,
+        labor_used: &mut Vec<(AgentId, u32)>,
+        params: &PerAgentBuildParams<'_>,
+    ) -> bool {
+        self.last_capital_decisions.clear();
+        let Some(money_good) = self.current_money_good() else {
+            return false;
+        };
+        // The two tool candidates with their realized recipe prices, ordered by net margin
+        // DESC so each colonist prefers the more rewarding roundabout investment (Menger's
+        // imputation — a per-agent choice, not a global stage choice); ties by tool id.
+        let flour_price = self.society.realized_price(params.flour);
+        let grain_price = self.society.realized_price(params.grain);
+        let bread_price = self.society.realized_price(params.bread);
+        let mut tool_candidates = [
+            ToolCandidate {
+                tool: params.oven_good,
+                recipe: params.bake_recipe,
+                template_id: ProjectTemplateId::BuildOven,
+                output_price: bread_price,
+                input_price: flour_price,
+            },
+            ToolCandidate {
+                tool: params.mill_good,
+                recipe: params.mill_recipe,
+                template_id: ProjectTemplateId::BuildMill,
+                output_price: flour_price,
+                input_price: grain_price,
+            },
+        ];
+        tool_candidates.sort_by(|a, b| {
+            recipe_net_margin(b, params.operating_cost)
+                .cmp(&recipe_net_margin(a, params.operating_cost))
+                .then(a.tool.0.cmp(&b.tool.0))
+        });
+
+        let mut built = false;
+        for idx in 0..self.live_colonist_slots.len() {
+            let slot = self.live_colonist_slots[idx];
+            let colonist = &self.colonists[slot];
+            // The S7 eligibility filter (unchanged): a fed, non-latent colonist in a
+            // survival/idle role with no in-flight build of its own.
+            if colonist.latent.is_some()
+                || !matches!(
+                    colonist.vocation,
+                    Vocation::Gatherer | Vocation::Consumer | Vocation::Unassigned
+                )
+                || colonist.need.hunger > params.hunger_max
+            {
+                continue;
+            }
+            let id = colonist.id;
+            if self.capital_builds.iter().any(|build| build.builder == id) {
+                continue;
+            }
+            // Holds no chain tool and enough saved WOOD to fund the build itself, then
+            // appraises each tool on its own scale — all under one immutable agent borrow.
+            let appraised: Option<(CapitalDecision, Option<usize>)> = {
+                let Some(agent) = self.society.agents.get(id) else {
+                    continue;
+                };
+                if agent.stock.get(params.mill_good) != 0
+                    || agent.stock.get(params.oven_good) != 0
+                    || u64::from(agent.stock.get(WOOD)) < u64::from(params.wood_qty)
+                {
+                    None
+                } else {
+                    Some(appraise_capital_for_colonist(
+                        agent,
+                        slot,
+                        &tool_candidates,
+                        params.wood_qty,
+                        params.build_labor,
+                        params.tick,
+                        params.operating_cost,
+                        money_good,
+                    ))
+                }
+            };
+            let Some((decision, chosen)) = appraised else {
+                continue;
+            };
+            self.last_capital_decisions.push(decision);
+            let Some(chosen_index) = chosen else {
+                continue;
+            };
+            let candidate = tool_candidates[chosen_index];
+
+            // Commit the build via the reused per-builder substrate: the builder's OWN
+            // WOOD up front (booked consumed_as_input) + one labor advance, exactly the S7
+            // path — only the DECISION above is per-colonist, not the mechanics.
+            let template = match candidate.template_id {
+                ProjectTemplateId::BuildOven => {
+                    build_oven_template(candidate.tool, params.wood_qty, params.build_labor)
+                }
+                _ => build_mill_template(candidate.tool, params.wood_qty, params.build_labor),
+            };
+            let pid = ProjectId(self.next_capital_project_id);
+            let started = match self.society.agents.get_mut(id) {
+                Some(agent) => start_project(&template, &mut agent.stock, pid, Tick(params.tick)),
+                None => None,
+            };
+            let Some(mut project) = started else {
+                continue;
+            };
+            *report.consumed_as_input.entry(WOOD).or_insert(0) += u64::from(params.wood_qty);
+            if project.labor_advanced < template.required_labor && advance_project(&mut project) {
+                labor_used.push((id, 1));
+            }
+            self.next_capital_project_id = self.next_capital_project_id.wrapping_add(1);
+            let completed = match self.society.agents.get_mut(id) {
+                Some(agent) => complete_project_if_ready(&mut project, &template, &mut agent.stock),
+                None => false,
+            };
+            if completed {
+                let qty = project.output_qty;
+                *report.produced.entry(project.output_good).or_insert(0) += u64::from(qty);
+                self.tools_built = self.tools_built.saturating_add(u64::from(qty));
+                self.colonists[slot].acquired_tool = true;
+                built = true;
+            } else {
+                self.capital_builds.push(CapitalBuild {
+                    builder: id,
+                    slot,
+                    template,
+                    project,
+                });
+            }
+            // NO break: each colonist its own appraisal accepts starts its own build (no
+            // single-in-flight gate). The slot order is iteration order, not selection.
+        }
+
+        built
+    }
+
     fn productive_reentry_can_run(&self) -> bool {
         self.chain.as_ref().is_some_and(|chain| {
             let grain = chain.content.grain();
@@ -7100,6 +7376,19 @@ impl Settlement {
         self.chain
             .as_ref()
             .is_some_and(|chain| chain.producible_capital)
+    }
+
+    /// S10: whether the per-agent intertemporal build decision replaces the S7 heuristic —
+    /// gated on both flags (per-agent mode requires the producible-capital substrate). A
+    /// pure function of the chain flags. When this holds, `capital_payback_cycles` is
+    /// behaviour-INERT (no uniform payback is charged), so `canonical_bytes` serializes
+    /// the `per_agent_capital` flag in its place rather than the inert knob (avoiding false
+    /// digest splits); when it is off the legacy stream — `capital_payback_cycles`, no flag
+    /// — is byte-identical to pre-S10.
+    fn per_agent_capital_can_run(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(|chain| chain.producible_capital && chain.per_agent_capital)
     }
 
     /// S7.2: whether `good` has cleared a real trade within the last `window` econ ticks
@@ -8044,6 +8333,16 @@ impl Settlement {
         self.capital_builds.len()
     }
 
+    /// S10 observability: the per-agent build decisions the LAST per-agent
+    /// capital-formation phase recorded this tick — one [`CapitalDecision`] per eligible
+    /// candidate, in slot order, with accept/reject, the target savings want rank, and the
+    /// decline reason. Empty on the S7 heuristic path and on any tick the phase did not
+    /// run. Lets a test prove the build is a per-colonist ordinal decision (an
+    /// earlier-eligible colonist declined on its OWN scale while a later one accepted).
+    pub fn last_capital_decisions(&self) -> &[CapitalDecision] {
+        &self.last_capital_decisions
+    }
+
     /// Living colonists of a vocation.
     pub fn living_count(&self, vocation: Vocation) -> usize {
         self.live_colonist_slots
@@ -8464,7 +8763,16 @@ impl Settlement {
             // run. Emitted only when on (the same gated-block discipline), so a
             // producible-capital-OFF chain stays byte-identical to the pre-S7 stream.
             if self.producible_capital_can_run() {
-                out.extend_from_slice(&chain.capital_payback_cycles.to_le_bytes());
+                // S10: in the per-agent path the `per_agent_capital` flag steers every
+                // future tick and `capital_payback_cycles` is behaviour-INERT — so
+                // serialize the flag in its place (digesting the inert knob would split
+                // behaviour-identical per-agent configs). The legacy heuristic path
+                // serializes `capital_payback_cycles` and no flag, byte-identical to pre-S10.
+                if self.per_agent_capital_can_run() {
+                    out.push(1);
+                } else {
+                    out.extend_from_slice(&chain.capital_payback_cycles.to_le_bytes());
+                }
                 out.extend_from_slice(&chain.tool_build_wood.to_le_bytes());
                 out.extend_from_slice(&chain.tool_build_labor.to_le_bytes());
                 out.extend_from_slice(&chain.capital_build_hunger_max.to_le_bytes());
@@ -9307,6 +9615,450 @@ struct CapitalBuildAppraisal {
     tool_build_wood: u32,
     tool_build_labor: u32,
     payback_cycles: u32,
+}
+
+/// S10: why a per-agent capital-tool appraisal declined (or that it `Accepted`) — the
+/// diagnostic surface a test reads to prove a build is a per-colonist ORDINAL decision
+/// (an earlier-eligible colonist declined on its OWN scale) rather than the S7 planner's
+/// slot-order-first assignment. `NonPositiveMargin`/`NoPrices` are price-global (the same
+/// for every colonist this tick); `NoFutureProvision`/`PresentCostOutranks` are
+/// scale-specific — a colonist declining for one of those declined on its own value scale.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CapitalDeclineReason {
+    /// The colonist accepted — the build was taken.
+    Accepted,
+    /// The tool recipe's realized output (or input) price is missing — no spread to
+    /// appraise (price-global).
+    NoPrices,
+    /// The recipe's net margin per run is non-positive — the tool would lose money
+    /// (price-global; the demand-anchored brake once output demand is met).
+    NonPositiveMargin,
+    /// The tool's gestation-delayed receipt stream newly provisions NO future-money
+    /// savings want on this colonist's scale — its savings ladder is too shallow
+    /// (present-biased) or already satiated (scale-specific).
+    NoFutureProvision,
+    /// The newly-provisioned saving is ranked BELOW the leisure the build sacrifices (or
+    /// below a present good the committed WOOD provisions) — the present cost outranks the
+    /// future gain on this colonist's scale (scale-specific).
+    PresentCostOutranks,
+}
+
+/// S10: one per-agent build decision recorded by the per-agent capital-formation phase —
+/// which colonist appraised toward which tool this tick, whether it accepted, the rank of
+/// the savings want the tool's receipts would provision (when one is reached), and the
+/// decline reason. Read-only/diagnostic (NOT serialized — it steers no future tick),
+/// exposed via [`Settlement::last_capital_decisions`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CapitalDecision {
+    pub candidate: AgentId,
+    pub slot: usize,
+    pub tool: GoodId,
+    pub accepted: bool,
+    pub target_rank: Option<usize>,
+    pub reason: CapitalDeclineReason,
+}
+
+/// S10: the outcome of one [`appraise_capital_tool_bundle_for_money`] call on a colonist's
+/// own scale — whether the build was accepted, the rank of the savings want its receipts
+/// would provision (when one is reached), and the decline reason. Public so the
+/// originary-interest microtest can appraise it directly.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CapitalBuildOutcome {
+    pub accepted: bool,
+    pub target_rank: Option<usize>,
+    pub reason: CapitalDeclineReason,
+}
+
+/// S10 (microtest surface — the falsifiable bar): does a colonist with `culture` (rested,
+/// holding `wood_held` WOOD and `gold` of `savings_good`, saving in `savings_good`) accept
+/// building a durable tool whose recipe yields `output_price·output_qty − input_price·
+/// input_qty − operating_cost` proceeds per run, on its OWN multi-horizon value scale?
+///
+/// The ONLY thing that changes the answer between two calls with everything else fixed is
+/// `culture.time_preference_bps`: it sets the savings-ladder DEPTH
+/// ([`life::savings_ladder_depth`]), so a patient colonist carries deep savings wants a
+/// tool's gestation-delayed receipts can fill (→ accepts) while a present-biased one's
+/// shallow near-savings are unreachable (→ declines). That is the horizon-depth formula,
+/// testable directly — if capital formation does NOT vary with `time_preference_bps`, the
+/// decision is not reading the ordinal scale and the milestone failed.
+#[allow(clippy::too_many_arguments)]
+pub fn capital_build_outcome_for_culture(
+    culture: CultureParams,
+    savings_good: GoodId,
+    gold: u64,
+    wood_held: u32,
+    output_price: u64,
+    output_qty: u32,
+    input_price: u64,
+    input_qty: u32,
+    build_wood: u32,
+    build_labor: u32,
+    operating_cost: u64,
+) -> CapitalBuildOutcome {
+    let known = KnownGoods {
+        hunger: FOOD,
+        warmth: WOOD,
+        savings: savings_good,
+        subsistence: None,
+    };
+    // A rested colonist (no hunger/warmth/rest deficit), so the only present cost the
+    // build charges is the committed WOOD and the displaced leisure — exactly what the
+    // microtest isolates against the savings ladder its culture shapes.
+    let scale = regenerate_scale_for_capital(&NeedState::rested(), &culture, &known);
+    let mut stock = Stock::new(NET.0);
+    stock.add(WOOD, wood_held);
+    let agent = Agent {
+        id: AgentId(1),
+        scale,
+        stock,
+        gold: Gold(gold),
+        labor_capacity: 0,
+        hunger_deficit: 0,
+        roles: vec![Role::Household],
+        expect: Vec::new(),
+    };
+    // A synthetic recipe carrying only the input/output quantities the margin reads.
+    let recipe = Recipe {
+        id: RecipeId::Mill,
+        name: "CapitalBuildMicrotest",
+        labor: build_labor,
+        input_good: (input_qty > 0).then_some((SALT, input_qty)),
+        required_tool: None,
+        output_good: FOOD,
+        output_qty,
+        enabled: true,
+    };
+    appraise_capital_tool_bundle_for_money(
+        &agent,
+        &recipe,
+        Some(Gold(output_price)),
+        (input_qty > 0).then_some(Gold(input_price)),
+        build_wood,
+        build_labor,
+        0,
+        operating_cost,
+        savings_good,
+    )
+}
+
+/// S10: one tool a colonist could build, with the realized prices its recipe-margin
+/// appraisal needs — the oven (Bake: flour→bread) or the mill (Mill: grain→flour).
+#[derive(Clone, Copy)]
+struct ToolCandidate<'a> {
+    tool: GoodId,
+    recipe: &'a Recipe,
+    template_id: ProjectTemplateId,
+    output_price: Option<Gold>,
+    input_price: Option<Gold>,
+}
+
+/// S10: the inputs the per-agent capital-formation phase pulls from the chain runtime —
+/// the two tool recipes + their goods and the build-cost knobs — bundled so the appraisal
+/// loop is a small call rather than a long argument list.
+struct PerAgentBuildParams<'a> {
+    mill_recipe: &'a Recipe,
+    bake_recipe: &'a Recipe,
+    grain: GoodId,
+    flour: GoodId,
+    bread: GoodId,
+    mill_good: GoodId,
+    oven_good: GoodId,
+    operating_cost: u64,
+    wood_qty: u32,
+    build_labor: u32,
+    hunger_max: u16,
+    tick: u64,
+}
+
+/// S10: a tool candidate's net recipe margin per run (`revenue − input_cost −
+/// operating_cost`), or `i128::MIN` when its prices are missing — used only to ORDER the
+/// two candidates so each colonist prefers the more rewarding roundabout investment (a
+/// per-agent choice, not a global planner stage choice). The accept/reject gate itself is
+/// the ordinal [`appraise_capital_tool_bundle_for_money`], never this scalar.
+fn recipe_net_margin(candidate: &ToolCandidate<'_>, operating_cost: u64) -> i128 {
+    let Some(output_price) = candidate.output_price else {
+        return i128::MIN;
+    };
+    let input_qty = candidate.recipe.input_good.map_or(0, |(_input, qty)| qty);
+    if input_qty > 0 && candidate.input_price.is_none() {
+        return i128::MIN;
+    }
+    let revenue = output_price
+        .0
+        .saturating_mul(u64::from(candidate.recipe.output_qty));
+    let input_cost = candidate
+        .input_price
+        .map_or(0, |price| price.0)
+        .saturating_mul(u64::from(input_qty));
+    i128::from(revenue) - i128::from(input_cost) - i128::from(operating_cost)
+}
+
+/// S10: appraise EVERY tool `agent` could build on its OWN scale (most-rewarding first)
+/// and return the recorded decision plus the index of the tool it accepts (if any). The
+/// colonist builds the first tool its scale accepts; otherwise the decision keeps the most
+/// informative decline (a scale-specific reason over a price-global one) so the diagnostic
+/// shows a genuine own-scale decline.
+#[allow(clippy::too_many_arguments)]
+fn appraise_capital_for_colonist(
+    agent: &Agent,
+    slot: usize,
+    tool_candidates: &[ToolCandidate<'_>],
+    wood_qty: u32,
+    build_labor: u32,
+    tick: u64,
+    operating_cost: u64,
+    money_good: GoodId,
+) -> (CapitalDecision, Option<usize>) {
+    let mut decision = CapitalDecision {
+        candidate: agent.id,
+        slot,
+        tool: tool_candidates
+            .first()
+            .map_or(WOOD, |candidate| candidate.tool),
+        accepted: false,
+        target_rank: None,
+        reason: CapitalDeclineReason::NoPrices,
+    };
+    for (index, candidate) in tool_candidates.iter().enumerate() {
+        let outcome = appraise_capital_tool_bundle_for_money(
+            agent,
+            candidate.recipe,
+            candidate.output_price,
+            candidate.input_price,
+            wood_qty,
+            build_labor,
+            tick,
+            operating_cost,
+            money_good,
+        );
+        if outcome.accepted {
+            return (
+                CapitalDecision {
+                    candidate: agent.id,
+                    slot,
+                    tool: candidate.tool,
+                    accepted: true,
+                    target_rank: outcome.target_rank,
+                    reason: CapitalDeclineReason::Accepted,
+                },
+                Some(index),
+            );
+        }
+        if decline_rank(outcome.reason) > decline_rank(decision.reason) {
+            decision = CapitalDecision {
+                candidate: agent.id,
+                slot,
+                tool: candidate.tool,
+                accepted: false,
+                target_rank: outcome.target_rank,
+                reason: outcome.reason,
+            };
+        }
+    }
+    (decision, None)
+}
+
+/// S10: how informative a decline reason is — a scale-specific decline
+/// (`PresentCostOutranks` / `NoFutureProvision`, the colonist declining on its OWN scale)
+/// outranks a price-global one (`NonPositiveMargin` / `NoPrices`, the same for everyone),
+/// so the recorded diagnostic prefers a genuine own-scale decline.
+fn decline_rank(reason: CapitalDeclineReason) -> u8 {
+    match reason {
+        CapitalDeclineReason::NoPrices => 0,
+        CapitalDeclineReason::NonPositiveMargin => 1,
+        CapitalDeclineReason::NoFutureProvision => 2,
+        CapitalDeclineReason::PresentCostOutranks => 3,
+        CapitalDeclineReason::Accepted => 4,
+    }
+}
+
+/// S10: the per-agent ORDINAL capital-tool build appraisal — the milestone's core.
+///
+/// Decides, on `agent`'s OWN value scale, whether committing present WOOD + forgone
+/// leisure to build a durable `recipe` tool whose multi-period proceeds provision one of
+/// the agent's own future-money savings wants is worth it — generalizing
+/// [`appraise_project_bundle_for_money`] to a dated receivable STREAM (not one receipt)
+/// and charging the present sacrifice as the spec's PRESENT side (the WOOD removed from
+/// stock + the displaced Leisure rank), with NO cardinal discount (originary interest is
+/// expressed ordinally, via the agent's own savings ladder).
+///
+/// - PRESENT side: the `build_wood` WOOD is removed from the bundle stock (its present
+///   warmth use forgone); the `build_labor` build ticks displace the agent's leisure want.
+/// - FUTURE side: the recipe's net margin per run (`revenue − input_cost − operating_cost`)
+///   arrives as a stream of dated receivables — one per tick from `tick + build_labor + 1`
+///   out to the agent's deepest savings horizon. A tool's gestation pushes the first
+///   receipt past the near horizons (`Later(4)`), so only a deep-enough savings ladder is
+///   reached — which is exactly where `time_preference_bps` bites (a patient colonist
+///   carries the deep wants; a present-biased one does not).
+/// - ACCEPTANCE (the gate): the altered endowment newly provisions a future-money savings
+///   want ([`appraise_project_bundle_for_money`]'s `bundle_accepts_due` generalized) while
+///   preserving every higher-ranked want — AND that newly-provisioned want outranks the
+///   displaced leisure. A patient colonist (deep ladder, savings ranked high) accepts; a
+///   present-biased one (shallow ladder, savings below leisure / unreached by the stream)
+///   declines — no rate imposed.
+#[allow(clippy::too_many_arguments)]
+fn appraise_capital_tool_bundle_for_money(
+    agent: &Agent,
+    recipe: &Recipe,
+    output_price: Option<Gold>,
+    input_price: Option<Gold>,
+    build_wood: u32,
+    build_labor: u32,
+    tick: u64,
+    operating_cost: u64,
+    money_good: GoodId,
+) -> CapitalBuildOutcome {
+    let decline = |reason| CapitalBuildOutcome {
+        accepted: false,
+        target_rank: None,
+        reason,
+    };
+
+    // ---- the recipe's net margin per run (the FUTURE side's per-tick proceeds).
+    let Some(output_price) = output_price else {
+        return decline(CapitalDeclineReason::NoPrices);
+    };
+    let input_qty = recipe.input_good.map_or(0, |(_input, qty)| qty);
+    if input_qty > 0 && input_price.is_none() {
+        return decline(CapitalDeclineReason::NoPrices);
+    }
+    let revenue = output_price.0.saturating_mul(u64::from(recipe.output_qty));
+    let input_cost = input_price
+        .map_or(0, |price| price.0)
+        .saturating_mul(u64::from(input_qty));
+    let margin = i128::from(revenue) - i128::from(input_cost) - i128::from(operating_cost);
+    if margin <= 0 {
+        return decline(CapitalDeclineReason::NonPositiveMargin);
+    }
+    let margin = u64::try_from(margin).unwrap_or(u64::MAX);
+
+    // ---- PRESENT side: remove the committed WOOD from the bundle stock (its present
+    // warmth use forgone). Eligibility already checks the WOOD is on hand; defensive.
+    let mut bundle_stock = agent.stock.clone();
+    if !bundle_stock.remove(WOOD, build_wood) {
+        return decline(CapitalDeclineReason::NoFutureProvision);
+    }
+
+    // ---- FUTURE side: the dated receivable stream — one margin-receipt per tick from
+    // tick+build_labor+1 (the first proceeds after the gestation) out to the agent's
+    // deepest savings horizon (beyond it there is no want for a receipt to provision).
+    let max_horizon = deepest_savings_horizon(&agent.scale, money_good);
+    let mut stream: Vec<DebtContract> = Vec::new();
+    let mut due_in = u64::from(build_labor).saturating_add(1);
+    while due_in <= max_horizon {
+        stream.push(capital_tool_receipt(agent.id, tick, due_in, Gold(margin)));
+        due_in += 1;
+    }
+    if stream.is_empty() {
+        // The gestation pushes every receipt past the agent's deepest savings horizon — a
+        // present-biased colonist whose ladder never reaches the tool's payback window.
+        return decline(CapitalDeclineReason::NoFutureProvision);
+    }
+
+    // ---- ACCEPTANCE: newly provision a future-money savings want while preserving every
+    // higher-ranked want, and outrank the displaced leisure.
+    let baseline = TemporalEndowment {
+        stock: &agent.stock,
+        gold: agent.gold,
+        receivables: &[],
+        payables: &[],
+        tick: Tick(tick),
+    };
+    let baseline_bitmap = provisioning_bitmap_for_money(&agent.scale, &baseline, money_good);
+    let bundle = TemporalEndowment {
+        stock: &bundle_stock,
+        gold: agent.gold,
+        receivables: &stream,
+        payables: &[],
+        tick: Tick(tick),
+    };
+    let bundle_bitmap = provisioning_bitmap_for_money(&agent.scale, &bundle, money_good);
+
+    // The first (highest-ranked) future-money savings want the stream newly provisions.
+    let target = agent.scale.iter().enumerate().find_map(|(index, want)| {
+        let future_money_want =
+            want.kind == WantKind::Good(money_good) && matches!(want.horizon, Horizon::Later(_));
+        (future_money_want
+            && !baseline_bitmap.get(index).copied().unwrap_or(false)
+            && bundle_bitmap.get(index).copied().unwrap_or(false))
+        .then_some(index)
+    });
+    let Some(target) = target else {
+        return decline(CapitalDeclineReason::NoFutureProvision);
+    };
+
+    // Preserve every higher-ranked want the committed WOOD might have provisioned (the
+    // WOOD's present warmth use among the costs the future gain must outrank).
+    if !preserved_provisioning_above(&baseline_bitmap, &bundle_bitmap, target) {
+        return decline(CapitalDeclineReason::PresentCostOutranks);
+    }
+    // The displaced leisure: the build sacrifices the agent's leisure for the build
+    // duration, so the newly-provisioned saving must OUTRANK the leisure want — else the
+    // present sacrifice outranks the future gain on this colonist's own scale (a
+    // present-biased colonist whose savings sink below its leisure).
+    if let Some(leisure_rank) = agent
+        .scale
+        .iter()
+        .position(|want| want.kind == WantKind::Leisure)
+    {
+        if target >= leisure_rank {
+            return decline(CapitalDeclineReason::PresentCostOutranks);
+        }
+    }
+
+    CapitalBuildOutcome {
+        accepted: true,
+        target_rank: Some(target),
+        reason: CapitalDeclineReason::Accepted,
+    }
+}
+
+/// S10: the deepest `Later` horizon at which `scale` carries a savings want for
+/// `money_good` (the far end of the multi-horizon ladder), or `0` if none — the window the
+/// capital-tool receipt stream is dated across.
+fn deepest_savings_horizon(scale: &[Want], money_good: GoodId) -> u64 {
+    scale
+        .iter()
+        .filter_map(|want| match (want.kind, want.horizon) {
+            (WantKind::Good(good), Horizon::Later(later)) if good == money_good => {
+                Some(u64::from(later))
+            }
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// S10: a hypothetical dated tool-proceeds receipt for the
+/// [`appraise_capital_tool_bundle_for_money`] stream — an in-memory `DebtContract`
+/// carrying only the `(due_tick, due)` the provisioning math reads, never registered as a
+/// real claim (the owner id is a per-call label, like the role-choice appraisal's).
+fn capital_tool_receipt(owner: AgentId, tick: u64, due_in: u64, due: Gold) -> DebtContract {
+    DebtContract {
+        id: DebtId(0),
+        lender: CreditLender::Agent(owner),
+        borrower: AgentId(0),
+        opened_tick: Tick(tick),
+        due_tick: Tick(tick.saturating_add(due_in)),
+        principal: Gold::ZERO,
+        due,
+        paid: Gold::ZERO,
+        state: DebtState::Open,
+        purpose: DebtPurpose::Consumption,
+        funding: CreditSource::Commodity,
+    }
+}
+
+/// S10: every want ranked above `target` that the baseline provisioned is still
+/// provisioned in the bundle — the `preserved_above_target` invariant (the future
+/// provision must not break a higher-ranked want), generalized to the capital-tool
+/// bundle's two bitmaps.
+fn preserved_provisioning_above(before: &[bool], after: &[bool], target: usize) -> bool {
+    before
+        .iter()
+        .zip(after)
+        .take(target)
+        .all(|(was, now)| !*was || *now)
 }
 
 /// The producer's imputed reservation for ONE unit of its recipe input (S2),
@@ -11975,6 +12727,124 @@ mod tests {
             before,
             build_state.canonical_bytes(),
             "an in-flight capital project's id must be serialized"
+        );
+    }
+
+    #[test]
+    fn canonical_bytes_include_per_agent_capital() {
+        // S10: the per_agent_capital flag steers every future tick (it replaces the S7
+        // build planner with a per-colonist ordinal decision), so it is part of the chain
+        // config identity. And in per-agent mode capital_payback_cycles is behaviour-INERT
+        // — two per-agent configs differing only in it must NOT digest apart (no false
+        // split for a behaviour-inert knob).
+        let mut heuristic = capital_test_config();
+        heuristic.chain.as_mut().expect("chain").per_agent_capital = false;
+        let mut per_agent = heuristic.clone();
+        per_agent.chain.as_mut().expect("chain").per_agent_capital = true;
+
+        // per-agent ON vs the S7 heuristic must digest apart (the gate is in the identity).
+        assert_ne!(
+            Settlement::generate(7, &heuristic).canonical_bytes(),
+            Settlement::generate(7, &per_agent).canonical_bytes(),
+            "per_agent_capital must be part of the chain config identity"
+        );
+
+        // In per-agent mode capital_payback_cycles is inert — including across a live run
+        // (the per-agent decision never reads it) — so the digest must not split on it.
+        let mut per_agent_other = per_agent.clone();
+        per_agent_other
+            .chain
+            .as_mut()
+            .expect("chain")
+            .capital_payback_cycles += 9;
+        let mut a = Settlement::generate(7, &per_agent);
+        let mut b = Settlement::generate(7, &per_agent_other);
+        a.run(120);
+        b.run(120);
+        assert_eq!(
+            a.canonical_bytes(),
+            b.canonical_bytes(),
+            "capital_payback_cycles is inert in per-agent mode and must not split the digest"
+        );
+        assert_eq!(a.digest(), b.digest());
+
+        // The still-active build knobs DO steer per-agent builds, so each must split.
+        for mutate in [
+            (|c: &mut ChainConfig| c.tool_build_wood += 1) as fn(&mut ChainConfig),
+            |c: &mut ChainConfig| c.tool_build_labor += 1,
+            |c: &mut ChainConfig| c.capital_build_hunger_max += 1,
+        ] {
+            let mut tweaked = per_agent.clone();
+            mutate(tweaked.chain.as_mut().expect("chain"));
+            assert_ne!(
+                Settlement::generate(7, &per_agent).canonical_bytes(),
+                Settlement::generate(7, &tweaked).canonical_bytes(),
+                "with per-agent capital on, the active build knobs must steer the digest"
+            );
+        }
+    }
+
+    #[test]
+    fn per_agent_capital_builds_by_appraisal_with_a_visible_decliner() {
+        // S10.1: on a simple designated-GOLD capital config with per_agent_capital ON, an
+        // individual colonist builds via its OWN ordinal appraisal, and the per-tick
+        // decision diagnostic shows at least one tick where an EARLIER-eligible colonist
+        // declined on its own scale while a LATER one accepted — proving the builder is
+        // chosen by its own appraisal, not slot-order-first. (The flagship emergence
+        // variant is covered by the integration suite; this isolates the gated core.)
+        let mut cfg = capital_test_config();
+        cfg.chain.as_mut().expect("chain").per_agent_capital = true;
+        // A leaner roster than the full capital config keeps this isolated core test fast
+        // while still leaving bread demand the seeded chain cannot meet (so builds fire).
+        cfg.consumers = 20;
+        cfg.gatherers = 12;
+        let mut s = Settlement::generate(1, &cfg);
+
+        let mut saw_later_accept_after_earlier_own_decline = false;
+        for _ in 0..500u64 {
+            s.econ_tick();
+            let decisions = s.last_capital_decisions();
+            let earliest_own_decline = decisions
+                .iter()
+                .filter(|d| {
+                    !d.accepted
+                        && matches!(
+                            d.reason,
+                            CapitalDeclineReason::NoFutureProvision
+                                | CapitalDeclineReason::PresentCostOutranks
+                        )
+                })
+                .map(|d| d.slot)
+                .min();
+            if let Some(decline_slot) = earliest_own_decline {
+                if decisions
+                    .iter()
+                    .any(|d| d.accepted && d.slot > decline_slot)
+                {
+                    saw_later_accept_after_earlier_own_decline = true;
+                }
+            }
+        }
+
+        assert!(
+            s.tools_built() > 0,
+            "an individual colonist must build via its own appraisal with per-agent on"
+        );
+        assert!(
+            saw_later_accept_after_earlier_own_decline,
+            "the diagnostic must show an earlier-eligible colonist declining on its own \
+             scale while a later one accepts (per-agent, not slot-order-first)"
+        );
+
+        // Flag OFF (the S7 heuristic) records no per-agent decision diagnostic at all, and
+        // the multi-horizon savings ladder never activates — byte-identical to S7.
+        let mut off = capital_test_config();
+        off.chain.as_mut().expect("chain").per_agent_capital = false;
+        let mut t = Settlement::generate(1, &off);
+        t.run(200);
+        assert!(
+            t.last_capital_decisions().is_empty(),
+            "the per-agent diagnostic must be empty on the S7 heuristic path"
         );
     }
 
