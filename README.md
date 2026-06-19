@@ -1460,7 +1460,7 @@ labor, and capital all **co-emerge in one run** from a no-money barter start. Sl
       finding below) — no designated money, zero gold at generation; the chain waits on money (no
       producer/no chain output before promotion); inputs clear by real `Society::trade` across the
       cutover; bread sustains through tick 1600 at a real rate (tail ~450/100-tick window); hunger is
-      bounded but the colony is **semi-hungry** (mean ~7.6, p95 ~12 — healthy provisioning is S11); ≥1
+      bounded but the colony is **semi-hungry** (mean ~7.6, p95 ~12 — healthy provisioning is S12); ≥1
       mill/oven is **built** (`produced`) after promotion by a formerly-non-latent colonist;
       everything conserves every tick (incl. the promotion sink) and is byte-deterministic.
 - [x] acceptance suite (`sim/tests/money_coemergence.rs`: the eleven named tests) + the viewer
@@ -1481,7 +1481,7 @@ further rests on (disclosed): exogenous, producer-only and household subsistence
 "market alone") — tuned **lean** (`producer_subsistence` 2 vs S5's 4; demographic `food/wood_provision`
 1 vs 3) so a fed agent recirculates rather than hoards (a money-sink avoidance, not a handout) — plus
 the same cold-start buffers as S5, and a modest, semi-hungry colony (healthy provisioning-at-scale
-under emergence is deferred to S11, where the raw-grain floor would crowd out the bread-for-SALT trade
+under emergence is deferred to S12, where the raw-grain floor would crowd out the bread-for-SALT trade
 that monetizes SALT).
 
 **The principled finding (Tension B), reported as a passing diagnostic — not papered over.** The
@@ -1645,6 +1645,16 @@ over-optimist sinks real WOOD into capital that under-earns at the real price. S
 the flagship run is old age). The single clean lever is the **output-revenue** forecast; input-cost and
 build-cost forecasting, richer expectation (variance/confidence), and re-enabled mortality selection are
 noted follow-ons.
+
+**Honest scope (Codex-reviewed: PASS on the narrow bar, no P0/P1).** Three deliberate limits: (1) the
+shock test proves a **real chain perturbation with output recovery**, not rich entrepreneurial
+re-coordination / belief repair / order-book rediscovery; (2) `agent_capital` is a **conservative
+selection metric** (idle tools at zero), correct for "a sunk-WOOD loss can't hide in a bad tool" but it
+**undervalues a productive mid-payback tool** — it is not full economic net worth; (3) "selection" here
+is a **capital penalty** (over-optimists end poorer), not yet evolutionary selection (accurate
+forecasters do not yet gain lineage/market/survival share — that needs mortality/exit). Entrepreneurial
+error is now individually forecasted and bears a real loss; the remaining stopping-point piece is
+**survival/profit-loss selection through starvation or exit**.
 
 ## Build and test
 
