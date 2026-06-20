@@ -190,6 +190,12 @@ const SCENARIOS: &[Scenario] = &[
         build: build_entrepreneurial,
     },
     Scenario {
+        name: "provisioned",
+        description:
+            "S12: HOUSEHOLD SUBSISTENCE AT SCALE — the S11 entrepreneurial colony with the exogenous food MINTS retired and replaced by OWN-LABOR subsistence: a hungry, eligible, unprovisioned colonist forages a low-grade FORAGE floor from its own labor (booked produced, eaten at home, ranked below bread) instead of harvesting WOOD. The floor FEEDS the tail (hunger drops from the semi-hungry ~8 to ~4), but the falsifiable core is FALSIFIED: once the bread mints are gone, SALT never monetizes at any forage yield — the no-middle-band finding (docs/finding-household-subsistence.md). With one hunger scalar, feeding the colony any way that is not buying bread removes the bread demand that monetizes SALT; the fix (out of scope) is differentiated food quality.",
+        build: build_provisioned,
+    },
+    Scenario {
         name: "millisats-1x",
         description:
             "EXPERIMENT: frontier at coarse (x1) money precision — the unit-starved baseline that freezes (~320 money units)",
@@ -397,6 +403,10 @@ fn build_originary() -> SettlementConfig {
 
 fn build_entrepreneurial() -> SettlementConfig {
     SettlementConfig::frontier_coemergent_strong_entrepreneurial()
+}
+
+fn build_provisioned() -> SettlementConfig {
+    SettlementConfig::frontier_coemergent_strong_provisioned()
 }
 
 fn build_millisats_1x() -> SettlementConfig {

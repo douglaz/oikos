@@ -1656,6 +1656,50 @@ forecasters do not yet gain lineage/market/survival share — that needs mortali
 error is now individually forecasted and bears a real loss; the remaining stopping-point piece is
 **survival/profit-loss selection through starvation or exit**.
 
+## Status: S12 (household subsistence at scale — own-labor subsistence) — landed as a FINDING
+
+The co-emergent colony was kept alive by exogenous **hearths that MINT food with no labor**
+(`producer_subsistence`'s staple + the demographic `food_provision`). S12 retires that food
+minting and replaces it with **own-labor subsistence**: a labor-produced survival **floor**. Built,
+gated, conserving — behind a default-off `ChainConfig::own_labor_subsistence`, per
+`docs/impl-household-subsistence.md`:
+
+- [x] **S12.1 — own-labor subsistence (retire the food mint).** A new low-grade `FORAGE` good
+      (interned via `ContentSet::with_forage`, wired `KnownGoods::subsistence` so the consume readback
+      counts it as hunger relief, ranked **below bread** by the existing subsistence offset, perishable
+      via the existing spoilage phase). A new world task `Task::GoForage` — a hungry, eligible,
+      unprovisioned spatial non-lineage colonist forages instead of harvesting WOOD (the **structural
+      opportunity cost**: one world task per colonist per tick). `run_own_labor_subsistence` credits
+      `forage_yield` FORAGE into the forager's OWN stock booked **`report.produced`** (own labor) — NOT
+      `report.endowment` (a mint) — one source line, no node-regen double-count. In this path the
+      hunger-good mints are ZEROED (`producer_subsistence` staple + `food_provision`); WOOD/warmth
+      provision stays. Tests: `subsistence_is_produced_not_minted` (FORAGE produced not minted,
+      `endowment[staple] == 0`, a forager's hunger falls), `provisioned_run_is_deterministic`,
+      `provisioning_conserves`, and `canonical_bytes_include_own_labor_subsistence` /
+      `canonical_bytes_include_foraging`.
+- [x] **S12.2 — the balance (the falsifiable core), FALSIFIED.** `forage_floor_feeds_the_tail` (tail
+      hunger mean/p95/max/chronic all drop below the semi-hungry S11 baseline and do not drift),
+      `no_own_labor_production_control_stays_hungry` (forage off → the tail stays hungry — the floor is
+      what feeds it), `producer_food_path_is_feasible`. But money no longer emerges (see the finding).
+- [x] **S12.3 — the `provisioned` scenario** (`frontier_coemergent_strong_provisioned`, derived from the
+      S11 entrepreneurial base with own-labor on, food mint off) + the pinned DoD diagnostic
+      `subsistence_and_monetization_have_no_middle_band`. All additive/gated: with the flag off the
+      S5–S11 scenarios + the econ + g5a/g5b/coemergence goldens are byte-identical.
+
+**Is there a middle band (fed AND money emerges)? No — the principled-failure mode the spec
+anticipated.** Across the pinned sweep — forage-yield `{0,1,2,3,4,6,8}` carry/tick × seeds
+`{1,7,0xC0FFEE}` × 1600 ticks — the floor **feeds the tail** (hunger drops from the semi-hungry mean ~8
+to ~4, 0 chronically hungry at any yield ≥ 1), but **SALT never monetizes once the food mints are
+retired** (no cell promotes; pre-promotion bread-for-SALT volume is 0). Isolating it: retiring
+`producer_subsistence` alone leaves emergence intact, but retiring the demographic `food_provision`
+kills it — that mint produced **bread** (the good SALT monetizes against) *per tick*, the sustained
+pre-promotion bread supply the strong-bar emergence window needs. With a **single hunger scalar**, the
+labor floor relieves the same hunger bread does, so any way of feeding the colony that is not *buying
+bread* removes the bread demand that monetizes SALT. The faithful fix is **differentiated food
+quality/services** (bread satisfying a want forage cannot), a model change deliberately out of S12
+scope. Landed honestly as a finding (`docs/finding-household-subsistence.md`), not forced with re-minted
+food or raw-grain edibility.
+
 ## Build and test
 
 ```bash

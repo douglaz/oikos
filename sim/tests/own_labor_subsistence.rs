@@ -5,7 +5,7 @@
 //! bread). These tests pin the mechanism (produced not minted, conserving, gated) and
 //! the milestone's falsifiable core.
 
-use econ::good::GoodId;
+use econ::good::{GoodId, SALT};
 use sim::{Settlement, SettlementConfig, Vocation};
 
 /// (mean, p95, max, chronically-hungry count) over the living roster, where "chronic" is
@@ -246,4 +246,177 @@ fn producer_food_path_is_feasible() {
         "a latent producer must keep a feasible food path (forage), not starve at the \
          ceiling — worst latent-producer hunger was {worst}"
     );
+}
+
+// ---- S12.3 DoD: the no-middle-band diagnostic ----------------------------------------
+
+/// One sweep cell's recorded metrics.
+#[derive(Debug)]
+struct Cell {
+    yield_units: u32,
+    seed: u64,
+    mean: u64,
+    p95: u16,
+    max: u16,
+    chronic: usize,
+    promoted_at: Option<u64>,
+    salt_promoted: bool,
+    pre_bread_salt: u64,
+    tail_bread_and_inputs: u64,
+}
+
+fn run_cell(yield_units: u32, seed: u64, ticks: u64) -> Cell {
+    let cfg = provisioned_with_yield(yield_units);
+    let bread = bread_good(&cfg);
+    let grain = cfg.chain.as_ref().unwrap().content.grain();
+    let flour = cfg.chain.as_ref().unwrap().content.flour();
+    let mut s = Settlement::generate(seed, &cfg);
+    let mut pre_bread_salt = 0u64;
+    let mut tail = 0u64;
+    for t in 0..ticks {
+        let pre = s.promoted_at_tick().is_none();
+        let report = s.econ_tick();
+        assert!(
+            report.conserves(),
+            "y={yield_units} seed={seed:#x} broke at {t}"
+        );
+        if pre {
+            pre_bread_salt = s.bread_for_salt_volume();
+        }
+        if t >= ticks - 400 {
+            // Tail bread.made + active-producer input trades (grain milled, flour baked).
+            tail += report.produced_of(bread)
+                + report.consumed_as_input_of(grain)
+                + report.consumed_as_input_of(flour);
+        }
+    }
+    let (mean, p95, max, chronic) = hunger_stats(&s, 8);
+    Cell {
+        yield_units,
+        seed,
+        mean,
+        p95,
+        max,
+        chronic,
+        promoted_at: s.promoted_at_tick(),
+        salt_promoted: s.current_money_good() == Some(SALT),
+        pre_bread_salt,
+        tail_bread_and_inputs: tail,
+    }
+}
+
+#[test]
+fn subsistence_and_monetization_have_no_middle_band() {
+    // The pinned sweep (`docs/finding-household-subsistence.md`): forage-yield grid
+    // {0,1,2,3,4,6,8} carry/tick × seeds {1,7,0xC0FFEE} × 1600 ticks. The milestone PASSES
+    // its falsifiable core iff >= 1 cell has bounded hunger AND SALT promoted AND tail
+    // bread/input trades. None does: the food mints, once retired, take SALT emergence
+    // with them at every forage yield — the no-middle-band finding.
+    let yields = [0u32, 1, 2, 3, 4, 6, 8];
+    let seeds = [1u64, 7, 0xC0FFEE];
+    let ticks = 1600u64;
+
+    // Anchor: the SAME colony with the food mints ON (the S11 base) DOES monetize SALT —
+    // proving the mints (not some unrelated change) are what emergence depends on.
+    let mut anchor = Settlement::generate(
+        1,
+        &SettlementConfig::frontier_coemergent_strong_entrepreneurial(),
+    );
+    let mut anchor_pre_bread_salt = 0u64;
+    for _ in 0..ticks {
+        let pre = anchor.promoted_at_tick().is_none();
+        anchor.econ_tick();
+        if pre {
+            anchor_pre_bread_salt = anchor.bread_for_salt_volume();
+        }
+    }
+    assert_eq!(
+        anchor.current_money_good(),
+        Some(SALT),
+        "the mints-ON baseline must monetize SALT (the load-bearing anchor)"
+    );
+    assert!(
+        anchor_pre_bread_salt > 0,
+        "the mints-ON baseline must show a material pre-promotion bread-for-SALT trade"
+    );
+
+    let mut cells = Vec::new();
+    for &y in &yields {
+        for &seed in &seeds {
+            cells.push(run_cell(y, seed, ticks));
+        }
+    }
+
+    // Bounded-hunger threshold: comfortably under the semi-hungry baseline (mean ~8,
+    // p95 12, max 12, 12 chronic).
+    let bounded = |c: &Cell| c.mean <= 6 && c.p95 <= 8 && c.max <= 10 && c.chronic == 0;
+    let monetizes = |c: &Cell| c.salt_promoted && c.tail_bread_and_inputs > 0;
+
+    let passing: Vec<&Cell> = cells
+        .iter()
+        .filter(|c| bounded(c) && monetizes(c))
+        .collect();
+
+    // The two halves of the finding must both be present so the diagnostic is meaningful
+    // (not a vacuous pass): SOME yield bounds hunger (the floor works), and NO yield
+    // monetizes SALT (the mint retirement kills money).
+    assert!(
+        cells.iter().any(bounded),
+        "the forage floor must bound hunger at SOME yield (else the sweep is degenerate)"
+    );
+    assert!(
+        cells.iter().all(|c| !c.salt_promoted),
+        "the finding is that SALT never monetizes once the mints are retired; a promoting \
+         cell would mean a middle band exists — re-run as the passing-band suite"
+    );
+
+    assert!(
+        passing.is_empty(),
+        "NO middle band was expected (fed AND money), but found passing cell(s): {:?}",
+        passing
+            .iter()
+            .map(|c| (c.yield_units, c.seed, c.promoted_at))
+            .collect::<Vec<_>>()
+    );
+
+    // Surface the grid so a future reader sees the shape of the finding, not a bare pass.
+    for c in &cells {
+        println!(
+            "y={} seed={:#x} mean={} p95={} max={} chronic={} promoted={:?} preBreadSalt={} tailBread+inputs={}",
+            c.yield_units,
+            c.seed,
+            c.mean,
+            c.p95,
+            c.max,
+            c.chronic,
+            c.promoted_at,
+            c.pre_bread_salt,
+            c.tail_bread_and_inputs,
+        );
+    }
+}
+
+#[test]
+fn goldens_unchanged_base_still_emerges() {
+    // The own-labor changes are additive + gated: with the flag OFF the S11 flagship is
+    // byte-identical (verified by the unchanged emergence/coemergence/frontier golden
+    // suites) and still behaves — SALT emerges and the chain sustains. This anchors that
+    // S9/S10/S11 are intact in the base the provisioned config derives from.
+    let cfg = SettlementConfig::frontier_coemergent_strong_entrepreneurial();
+    let mut s = Settlement::generate(1, &cfg);
+    let mut promoted = None;
+    for t in 0..1000u64 {
+        let was_barter = s.current_money_good().is_none();
+        let report = s.econ_tick();
+        assert!(report.conserves(), "baseline conservation broke at {t}");
+        if was_barter && s.current_money_good().is_some() {
+            promoted = Some(t);
+        }
+    }
+    assert_eq!(
+        s.current_money_good(),
+        Some(SALT),
+        "the unmodified S11 base must still monetize SALT (S9/S11 intact)"
+    );
+    assert!(promoted.is_some(), "SALT must promote in the base");
 }
