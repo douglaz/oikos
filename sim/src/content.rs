@@ -47,6 +47,13 @@ pub const PASTRY: &str = "pastry";
 pub const LIBRARY: &str = "library";
 pub const ATELIER: &str = "atelier";
 
+/// S12 own-labor subsistence: the low-grade subsistence good a hungry colonist
+/// **forages** from its own labor (booked `produced`, eaten at home, ranked below
+/// bread). A conserved good (tracked), wired as `KnownGoods::subsistence` on the
+/// gated `own_labor_subsistence` path. `None` on every other content set, so they
+/// stay byte-identical.
+pub const FORAGE: &str = "forage";
+
 /// Grain consumed per mill application (the conserved conversion's input ratio).
 pub const GRAIN_PER_MILL: u32 = 1;
 /// Flour produced per mill application — the mill's yield. A recipe is a conserved
@@ -93,6 +100,12 @@ pub struct ContentSet {
     pastry: Option<GoodId>,
     library: Option<GoodId>,
     atelier: Option<GoodId>,
+    /// S12: the foraged subsistence good, `Some` only for a [`Self::with_forage`]
+    /// set (the gated `own_labor_subsistence` path). `None` everywhere else, so the
+    /// G3a/G6b sets are byte-identical. It has no recipe (it is produced directly
+    /// from labor by the settlement's forage phase, not transformed) but IS a
+    /// conserved, tracked good (it joins [`Self::goods`] and [`Self::good_entries`]).
+    forage: Option<GoodId>,
     /// `[mill, bake]` for the plain chain, or `[mill, bake, research, confect]` for
     /// a research-tiers set, in chain order. The `confect` (tier-2) recipe starts
     /// `enabled: false` and is flipped by the `sim` unlock.
@@ -148,6 +161,7 @@ impl ContentSet {
             pastry: None,
             library: None,
             atelier: None,
+            forage: None,
             recipes,
         }
     }
@@ -228,8 +242,20 @@ impl ContentSet {
             pastry: Some(pastry),
             library: Some(library),
             atelier: Some(atelier),
+            forage: None,
             recipes,
         }
+    }
+
+    /// S12: intern the [`FORAGE`] subsistence good onto this content set, returning the
+    /// extended set. Interns over the same registry so FORAGE takes the next free id
+    /// *after* every existing content good (it never shifts a grain/flour/bread/research
+    /// id), keeping the gated `own_labor_subsistence` path additive. No recipe is added
+    /// — FORAGE is produced directly from labor by the settlement's forage phase.
+    pub fn with_forage(mut self) -> Self {
+        let forage = self.registry.intern(FORAGE);
+        self.forage = Some(forage);
+        self
     }
 
     /// The raw, gathered good (the only chain good a world node produces).
@@ -279,6 +305,12 @@ impl ContentSet {
     /// The durable `atelier` tool that gates the tier-2 recipe, or `None`.
     pub fn atelier(&self) -> Option<GoodId> {
         self.atelier
+    }
+
+    /// S12: the foraged subsistence good, or `None` for a content set without
+    /// [`Self::with_forage`]. A conserved, tracked good with no recipe.
+    pub fn forage(&self) -> Option<GoodId> {
+        self.forage
     }
 
     /// Whether this is a research-tiers content set (the research/tier-2 recipes and
@@ -362,6 +394,10 @@ impl ContentSet {
         goods.extend(self.pastry);
         goods.extend(self.library);
         goods.extend(self.atelier);
+        // S12: the foraged subsistence good is conserved and tracked (so the forage
+        // phase that mints it into econ stock is accounted by the digest and the
+        // whole-system ledger). `None` (omitted) on every non-forage set.
+        goods.extend(self.forage);
         goods
     }
 
@@ -392,6 +428,9 @@ impl ContentSet {
         }
         if let Some(atelier) = self.atelier {
             entries.push((ATELIER, atelier));
+        }
+        if let Some(forage) = self.forage {
+            entries.push((FORAGE, forage));
         }
         entries
     }
@@ -546,6 +585,36 @@ mod tests {
         assert!(
             !confect.enabled,
             "the tier-2 recipe must start disabled (unlocked by research)"
+        );
+    }
+
+    #[test]
+    fn with_forage_interns_after_the_chain_and_tracks_the_good() {
+        // S12: FORAGE interns after every existing content good (never shifting a
+        // chain id), is a conserved/tracked good (joins `goods` AND `good_entries`),
+        // and carries no recipe. The base set without it stays byte-identical.
+        let base = ContentSet::grain_flour_bread();
+        let forage_set = ContentSet::grain_flour_bread().with_forage();
+        assert_eq!(base.forage(), None);
+        assert_eq!(base.goods().len(), 5, "the plain chain is unchanged");
+
+        let forage = forage_set.forage().expect("with_forage interns the good");
+        assert_eq!(
+            forage.0,
+            base.oven().0 + 1,
+            "FORAGE takes the next id after the chain goods"
+        );
+        assert!(forage_set.goods().contains(&forage), "FORAGE is tracked");
+        assert!(forage_set
+            .good_entries()
+            .iter()
+            .any(|&(name, id)| name == FORAGE && id == forage));
+        assert_eq!(forage_set.recipes().len(), base.recipes().len());
+        // Research-tiers + forage: FORAGE follows the research goods too.
+        let research_forage = ContentSet::research_tiers().with_forage();
+        assert_eq!(
+            research_forage.forage().map(|g| g.0),
+            Some(research_forage.atelier().unwrap().0 + 1)
         );
     }
 

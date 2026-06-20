@@ -770,6 +770,36 @@ pub struct ChainConfig {
     /// the sole food source. `false` (every existing config) leaves hunger
     /// satisfied only by the staple, byte-identical.
     pub subsistence_on_grain: bool,
+    /// S12 — OWN-LABOR SUBSISTENCE (default `false`, byte-identical when off). When
+    /// `true` the settlement retires the **hunger-good mints** (the producer staple
+    /// floor in [`Self::producer_subsistence`] and the demographic `food_provision`)
+    /// and replaces them with a labor-produced survival **floor**: a hungry,
+    /// unprovisioned, spatial non-lineage colonist with spare labor is sent to
+    /// **forage** the FORAGE node ([`Task::GoForage`]) instead of harvesting WOOD,
+    /// and the settlement credits it [`Self::forage_yield`] units of the FORAGE
+    /// subsistence good into its OWN econ stock — booked `report.produced` (own
+    /// labor), NOT `report.endowment` (a mint). FORAGE is wired as
+    /// `KnownGoods::subsistence` (read back as hunger relief) and ranked BELOW bread,
+    /// so bread stays the superior market good that monetizes SALT. The WOOD/warmth
+    /// provision stays an endowment (hunger-only scope). Requires the content to
+    /// carry a forage good ([`ContentSet::with_forage`]).
+    pub own_labor_subsistence: bool,
+    /// S12: the FORAGE units a foraging colonist produces from its own labor per econ
+    /// tick — the survival-floor knob. High enough that sustained tail hunger drops
+    /// to a bounded band, low enough that colonists still prefer (and buy) bread so
+    /// the bread-for-SALT trade survives. `0` (with [`Self::own_labor_subsistence`]
+    /// on) retires the mint but produces no floor — the no-forage control. Inert
+    /// unless `own_labor_subsistence` is on.
+    pub forage_yield: u32,
+    /// S12: the hunger at/above which an eligible colonist starts foraging, and (paired
+    /// with [`Self::forage_hunger_out`]) the hysteresis exit below which it stops — so a
+    /// gatherer does not thrash between foraging and selling WOOD every tick. Consulted
+    /// only while `own_labor_subsistence` is on.
+    pub forage_hunger_in: u16,
+    /// S12: the hunger below which a foraging colonist stops foraging and reverts to its
+    /// home role (resuming WOOD gathering / idling). Must sit strictly below
+    /// [`Self::forage_hunger_in`]. Consulted only while `own_labor_subsistence` is on.
+    pub forage_hunger_out: u16,
     /// EXPERIMENTAL (capital-advance probe): when `true` *and* money has emerged,
     /// each econ tick a conserved working-capital advance moves real money from
     /// the richest saver to any cashless active chain producer (Miller/Baker), so
@@ -1040,6 +1070,13 @@ impl ChainConfig {
             operating_cost: 1,
             bread_is_staple: true,
             subsistence_on_grain: false,
+            // Own-labor subsistence off by default (S12): the food mints stay, no FORAGE
+            // is produced, and the forage knobs are inert — so every existing config and
+            // its goldens are byte-identical.
+            own_labor_subsistence: false,
+            forage_yield: 0,
+            forage_hunger_in: 8,
+            forage_hunger_out: 4,
             capital_advance: false,
             perishable_decay_bps: 0,
             subsistence_advance: false,
@@ -1115,6 +1152,10 @@ impl ChainConfig {
             operating_cost: 1,
             bread_is_staple: true,
             subsistence_on_grain: false,
+            own_labor_subsistence: false,
+            forage_yield: 0,
+            forage_hunger_in: 8,
+            forage_hunger_out: 4,
             capital_advance: false,
             perishable_decay_bps: 0,
             subsistence_advance: false,
@@ -2977,6 +3018,41 @@ impl SettlementConfig {
         cfg
     }
 
+    /// S12 — THE PROVISIONED ECONOMY (the flagship): the S11 entrepreneurial co-emergent
+    /// colony ([`Self::frontier_coemergent_strong_entrepreneurial`], never mutated) with
+    /// **own-labor subsistence** on and the food mints retired. The exogenous food
+    /// hearths that minted bread/staple with no labor (the producer-subsistence staple
+    /// floor and the demographic `food_provision`) are gone; instead a hungry, eligible,
+    /// unprovisioned colonist with spare labor **forages** a low-grade survival floor
+    /// (the FORAGE good) from its OWN labor — booked `produced`, eaten at home, ranked
+    /// BELOW bread. Everything that makes SALT emerge and the chain + capital + forecasts
+    /// sustain is untouched, so the test is whether the colony can be both
+    /// **bounded-hunger** (the forage floor feeds the tail) AND keep money emerging
+    /// (bread stays the superior good that monetizes SALT). Derived by flipping the
+    /// own-labor flags (and interning the FORAGE good into the content), so with them
+    /// reverted it is byte-identical to the entrepreneurial base.
+    ///
+    /// The `forage_yield` sits in the middle band the S12 sweep probes: high enough to
+    /// pull sustained tail hunger below the semi-hungry S9/S11 baseline, low enough that
+    /// colonists still prefer (and buy) bread so the bread-for-SALT trade survives.
+    pub fn frontier_coemergent_strong_provisioned() -> Self {
+        let mut cfg = Self::frontier_coemergent_strong_entrepreneurial();
+        if let Some(chain) = cfg.chain.as_mut() {
+            // Intern the FORAGE subsistence good (no recipe — produced from labor) and
+            // turn on the own-labor path: the food mints retire and a hungry forager is
+            // credited `forage_yield` FORAGE into its own stock each tick.
+            chain.content = chain.content.clone().with_forage();
+            chain.own_labor_subsistence = true;
+            // The survival-floor knob (the middle-band value the S12 sweep selects).
+            chain.forage_yield = 3;
+            // Forage when hunger reaches the band's top, stop once comfortably fed —
+            // wide enough that a gatherer does not thrash between foraging and WOOD.
+            chain.forage_hunger_in = 6;
+            chain.forage_hunger_out = 2;
+        }
+        cfg
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).
@@ -3306,6 +3382,16 @@ struct Colonist {
     /// marker, not behaviour state). Deterministic: set on a deterministic build
     /// completion.
     acquired_tool: bool,
+    /// S12 own-labor subsistence: `true` while this colonist is foraging the FORAGE
+    /// node for its own-consumption subsistence floor. Set by `run_own_labor_subsistence`
+    /// (a hungry, eligible, unprovisioned colonist with spare labor) and cleared once it
+    /// is fed (the hysteresis). It STEERS the next fast loop: a spatial forager is
+    /// assigned [`Task::GoForage`] instead of harvesting WOOD (the structural
+    /// opportunity cost). Part of the future-behaviour identity whenever the
+    /// `own_labor_subsistence` phase can run; serialized only under that gate, so a
+    /// flag-off colonist block stays byte-identical to pre-S12. Always `false` for a
+    /// non-own-labor settlement.
+    foraging: bool,
 }
 
 /// A settlement of generated colonists driven over a real `world` + `econ`.
@@ -3603,6 +3689,13 @@ struct ChainRuntime {
     /// household hearth mints fresh each tick (see
     /// [`ChainConfig::producer_subsistence`]). `0` for every existing config.
     producer_subsistence: u32,
+    /// S12: the own-labor subsistence gate + forage knobs (see
+    /// [`ChainConfig::own_labor_subsistence`]). `false`/`0` for every existing config,
+    /// so the food mints stay, no FORAGE is produced, and the run is byte-identical.
+    own_labor_subsistence: bool,
+    forage_yield: u32,
+    forage_hunger_in: u16,
+    forage_hunger_out: u16,
     /// S6: the productive-re-entry phase gate + hysteresis thresholds (see
     /// [`ChainConfig::productive_reentry`]). `false`/unused for every existing config.
     productive_reentry: bool,
@@ -3683,6 +3776,20 @@ impl Settlement {
         // eat to live, and that demand prices bread. The G3b no-spread control sets
         // `bread_is_staple = false`, keeping hunger ↔ FOOD so bread is never demanded
         // (and so never prices, and so no role forms). Warmth stays WOOD.
+        // The directly-edible subsistence fallback a bread-staple chain ranks below
+        // bread. S12 own-labor subsistence wires the FORAGE good (the labor-produced
+        // floor); otherwise the legacy `subsistence_on_grain` raw-grain edibility (off
+        // by default). Both are `KnownGoods::subsistence`, read back as hunger relief
+        // and interleaved below the staple by the subsistence offset (`scale.rs`).
+        let chain_subsistence = |chain: &ChainConfig| -> Option<GoodId> {
+            if chain.own_labor_subsistence {
+                Some(chain.content.forage().expect(
+                    "own_labor_subsistence requires a forage good (ContentSet::with_forage)",
+                ))
+            } else {
+                chain.subsistence_on_grain.then(|| chain.content.grain())
+            }
+        };
         let known = match (&config.chain, &config.barter) {
             // G5b **frontier**: a bread-staple chain composed with the barter-start
             // medium. Hunger ↔ bread (the chain's demand pulls the chain into being),
@@ -3695,13 +3802,13 @@ impl Settlement {
                 hunger: chain.content.bread(),
                 warmth: WOOD,
                 savings: barter.medium_good,
-                subsistence: chain.subsistence_on_grain.then(|| chain.content.grain()),
+                subsistence: chain_subsistence(chain),
             },
             (Some(chain), _) if chain.bread_is_staple => KnownGoods {
                 hunger: chain.content.bread(),
                 warmth: WOOD,
                 savings: GOLD,
-                subsistence: chain.subsistence_on_grain.then(|| chain.content.grain()),
+                subsistence: chain_subsistence(chain),
             },
             // The G5a barter camp (no chain) eats gathered FOOD, warms with WOOD,
             // and **saves the emergent medium** (e.g. SALT). Saving the good that
@@ -3859,6 +3966,23 @@ impl Settlement {
                 ))
                 .expect("node lands on a passable tile");
             node_ids.push(id);
+        }
+        // S12: the FORAGE node — a pure location marker for the `GoForage` task. It is
+        // placed OUTSIDE `config.nodes` (so the gatherer round-robin never targets it)
+        // and carries NO stock/regen/cap: foraging produces no world good (the floor is
+        // credited at the econ layer, booked `produced`), so node regen stays the
+        // world's only source and conservation is untouched. Placed at the exchange tile
+        // ("eaten at home") only when own-labor subsistence is on, so every other config
+        // adds no node and stays byte-identical.
+        if let Some(chain) = &config.chain {
+            if chain.own_labor_subsistence {
+                let forage = chain.content.forage().expect(
+                    "own_labor_subsistence requires a forage good (ContentSet::with_forage)",
+                );
+                world
+                    .add_node(ResourceNode::new(config.exchange, forage, 0, 0, 0))
+                    .expect("the forage node lands on the (passable) exchange tile");
+            }
         }
 
         let consumers = usize::from(config.consumers);
@@ -4043,6 +4167,7 @@ impl Settlement {
                 seed: 0,
                 estate_destination: None,
                 acquired_tool: false,
+                foraging: false,
             });
         }
 
@@ -4094,6 +4219,7 @@ impl Settlement {
                         seed,
                         estate_destination: None,
                         acquired_tool: false,
+                        foraging: false,
                     });
                 }
             }
@@ -4377,6 +4503,10 @@ impl Settlement {
                 recurring_motive: chain.recurring_motive,
                 project_input_bids: chain.project_input_bids,
                 producer_subsistence: chain.producer_subsistence,
+                own_labor_subsistence: chain.own_labor_subsistence,
+                forage_yield: chain.forage_yield,
+                forage_hunger_in: chain.forage_hunger_in,
+                forage_hunger_out: chain.forage_hunger_out,
                 productive_reentry: chain.productive_reentry,
                 reentry_hunger_in: chain.reentry_hunger_in,
                 reentry_hunger_out: chain.reentry_hunger_out,
@@ -4758,6 +4888,17 @@ impl Settlement {
         // specialization sits on, so a producer's money frees for input bids; a
         // no-op unless enabled, so every other run is byte-identical.
         self.run_producer_subsistence(&mut report);
+
+        // ---- 4c''. OWN-LABOR SUBSISTENCE (S12): with the food mints retired, give each
+        // hungry, eligible, unprovisioned colonist with spare labor a labor-produced
+        // FORAGE floor — credited to its OWN stock as `report.produced` (own labor), not
+        // a mint, and eaten this tick (FORAGE is `known.subsistence`, ranked below
+        // bread). Sets the `foraging` flag that steers the next fast loop to forage
+        // instead of harvesting WOOD (the structural opportunity cost). After the
+        // (retired) hearth phases, before the market, so the floor is on hand to eat. A
+        // no-op unless the gated own-labor path is active, so every other run is
+        // byte-identical.
+        self.run_own_labor_subsistence(&mut report);
 
         // ---- 4d. BANK (G8b): colonists deposit M3 specie into the chartered bank
         // (specie → reserves, claims to the depositor) and the bank lends fiduciary
@@ -5340,17 +5481,37 @@ impl Settlement {
     /// anything, else harvest a full load from its node. Deterministic (id order,
     /// no RNG). Dead gatherers have already had their carry settled and their world
     /// agents removed, so this loop never sees them.
+    ///
+    /// S12: a colonist marked `foraging` (a hungry, eligible forager — possibly a
+    /// Gatherer, an idle Consumer, or a latent producer) is instead sent to deposit any
+    /// carry it still holds and then [`Task::GoForage`] the FORAGE node — occupying its
+    /// one world-task slot foraging *instead of* harvesting WOOD (the structural
+    /// opportunity cost). Only spatial colonists reach the body (a non-spatial founder
+    /// has no Idle world agent), and the foraging branch is taken only on the gated
+    /// own-labor path (where `forage_node` resolves), so every other run is unchanged.
     fn assign_idle_gatherer_tasks(&mut self) {
+        let forage_node = self.forage_node();
         for &slot in &self.live_colonist_slots {
             let colonist = &self.colonists[slot];
-            if colonist.vocation != Vocation::Gatherer {
-                continue;
-            }
-            let Some(node) = colonist.node else { continue };
             let id = colonist.id;
             if self.world.agent_status(id) != Some(AgentStatus::Idle) {
                 continue;
             }
+            if colonist.foraging {
+                if let Some(forage_node) = forage_node {
+                    let task = if self.world.agent_carry_total(id) > 0 {
+                        Task::GoDeposit(self.exchange)
+                    } else {
+                        Task::GoForage(forage_node, self.carry_cap)
+                    };
+                    self.world.assign_task(id, task);
+                    continue;
+                }
+            }
+            if colonist.vocation != Vocation::Gatherer {
+                continue;
+            }
+            let Some(node) = colonist.node else { continue };
             let task = if self.world.agent_carry_total(id) > 0 {
                 Task::GoDeposit(self.exchange)
             } else {
@@ -5747,6 +5908,12 @@ impl Settlement {
             return;
         };
         let staple = self.known.hunger;
+        // S12: own-labor subsistence retires the demographic FOOD mint (the food
+        // scaffold) — only the WOOD/warmth provision stays an endowment (hunger-only
+        // scope). The lineage then earns its food from the market (selling its WOOD
+        // provision for the staple), exactly the retirement test 2 pins
+        // (`endowment[staple] == 0`).
+        let mint_food = !self.own_labor_subsistence_can_run();
         // Collect (id, household) first so the colonists borrow is released before the
         // society is mutated.
         let members: Vec<(AgentId, usize)> = self
@@ -5759,7 +5926,9 @@ impl Settlement {
             .collect();
         for (id, h) in members {
             let spec = &demo.households[h];
-            self.deliver_demography_provision_unit(id, staple, spec.food_provision, report);
+            if mint_food {
+                self.deliver_demography_provision_unit(id, staple, spec.food_provision, report);
+            }
             self.deliver_demography_provision_unit(id, WOOD, spec.wood_provision, report);
         }
     }
@@ -5918,6 +6087,7 @@ impl Settlement {
                 seed: cseed,
                 estate_destination: None,
                 acquired_tool: false,
+                foraging: false,
             });
             let child_slot = self.colonists.len() - 1;
             self.live_colonist_slots.push(child_slot);
@@ -6250,6 +6420,11 @@ impl Settlement {
             return;
         }
         let staple = self.known.hunger;
+        // S12: own-labor subsistence retires the producer's STAPLE mint (the food
+        // scaffold) — only the WOOD/warmth provision stays an endowment (hunger-only
+        // scope). A producer then earns its food by buying bread or, when idle/too
+        // hungry to produce, foraging, exactly like the rest of the tail.
+        let mint_staple = !self.own_labor_subsistence_can_run();
         let live_len = self.live_colonist_slots.len();
         for live_index in 0..live_len {
             let slot = self.live_colonist_slots[live_index];
@@ -6262,11 +6437,15 @@ impl Settlement {
             if !is_producer {
                 continue;
             }
-            // The producer's own hearth provisions BOTH the hunger staple and WOOD
-            // (warmth) up to the floor — exactly the two goods the demography hearth
-            // mints for its members — so a producer's whole subsistence (food and
-            // warmth) is met locally and its money frees ENTIRELY for recipe inputs.
+            // The producer's own hearth provisions the hunger staple AND WOOD (warmth)
+            // up to the floor — exactly the two goods the demography hearth mints for
+            // its members — so a producer's whole subsistence is met locally and its
+            // money frees for recipe inputs. Under own-labor subsistence the staple
+            // line is retired (only WOOD stays).
             for good in [staple, WOOD] {
+                if good == staple && !mint_staple {
+                    continue;
+                }
                 let held = self
                     .society
                     .agents
@@ -6276,6 +6455,105 @@ impl Settlement {
                     self.deliver_demography_provision_unit(id, good, target - held, report);
                 }
             }
+        }
+    }
+
+    /// S12 — OWN-LABOR SUBSISTENCE phase (see [`ChainConfig::own_labor_subsistence`]).
+    /// Before the market (so the floor is on hand to eat this tick), give each hungry,
+    /// eligible, **unprovisioned** colonist with spare labor a labor-produced survival
+    /// floor: credit it [`ChainConfig::forage_yield`] units of the FORAGE subsistence
+    /// good into its OWN econ stock — booked `report.produced` (its own labor on the
+    /// forage node), NOT `report.endowment` (a mint). The same call sets the colonist's
+    /// `foraging` flag, which steers the NEXT fast loop to send it to [`Task::GoForage`]
+    /// instead of harvesting WOOD (the structural opportunity cost). Eligible = a
+    /// spatial non-lineage colonist (`household: None`) in an untooled-or-latent role
+    /// (`Consumer`/`Gatherer`/`Unassigned` — NOT an actively-producing Miller/Baker that
+    /// has no spare labor). Hysteresis (`forage_hunger_in`/`out`) keeps a gatherer from
+    /// thrashing between foraging and selling WOOD. FORAGE is `KnownGoods::subsistence`,
+    /// ranked below bread, eaten in the consume phase and read back as hunger relief —
+    /// and perishes via [`Self::run_spoilage`] if a decay rate is set. A no-op unless
+    /// the gated own-labor path is active, so every other run is byte-identical.
+    /// Deterministic: slot order, integer thresholds, nothing drawn.
+    fn run_own_labor_subsistence(&mut self, report: &mut EconTickReport) {
+        if !self.own_labor_subsistence_can_run() {
+            return;
+        }
+        let chain = self
+            .chain
+            .as_ref()
+            .expect("the own-labor path carries a chain");
+        let forage = chain
+            .content
+            .forage()
+            .expect("the own-labor path carries a forage good");
+        let yield_units = chain.forage_yield;
+        let h_in = chain.forage_hunger_in;
+        let h_out = chain.forage_hunger_out;
+        let live = self.live_colonist_slots.clone();
+        for slot in live {
+            let (id, eligible, hunger, was_foraging) = {
+                let colonist = &self.colonists[slot];
+                // The spatial non-lineage poor with spare labor (`household: None`,
+                // untooled-or-latent role). An actively-producing role (Miller/Baker/
+                // Scholar/Confectioner) has no spare labor; a lineage member is
+                // non-spatial (no world task) and is fed through the market.
+                let eligible = colonist.household.is_none()
+                    && matches!(
+                        colonist.vocation,
+                        Vocation::Consumer | Vocation::Gatherer | Vocation::Unassigned
+                    );
+                (
+                    colonist.id,
+                    eligible,
+                    colonist.need.hunger,
+                    colonist.foraging,
+                )
+            };
+            // Hysteresis: start foraging at/above `h_in`, stop below `h_out`, else hold.
+            // A non-eligible colonist (a lineage member, or one that adopted an active
+            // producer role) never forages and clears any stale flag.
+            let forage_now = if !eligible {
+                false
+            } else if hunger >= h_in {
+                true
+            } else if hunger < h_out {
+                false
+            } else {
+                was_foraging
+            };
+            self.colonists[slot].foraging = forage_now;
+            if forage_now {
+                self.credit_produced(id, forage, yield_units, report);
+            }
+        }
+    }
+
+    /// Credit `qty` units of a labor-PRODUCED good into an agent's own econ stock,
+    /// booking it to `report.produced` (the produced side of the conservation
+    /// identity) — the [`Self::deliver_demography_provision_unit`] analogue for own
+    /// labor rather than a hearth mint. A no-op for `qty == 0`, a freed id, or a stock
+    /// already at the `u32` ceiling (the unit is simply not created — never destroyed).
+    fn credit_produced(
+        &mut self,
+        id: AgentId,
+        good: GoodId,
+        qty: u32,
+        report: &mut EconTickReport,
+    ) {
+        if qty == 0 {
+            return;
+        }
+        let Some(held) = self
+            .society
+            .agents
+            .get(id)
+            .map(|agent| agent.stock.get(good))
+        else {
+            return;
+        };
+        let credited = qty.min(u32::MAX - held);
+        if credited > 0 && self.society.credit_stock(id, good, credited) {
+            *report.produced.entry(good).or_insert(0) += u64::from(credited);
         }
     }
 
@@ -7609,6 +7887,26 @@ impl Settlement {
             .is_some_and(|chain| chain.entrepreneurial_forecasts)
     }
 
+    /// S12: whether the own-labor subsistence path is active — the food mints are
+    /// retired and a hungry, eligible colonist forages the FORAGE floor. Gated on the
+    /// chain flag (and, for a real path, a forage good in the content). When this holds,
+    /// `canonical_bytes` serializes the forage knobs + the per-colonist `foraging` state;
+    /// with it off the stream is byte-identical to pre-S12.
+    fn own_labor_subsistence_can_run(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(|chain| chain.own_labor_subsistence && chain.content.forage().is_some())
+    }
+
+    /// S12: the FORAGE node (the `GoForage` target / forage location), or `None` when
+    /// own-labor subsistence is off. Resolved by good, like [`Self::grain_node`].
+    fn forage_node(&self) -> Option<NodeId> {
+        self.chain
+            .as_ref()
+            .and_then(|chain| chain.content.forage())
+            .and_then(|forage| self.node_for_good(forage))
+    }
+
     /// S7.2: whether `good` has cleared a real trade within the last `window` econ ticks
     /// — a recency guard so the build appraisal never trusts a STALE realized price (a
     /// price frozen because the good stopped clearing). Without it a mill would be built
@@ -8505,6 +8803,24 @@ impl Settlement {
         self.node_for_good(grain)
     }
 
+    /// S12: the FORAGE node — the [`Task::GoForage`] target — or `None` when own-labor
+    /// subsistence is off. The acceptance suite compares a forager's world task against
+    /// `Task::GoForage(forage_node, _)`.
+    pub fn forage_node_id(&self) -> Option<NodeId> {
+        self.forage_node()
+    }
+
+    /// S12: the FORAGE subsistence good, or `None` (no chain / no forage good).
+    pub fn forage_good(&self) -> Option<GoodId> {
+        self.chain.as_ref()?.content.forage()
+    }
+
+    /// S12: whether the colonist at generation `index` is currently foraging the FORAGE
+    /// floor (the own-labor path). Always `false` for a non-own-labor settlement.
+    pub fn is_foraging(&self, index: usize) -> bool {
+        self.colonists.get(index).is_some_and(|c| c.foraging)
+    }
+
     /// S7.1: whether the colonist at generation `index` is ELIGIBLE to adopt a chain
     /// vocation in the role-choice appraisal — either it is seeded `latent`, or (when
     /// [`ChainConfig::tool_acquisition_eligibility`] is on) it now HOLDS the required
@@ -9146,6 +9462,19 @@ impl Settlement {
             if self.entrepreneurial_can_run() {
                 out.push(1);
             }
+            // S12: the own-labor subsistence gate retires the food mints and steers the
+            // forage phase + the per-colonist `foraging` state below. When it can run,
+            // serialize a marker + the forage knobs (yield + the hysteresis band) that
+            // steer how much FORAGE is produced and who forages. Emitted only when on
+            // (the same gated-block discipline as S7/S10/S11 above), so a flag-off chain
+            // stays byte-identical to the pre-S12 stream. (The FORAGE good id itself is
+            // already captured by `known.subsistence` below and `good_entries`.)
+            if self.own_labor_subsistence_can_run() {
+                out.push(1);
+                out.extend_from_slice(&chain.forage_yield.to_le_bytes());
+                out.extend_from_slice(&chain.forage_hunger_in.to_le_bytes());
+                out.extend_from_slice(&chain.forage_hunger_out.to_le_bytes());
+            }
             // The staple mapping steers the next needs/scale phase for *any* chain,
             // role-choice or not, so it is included whenever a chain is active. The
             // G3b no-spread control shares the emergent config's physical state but
@@ -9484,6 +9813,11 @@ impl Settlement {
         // thresholds above: a re-entry-OFF or non-edible config never reads the home
         // and keeps its pre-S6 per-colonist layout byte-identical.
         let reentry_serialized = self.productive_reentry_can_run();
+        // S12: the per-colonist `foraging` flag steers the next fast loop (forage vs
+        // harvest WOOD) only while the own-labor phase can run; gate its byte on the same
+        // active-phase predicate, so a non-own-labor config keeps its pre-S12
+        // per-colonist layout byte-identical.
+        let own_labor_serialized = self.own_labor_subsistence_can_run();
         out.extend_from_slice(&(self.colonists.len() as u32).to_le_bytes());
         for colonist in &self.colonists {
             out.extend_from_slice(&colonist.id.0.to_le_bytes());
@@ -9528,6 +9862,14 @@ impl Settlement {
                     }
                     None => out.push(0),
                 }
+            }
+            if own_labor_serialized {
+                // S12: whether the colonist is foraging — it steers the next fast loop
+                // (forage the FORAGE node instead of harvesting WOOD). Two states with
+                // identical current vocation/node but different foraging flags diverge
+                // on the next task, so it is part of the future-behaviour identity
+                // whenever the own-labor phase runs.
+                out.push(u8::from(colonist.foraging));
             }
             if role_choice_active {
                 // The latent specialty (G3b) steers each tick's role-choice
@@ -13924,6 +14266,92 @@ mod tests {
             base.canonical_bytes(),
             edible.canonical_bytes(),
             "the edible-grain subsistence fallback must be part of the chain config identity"
+        );
+    }
+
+    #[test]
+    fn canonical_bytes_include_own_labor_subsistence() {
+        // S12: the own-labor gate retires the food mints, wires FORAGE as the
+        // subsistence good, and steers the forage phase + yield — so the provisioned
+        // flagship (own-labor ON) must digest apart from the entrepreneurial base
+        // (own-labor OFF, no forage good).
+        let base = Settlement::generate(
+            7,
+            &SettlementConfig::frontier_coemergent_strong_entrepreneurial(),
+        );
+        let provisioned = Settlement::generate(
+            7,
+            &SettlementConfig::frontier_coemergent_strong_provisioned(),
+        );
+        assert_ne!(
+            base.canonical_bytes(),
+            provisioned.canonical_bytes(),
+            "own-labor subsistence (the FORAGE good + retired mints) must be part of the identity"
+        );
+
+        // ON: a different forage yield or hysteresis threshold steers the forage phase,
+        // so each must split the digest.
+        let mut y_a = SettlementConfig::frontier_coemergent_strong_provisioned();
+        y_a.chain.as_mut().expect("chain").forage_yield = 2;
+        let mut y_b = SettlementConfig::frontier_coemergent_strong_provisioned();
+        y_b.chain.as_mut().expect("chain").forage_yield = 5;
+        assert_ne!(
+            Settlement::generate(7, &y_a).canonical_bytes(),
+            Settlement::generate(7, &y_b).canonical_bytes(),
+            "with own-labor on, the forage yield must be part of the digest"
+        );
+        let mut h = SettlementConfig::frontier_coemergent_strong_provisioned();
+        h.chain.as_mut().expect("chain").forage_hunger_in = 9;
+        assert_ne!(
+            provisioned.canonical_bytes(),
+            Settlement::generate(7, &h).canonical_bytes(),
+            "with own-labor on, the forage entry threshold must be part of the digest"
+        );
+
+        // OFF: the (unused) forage knobs must NOT split a flag-off chain's digest, or
+        // the tripwire would call two behaviour-identical configs unequal.
+        let off_bytes = base.canonical_bytes();
+        let mut off_knobs = SettlementConfig::frontier_coemergent_strong_entrepreneurial();
+        {
+            let c = off_knobs.chain.as_mut().expect("chain");
+            c.forage_yield = 9;
+            c.forage_hunger_in = 11;
+            c.forage_hunger_out = 1;
+        }
+        assert_eq!(
+            off_bytes,
+            Settlement::generate(7, &off_knobs).canonical_bytes(),
+            "with own-labor off, the unused forage knobs must not steer the digest"
+        );
+    }
+
+    #[test]
+    fn canonical_bytes_include_foraging() {
+        // S12: the per-colonist `foraging` flag steers the next fast loop (forage the
+        // FORAGE node vs harvest WOOD), so two own-labor states differing only in it must
+        // digest apart — and a flag-off chain must NOT serialize it (byte-identical).
+        let mut on = Settlement::generate(
+            7,
+            &SettlementConfig::frontier_coemergent_strong_provisioned(),
+        );
+        let before = on.canonical_bytes();
+        on.colonists[0].foraging = !on.colonists[0].foraging;
+        assert_ne!(
+            before,
+            on.canonical_bytes(),
+            "with own-labor on, a colonist's foraging flag must be part of the digest"
+        );
+
+        let mut off = Settlement::generate(
+            7,
+            &SettlementConfig::frontier_coemergent_strong_entrepreneurial(),
+        );
+        let off_before = off.canonical_bytes();
+        off.colonists[0].foraging = !off.colonists[0].foraging;
+        assert_eq!(
+            off_before,
+            off.canonical_bytes(),
+            "with own-labor off, the unused foraging flag must not steer the digest"
         );
     }
 

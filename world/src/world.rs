@@ -39,6 +39,16 @@ pub enum Task {
     Idle,
     /// Walk to the node's tile and harvest up to `want` units (once, on arrival).
     GoHarvest(NodeId, u32),
+    /// Walk to the forage node's tile and forage (once, on arrival). Unlike
+    /// [`Task::GoHarvest`] it relocates NO world good — the foraged subsistence is
+    /// produced and credited at the econ layer (booked `report.produced`), so the
+    /// world stays a pure conserver (node regen remains its only source). The task
+    /// exists for its **structural opportunity cost**: a colonist that forages this
+    /// tick occupies its one world-task slot foraging instead of harvesting WOOD to
+    /// sell. The `u32` mirrors `GoHarvest`'s carry cap (the forage yield knob) and is
+    /// part of the canonical task identity. Only ever assigned on the gated
+    /// `own_labor_subsistence` path, so every other run never emits it.
+    GoForage(NodeId, u32),
     /// Walk to the stockpile's tile and deposit all carried goods (on arrival).
     GoDeposit(StockpileId),
     /// Walk to an arbitrary tile.
@@ -163,6 +173,10 @@ fn write_task_canonical(task: Task, out: &mut Vec<u8>) {
             out.extend_from_slice(&node.0.to_le_bytes());
             out.extend_from_slice(&want.to_le_bytes());
         }
+        Task::GoForage(node, want) => {
+            out.extend_from_slice(&node.0.to_le_bytes());
+            out.extend_from_slice(&want.to_le_bytes());
+        }
         Task::GoDeposit(stockpile) => {
             out.extend_from_slice(&stockpile.0.to_le_bytes());
         }
@@ -179,6 +193,10 @@ fn task_tag(task: Task) -> u8 {
         Task::GoHarvest(_, _) => 1,
         Task::GoDeposit(_) => 2,
         Task::GoTo(_) => 3,
+        // The forage task extends the tag space; the gated `own_labor_subsistence`
+        // path is the only emitter, so every pre-S12 stream never produces 4 and
+        // stays byte-identical.
+        Task::GoForage(_, _) => 4,
     }
 }
 
@@ -423,6 +441,7 @@ impl World {
         let valid = match task {
             Task::Idle => true,
             Task::GoHarvest(node, _) => (node.0 as usize) < self.nodes.len(),
+            Task::GoForage(node, _) => (node.0 as usize) < self.nodes.len(),
             Task::GoDeposit(sp) => (sp.0 as usize) < self.stockpiles.len(),
             Task::GoTo(pos) => self.grid.in_bounds(pos),
         };
@@ -490,6 +509,7 @@ impl World {
             Task::Idle => None,
             Task::GoTo(pos) => Some(pos),
             Task::GoHarvest(node, _) => self.nodes.get(node.0 as usize).map(|n| n.pos),
+            Task::GoForage(node, _) => self.nodes.get(node.0 as usize).map(|n| n.pos),
             Task::GoDeposit(sp) => self.stockpiles.get(sp.0 as usize).map(|s| s.pos),
         }
     }
@@ -581,6 +601,17 @@ impl World {
                 state.task = Task::Idle;
                 state.clear_path();
                 report.harvested += u64::from(moved);
+            }
+            Task::GoForage(_node_id, _want) => {
+                // Foraging relocates no world good: the subsistence floor is produced
+                // and credited at the econ layer (booked `report.produced`), so node
+                // regen stays the world's only source and conservation is untouched.
+                // Reaching the forage node simply completes the task (it occupied the
+                // colonist's world-task slot this tick — the structural opportunity
+                // cost of foraging instead of harvesting WOOD).
+                let state = self.agents.get_mut(&id).unwrap();
+                state.task = Task::Idle;
+                state.clear_path();
             }
             Task::GoDeposit(sp_id) => {
                 // Deposit every carried good (good order), keeping any overflow.
@@ -936,6 +967,23 @@ mod tests {
         a.assign_task(agent, Task::GoHarvest(node, 1));
         b.assign_task(agent, Task::GoHarvest(node, 2));
         assert_ne!(a.digest(), b.digest());
+
+        // GoForage carries the same (node, want) payload and a distinct tag, so its
+        // yield knob and its difference from GoHarvest both register in the digest.
+        let mut a = base.clone();
+        let mut b = base.clone();
+        a.assign_task(agent, Task::GoForage(node, 1));
+        b.assign_task(agent, Task::GoForage(node, 2));
+        assert_ne!(a.digest(), b.digest());
+        let mut a = base.clone();
+        let mut b = base.clone();
+        a.assign_task(agent, Task::GoForage(node, 3));
+        b.assign_task(agent, Task::GoHarvest(node, 3));
+        assert_ne!(
+            a.canonical_bytes(),
+            b.canonical_bytes(),
+            "foraging and harvesting the same node must digest apart"
+        );
 
         let mut a = base.clone();
         let mut b = base;
