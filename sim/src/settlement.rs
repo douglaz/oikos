@@ -4479,6 +4479,16 @@ impl Settlement {
                     || chain.reentry_hunger_out < chain.reentry_hunger_in,
                 "re-entry hysteresis requires reentry_hunger_out < reentry_hunger_in"
             );
+            // S12 hysteresis invariant: when the own-labor forage path can run, the
+            // exit threshold must sit strictly below the entry threshold. Otherwise
+            // a forager can satisfy both sides of the band and stay in a degenerate
+            // always-forage state.
+            assert!(
+                !chain.own_labor_subsistence
+                    || chain.content.forage().is_none()
+                    || chain.forage_hunger_out < chain.forage_hunger_in,
+                "own-labor subsistence hysteresis requires forage_hunger_out < forage_hunger_in"
+            );
             // S7.2 prerequisite: a built tool is useless unless holding it makes the
             // builder eligible to adopt (S7.1), so producible capital requires the
             // tool-acquisition gate. The capital scenario composes both; this guards a
@@ -5336,6 +5346,7 @@ impl Settlement {
     fn run_fast_loop(&mut self) -> FastLoopReport {
         let mut deposited: BTreeMap<(AgentId, GoodId), u32> = BTreeMap::new();
         let mut foraged: BTreeSet<AgentId> = BTreeSet::new();
+        let detect_forage = self.own_labor_subsistence_can_run();
         // Opening carry baseline (the current escrow), per living gatherer/good.
         let mut prev_carry: BTreeMap<(AgentId, GoodId), u32> = BTreeMap::new();
         for &slot in &self.live_colonist_slots {
@@ -5363,19 +5374,24 @@ impl Settlement {
 
         for _ in 0..FAST_TICKS_PER_ECON_TICK {
             self.assign_idle_gatherer_tasks();
-            let foraging_before: Vec<AgentId> = self
-                .live_colonist_slots
-                .iter()
-                .filter_map(|&slot| {
-                    let id = self.colonists[slot].id;
-                    matches!(self.world.agent_task(id), Some(Task::GoForage(_, _))).then_some(id)
-                })
-                .collect();
-            self.world.tick();
-            for id in foraging_before {
-                if self.world.agent_status(id) == Some(AgentStatus::Idle) {
-                    foraged.insert(id);
+            if detect_forage {
+                let foraging_before: Vec<AgentId> = self
+                    .live_colonist_slots
+                    .iter()
+                    .filter_map(|&slot| {
+                        let id = self.colonists[slot].id;
+                        matches!(self.world.agent_task(id), Some(Task::GoForage(_, _)))
+                            .then_some(id)
+                    })
+                    .collect();
+                self.world.tick();
+                for id in foraging_before {
+                    if self.world.agent_status(id) == Some(AgentStatus::Idle) {
+                        foraged.insert(id);
+                    }
                 }
+            } else {
+                self.world.tick();
             }
             for &slot in &self.live_colonist_slots {
                 let colonist = &self.colonists[slot];
@@ -6520,14 +6536,6 @@ impl Settlement {
         let yield_units = chain.forage_yield;
         let h_in = chain.forage_hunger_in;
         let h_out = chain.forage_hunger_out;
-        // The hysteresis band must be ordered (exit strictly below entry). With
-        // `h_out >= h_in` a colonist that reaches `h_in` can never fall back below
-        // `h_out`, so it forages forever — degenerate hysteresis with no opportunity-cost
-        // trade-off. Fail fast on a mis-set config rather than silently producing it.
-        debug_assert!(
-            h_out < h_in,
-            "forage_hunger_out ({h_out}) must sit strictly below forage_hunger_in ({h_in})"
-        );
         let live = self.live_colonist_slots.clone();
         for slot in live {
             let (id, eligible, hunger, was_foraging) = {
@@ -14599,6 +14607,20 @@ mod tests {
             c.productive_reentry = true;
             c.reentry_hunger_in = 4;
             c.reentry_hunger_out = 4;
+        }
+        let _ = Settlement::generate(7, &cfg);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "own-labor subsistence hysteresis requires forage_hunger_out < forage_hunger_in"
+    )]
+    fn active_own_labor_subsistence_rejects_invalid_hysteresis() {
+        let mut cfg = SettlementConfig::frontier_coemergent_strong_provisioned();
+        {
+            let c = cfg.chain.as_mut().expect("chain");
+            c.forage_hunger_in = 4;
+            c.forage_hunger_out = 4;
         }
         let _ = Settlement::generate(7, &cfg);
     }
