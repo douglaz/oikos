@@ -306,6 +306,69 @@ fn run_cell(yield_units: u32, seed: u64, ticks: u64) -> Cell {
 }
 
 #[test]
+fn food_mint_isolation_controls_are_reproducible() {
+    // These controls pin the causal note in the finding doc without adding new runtime
+    // knobs. They derive from the S11 base and remove one food source at a time:
+    // producer staple hearth vs demographic food provision.
+    let ticks = 1600u64;
+
+    let mut no_producer_staple = SettlementConfig::frontier_coemergent_strong_entrepreneurial();
+    no_producer_staple
+        .chain
+        .as_mut()
+        .expect("chain")
+        .producer_subsistence = 0;
+    let mut s = Settlement::generate(1, &no_producer_staple);
+    let mut pre_bread_salt = 0u64;
+    for _ in 0..ticks {
+        let pre = s.promoted_at_tick().is_none();
+        let report = s.econ_tick();
+        assert!(report.conserves());
+        if pre {
+            pre_bread_salt = s.bread_for_salt_volume();
+        }
+    }
+    assert_eq!(
+        s.current_money_good(),
+        Some(SALT),
+        "retiring only the producer staple floor must leave SALT emergence intact"
+    );
+    assert!(
+        pre_bread_salt > 0,
+        "the producer-staple control must retain a bread-for-SALT barter leg"
+    );
+
+    let mut no_demography_food = SettlementConfig::frontier_coemergent_strong_entrepreneurial();
+    for household in &mut no_demography_food
+        .demography
+        .as_mut()
+        .expect("demography")
+        .households
+    {
+        household.food_provision = 0;
+    }
+    let mut s = Settlement::generate(1, &no_demography_food);
+    let mut pre_bread_salt = 0u64;
+    for _ in 0..ticks {
+        let pre = s.promoted_at_tick().is_none();
+        let report = s.econ_tick();
+        assert!(report.conserves());
+        if pre {
+            pre_bread_salt = s.bread_for_salt_volume();
+        }
+    }
+    assert_eq!(
+        s.current_money_good(),
+        None,
+        "retiring only the demographic food provision must prevent SALT monetization"
+    );
+    assert_eq!(
+        pre_bread_salt, 0,
+        "without demographic bread provision the pre-promotion bread-for-SALT leg collapses"
+    );
+}
+
+#[test]
 fn subsistence_and_monetization_have_no_middle_band() {
     // The pinned sweep (`docs/finding-household-subsistence.md`): forage-yield grid
     // {0,1,2,3,4,6,8} carry/tick × seeds {1,7,0xC0FFEE} × 1600 ticks. The milestone PASSES

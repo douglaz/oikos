@@ -58,7 +58,7 @@
 //! checkpoints are the proof).
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use econ::agent::{Agent, AgentId, Role, Want, WantKind};
 use econ::agio::{provisioning_bitmap_for_money, TemporalEndowment};
@@ -776,20 +776,20 @@ pub struct ChainConfig {
     /// and replaces them with a labor-produced survival **floor**: a hungry,
     /// unprovisioned, spatial non-lineage colonist with spare labor is sent to
     /// **forage** the FORAGE node ([`Task::GoForage`]) instead of harvesting WOOD,
-    /// and the settlement credits it [`Self::forage_yield`] units of the FORAGE
-    /// subsistence good into its OWN econ stock — booked `report.produced` (own
-    /// labor), NOT `report.endowment` (a mint). FORAGE is wired as
+    /// and after it completes that task the settlement credits it
+    /// [`Self::forage_yield`] units of the FORAGE subsistence good into its OWN econ
+    /// stock — booked `report.produced` (own labor), NOT `report.endowment` (a mint).
+    /// FORAGE is wired as
     /// `KnownGoods::subsistence` (read back as hunger relief) and ranked BELOW bread,
     /// so bread stays the superior market good that monetizes SALT. The WOOD/warmth
     /// provision stays an endowment (hunger-only scope). Requires the content to
     /// carry a forage good ([`ContentSet::with_forage`]).
     pub own_labor_subsistence: bool,
-    /// S12: the FORAGE units a foraging colonist produces from its own labor per econ
-    /// tick — the survival-floor knob. High enough that sustained tail hunger drops
-    /// to a bounded band, low enough that colonists still prefer (and buy) bread so
-    /// the bread-for-SALT trade survives. `0` (with [`Self::own_labor_subsistence`]
-    /// on) retires the mint but produces no floor — the no-forage control. Inert
-    /// unless `own_labor_subsistence` is on.
+    /// S12: the FORAGE units a colonist produces from its own labor after completing
+    /// a forage task — the survival-floor knob. The S12 sweep varies it to test
+    /// whether a bounded-hunger / money-emergence band exists. `0` (with
+    /// [`Self::own_labor_subsistence`] on) retires the mint but produces no floor —
+    /// the no-forage control. Inert unless `own_labor_subsistence` is on.
     pub forage_yield: u32,
     /// S12: the hunger at/above which an eligible colonist starts foraging, and (paired
     /// with [`Self::forage_hunger_out`]) the hysteresis exit below which it stops — so a
@@ -3027,23 +3027,23 @@ impl SettlementConfig {
     /// (the FORAGE good) from its OWN labor — booked `produced`, eaten at home, ranked
     /// BELOW bread. Everything that makes SALT emerge and the chain + capital + forecasts
     /// sustain is untouched, so the test is whether the colony can be both
-    /// **bounded-hunger** (the forage floor feeds the tail) AND keep money emerging
-    /// (bread stays the superior good that monetizes SALT). Derived by flipping the
+    /// **bounded-hunger** (the forage floor feeds the surviving spatial tail) AND keep
+    /// money emerging (bread stays the superior good that monetizes SALT). Derived by flipping the
     /// own-labor flags (and interning the FORAGE good into the content), so with them
     /// reverted it is byte-identical to the entrepreneurial base.
     ///
-    /// The `forage_yield` sits in the middle band the S12 sweep probes: high enough to
-    /// pull sustained tail hunger below the semi-hungry S9/S11 baseline, low enough that
-    /// colonists still prefer (and buy) bread so the bread-for-SALT trade survives.
+    /// The `forage_yield` is the default diagnostic yield the S12 sweep probes: enough
+    /// to pull sustained spatial-tail hunger below the semi-hungry S9/S11 baseline, but
+    /// not enough to rescue money emergence under the one-scalar food model.
     pub fn frontier_coemergent_strong_provisioned() -> Self {
         let mut cfg = Self::frontier_coemergent_strong_entrepreneurial();
         if let Some(chain) = cfg.chain.as_mut() {
             // Intern the FORAGE subsistence good (no recipe — produced from labor) and
             // turn on the own-labor path: the food mints retire and a hungry forager is
-            // credited `forage_yield` FORAGE into its own stock each tick.
+            // credited `forage_yield` FORAGE after completing a forage task.
             chain.content = chain.content.clone().with_forage();
             chain.own_labor_subsistence = true;
-            // The survival-floor knob (the middle-band value the S12 sweep selects).
+            // The survival-floor knob used by the S12 no-middle-band diagnostic.
             chain.forage_yield = 3;
             // Forage when hunger reaches the band's top, stop once comfortably fed —
             // wide enough that a gatherer does not thrash between foraging and WOOD.
@@ -3141,6 +3141,12 @@ pub struct EconTickReport {
     /// (e.g. grain) ARE accounted in `consumed_as_input`. Zero for a non-research
     /// settlement.
     pub knowledge_produced: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct FastLoopReport {
+    deposited: BTreeMap<(AgentId, GoodId), u32>,
+    foraged: BTreeSet<AgentId>,
 }
 
 impl EconTickReport {
@@ -4776,7 +4782,7 @@ impl Settlement {
         report.total_gold_before_fast = self.total_gold().0;
 
         // ---- 1. FAST: world ticks; track per-colonist deposits via carry deltas.
-        let deposited = self.run_fast_loop();
+        let fast = self.run_fast_loop();
         report.total_gold_after_fast = self.total_gold().0;
         debug_assert_eq!(
             report.total_gold_before_fast, report.total_gold_after_fast,
@@ -4797,7 +4803,7 @@ impl Settlement {
         // here: G4a's estate settlement drains its stranded pending units to the
         // commons at death and drops the attribution, so `credit_stock`'s rejection
         // of a freed id is a defensive backstop, not a live path.
-        self.record_pending_deposits(deposited);
+        self.record_pending_deposits(fast.deposited);
         report.transferred = self.transfer_pending_deposits();
 
         // ---- 3. NEEDS + real death (G4a): settle each starvation death's estate to
@@ -4898,7 +4904,7 @@ impl Settlement {
         // (retired) hearth phases, before the market, so the floor is on hand to eat. A
         // no-op unless the gated own-labor path is active, so every other run is
         // byte-identical.
-        self.run_own_labor_subsistence(&mut report);
+        self.run_own_labor_subsistence(&fast.foraged, &mut report);
 
         // ---- 4d. BANK (G8b): colonists deposit M3 specie into the chartered bank
         // (specie → reserves, claims to the depositor) and the bank lends fiduciary
@@ -5313,7 +5319,8 @@ impl Settlement {
 
     /// Run [`FAST_TICKS_PER_ECON_TICK`] `world` ticks, keeping idle living
     /// gatherers busy (harvest → exchange), and return the per-colonist,
-    /// per-good amounts deposited into the exchange stockpile this interval.
+    /// per-good amounts deposited into the exchange stockpile this interval plus
+    /// the agents that actually completed a forage task.
     ///
     /// Deposits are detected as carry **decreases**: a gatherer only ever
     /// deposits at the exchange and harvests at its node, and `world.tick` runs
@@ -5321,8 +5328,9 @@ impl Settlement {
     /// exactly a deposit (the accepted amount — overflow stays carried). Escrow
     /// carried over from a previous interval is part of the opening carry, so it
     /// transfers on the arrival that finally lands it.
-    fn run_fast_loop(&mut self) -> BTreeMap<(AgentId, GoodId), u32> {
+    fn run_fast_loop(&mut self) -> FastLoopReport {
         let mut deposited: BTreeMap<(AgentId, GoodId), u32> = BTreeMap::new();
+        let mut foraged: BTreeSet<AgentId> = BTreeSet::new();
         // Opening carry baseline (the current escrow), per living gatherer/good.
         let mut prev_carry: BTreeMap<(AgentId, GoodId), u32> = BTreeMap::new();
         for &slot in &self.live_colonist_slots {
@@ -5350,7 +5358,20 @@ impl Settlement {
 
         for _ in 0..FAST_TICKS_PER_ECON_TICK {
             self.assign_idle_gatherer_tasks();
+            let foraging_before: Vec<AgentId> = self
+                .live_colonist_slots
+                .iter()
+                .filter_map(|&slot| {
+                    let id = self.colonists[slot].id;
+                    matches!(self.world.agent_task(id), Some(Task::GoForage(_, _))).then_some(id)
+                })
+                .collect();
             self.world.tick();
+            for id in foraging_before {
+                if self.world.agent_status(id) == Some(AgentStatus::Idle) {
+                    foraged.insert(id);
+                }
+            }
             for &slot in &self.live_colonist_slots {
                 let colonist = &self.colonists[slot];
                 if colonist.vocation != Vocation::Gatherer {
@@ -5391,7 +5412,7 @@ impl Settlement {
             );
         }
 
-        deposited
+        FastLoopReport { deposited, foraged }
     }
 
     fn record_pending_deposits(&mut self, deposited: BTreeMap<(AgentId, GoodId), u32>) {
@@ -6459,13 +6480,14 @@ impl Settlement {
     }
 
     /// S12 — OWN-LABOR SUBSISTENCE phase (see [`ChainConfig::own_labor_subsistence`]).
-    /// Before the market (so the floor is on hand to eat this tick), give each hungry,
-    /// eligible, **unprovisioned** colonist with spare labor a labor-produced survival
-    /// floor: credit it [`ChainConfig::forage_yield`] units of the FORAGE subsistence
-    /// good into its OWN econ stock — booked `report.produced` (its own labor on the
-    /// forage node), NOT `report.endowment` (a mint). The same call sets the colonist's
-    /// `foraging` flag, which steers the NEXT fast loop to send it to [`Task::GoForage`]
-    /// instead of harvesting WOOD (the structural opportunity cost). Eligible = a
+    /// Before the market (so the floor is on hand to eat this tick), credit a hungry,
+    /// eligible, **unprovisioned** colonist with spare labor only when it completed a
+    /// [`Task::GoForage`] in the preceding fast loop. The credited
+    /// [`ChainConfig::forage_yield`] units of the FORAGE subsistence good land in its
+    /// OWN econ stock — booked `report.produced` (its own labor on the forage node),
+    /// NOT `report.endowment` (a mint). The same call sets the colonist's `foraging`
+    /// flag, which steers the NEXT fast loop to send it to [`Task::GoForage`] instead
+    /// of harvesting WOOD (the structural opportunity cost). Eligible = a
     /// spatial non-lineage colonist (`household: None`) in an untooled-or-latent role
     /// (`Consumer`/`Gatherer`/`Unassigned` — NOT an actively-producing Miller/Baker that
     /// has no spare labor). Hysteresis (`forage_hunger_in`/`out`) keeps a gatherer from
@@ -6474,7 +6496,11 @@ impl Settlement {
     /// and perishes via [`Self::run_spoilage`] if a decay rate is set. A no-op unless
     /// the gated own-labor path is active, so every other run is byte-identical.
     /// Deterministic: slot order, integer thresholds, nothing drawn.
-    fn run_own_labor_subsistence(&mut self, report: &mut EconTickReport) {
+    fn run_own_labor_subsistence(
+        &mut self,
+        completed_forage: &BTreeSet<AgentId>,
+        report: &mut EconTickReport,
+    ) {
         if !self.own_labor_subsistence_can_run() {
             return;
         }
@@ -6522,7 +6548,7 @@ impl Settlement {
                 was_foraging
             };
             self.colonists[slot].foraging = forage_now;
-            if forage_now {
+            if completed_forage.contains(&id) {
                 self.credit_produced(id, forage, yield_units, report);
             }
         }
@@ -12805,8 +12831,8 @@ mod tests {
         // Accumulate a real pending deposit (deposit phase only — no transfer, so it
         // is never credited and stays attributed in `pending_deposits`).
         for _ in 0..8 {
-            let deposited = s.run_fast_loop();
-            s.record_pending_deposits(deposited);
+            let fast = s.run_fast_loop();
+            s.record_pending_deposits(fast.deposited);
             if !s.pending_deposits.is_empty() {
                 break;
             }
@@ -14352,6 +14378,46 @@ mod tests {
             off_before,
             off.canonical_bytes(),
             "with own-labor off, the unused foraging flag must not steer the digest"
+        );
+    }
+
+    #[test]
+    fn own_labor_credit_requires_completed_forage_task() {
+        // A stale `foraging` decision is not enough to create FORAGE. The agent must
+        // actually complete `Task::GoForage` in the preceding fast loop; a hungry
+        // colonist busy walking somewhere else keeps the flag for the next assignment
+        // but produces nothing this tick.
+        let cfg = SettlementConfig::frontier_coemergent_strong_provisioned();
+        let forage = cfg
+            .chain
+            .as_ref()
+            .expect("chain")
+            .content
+            .forage()
+            .expect("forage good");
+        let mut s = Settlement::generate(7, &cfg);
+        let slot = s
+            .live_colonist_slots
+            .iter()
+            .copied()
+            .find(|&slot| s.colonists[slot].household.is_none())
+            .expect("a spatial non-lineage colonist");
+        let id = s.colonists[slot].id;
+        s.colonists[slot].need.hunger = 12;
+        s.colonists[slot].foraging = true;
+        assert!(s.world.assign_task(id, Task::GoTo(Pos::new(63, 0))));
+        assert_eq!(s.world.agent_status(id), Some(AgentStatus::Moving));
+
+        let report = s.econ_tick();
+        assert!(report.conserves());
+        assert_eq!(
+            report.produced_of(forage),
+            0,
+            "FORAGE credit must be gated on a completed GoForage task, not just the flag"
+        );
+        assert!(
+            s.colonists[slot].foraging,
+            "the hungry colonist should still be marked to forage once its current task settles"
         );
     }
 

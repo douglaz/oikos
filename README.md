@@ -1670,8 +1670,9 @@ gated, conserving — behind a default-off `ChainConfig::own_labor_subsistence`,
       via the existing spoilage phase). A new world task `Task::GoForage` — a hungry, eligible,
       unprovisioned spatial non-lineage colonist forages instead of harvesting WOOD (the **structural
       opportunity cost**: one world task per colonist per tick). `run_own_labor_subsistence` credits
-      `forage_yield` FORAGE into the forager's OWN stock booked **`report.produced`** (own labor) — NOT
-      `report.endowment` (a mint) — one source line, no node-regen double-count. In this path the
+      `forage_yield` FORAGE after a completed forage task into the forager's OWN stock booked
+      **`report.produced`** (own labor) — NOT `report.endowment` (a mint) — one source line,
+      no node-regen double-count. In this path the
       hunger-good mints are ZEROED (`producer_subsistence` staple + `food_provision`); WOOD/warmth
       provision stays. Tests: `subsistence_is_produced_not_minted` (FORAGE produced not minted,
       `endowment[staple] == 0`, a forager's hunger falls), `provisioned_run_is_deterministic`,
@@ -1688,17 +1689,19 @@ gated, conserving — behind a default-off `ChainConfig::own_labor_subsistence`,
 
 **Is there a middle band (fed AND money emerges)? No — the principled-failure mode the spec
 anticipated.** Across the pinned sweep — forage-yield `{0,1,2,3,4,6,8}` carry/tick × seeds
-`{1,7,0xC0FFEE}` × 1600 ticks — the floor **feeds the tail** (hunger drops from the semi-hungry mean ~8
-to ~4, 0 chronically hungry at any yield ≥ 1), but **SALT never monetizes once the food mints are
-retired** (no cell promotes; pre-promotion bread-for-SALT volume is 0). Isolating it: retiring
-`producer_subsistence` alone leaves emergence intact, but retiring the demographic `food_provision`
+`{1,7,0xC0FFEE}` × 1600 ticks — the floor **feeds the surviving spatial tail** (hunger drops from the
+semi-hungry mean ~8 to a bounded mean 0-4 at forage yields ≥ 1), but **SALT never monetizes once the
+food mints are retired** (no cell promotes; pre-promotion bread-for-SALT volume is 0). This is not a
+whole-colony food-path result: non-spatial lineage members are not eligible for world-task forage, and
+retiring their `food_provision` can strand the lineages. The tested mint controls localize the collapse:
+retiring `producer_subsistence` alone leaves emergence intact, but retiring the demographic `food_provision`
 kills it — that mint produced **bread** (the good SALT monetizes against) *per tick*, the sustained
-pre-promotion bread supply the strong-bar emergence window needs. With a **single hunger scalar**, the
-labor floor relieves the same hunger bread does, so any way of feeding the colony that is not *buying
-bread* removes the bread demand that monetizes SALT. The faithful fix is **differentiated food
-quality/services** (bread satisfying a want forage cannot), a model change deliberately out of S12
-scope. Landed honestly as a finding (`docs/finding-household-subsistence.md`), not forced with re-minted
-food or raw-grain edibility.
+pre-promotion bread supply the strong-bar emergence window needs, while its removal also erases lineage
+bread demand. With a **single hunger scalar**, the labor floor relieves the same hunger bread does, so
+feeding the tail by a non-bread floor removes the bread trade that monetizes SALT. The faithful fix is
+**differentiated food quality/services** (bread satisfying a want forage cannot), a model change
+deliberately out of S12 scope. Landed honestly as a finding (`docs/finding-household-subsistence.md`),
+not forced with re-minted food or raw-grain edibility.
 
 ## Build and test
 
