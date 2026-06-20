@@ -89,15 +89,53 @@ adds no bread to the bread-for-SALT trade. So:
 There is no setting of a one-dimensional hunger floor that frees the colony's money to
 circulate **and** keeps bread the widely-traded superior good.
 
+**Supply is the binding constraint (deeper analysis).** The intuition "free bread reduces
+demand" is true but not the operative effect — the demographic mint's load-bearing role
+was as renewable bread **supply**, the counterparty SALT must circulate *against*. The
+SALT is held by the consumers (the `consumer_medium_endowment`; producers/gatherers get
+none), and the consumers *want* bread; the minted-bread lineages (plus the seeded
+`bread_buffer`, which spoils) were the *sellers*. With the mint off, the SALT-rich
+consumers still want bread but the renewable seller is gone, and the barter book's
+**one-live-offer-per-agent** rule plus ordinal swap-protection (`barter_swap_acceptable`)
+turn "no bread seller" into a **circulation choke**: consumers post SALT-for-bread offers
+that never fill and reserve their SALT behind them. So removing the mint kills monetization
+even before the lineage's own bread demand vanishes — the missing **counterparty** is the
+binding constraint, not the demand. **Caveat (untraced):** the `bread_for_salt_volume`
+accessor counts bread↔SALT trades but does not record the *seller's* vocation/reason, so
+"the mint was the supplier" is strongly inferred from the isolation control, not directly
+traced — a **seller-by-vocation trace is the clean next diagnostic** to nail it.
+
 ## The fix (out of scope for S12)
 
 The finding is exactly the spec's predicted resolution: the **single-hunger-scalar food
-model is too coarse**. A faithful fix needs **differentiated food quality/services** —
-bread satisfying a preference (variety, a prepared-meal service, a status good) that
-forage cannot — so that a colonist forages to survive yet still buys bread for a want
-forage does not touch, preserving the bread-for-SALT trade that monetizes SALT. That is a
-model change (new want dimension), deliberately **not** attempted here: re-minting food
-or making raw grain edible would force a hollow pass.
+model is too coarse** — but the deeper analysis shows the fix is **two-part**, not one:
+
+1. **Differentiated food quality/services** — bread satisfying a preference (variety, a
+   prepared-meal service, a status good) that forage cannot — so a colonist forages to
+   survive yet still *buys* bread for a want forage does not touch (preserves bread
+   **demand**).
+2. **Endogenous produced bread *supply* during the barter window** — bread made by a
+   non-minted path (household baking / proto-bakers / a direct grain→bread household
+   recipe) so SALT monetizes against *produced* bread, not a hearth mint (preserves the
+   bread **counterparty**, the binding constraint above).
+
+Differentiated quality alone is not enough: without a produced bread supplier during the
+long strong-bar window, the counterparty still vanishes when the mint is retired. Both are
+model changes deliberately **not** attempted here; re-minting food or making raw grain
+edible would force a hollow pass.
+
+## Implication for S8/S9 (the honest caveat, sharpened)
+
+S9's strong-bar PASS stands on its own terms: SALT was not promoted by a circular medium
+want — it had a real direct use and had to clear genuine indirect-acceptance breadth. But
+this finding shows the indirect-exchange *environment* was fed by an **exogenous bread
+supplier** (the demographic mint); bread itself was not endogenously produced during the
+barter window. So the honest full-stack claim is:
+
+> **Strong-bar SALT emergence is genuine within a *provisioned* bread economy, but not yet
+> within a fully *produced* subsistence economy.**
+
+That caveat belongs anywhere S9 is summarized.
 
 ## Consequence for S13
 

@@ -1537,10 +1537,13 @@ What it does **not** earn: "fully authentic praxeology" in the global sense. The
 artifacts (disclosed): the SALT direct-use is an *exogenous* preference schedule (the use, not the
 money, is given); weak one-target indirect breadth; lean hearth provisioning; cold-start buffers; and
 the scalar S7 capital heuristic. Money emergence is now non-circular; several *other* mechanisms remain
-parameter-supported. **(S12 deepened this materially:** the isolation sweep showed the minted
-*demographic* bread hearth was **load-bearing for emergence** — it supplied the sustained pre-promotion
-bread-for-SALT exchange. So S9's money emergence is real but **not provision-autarkic**: it rested on an
-exogenous minted bread stream. See the S12 finding below.)
+parameter-supported. **(S12 + the deeper analysis sharpened this materially:** the isolation sweep
+showed the minted *demographic* bread hearth was **load-bearing for emergence** — not as bread *demand*
+but as the renewable bread **supply / counterparty** the SALT-holding consumers circulate against (the
+binding constraint; with the one-live-offer barter book, no bread seller is a circulation choke). So the
+honest full-stack claim is: **strong-bar SALT emergence is genuine within a *provisioned* bread economy,
+but not yet within a fully *produced* subsistence economy** — bread was not endogenously produced during
+the barter window. See the S12 finding below.)
 
 ## Status: S10 (per-agent intertemporal capital choice — originary interest) — complete
 
