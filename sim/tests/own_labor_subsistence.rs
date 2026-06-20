@@ -2,14 +2,38 @@
 //!
 //! The own-labor subsistence path retires the food mints and replaces them with a
 //! labor-produced FORAGE survival floor (booked `produced`, eaten at home, ranked below
-//! bread). These tests pin the mechanism: the floor is produced from own labor (not
-//! minted), conserves every tick, and is fully gated.
+//! bread). These tests pin the mechanism (produced not minted, conserving, gated) and
+//! the milestone's falsifiable core.
 
 use econ::good::GoodId;
-use sim::{Settlement, SettlementConfig};
+use sim::{Settlement, SettlementConfig, Vocation};
+
+/// (mean, p95, max, chronically-hungry count) over the living roster, where "chronic" is
+/// hunger >= `threshold`. The provisioning baseline metric (`provisioning_at_scale.rs`).
+fn hunger_stats(s: &Settlement, threshold: u16) -> (u64, u16, u16, usize) {
+    let mut h: Vec<u16> = (0..s.population())
+        .filter(|&i| s.is_alive(i))
+        .filter_map(|i| s.need_of(i).map(|n| n.hunger))
+        .collect();
+    h.sort_unstable();
+    if h.is_empty() {
+        return (0, 0, 0, 0);
+    }
+    let mean = h.iter().map(|&x| u64::from(x)).sum::<u64>() / h.len() as u64;
+    let p95 = h[(h.len() * 95 / 100).min(h.len() - 1)];
+    let max = *h.last().unwrap();
+    let chronic = h.iter().filter(|&&x| x >= threshold).count();
+    (mean, p95, max, chronic)
+}
 
 fn provisioned() -> SettlementConfig {
     SettlementConfig::frontier_coemergent_strong_provisioned()
+}
+
+fn provisioned_with_yield(yield_units: u32) -> SettlementConfig {
+    let mut cfg = provisioned();
+    cfg.chain.as_mut().expect("chain").forage_yield = yield_units;
+    cfg
 }
 
 fn bread_good(cfg: &SettlementConfig) -> GoodId {
@@ -144,4 +168,82 @@ fn provisioning_conserves() {
         let _ = report.spoiled_of(forage) + report.spoiled_of(bread);
     }
     assert!(produced > 0, "the forage floor must be produced from labor");
+}
+
+// ---- S12.2: the falsifiable core -----------------------------------------------------
+
+#[test]
+fn forage_floor_feeds_the_tail() {
+    // The labor-produced floor pulls tail hunger strictly below the semi-hungry S11
+    // baseline on every axis (mean / p95 / max / chronic count), and it does not drift.
+    let baseline = SettlementConfig::frontier_coemergent_strong_entrepreneurial();
+    let mut b = Settlement::generate(1, &baseline);
+    b.run(1000);
+    let (b_mean, b_p95, b_max, b_chronic) = hunger_stats(&b, 8);
+
+    let cfg = provisioned();
+    let mut s = Settlement::generate(1, &cfg);
+    s.run(1000);
+    let (mean_a, p95_a, max_a, chronic_a) = hunger_stats(&s, 8);
+    s.run(600);
+    let (mean_b, p95_b, max_b, chronic_b) = hunger_stats(&s, 8);
+
+    assert!(
+        mean_a < b_mean && p95_a < b_p95 && max_a < b_max && chronic_a < b_chronic,
+        "provisioned tail hunger must be below the baseline ({mean_a}/{p95_a}/{max_a}/{chronic_a} \
+         vs {b_mean}/{b_p95}/{b_max}/{b_chronic})"
+    );
+    // Non-drifting: the tail stays bounded over the further 600 ticks.
+    assert!(
+        mean_b <= b_mean && p95_b < b_p95 && max_b < b_max && chronic_b < b_chronic,
+        "the bounded tail must not drift back up ({mean_b}/{p95_b}/{max_b}/{chronic_b})"
+    );
+}
+
+#[test]
+fn no_own_labor_production_control_stays_hungry() {
+    // The control: own-labor ON (mints retired) but `forage_yield = 0` — no labor floor
+    // is produced. The tail is materially hungrier than the provisioned colony, proving
+    // the produced FORAGE floor (not some side effect of the gate) is what feeds it.
+    let mut control = Settlement::generate(1, &provisioned_with_yield(0));
+    control.run(1000);
+    let (c_mean, _, _, c_chronic) = hunger_stats(&control, 8);
+
+    let mut fed = Settlement::generate(1, &provisioned());
+    fed.run(1000);
+    let (f_mean, _, _, f_chronic) = hunger_stats(&fed, 8);
+
+    assert!(
+        c_mean > f_mean && c_chronic > f_chronic,
+        "the no-forage control must stay hungrier than the provisioned colony \
+         (control {c_mean}/{c_chronic} vs fed {f_mean}/{f_chronic})"
+    );
+}
+
+#[test]
+fn producer_food_path_is_feasible() {
+    // Producer-hunger sanity: the latent producers (the only producer role present, since
+    // money never emerges on the own-labor path) are an eligible part of the forage set,
+    // so retiring the producer staple mint leaves them a feasible food path — none is
+    // left permanently stranded at the hunger ceiling.
+    let cfg = provisioned();
+    let mut s = Settlement::generate(7, &cfg);
+    s.run(1000);
+    let mut latent_seen = false;
+    let mut worst = 0u16;
+    for i in 0..s.population() {
+        if !s.is_alive(i) {
+            continue;
+        }
+        if s.vocation_of(i) == Some(Vocation::Unassigned) {
+            latent_seen = true;
+            worst = worst.max(s.need_of(i).map(|n| n.hunger).unwrap_or(0));
+        }
+    }
+    assert!(latent_seen, "the provisioned config seeds latent producers");
+    assert!(
+        worst <= 8,
+        "a latent producer must keep a feasible food path (forage), not starve at the \
+         ceiling — worst latent-producer hunger was {worst}"
+    );
 }
