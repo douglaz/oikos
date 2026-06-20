@@ -176,6 +176,15 @@ fn provisioning_conserves() {
 fn forage_floor_feeds_the_tail() {
     // The labor-produced floor pulls tail hunger strictly below the semi-hungry S11
     // baseline on every axis (mean / p95 / max / chronic count), and it does not drift.
+    //
+    // CAVEAT (survivorship): the baseline runs with the food mints ON (nobody starves),
+    // while the provisioned path retires `food_provision`, so non-spatial lineage members
+    // can die out under mint retirement — part of this drop is the hungry tail being
+    // removed, not only fed (the finding doc's "tail-survivor metric"). This test is
+    // therefore a tail-survivor metric, NOT a whole-colony feeding claim. The
+    // floor-isolating guarantee — that the PRODUCED forage, not survivorship, is what
+    // feeds the survivors — is `no_own_labor_production_control_stays_hungry` (same mint
+    // retirement, `forage_yield = 0`): same survivorship, hungrier tail.
     let baseline = SettlementConfig::frontier_coemergent_strong_entrepreneurial();
     let mut b = Settlement::generate(1, &baseline);
     b.run(1000);
@@ -226,18 +235,34 @@ fn producer_food_path_is_feasible() {
     // money never emerges on the own-labor path) are an eligible part of the forage set,
     // so retiring the producer staple mint leaves them a feasible food path — none is
     // left permanently stranded at the hunger ceiling.
+    //
+    // Active producers (Miller/Baker/Scholar/Confectioner) are deliberately NOT forage-
+    // eligible (`run_own_labor_subsistence` excludes them — they spend their world-task
+    // slot producing and are meant to buy bread). That exclusion is only safe because no
+    // active producer ever forms on this path: SALT never monetizes, so the latent pool
+    // never adopts a role. This test makes that reliance explicit rather than silent — if
+    // a future change lets an active producer form here, it would have its staple mint
+    // retired AND no forage path AND no bread market, so this assertion fires to flag the
+    // tracked gap the differentiated-food / S13 follow-on must close.
     let cfg = provisioned();
     let mut s = Settlement::generate(7, &cfg);
     s.run(1000);
     let mut latent_seen = false;
+    let mut active_producers = 0usize;
     let mut worst = 0u16;
     for i in 0..s.population() {
         if !s.is_alive(i) {
             continue;
         }
-        if s.vocation_of(i) == Some(Vocation::Unassigned) {
-            latent_seen = true;
-            worst = worst.max(s.need_of(i).map(|n| n.hunger).unwrap_or(0));
+        match s.vocation_of(i) {
+            Some(Vocation::Unassigned) => {
+                latent_seen = true;
+                worst = worst.max(s.need_of(i).map(|n| n.hunger).unwrap_or(0));
+            }
+            Some(
+                Vocation::Miller | Vocation::Baker | Vocation::Scholar | Vocation::Confectioner,
+            ) => active_producers += 1,
+            _ => {}
         }
     }
     assert!(latent_seen, "the provisioned config seeds latent producers");
@@ -245,6 +270,12 @@ fn producer_food_path_is_feasible() {
         worst <= 8,
         "a latent producer must keep a feasible food path (forage), not starve at the \
          ceiling — worst latent-producer hunger was {worst}"
+    );
+    assert_eq!(
+        active_producers, 0,
+        "no ACTIVE producer may form on the provisioned path (SALT never monetizes), so the \
+         forage-eligibility exclusion of active producers stays unreachable here; saw \
+         {active_producers} active producer(s) — the tracked active-producer food-path gap"
     );
 }
 

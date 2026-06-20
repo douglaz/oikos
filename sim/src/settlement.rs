@@ -3789,9 +3789,11 @@ impl Settlement {
         // and interleaved below the staple by the subsistence offset (`scale.rs`).
         let chain_subsistence = |chain: &ChainConfig| -> Option<GoodId> {
             if chain.own_labor_subsistence {
-                Some(chain.content.forage().expect(
-                    "own_labor_subsistence requires a forage good (ContentSet::with_forage)",
-                ))
+                // A flag set without a forage good degrades to off (None), matching
+                // `own_labor_subsistence_can_run` (the per-tick gate) — so a misconfigured
+                // flag is treated as off everywhere rather than panicking in this path
+                // while the per-tick gate silently disables it.
+                chain.content.forage()
             } else {
                 chain.subsistence_on_grain.then(|| chain.content.grain())
             }
@@ -3980,15 +3982,18 @@ impl Settlement {
         // world's only source and conservation is untouched. Placed at the exchange tile
         // ("eaten at home") only when own-labor subsistence is on, so every other config
         // adds no node and stays byte-identical.
-        if let Some(chain) = &config.chain {
-            if chain.own_labor_subsistence {
-                let forage = chain.content.forage().expect(
-                    "own_labor_subsistence requires a forage good (ContentSet::with_forage)",
-                );
-                world
-                    .add_node(ResourceNode::new(config.exchange, forage, 0, 0, 0))
-                    .expect("the forage node lands on the (passable) exchange tile");
-            }
+        // Place the node only when the own-labor path can actually run (the flag AND a
+        // forage good in the content), matching `own_labor_subsistence_can_run`; a flag
+        // set without a forage good degrades to off (no node) rather than panicking.
+        if let Some(forage) = config
+            .chain
+            .as_ref()
+            .filter(|chain| chain.own_labor_subsistence)
+            .and_then(|chain| chain.content.forage())
+        {
+            world
+                .add_node(ResourceNode::new(config.exchange, forage, 0, 0, 0))
+                .expect("the forage node lands on the (passable) exchange tile");
         }
 
         let consumers = usize::from(config.consumers);
@@ -6515,14 +6520,29 @@ impl Settlement {
         let yield_units = chain.forage_yield;
         let h_in = chain.forage_hunger_in;
         let h_out = chain.forage_hunger_out;
+        // The hysteresis band must be ordered (exit strictly below entry). With
+        // `h_out >= h_in` a colonist that reaches `h_in` can never fall back below
+        // `h_out`, so it forages forever — degenerate hysteresis with no opportunity-cost
+        // trade-off. Fail fast on a mis-set config rather than silently producing it.
+        debug_assert!(
+            h_out < h_in,
+            "forage_hunger_out ({h_out}) must sit strictly below forage_hunger_in ({h_in})"
+        );
         let live = self.live_colonist_slots.clone();
         for slot in live {
             let (id, eligible, hunger, was_foraging) = {
                 let colonist = &self.colonists[slot];
                 // The spatial non-lineage poor with spare labor (`household: None`,
                 // untooled-or-latent role). An actively-producing role (Miller/Baker/
-                // Scholar/Confectioner) has no spare labor; a lineage member is
-                // non-spatial (no world task) and is fed through the market.
+                // Scholar/Confectioner) is excluded: it spends its one world-task slot
+                // producing and is meant to earn its food by buying bread. TRACKED GAP:
+                // with its staple mint retired, an active producer's only food path is
+                // the bread market — unreachable on this path because SALT never
+                // monetizes, so no active producer ever forms (asserted in
+                // `producer_food_path_is_feasible`). Before any own-labor config that DOES
+                // monetize (the differentiated-food / S13 follow-on), an active producer
+                // must get a forage-when-too-hungry-to-produce path, or it would starve.
+                // A lineage member is non-spatial (no world task) and fed through the market.
                 let eligible = colonist.household.is_none()
                     && matches!(
                         colonist.vocation,

@@ -107,3 +107,15 @@ tail-only sense: the spatial non-lineage tail now has a real labor-based surviva
 (forage). The lineage remains a disclosed stranded case under mint retirement, and money
 emergence is gone; the differentiated-food-quality follow-on must restore both before
 the provisioned scenario can serve as a full S13 base.
+
+## Tracked gaps (for the differentiated-food / S13 follow-on)
+
+- **Active producers have no forage path.** Forage eligibility excludes active producer
+  roles (Miller/Baker/Scholar/Confectioner) — they spend their one world-task slot
+  producing and are meant to buy bread. With the producer staple mint retired, an active
+  producer's only food path is the bread market. That is safe *here* only because SALT
+  never monetizes on this path, so the latent pool never adopts a role and no active
+  producer ever forms (asserted, not assumed, in `producer_food_path_is_feasible`). Any
+  own-labor config that DOES monetize must first give an active producer a
+  forage-when-too-hungry-to-produce path, or it would starve with no food path. Tracked
+  for the differentiated-food / S13 follow-on alongside the lineage stranded case above.
