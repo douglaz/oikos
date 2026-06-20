@@ -1537,7 +1537,10 @@ What it does **not** earn: "fully authentic praxeology" in the global sense. The
 artifacts (disclosed): the SALT direct-use is an *exogenous* preference schedule (the use, not the
 money, is given); weak one-target indirect breadth; lean hearth provisioning; cold-start buffers; and
 the scalar S7 capital heuristic. Money emergence is now non-circular; several *other* mechanisms remain
-parameter-supported.
+parameter-supported. **(S12 deepened this materially:** the isolation sweep showed the minted
+*demographic* bread hearth was **load-bearing for emergence** — it supplied the sustained pre-promotion
+bread-for-SALT exchange. So S9's money emergence is real but **not provision-autarkic**: it rested on an
+exogenous minted bread stream. See the S12 finding below.)
 
 ## Status: S10 (per-agent intertemporal capital choice — originary interest) — complete
 
