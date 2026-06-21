@@ -208,6 +208,12 @@ const SCENARIOS: &[Scenario] = &[
         build: build_forage_capacity,
     },
     Scenario {
+        name: "cultivation",
+        description:
+            "S15: PRE-MONEY OWN-USE CULTIVATION — intensification under pressure (the Austrian/Boserupian escape valve). The S14 forage-capacity colony plus a new no-tool CULTIVATE recipe: when the land-capped forage commons can't feed a colonist (it is SUSTAINED-hungry), it escalates from foraging to CULTIVATING — hauling grain from the abundant grain node and making bread by its OWN labor (a more roundabout, more laborious path), eaten at home. Tapping the bigger grain flow via the costlier process RAISES the carrying capacity ABOVE the forage-only plateau (~51 -> ~125) and the new plateau TRACKS the grain flow; under abundant forage nobody is sustained-hungry so nobody cultivates. The bread is OWN-USE (never traded; SALT does not promote — money is S16) and deaths stay old-age only (no mortality). Run with more ticks (e.g. 3000) to see the intensified plateau.",
+        build: build_cultivation,
+    },
+    Scenario {
         name: "millisats-1x",
         description:
             "EXPERIMENT: frontier at coarse (x1) money precision — the unit-starved baseline that freezes (~320 money units)",
@@ -427,6 +433,10 @@ fn build_spatial_households() -> SettlementConfig {
 
 fn build_forage_capacity() -> SettlementConfig {
     SettlementConfig::frontier_forage_capacity()
+}
+
+fn build_cultivation() -> SettlementConfig {
+    SettlementConfig::frontier_cultivation()
 }
 
 fn build_millisats_1x() -> SettlementConfig {
