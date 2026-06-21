@@ -71,6 +71,41 @@ fn with_regen(stock: u32, regen: u32, cap: u32) -> SettlementConfig {
     cfg
 }
 
+/// The shipped config with the FORAGE commons regen overridden AND `max_household_size`
+/// lifted far above any of the sweep's forage plateaus, so the artificial knob can NEVER
+/// bind: every sweep point is then purely **forage-bound** (the hunger ceiling is the
+/// only stall, the size cap blocks no birth). This isolates the variable the milestone's
+/// headline claim rests on — the rising plateau is the population's response to the
+/// forage flow, not the population climbing into the size cap.
+fn forage_bound_sweep(stock: u32, regen: u32, cap: u32) -> SettlementConfig {
+    let mut cfg = with_regen(stock, regen, cap);
+    cfg.demography
+        .as_mut()
+        .expect("demography")
+        .max_household_size = 60;
+    cfg
+}
+
+/// (windowed-mean living population, hunger-ceiling birth-blocks, size-cap birth-blocks)
+/// over the plateau window — the carrying-capacity metric plus the birth-block reasons
+/// that say WHETHER the plateau is forage-bound (hunger ceiling) or knob-bound (size cap).
+fn plateau_blocks(cfg: &SettlementConfig) -> (f64, u64, u64) {
+    let mut s = Settlement::generate(1, cfg);
+    let (mut sum, mut n) = (0u64, 0u64);
+    for tick in 0..RUN_TICKS {
+        s.econ_tick();
+        if tick >= WINDOW_FROM {
+            sum += living(&s) as u64;
+            n += 1;
+        }
+    }
+    (
+        sum as f64 / n as f64,
+        s.birth_block_hunger_ceiling(),
+        s.birth_block_size_cap(),
+    )
+}
+
 #[test]
 fn forage_capacity_run_is_deterministic() {
     // Byte-identical for the same (seed, config): the FORAGE node stock/regen/cap, the
@@ -261,18 +296,39 @@ fn population_grows_then_plateaus() {
 #[test]
 fn plateau_tracks_carrying_capacity() {
     // Lower forage regen → lower population plateau, monotone: the plateau tracks the
-    // forage FLOW, not `max_household_size`. Each level is forage-bound (the hunger
-    // ceiling is the dominant stall).
-    let (lo, _, _) = plateau(&with_regen(60, 1, 200));
-    let (mid, _, _) = plateau(&with_regen(90, 2, 300));
-    let (hi, _, _) = plateau(&with_regen(150, 4, 500));
+    // forage FLOW, not `max_household_size`. The size cap is lifted out of the way for
+    // the whole sweep (`forage_bound_sweep`), so EVERY point is forage-bound — the
+    // hunger ceiling is the only stall and the size cap blocks no birth. The rising
+    // plateau is therefore the population's response to the forage flow (the headline
+    // claim), not the population climbing into the artificial knob.
+    let points = [
+        plateau_blocks(&forage_bound_sweep(60, 1, 200)),
+        plateau_blocks(&forage_bound_sweep(90, 2, 300)),
+        plateau_blocks(&forage_bound_sweep(120, 3, 400)),
+        plateau_blocks(&forage_bound_sweep(150, 4, 500)),
+    ];
+    for &(mean, hunger, size_cap) in &points {
+        assert_eq!(
+            size_cap, 0,
+            "every sweep point must be forage-bound — the size cap must NEVER bind \
+             (mean {mean:.1}, sizecap blocks {size_cap})"
+        );
+        assert!(
+            hunger > 0,
+            "every sweep point must be bounded by the hunger ceiling — the preventive \
+             check (mean {mean:.1}, hunger blocks {hunger})"
+        );
+    }
+    let means: Vec<f64> = points.iter().map(|&(m, _, _)| m).collect();
+    for w in means.windows(2) {
+        assert!(
+            w[1] > w[0],
+            "the forage-bound plateau must rise monotonically with forage regen: {means:?}"
+        );
+    }
     assert!(
-        lo < mid && mid < hi,
-        "the plateau must rise monotonically with forage regen (lo {lo:.1}, mid {mid:.1}, hi {hi:.1})"
-    );
-    assert!(
-        hi - lo > 8.0,
-        "lower forage flow must give a meaningfully lower plateau (lo {lo:.1} -> hi {hi:.1})"
+        means.last().expect("means") - means.first().expect("means") > 8.0,
+        "lower forage flow must give a meaningfully lower plateau: {means:?}"
     );
 }
 
