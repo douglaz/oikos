@@ -2347,6 +2347,9 @@ impl SettlementConfig {
             // Barter start: a newborn inherits no money before promotion.
             child_gold_endowment: 0,
             mutation_delta_bps: 200,
+            // S13 off by default: the shipped frontier keeps econ-only lineages, so the
+            // frontier golden is byte-identical. `frontier_spatial_households` flips it.
+            spatial_households: false,
         };
 
         let exchange = Pos::new(0, 0);
@@ -4182,18 +4185,22 @@ impl Settlement {
             });
         }
 
-        // ---- G4b demography founders: the non-spatial household members ----
+        // ---- G4b demography founders: the household members ----
         // When a demography overlay is present, its households' founders follow the
         // normal colonist roster in id order (a non-demography settlement adds none,
-        // so it is byte-identical). A founder is a NON-SPATIAL householder: it has
-        // an econ agent but **no world agent** — it never hauls, so the fast loop,
-        // the deposit transfer, and the world↔econ id coincidence the gatherers rely
-        // on are untouched. Its stable seed (hashed from the world seed + its global
-        // founder index — no extra `Rng` draw) fixes its staggered starting age and
-        // its deterministic old-age lifespan; its culture is drawn from the
-        // household's time-preference base (the heritable ordinal bias).
+        // so it is byte-identical). Pre-S13 a founder is a NON-SPATIAL householder
+        // (an econ agent, no world agent). S13 spatial households (gated, default off)
+        // instead give each founder a world agent at its EXACT econ id via
+        // `add_agent_with_id`, so `world_id == econ_id` by construction and the
+        // reproducing population can be assigned world tasks — the structural
+        // unification. The founder still stays Idle (no task) and fed exactly as
+        // today; only the capability is new. Its stable seed (hashed from the world
+        // seed + its global founder index — no extra `Rng` draw) fixes its staggered
+        // starting age and its deterministic old-age lifespan; its culture is drawn
+        // from the household's time-preference base (the heritable ordinal bias).
         let mut households: Vec<HouseholdRuntime> = Vec::new();
         if let Some(demo) = &config.demography {
+            let spatial = demo.spatial_households;
             let mut founder_index = 0usize;
             for (household_index, spec) in demo.households.iter().enumerate() {
                 households.push(HouseholdRuntime {
@@ -4212,6 +4219,20 @@ impl Settlement {
                     );
                     let need = NeedState::rested();
                     agents.push(build_demography_agent(id, &need, &culture, &known, spec));
+                    if spatial {
+                        // Mirror the founder's econ id into the world (generation 0, so
+                        // it bumps the world's fresh-id watermark past it). Placement at
+                        // the exchange tile is always passable.
+                        let placed = world
+                            .add_agent_with_id(
+                                id,
+                                config.exchange,
+                                config.carry_cap,
+                                config.move_speed,
+                            )
+                            .expect("founder world agent lands on the exchange tile");
+                        debug_assert_eq!(placed, id, "founder world and econ ids must coincide");
+                    }
                     colonists.push(Colonist {
                         id,
                         vocation: Vocation::Consumer,
@@ -12080,6 +12101,15 @@ fn push_demography_config_bytes(out: &mut Vec<u8>, demo: &DemographyConfig) {
     out.extend_from_slice(&demo.child_food_endowment.to_le_bytes());
     out.extend_from_slice(&demo.child_gold_endowment.to_le_bytes());
     out.extend_from_slice(&demo.mutation_delta_bps.to_le_bytes());
+    // S13: the spatial-households flag steers future ticks (whether newborns get a
+    // world agent and whether lineage members can be assigned world tasks), so it is
+    // part of the future-behaviour identity once it is set. Appended only when ON, so
+    // every flag-off demography config (the `lineages`/frontier goldens) keeps its
+    // exact pre-S13 byte layout. The founder/newborn world agents themselves are
+    // already in `world.canonical_bytes`; this pins the flag's own identity.
+    if demo.spatial_households {
+        out.push(1);
+    }
 }
 
 fn push_role_bytes(out: &mut Vec<u8>, role: Role) {
@@ -14993,5 +15023,91 @@ mod tests {
             !recipe_adoption_pays(&patient, &free_recipe, Some(Gold(5)), None, 0, 1),
             "a sated colonist declines even an input-less spread (ordinal, not scalar)"
         );
+    }
+
+    // ---- S13.1: founders spatial at generation -------------------------------------
+
+    #[test]
+    fn spatial_households_flag_makes_founders_spatial() {
+        // Flag off: `lineages` founders are econ-only — the world holds no colonist
+        // agents (no gatherers/consumers/traders in this config), the pre-S13 model.
+        let off = Settlement::generate(1, &SettlementConfig::lineages());
+        assert!(
+            off.world().agent_ids().is_empty(),
+            "flag off: founders stay non-spatial (no world agents)"
+        );
+
+        // Flag on: every founder has a world agent at its EXACT econ id (world_id ==
+        // econ_id by construction via add_agent_with_id).
+        let mut cfg = SettlementConfig::lineages();
+        cfg.demography.as_mut().unwrap().spatial_households = true;
+        let on = Settlement::generate(1, &cfg);
+        let founders = cfg.demography.as_ref().unwrap().founder_count();
+        assert_eq!(
+            on.world().agent_ids().len(),
+            founders,
+            "flag on: one world agent per founder"
+        );
+        for i in 0..on.population() {
+            if on.is_alive(i) {
+                let id = on.colonist_id(i).unwrap();
+                assert!(
+                    on.world().agent_pos(id).is_some(),
+                    "every living founder has a world agent at world_id == econ_id"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn spatial_households_founders_feed_and_conserve_unchanged() {
+        // Flag on but no forage scarcity (`lineages` keeps its food hearth): the
+        // spatial founders are inert (Idle world agents, never tasked), so feeding,
+        // demography, and whole-system conservation match the non-spatial baseline
+        // tick for tick — the milestone adds capability, not a behavior change.
+        let base_cfg = SettlementConfig::lineages();
+        let mut spatial_cfg = base_cfg.clone();
+        spatial_cfg.demography.as_mut().unwrap().spatial_households = true;
+
+        let mut base = Settlement::generate(7, &base_cfg);
+        let mut spatial = Settlement::generate(7, &spatial_cfg);
+        for tick in 0..200u64 {
+            base.econ_tick();
+            let report = spatial.econ_tick();
+            assert!(
+                report.conserves(),
+                "spatial founders must conserve at tick {tick}"
+            );
+            assert_eq!(
+                base.population(),
+                spatial.population(),
+                "population diverged at tick {tick}"
+            );
+            for i in 0..base.population() {
+                assert_eq!(base.is_alive(i), spatial.is_alive(i), "liveness at {i}/{tick}");
+                assert_eq!(
+                    base.need_of(i).map(|n| (n.hunger, n.warmth, n.rest)),
+                    spatial.need_of(i).map(|n| (n.hunger, n.warmth, n.rest)),
+                    "feeding diverged for colonist {i} at tick {tick}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_bytes_include_spatial_households() {
+        // The flag (and its founder world agents) must register in the determinism
+        // surface, so two settlements differing only in it never digest equal; with the
+        // flag off the byte layout is the exact pre-S13 stream (the `lineages` golden).
+        let off = Settlement::generate(1, &SettlementConfig::lineages());
+        let mut cfg = SettlementConfig::lineages();
+        cfg.demography.as_mut().unwrap().spatial_households = true;
+        let on = Settlement::generate(1, &cfg);
+        assert_ne!(
+            off.canonical_bytes(),
+            on.canonical_bytes(),
+            "the spatial-households flag must register in canonical_bytes"
+        );
+        assert_ne!(off.digest(), on.digest());
     }
 }

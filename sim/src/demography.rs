@@ -91,6 +91,14 @@ pub struct DemographyConfig {
     /// Bound on the per-field culture mutation at birth (bps). `0` is a no-mutation
     /// (pure-clone) lineage.
     pub mutation_delta_bps: u16,
+    /// S13 **spatial households**: when set, every lineage member (founders at
+    /// generation + newborns at birth) is given a **world agent** at its exact econ
+    /// `AgentId`, so the reproducing population is spatial and can be assigned
+    /// forage/gather/haul tasks — the structural unification that unblocks the
+    /// scarcity arc. `false` for every pre-S13 config (founders/newborns stay
+    /// econ-only, so the run is byte-identical). Purely structural: it grants the
+    /// *capability*, not forage scarcity, cultivation, or mortality.
+    pub spatial_households: bool,
 }
 
 impl DemographyConfig {
@@ -136,6 +144,8 @@ impl DemographyConfig {
             child_food_endowment: 4,
             child_gold_endowment: 4,
             mutation_delta_bps: 200,
+            // Non-spatial by default: the `lineages` golden keeps econ-only founders.
+            spatial_households: false,
         }
     }
 
