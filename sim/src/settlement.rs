@@ -734,6 +734,28 @@ pub struct NodeSpec {
 /// who-produces-what (that is G3b). The buffers are generous *mechanism* knobs:
 /// they bridge the pipeline fill and keep the smoke horizon collapse-free; they
 /// pin no magnitude.
+/// S14 — a **capped FORAGE commons**: the parameters of the real
+/// [`world::ResourceNode`] the forage path harvests when this mode is on. The S12
+/// own-labor path created the FORAGE node as a `0/0/0` marker and credited a fixed
+/// [`ChainConfig::forage_yield`] per completed forage task (independent of forager
+/// count); the commons replaces that with a depleting node so per-capita yield
+/// **falls** as the foraging population grows — the carrying capacity the
+/// endogenous population plateau presses on. Routed through the existing GoHarvest
+/// haul cycle (harvest → carry → deposit → transfer), so node regen stays the only
+/// source and conservation is untouched. `None` on [`ChainConfig::forage_commons`]
+/// for every existing config (the S12 fixed-credit path is byte-identical).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ForageCommons {
+    /// Initial FORAGE stock at generation (clamped to `cap` by `ResourceNode::new`).
+    pub stock: u32,
+    /// FORAGE units the commons regenerates per **fast** world tick (the only
+    /// source of FORAGE on this path), capped at `cap`.
+    pub regen: u32,
+    /// The commons' stock ceiling — the standing larder a burst of foragers can draw
+    /// down before regen alone bounds the per-tick flow.
+    pub cap: u32,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChainConfig {
     /// The interned chain goods and recipes (built once at generation).
@@ -800,6 +822,15 @@ pub struct ChainConfig {
     /// home role (resuming WOOD gathering / idling). Must sit strictly below
     /// [`Self::forage_hunger_in`]. Consulted only while `own_labor_subsistence` is on.
     pub forage_hunger_out: u16,
+    /// S14 — the **capped FORAGE commons** (default `None`, byte-identical when off).
+    /// When `Some` *and* [`Self::own_labor_subsistence`] is active, the FORAGE node is
+    /// created as a real depleting [`world::ResourceNode`] with these `stock/regen/cap`
+    /// and foragers harvest it through the GoHarvest haul cycle (deposit → transfer),
+    /// instead of S12's `0/0/0` marker + fixed [`Self::forage_yield`] credit — so
+    /// per-capita yield falls with the foraging population (the carrying capacity).
+    /// `None` keeps the S12 fixed-credit path exactly, so every existing config stays
+    /// byte-identical.
+    pub forage_commons: Option<ForageCommons>,
     /// EXPERIMENTAL (capital-advance probe): when `true` *and* money has emerged,
     /// each econ tick a conserved working-capital advance moves real money from
     /// the richest saver to any cashless active chain producer (Miller/Baker), so
@@ -1075,6 +1106,7 @@ impl ChainConfig {
             // its goldens are byte-identical.
             own_labor_subsistence: false,
             forage_yield: 0,
+            forage_commons: None,
             forage_hunger_in: 8,
             forage_hunger_out: 4,
             capital_advance: false,
@@ -1154,6 +1186,7 @@ impl ChainConfig {
             subsistence_on_grain: false,
             own_labor_subsistence: false,
             forage_yield: 0,
+            forage_commons: None,
             forage_hunger_in: 8,
             forage_hunger_out: 4,
             capital_advance: false,
@@ -3730,6 +3763,10 @@ struct ChainRuntime {
     forage_yield: u32,
     forage_hunger_in: u16,
     forage_hunger_out: u16,
+    /// S14: the capped FORAGE-commons parameters (see [`ChainConfig::forage_commons`]).
+    /// `None` for every existing config, so the FORAGE node stays a `0/0/0` marker and
+    /// the S12 fixed-credit path is byte-identical.
+    forage_commons: Option<ForageCommons>,
     /// S6: the productive-re-entry phase gate + hysteresis thresholds (see
     /// [`ChainConfig::productive_reentry`]). `false`/unused for every existing config.
     productive_reentry: bool,
@@ -4003,13 +4040,20 @@ impl Settlement {
                 .expect("node lands on a passable tile");
             node_ids.push(id);
         }
-        // S12: the FORAGE node — a pure location marker for the `GoForage` task. It is
-        // placed OUTSIDE `config.nodes` (so the gatherer round-robin never targets it)
-        // and carries NO stock/regen/cap: foraging produces no world good (the floor is
-        // credited at the econ layer, booked `produced`), so node regen stays the
-        // world's only source and conservation is untouched. Placed at the exchange tile
-        // ("eaten at home") only when own-labor subsistence is on, so every other config
+        // S12/S14: the FORAGE node. Placed OUTSIDE `config.nodes` (so the gatherer
+        // round-robin never targets it — only the forage path does) at the exchange tile
+        // ("eaten at home"), only when own-labor subsistence is on, so every other config
         // adds no node and stays byte-identical.
+        //
+        // - S12 (no `forage_commons`): a pure `0/0/0` location marker for `GoForage`,
+        //   which relocates nothing — the floor is credited at the econ layer (booked
+        //   `produced`), so node regen stays the world's only source.
+        // - S14 (`forage_commons` set): a REAL depleting `ResourceNode` with the
+        //   configured `stock/regen/cap`. Foragers harvest it through the GoHarvest haul
+        //   cycle, so per-capita yield falls with the foraging population — and node regen
+        //   is again the only source (the fixed credit is retired). Conservation holds in
+        //   both modes.
+        //
         // Place the node only when the own-labor path can actually run (the flag AND a
         // forage good in the content), matching `own_labor_subsistence_can_run`; a flag
         // set without a forage good degrades to off (no node) rather than panicking.
@@ -4019,8 +4063,21 @@ impl Settlement {
             .filter(|chain| chain.own_labor_subsistence)
             .and_then(|chain| chain.content.forage())
         {
+            let (stock, regen, cap) = config
+                .chain
+                .as_ref()
+                .and_then(|chain| chain.forage_commons.as_ref())
+                .map_or((0, 0, 0), |commons| {
+                    (commons.stock, commons.regen, commons.cap)
+                });
             world
-                .add_node(ResourceNode::new(config.exchange, forage, 0, 0, 0))
+                .add_node(ResourceNode::new(
+                    config.exchange,
+                    forage,
+                    stock,
+                    regen,
+                    cap,
+                ))
                 .expect("the forage node lands on the (passable) exchange tile");
         }
 
@@ -4574,6 +4631,7 @@ impl Settlement {
                 forage_yield: chain.forage_yield,
                 forage_hunger_in: chain.forage_hunger_in,
                 forage_hunger_out: chain.forage_hunger_out,
+                forage_commons: chain.forage_commons,
                 productive_reentry: chain.productive_reentry,
                 reentry_hunger_in: chain.reentry_hunger_in,
                 reentry_hunger_out: chain.reentry_hunger_out,
@@ -5395,11 +5453,19 @@ impl Settlement {
         let mut deposited: BTreeMap<(AgentId, GoodId), u32> = BTreeMap::new();
         let mut foraged: BTreeSet<AgentId> = BTreeSet::new();
         let detect_forage = self.own_labor_subsistence_can_run();
-        // Opening carry baseline (the current escrow), per living gatherer/good.
+        // Opening carry baseline (the current escrow), per attributed colonist/good.
+        // S14: a Gatherer deposits its harvested WOOD/grain, but a *forager* (a Consumer
+        // or Unassigned colonist marked `foraging`, including a spatial lineage member)
+        // deposits harvested FORAGE on the commons path — so the attribution must cover
+        // both, or a forager's FORAGE would carry/deposit but never transfer to econ. ONE
+        // predicate gates both the snapshot here and the carry-delta loop below, so a
+        // Gatherer that also forages is counted once. Non-spatial colonists hold no world
+        // carry, so the predicate is harmless for them; off the own-labor path no colonist
+        // is `foraging`, so this reduces to the pre-S14 Gatherer-only set (byte-identical).
         let mut prev_carry: BTreeMap<(AgentId, GoodId), u32> = BTreeMap::new();
         for &slot in &self.live_colonist_slots {
             let colonist = &self.colonists[slot];
-            if colonist.vocation == Vocation::Gatherer {
+            if Self::carry_is_forage_attributed(colonist) {
                 for &good in &self.goods {
                     prev_carry.insert(
                         (colonist.id, good),
@@ -5443,7 +5509,7 @@ impl Settlement {
             }
             for &slot in &self.live_colonist_slots {
                 let colonist = &self.colonists[slot];
-                if colonist.vocation != Vocation::Gatherer {
+                if !Self::carry_is_forage_attributed(colonist) {
                     continue;
                 }
                 for &good in &self.goods {
@@ -5579,8 +5645,23 @@ impl Settlement {
     /// opportunity cost). Only spatial colonists reach the body (a non-spatial founder
     /// has no Idle world agent), and the foraging branch is taken only on the gated
     /// own-labor path (where `forage_node` resolves), so every other run is unchanged.
+    /// S14: whether a colonist's exchange deposits are attributed to it in the fast
+    /// loop. A `Gatherer` deposits harvested WOOD/grain (the pre-S14 set); a colonist
+    /// marked `foraging` (a Consumer/Unassigned/lineage forager, on the commons path)
+    /// deposits harvested FORAGE — both must be attributed so the unit transfers to
+    /// econ. One predicate, used for both the opening-carry snapshot and the carry-delta
+    /// attribution, so a Gatherer that also forages is counted once. Off the own-labor
+    /// path no colonist is `foraging`, so this is exactly the pre-S14 Gatherer-only set.
+    fn carry_is_forage_attributed(colonist: &Colonist) -> bool {
+        colonist.foraging || colonist.vocation == Vocation::Gatherer
+    }
+
     fn assign_idle_gatherer_tasks(&mut self) {
         let forage_node = self.forage_node();
+        // S14: in the capped-commons mode a forager HARVESTS the FORAGE node (depleting
+        // it, so per-capita yield falls), then deposits — the real haul cycle. In the
+        // S12 marker mode it forages (relocating nothing) and is credited a fixed yield.
+        let commons = self.forage_commons_active();
         for &slot in &self.live_colonist_slots {
             let colonist = &self.colonists[slot];
             let id = colonist.id;
@@ -5591,6 +5672,8 @@ impl Settlement {
                 if let Some(forage_node) = forage_node {
                     let task = if self.world.agent_carry_total(id) > 0 {
                         Task::GoDeposit(self.exchange)
+                    } else if commons {
+                        Task::GoHarvest(forage_node, self.carry_cap)
                     } else {
                         Task::GoForage(forage_node, self.carry_cap)
                     };
@@ -6607,6 +6690,12 @@ impl Settlement {
         // exactly `household.is_none()` (the pre-S13 non-lineage poor), so every other run
         // is byte-identical.
         let spatial_active = self.spatial_households_active();
+        // S14: on the capped-commons path FORAGE is harvested from the depleting node
+        // and hauled to econ (the haul cycle), NOT credited as a fixed labor yield — so
+        // the per-completed-task credit is retired here. The `foraging` flag (the next
+        // fast loop's forage-vs-WOOD steering) is still set below; only the credit is
+        // gated off, so per-capita yield falls with the foraging population.
+        let commons = self.forage_commons_active();
         let live = self.live_colonist_slots.clone();
         for slot in live {
             let (id, eligible, hunger, was_foraging) = {
@@ -6648,7 +6737,7 @@ impl Settlement {
                 was_foraging
             };
             self.colonists[slot].foraging = forage_now;
-            if completed_forage.contains(&id) {
+            if !commons && completed_forage.contains(&id) {
                 self.credit_produced(id, forage, yield_units, report);
             }
         }
@@ -8028,6 +8117,21 @@ impl Settlement {
         self.chain
             .as_ref()
             .is_some_and(|chain| chain.own_labor_subsistence && chain.content.forage().is_some())
+    }
+
+    /// S14: whether the **capped FORAGE commons** is active — own-labor subsistence can
+    /// run AND a [`ForageCommons`] is configured. When this holds the FORAGE node is a
+    /// real depleting [`world::ResourceNode`], foragers harvest it through the GoHarvest
+    /// haul cycle (so per-capita yield falls with the foraging population), the fixed
+    /// [`ChainConfig::forage_yield`] credit is retired, the deposit attribution covers
+    /// foragers, and births endow children from FORAGE (the [`Self::birth_food`]
+    /// selector). Off (every existing config), the S12 fixed-credit path is unchanged.
+    fn forage_commons_active(&self) -> bool {
+        self.own_labor_subsistence_can_run()
+            && self
+                .chain
+                .as_ref()
+                .is_some_and(|chain| chain.forage_commons.is_some())
     }
 
     /// S13: whether spatial households are active — every lineage member (founders +
@@ -9617,6 +9721,16 @@ impl Settlement {
                 out.extend_from_slice(&chain.forage_yield.to_le_bytes());
                 out.extend_from_slice(&chain.forage_hunger_in.to_le_bytes());
                 out.extend_from_slice(&chain.forage_hunger_out.to_le_bytes());
+                // S14: the FORAGE-commons mode flag. The node's stock/regen/cap are
+                // already in `world.canonical_bytes` (it is a real `ResourceNode`); this
+                // marker pins the BEHAVIOR switch (harvest the depleting node + retire the
+                // fixed credit + FORAGE child endowment) so a commons config never digests
+                // equal to a `0/0/0`-marker config that happens to share node bytes.
+                // Emitted only when on, so a marker-mode (commons-off) chain stays
+                // byte-identical to the pre-S14 stream.
+                if self.forage_commons_active() {
+                    out.push(1);
+                }
             }
             // The staple mapping steers the next needs/scale phase for *any* chain,
             // role-choice or not, so it is included whenever a chain is active. The
@@ -14474,6 +14588,61 @@ mod tests {
             off_bytes,
             Settlement::generate(7, &off_knobs).canonical_bytes(),
             "with own-labor off, the unused forage knobs must not steer the digest"
+        );
+    }
+
+    #[test]
+    fn canonical_bytes_include_forage_commons() {
+        // S14: the FORAGE-commons mode switches the forage path from the S12 fixed
+        // credit (a `0/0/0` marker) to a real depleting node + the haul cycle, so a
+        // commons config must digest apart from the marker-mode flagship. Both the
+        // node's stock/regen/cap (via `world.canonical_bytes`) and the behavior marker
+        // contribute.
+        let marker = Settlement::generate(
+            7,
+            &SettlementConfig::frontier_coemergent_strong_provisioned(),
+        );
+        let mut commons_cfg = SettlementConfig::frontier_coemergent_strong_provisioned();
+        commons_cfg.chain.as_mut().expect("chain").forage_commons = Some(ForageCommons {
+            stock: 40,
+            regen: 3,
+            cap: 80,
+        });
+        let commons = Settlement::generate(7, &commons_cfg);
+        assert_ne!(
+            marker.canonical_bytes(),
+            commons.canonical_bytes(),
+            "the FORAGE-commons mode must be part of the chain config identity"
+        );
+
+        // The behavior marker is load-bearing on its OWN: even a degenerate `0/0/0`
+        // commons (node bytes coincide with the marker) must still digest apart, because
+        // it routes foragers through the depleting harvest cycle + the FORAGE endowment.
+        let mut degenerate = SettlementConfig::frontier_coemergent_strong_provisioned();
+        degenerate.chain.as_mut().expect("chain").forage_commons = Some(ForageCommons {
+            stock: 0,
+            regen: 0,
+            cap: 0,
+        });
+        assert_ne!(
+            marker.canonical_bytes(),
+            Settlement::generate(7, &degenerate).canonical_bytes(),
+            "the commons behavior marker must split the digest even with a 0/0/0 node"
+        );
+
+        // OFF (no own-labor path): the unused commons must NOT split a flag-off chain's
+        // digest, or the tripwire would call two behaviour-identical configs unequal.
+        let off = Settlement::generate(7, &SettlementConfig::emergent_chain());
+        let mut off_commons = SettlementConfig::emergent_chain();
+        off_commons.chain.as_mut().expect("chain").forage_commons = Some(ForageCommons {
+            stock: 99,
+            regen: 9,
+            cap: 99,
+        });
+        assert_eq!(
+            off.canonical_bytes(),
+            Settlement::generate(7, &off_commons).canonical_bytes(),
+            "with own-labor off, an unused commons must not steer the digest"
         );
     }
 
