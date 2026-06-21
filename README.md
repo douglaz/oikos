@@ -1801,16 +1801,20 @@ are the deferred S15→S16 arc). Built, gated, conserving — per `docs/impl-for
 
 **Does the population grow then plateau at a forage-determined level? Yes — the spec's success
 mode, not the principled-failure path.** With the commons feeding it, the colony grows **past the old
-`max_household_size` of 5** and plateaus at a forage-determined band (windowed mean ~42 living at
-regen 2), and the plateau **tracks the carrying capacity** monotonically (regen 1 → ~30, regen 2 →
-~42, regen 4 → ~47). The bound is the birth-hunger **preventive check**: the hunger-ceiling stall is
-the dominant birth-block reason, with the parent-endowment and size-cap stalls negligible — so it is
-**forage scarcity, not a bread shortage or the knob**, that bounds the colony, and deaths are
-**old-age only** (`hunger_critical` stays disabled). The two controls bracket "endogenous vs knob":
-uncapping the forage (huge regen) lets the population grow to the **raised household cap** (~72, where
-the hunger ceiling never stalls a birth and the size cap is the only block), while keeping
-`max_household_size` low pins it at the **knob** (~15, the old regime). The *endogenous* part is the
-population's **response** to scarce forage flow — the regen/cap are still parameters, stated honestly.
+`max_household_size` of 5** and plateaus at a forage-determined band (windowed mean ~52 living at the
+shipped regen 2), and the plateau **tracks the carrying capacity** monotonically. Lifting the size cap
+out of the way so the sweep is purely forage-bound, the plateau rises with the forage flow — regen 1 →
+~32, regen 2 → ~51, regen 3 → ~67, regen 4 → ~86 — and at **every** point the hunger-ceiling stall is
+the only birth-block reason (the size cap blocks no birth), so the rise is the population's response to
+the forage flow, not the population climbing into the artificial knob. The bound is the birth-hunger
+**preventive check**: the hunger-ceiling stall dominates the birth-block reasons, with the
+parent-endowment stall negligible — so it is **forage scarcity, not a bread shortage or the knob**,
+that bounds the colony, and deaths are **old-age only** (`hunger_critical` stays disabled). The two
+controls bracket "endogenous vs knob": uncapping the forage (huge regen) lets the population grow to
+the **raised household cap** (~72, where the hunger ceiling never stalls a birth and the size cap is
+the only block), while keeping `max_household_size` low pins it at the **knob** (~15, the old regime).
+The *endogenous* part is the population's **response** to scarce forage flow — the regen/cap are still
+parameters, stated honestly.
 
 All additive/gated: with the S14 flags off the S5–S13 scenarios + the six econ + the
 g5a/g5b/coemergence emergence + the demographic `lineages` goldens are byte-identical (the new state —
