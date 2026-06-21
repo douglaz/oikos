@@ -6550,16 +6550,16 @@ impl Settlement {
             // the BIRTH-FOOD selector: the hunger staple off the forage-commons path
             // (FOOD on `lineages`, bread on the frontier), the FORAGE subsistence good
             // on it — so a fed-by-forage colony endows children from forage, not bread.
-            let staple = self.birth_food();
+            // S15: on the cultivation path this BROADENS to any edible food the parent
+            // holds (bread first, then forage), so cultivated bread can endow children.
+            let foods = self.birth_food_options();
             let parent_slot = member_slots
                 .iter()
                 .copied()
                 .filter(|&slot| {
                     let pid = self.colonists[slot].id;
-                    self.society.agents.get(pid).is_some_and(|_| {
-                        self.society.free_stock_after_all_reserves(pid, staple)
-                            >= demo.child_food_endowment
-                    })
+                    self.parent_birth_food(pid, &foods, demo.child_food_endowment)
+                        .is_some()
                 })
                 .max_by_key(|&slot| {
                     let pid = self.colonists[slot].id;
@@ -6575,6 +6575,11 @@ impl Settlement {
             };
 
             let parent_id = self.colonists[parent_slot].id;
+            // The endowment good the chosen parent actually holds (the first option in
+            // preference order). With one option this is exactly the S14 `birth_food()`.
+            let staple = self
+                .parent_birth_food(parent_id, &foods, demo.child_food_endowment)
+                .expect("the parent was filtered for holding an endowment food");
             let parent_culture = self.colonists[parent_slot].culture;
             let parent_seed = self.colonists[parent_slot].seed;
 
@@ -8651,6 +8656,39 @@ impl Settlement {
     /// consumption / the chain / sales still thread the staple unchanged.
     fn birth_food(&self) -> GoodId {
         birth_food_good(self.forage_commons_active(), &self.known)
+    }
+
+    /// S15: the child-food goods a birth may endow from, in PREFERENCE order. Off the
+    /// cultivation path it is exactly `[birth_food()]` — the single S14 selector (FORAGE
+    /// on the commons path, the hunger staple otherwise) — so every existing run is
+    /// byte-identical. On the cultivation path it BROADENS to any edible food the parent
+    /// holds — bread (`known.hunger`) first, then forage (`known.subsistence`) — so a
+    /// cultivator's own bread can endow children. Without this a fed-by-cultivation
+    /// colony would still stall births on a FORAGE shortage (the cultivators gather grain,
+    /// not forage), and the intensified plateau could not rise (Base Fact 7).
+    fn birth_food_options(&self) -> Vec<GoodId> {
+        if self.own_use_cultivation_active() {
+            let mut foods = vec![self.known.hunger];
+            if let Some(sub) = self.known.subsistence {
+                if sub != self.known.hunger {
+                    foods.push(sub);
+                }
+            }
+            foods
+        } else {
+            vec![self.birth_food()]
+        }
+    }
+
+    /// S15: the first child-food good (in [`Self::birth_food_options`] preference order)
+    /// that `parent` holds at least `need` free units of, or `None`. Generalises the S14
+    /// single-good endowment gate; with one option it is exactly the S14 check, so the
+    /// off-cultivation path is byte-identical.
+    fn parent_birth_food(&self, parent: AgentId, foods: &[GoodId], need: u32) -> Option<GoodId> {
+        foods.iter().copied().find(|&good| {
+            self.society.agents.get(parent).is_some()
+                && self.society.free_stock_after_all_reserves(parent, good) >= need
+        })
     }
 
     /// S13: whether spatial households are active — every lineage member (founders +
@@ -15532,6 +15570,32 @@ mod tests {
             off_before,
             off.canonical_bytes(),
             "with cultivation off, the unused cultivating state must not steer the digest"
+        );
+    }
+
+    #[test]
+    fn birth_food_options_broadens_only_on_cultivation() {
+        // S15: off the cultivation path the birth-food rule is the single S14 selector
+        // (FORAGE on the commons path); on it, it BROADENS to bread-then-forage so a
+        // cultivator's own bread can endow children (else births stall on a forage
+        // shortage and the plateau cannot rise).
+        let forage_cfg = SettlementConfig::frontier_forage_capacity();
+        let forage = forage_cfg.chain.as_ref().unwrap().content.forage().unwrap();
+        let s = Settlement::generate(1, &forage_cfg);
+        assert_eq!(
+            s.birth_food_options(),
+            vec![forage],
+            "off cultivation the birth-food rule is the single S14 (forage) selector"
+        );
+
+        let cult_cfg = SettlementConfig::frontier_cultivation();
+        let bread = cult_cfg.chain.as_ref().unwrap().content.bread();
+        let forage = cult_cfg.chain.as_ref().unwrap().content.forage().unwrap();
+        let s = Settlement::generate(1, &cult_cfg);
+        assert_eq!(
+            s.birth_food_options(),
+            vec![bread, forage],
+            "on cultivation the rule broadens to bread first, then forage"
         );
     }
 
