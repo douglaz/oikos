@@ -202,6 +202,12 @@ const SCENARIOS: &[Scenario] = &[
         build: build_spatial_households,
     },
     Scenario {
+        name: "forage-capacity",
+        description:
+            "S14: FORAGE CARRYING CAPACITY — the endogenous population plateau. FORAGE becomes a real CAPPED COMMONS (a depleting node, not a fixed credit), the spatial lineages forage it and endow children from forage (the hearth food MINT is OFF — forage IS the food), and the demography is tuned to GROW. The population rises past the old size cap and PLATEAUS at a forage-determined level: as it grows, per-capita forage falls, hunger rises, and the birth-hunger PREVENTIVE check stalls births — so the carrying capacity is ENDOGENOUS (forage-flow-determined), not the artificial max_household_size knob. Deaths are old-age only (no mortality). Run with more ticks (e.g. 3000) to see the plateau.",
+        build: build_forage_capacity,
+    },
+    Scenario {
         name: "millisats-1x",
         description:
             "EXPERIMENT: frontier at coarse (x1) money precision — the unit-starved baseline that freezes (~320 money units)",
@@ -417,6 +423,10 @@ fn build_provisioned() -> SettlementConfig {
 
 fn build_spatial_households() -> SettlementConfig {
     SettlementConfig::frontier_spatial_households()
+}
+
+fn build_forage_capacity() -> SettlementConfig {
+    SettlementConfig::frontier_forage_capacity()
 }
 
 fn build_millisats_1x() -> SettlementConfig {
