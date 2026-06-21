@@ -3566,6 +3566,14 @@ pub struct Settlement {
     dynamics: NeedDynamics,
     known: KnownGoods,
     exchange: StockpileId,
+    /// S12/S14: the dedicated FORAGE node id — the `GoForage`/`GoHarvest` target the
+    /// own-labor path resolves. Captured at generation, where the node is created
+    /// OUTSIDE `config.nodes`, so the commons mode always harvests THIS node even when a
+    /// config ALSO defines a `NodeSpec` for the FORAGE good (which a resolve-by-good
+    /// lookup would otherwise find first, depleting the wrong node). `None` when
+    /// own-labor subsistence is off, so no other run depends on it. Not serialized — a
+    /// positional world locator, like [`Settlement::exchange`].
+    forage_node_id: Option<NodeId>,
     carry_cap: u32,
     /// The move speed every colonist world agent is generated with (mirrors
     /// `config.move_speed`). Stored so a mid-run newborn's world agent (S13 spatial
@@ -4168,7 +4176,7 @@ impl Settlement {
         // Place the node only when the own-labor path can actually run (the flag AND a
         // forage good in the content), matching `own_labor_subsistence_can_run`; a flag
         // set without a forage good degrades to off (no node) rather than panicking.
-        if let Some(forage) = config
+        let forage_node_id = if let Some(forage) = config
             .chain
             .as_ref()
             .filter(|chain| chain.own_labor_subsistence)
@@ -4181,7 +4189,11 @@ impl Settlement {
                 .map_or((0, 0, 0), |commons| {
                     (commons.stock, commons.regen, commons.cap)
                 });
-            world
+            // Capture the id so the forage path always targets THIS node, even when a
+            // config ALSO defines a `NodeSpec` for the FORAGE good — a resolve-by-good
+            // lookup would otherwise find that (earlier) node and deplete it, bypassing
+            // the configured commons stock/regen/cap (the isolation S14 promises).
+            let id = world
                 .add_node(ResourceNode::new(
                     config.exchange,
                     forage,
@@ -4190,7 +4202,10 @@ impl Settlement {
                     cap,
                 ))
                 .expect("the forage node lands on the (passable) exchange tile");
-        }
+            Some(id)
+        } else {
+            None
+        };
 
         let consumers = usize::from(config.consumers);
         let gatherers = usize::from(config.gatherers);
@@ -4786,6 +4801,7 @@ impl Settlement {
             dynamics,
             known,
             exchange,
+            forage_node_id,
             carry_cap: config.carry_cap,
             move_speed: config.move_speed,
             goods,
@@ -4955,6 +4971,8 @@ impl Settlement {
                 subsistence: None,
             },
             exchange,
+            // A finance settlement has no spatial colony — no FORAGE node is created.
+            forage_node_id: None,
             carry_cap: config.carry_cap,
             move_speed: config.move_speed,
             // No spatial goods are tracked: the demonstration's goods live inside
@@ -8304,13 +8322,15 @@ impl Settlement {
             .is_some_and(|demo| demo.spatial_households)
     }
 
-    /// S12: the FORAGE node (the `GoForage` target / forage location), or `None` when
-    /// own-labor subsistence is off. Resolved by good, like [`Self::grain_node`].
+    /// S12/S14: the FORAGE node (the `GoForage`/`GoHarvest` target / forage location),
+    /// or `None` when own-labor subsistence is off. Returns the dedicated node captured
+    /// at generation (`forage_node_id`), NOT a resolve-by-good lookup: the commons node
+    /// is created outside `config.nodes`, so a by-good search would pick an earlier
+    /// config FORAGE node (if any) and deplete the wrong stock. For every existing
+    /// own-labor scenario (no config FORAGE node) this is the same node the by-good
+    /// lookup returned, so the stream is byte-identical.
     fn forage_node(&self) -> Option<NodeId> {
-        self.chain
-            .as_ref()
-            .and_then(|chain| chain.content.forage())
-            .and_then(|forage| self.node_for_good(forage))
+        self.forage_node_id
     }
 
     /// S7.2: whether `good` has cleared a real trade within the last `window` econ ticks

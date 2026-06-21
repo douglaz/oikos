@@ -16,7 +16,10 @@
 //! off the S12 fixed-credit path is byte-identical.
 
 use econ::good::GoodId;
-use sim::{ForageCommons, Settlement, SettlementConfig, Vocation, FAST_TICKS_PER_ECON_TICK};
+use sim::{
+    ForageCommons, NodeId, NodeSpec, Settlement, SettlementConfig, Vocation,
+    FAST_TICKS_PER_ECON_TICK,
+};
 
 fn forage_good(cfg: &SettlementConfig) -> GoodId {
     cfg.chain
@@ -92,6 +95,67 @@ fn commons_is_a_real_node_not_a_marker() {
         (node_off.stock, node_off.regen_per_tick, node_off.cap),
         (0, 0, 0),
         "with the commons off the FORAGE node stays the S12 0/0/0 marker"
+    );
+}
+
+#[test]
+fn commons_path_harvests_the_dedicated_node_not_a_config_forage_node() {
+    // Regression: a config may ALSO define a `NodeSpec` for the FORAGE good. Config
+    // nodes are created BEFORE the dedicated commons node, so a resolve-by-good lookup
+    // would find the config node first and deplete it — bypassing the configured commons
+    // stock/regen/cap (the isolation S14 promises). The forage path must target the
+    // dedicated node it created, regardless of any config FORAGE node.
+    let mut cfg = consumer_commons(8, 0, 1, 40);
+    let fg = forage_good(&cfg);
+    // A decoy config FORAGE node: a fat, INERT stock (regen 0). If the forage path
+    // wrongly targeted it, the draw would tap this 9_999 stock; with the fix it never
+    // touches it, so the decoy stays exactly full.
+    cfg.nodes.push(NodeSpec {
+        good: fg,
+        pos: cfg.exchange,
+        stock: 9_999,
+        regen: 0,
+        cap: 9_999,
+    });
+
+    let s0 = Settlement::generate(1, &cfg);
+    let forage_id = s0
+        .forage_node_id()
+        .expect("the dedicated commons node exists");
+    let node = s0.world().node(forage_id).expect("the forage node exists");
+    assert_eq!(
+        (node.stock, node.regen_per_tick, node.cap),
+        (0, 1, 40),
+        "forage_node_id must resolve the dedicated commons node, not the config decoy"
+    );
+
+    // Behavioral proof: after a run the decoy config node is untouched (regen 0, so an
+    // intact stock means it was never harvested), while FORAGE was drawn from the
+    // commons — bounded by its regen budget, not the decoy's fat stock.
+    let mut s = Settlement::generate(1, &cfg);
+    let mut transferred = 0u64;
+    for tick in 0..200u64 {
+        let r = s.econ_tick();
+        assert!(r.conserves(), "conservation broke at tick {tick}");
+        transferred += r.transferred_of(fg);
+    }
+    let decoy_id = (0..s.world().node_count())
+        .map(|i| NodeId(i as u32))
+        .find(|&id| id != forage_id && s.world().node(id).map(|n| n.good) == Some(fg))
+        .expect("the decoy config FORAGE node exists");
+    let decoy = s.world().node(decoy_id).expect("the decoy node exists");
+    assert_eq!(
+        decoy.stock, 9_999,
+        "the config FORAGE decoy must never be harvested (the dedicated node is used)"
+    );
+    let budget = FAST_TICKS_PER_ECON_TICK * 200; // regen 1, stock 0
+    assert!(
+        transferred > 0,
+        "foragers must draw FORAGE from the commons"
+    );
+    assert!(
+        transferred <= budget,
+        "the draw {transferred} must come from the commons regen budget {budget}, not the decoy stock"
     );
 }
 
