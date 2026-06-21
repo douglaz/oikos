@@ -5558,6 +5558,20 @@ impl Society {
         agent: AgentId,
         recipe_id: RecipeId,
     ) -> Option<DirectRecipeExecution> {
+        self.execute_direct_recipe_for_agent_checked_with_labor(agent, recipe_id, u32::MAX)
+    }
+
+    /// Apply `recipe_id` to `agent` only if it fits inside `remaining_labor`, returning
+    /// the accounted conversion.
+    ///
+    /// External drivers use this when they own a phase-specific labor envelope but still
+    /// want econ's normal direct-recipe preflights, stock mutation, and labor receipt.
+    pub fn execute_direct_recipe_for_agent_checked_with_labor(
+        &mut self,
+        agent: AgentId,
+        recipe_id: RecipeId,
+        remaining_labor: u32,
+    ) -> Option<DirectRecipeExecution> {
         let position = self.agent_index_for(agent)?;
         if self.dead_agents.binary_search(&agent).is_ok() {
             return None;
@@ -5568,6 +5582,9 @@ impl Society {
             .iter()
             .find(|recipe| recipe.id == recipe_id)?
             .clone();
+        if recipe.labor > remaining_labor {
+            return None;
+        }
         self.agents[position]
             .stock
             .get(recipe.output_good)
@@ -5578,7 +5595,7 @@ impl Society {
             &mut self.agents[position],
             &self.recipes,
             recipe_id,
-            recipe.labor,
+            remaining_labor,
             0,
             &mut provisions,
         )?;

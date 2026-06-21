@@ -472,6 +472,43 @@ fn recipe_output_headroom_is_checked_before_input_is_consumed() {
     assert_eq!(stock.get(content.mill()), 1, "tool was consumed");
 }
 
+#[test]
+fn checked_direct_recipe_respects_external_labor_budget() {
+    let content = ContentSet::grain_flour_bread().with_cultivate();
+    let cultivate = content.cultivate_recipe().expect("cultivate recipe");
+    let mut stock = Stock::new(content.oven().0);
+    stock.add(content.grain(), 2);
+    let mut society = recipe_society(&content, stock);
+
+    assert!(
+        society
+            .execute_direct_recipe_for_agent_checked_with_labor(
+                AgentId(0),
+                cultivate.id,
+                cultivate.labor - 1,
+            )
+            .is_none(),
+        "a recipe must not run when the caller's labor budget is too small"
+    );
+    let agent = society.agents.get(AgentId(0)).expect("agent exists");
+    assert_eq!(agent.stock.get(content.grain()), 2, "input was consumed");
+    assert_eq!(agent.stock.get(content.bread()), 0, "output was produced");
+    assert!(society.labor_used_last_tick().is_empty());
+
+    let applied = society
+        .execute_direct_recipe_for_agent_checked_with_labor(
+            AgentId(0),
+            cultivate.id,
+            cultivate.labor,
+        )
+        .expect("the same recipe fits the full labor budget");
+    assert_eq!(applied.labor, cultivate.labor);
+    assert_eq!(
+        society.labor_used_last_tick(),
+        &[(AgentId(0), cultivate.labor)]
+    );
+}
+
 /// 6. The chain sustains itself without collapse over a multi-year smoke run:
 ///    the seeded producers and consumers stay alive and hunger stays bounded
 ///    (well below the lethal ceiling). Smoke only — deterministic, no magnitude.
