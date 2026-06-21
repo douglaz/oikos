@@ -3418,6 +3418,10 @@ pub struct Settlement {
     known: KnownGoods,
     exchange: StockpileId,
     carry_cap: u32,
+    /// The move speed every colonist world agent is generated with (mirrors
+    /// `config.move_speed`). Stored so a mid-run newborn's world agent (S13 spatial
+    /// households) is placed with the same speed as the founders/roster.
+    move_speed: u16,
     /// Physical goods tracked for whole-system conservation (node goods ∪ goods
     /// any colonist starts with), `GoodId`-ordered. GOLD (money) is excluded.
     goods: Vec<GoodId>,
@@ -4580,6 +4584,7 @@ impl Settlement {
             known,
             exchange,
             carry_cap: config.carry_cap,
+            move_speed: config.move_speed,
             goods,
             money_rejection_goods,
             pending_deposits: BTreeMap::new(),
@@ -4744,6 +4749,7 @@ impl Settlement {
             },
             exchange,
             carry_cap: config.carry_cap,
+            move_speed: config.move_speed,
             // No spatial goods are tracked: the demonstration's goods live inside
             // econ's own (conserving) market + project machinery, and the finance
             // settlement's conservation is the M3 ledger reconcile + the fiat base
@@ -6155,6 +6161,23 @@ impl Settlement {
             let child_slot = self.colonists.len() - 1;
             self.live_colonist_slots.push(child_slot);
             self.colonist_slot_by_id.insert(child_id, child_slot);
+            // S13: a spatial-households newborn gets a world agent at its EXACT econ id
+            // (a reused arena `slot#gen` after a death recycled the slot), so
+            // world_id == econ_id holds mid-run too. The slot's prior world occupant was
+            // removed on death (`collect_estate` → `world.remove_agent`), so the mirror
+            // insert never collides. Placement at the exchange tile is always passable.
+            if self.spatial_households_active() {
+                let exchange_pos = self
+                    .world
+                    .stockpile(self.exchange)
+                    .expect("the exchange stockpile exists")
+                    .pos;
+                let placed = self
+                    .world
+                    .add_agent_with_id(child_id, exchange_pos, self.carry_cap, self.move_speed)
+                    .expect("a newborn world agent mirrors its freed-or-fresh econ slot");
+                debug_assert_eq!(placed, child_id, "newborn world and econ ids must coincide");
+            }
             self.households[h].last_birth_tick = Some(self.econ_tick);
             self.births_total = self.births_total.saturating_add(1);
             births += 1;
@@ -7971,6 +7994,17 @@ impl Settlement {
         self.chain
             .as_ref()
             .is_some_and(|chain| chain.own_labor_subsistence && chain.content.forage().is_some())
+    }
+
+    /// S13: whether spatial households are active — every lineage member (founders +
+    /// newborns) is given a world agent at its exact econ id and is eligible to be
+    /// assigned forage/gather/haul tasks. Gated on the demography overlay's flag, so
+    /// every pre-S13 config (the flag default-off) keeps econ-only lineages and a
+    /// byte-identical stream.
+    fn spatial_households_active(&self) -> bool {
+        self.demography
+            .as_ref()
+            .is_some_and(|demo| demo.spatial_households)
     }
 
     /// S12: the FORAGE node (the `GoForage` target / forage location), or `None` when
@@ -15092,6 +15126,51 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ---- S13.2: newborns spatial at birth ------------------------------------------
+
+    #[test]
+    fn spatial_newborn_mirrors_a_reused_slot_after_a_death() {
+        // A long `lineages` run with spatial households: every newborn — including those
+        // born AFTER a death recycled an arena slot (a reused `slot#gen` id) — gets a
+        // world agent at its EXACT econ id, world_id == econ_id mid-run. The slot's prior
+        // world occupant was removed on death (`collect_estate`), so there is no leak: the
+        // world's live agent count never exceeds the living colonist roster (lineages has
+        // no traders/roster, so every world agent is a lineage member).
+        let mut cfg = SettlementConfig::lineages();
+        cfg.demography.as_mut().unwrap().spatial_households = true;
+        let mut s = Settlement::generate(7, &cfg);
+
+        let mut saw_reused_newborn = false;
+        for tick in 0..600u64 {
+            s.econ_tick();
+            let mut living = 0usize;
+            for i in 0..s.population() {
+                if !s.is_alive(i) {
+                    continue;
+                }
+                living += 1;
+                let id = s.colonist_id(i).unwrap();
+                assert!(
+                    s.world().agent_pos(id).is_some(),
+                    "living colonist {id} lacks a world agent at its exact id (tick {tick})"
+                );
+                if id.generation() >= 1 {
+                    // Born into a reused arena slot (a death freed it first) — the crux.
+                    saw_reused_newborn = true;
+                }
+            }
+            assert_eq!(
+                s.world().agent_ids().len(),
+                living,
+                "world-agent leak: live world agents must equal living colonists (tick {tick})"
+            );
+        }
+        assert!(
+            saw_reused_newborn,
+            "the run must exercise a newborn born at a reused slot#gen (birth after death)"
+        );
     }
 
     #[test]
