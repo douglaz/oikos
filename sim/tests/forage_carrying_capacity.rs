@@ -12,13 +12,14 @@
 //! mortality — `hunger_critical` stays disabled).
 //!
 //! FINDING: the population grows past the old `max_household_size` of 5 and plateaus at
-//! a forage-determined level (~42 living at regen 2) that TRACKS the carrying capacity
-//! (regen 1 → ~30, regen 2 → ~42, regen 4 → ~47). The controls bracket "endogenous vs
-//! knob": uncapping the forage lets it grow to the raised household cap (~72, forage no
-//! longer binds), while keeping `max_household_size` low pins it at the knob (~15). The
-//! plateau is bounded by the hunger-ceiling preventive check (the dominant birth-block
-//! reason), not the parent endowment or the size cap — so it is forage scarcity, not a
-//! bread shortage, that bounds the colony.
+//! a forage-determined level (low 50s living at regen 2, with inherited spoilage off)
+//! that TRACKS the carrying capacity (lower regen < regen 2 < higher regen). The
+//! controls bracket "endogenous vs knob": uncapping the forage lets it grow to the
+//! raised household cap (~72, forage no longer binds), while keeping
+//! `max_household_size` low pins it at the knob (~15). The plateau is bounded by the
+//! hunger-ceiling preventive check (the dominant birth-block reason), not the parent
+//! endowment or the size cap — so it is forage scarcity, not a bread shortage, that
+//! bounds the colony.
 
 use econ::good::GoodId;
 use sim::{ForageCommons, Settlement, SettlementConfig};
@@ -231,7 +232,7 @@ fn population_grows_then_plateaus() {
         "population must grow past the old size cap of 5 (peak {peak})"
     );
     assert!(
-        (32.0..52.0).contains(&avg),
+        (32.0..56.0).contains(&avg),
         "the plateau must settle in a forage-determined band (avg {avg:.1})"
     );
     assert!(
@@ -239,8 +240,8 @@ fn population_grows_then_plateaus() {
         "the colony must not collapse at the plateau (min {wmin})"
     );
     assert!(
-        wmax <= 62,
-        "the colony must not run away to the size cap 72 (max {wmax})"
+        wmax <= 68,
+        "the colony must remain separated from the size cap 72 (max {wmax})"
     );
     assert!(
         s.births_total() > u64::from(start as u32),
@@ -278,9 +279,14 @@ fn plateau_tracks_carrying_capacity() {
 #[test]
 fn forage_capacity_conserves() {
     // Whole-system conservation every tick, with the FORAGE node regen the ONLY source
-    // (no `produced` credit, no minted food): `endowment[staple] == 0` proves the
-    // hearth food mint is off, so the plateau is forage-determined.
+    // (no `produced` credit, no minted food, no inherited spoilage): `endowment[staple] == 0`
+    // proves the hearth food mint is off, so the plateau is forage-determined.
     let cfg = SettlementConfig::frontier_forage_capacity();
+    assert_eq!(
+        cfg.chain.as_ref().expect("chain").perishable_decay_bps,
+        0,
+        "the forage-capacity scenario must isolate the commons from spoilage"
+    );
     let staple = bread_good(&cfg);
     let fg = forage_good(&cfg);
     let mut s = Settlement::generate(2, &cfg);
@@ -297,6 +303,11 @@ fn forage_capacity_conserves() {
             r.produced_of(fg),
             0,
             "no fixed FORAGE credit: node regen is the only source (tick {tick})"
+        );
+        assert_eq!(
+            r.spoiled_of(fg) + r.spoiled_of(staple),
+            0,
+            "no inherited spoilage: forage scarcity must come from commons flow (tick {tick})"
         );
         total_regen += r.regen_of(fg);
     }

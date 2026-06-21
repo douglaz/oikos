@@ -3147,13 +3147,16 @@ impl SettlementConfig {
             chain.bread_buffer = 0;
             chain.consumer_staple_buffer = 0;
             chain.latent_flour_seed = 0;
+            // Isolate S14 from the inherited inventory-carrying-cost experiment:
+            // the carrying-capacity signal must come from forage flow, not spoilage.
+            chain.perishable_decay_bps = 0;
             // Forage aggressively (start at hunger 4, hold until comfortably fed) so a
             // fed lineage stays below the birth ceiling and a scarce commons is what
             // pushes it over — the preventive check, not a foraging-threshold artifact.
             chain.forage_hunger_in = 4;
             chain.forage_hunger_out = 1;
             // The capped commons: regen 2/fast-tick is the carrying capacity the
-            // population presses on. Tuned so the forage-bound plateau (~40) sits well
+            // population presses on. Tuned so the forage-bound plateau (low 50s) sits
             // below the size cap (3 × 24 = 72) and the demographic ceiling (~100), so
             // the plateau is forage-determined (the controls bracket it: uncap the
             // forage → it rises to the size cap; drop `max_household_size` → the knob
@@ -3166,8 +3169,8 @@ impl SettlementConfig {
         }
         if let Some(demo) = cfg.demography.as_mut() {
             demo.spatial_households = true;
-            // Three lineages, founders 2 each (start pop 6), food/WOOD mints off (food is
-            // foraged; WOOD still hearth-provisioned for non-lethal warmth, which does
+            // Three lineages, founders 2 each (start pop 6), food mint off (food is
+            // foraged); WOOD still hearth-provisioned for non-lethal warmth, which does
             // not gate births). Children are endowed from FORAGE (the birth-food
             // selector), so births stall on FORAGE scarcity, not a bread shortage.
             demo.households.clear();
@@ -8262,7 +8265,7 @@ impl Settlement {
     fn own_labor_subsistence_can_run(&self) -> bool {
         self.chain
             .as_ref()
-            .is_some_and(|chain| chain.own_labor_subsistence && chain.content.forage().is_some())
+            .is_some_and(chain_runtime_own_labor_subsistence_can_run)
     }
 
     /// S14: whether the **capped FORAGE commons** is active — own-labor subsistence can
@@ -8273,11 +8276,9 @@ impl Settlement {
     /// foragers, and births endow children from FORAGE (the [`Self::birth_food`]
     /// selector). Off (every existing config), the S12 fixed-credit path is unchanged.
     fn forage_commons_active(&self) -> bool {
-        self.own_labor_subsistence_can_run()
-            && self
-                .chain
-                .as_ref()
-                .is_some_and(|chain| chain.forage_commons.is_some())
+        self.chain
+            .as_ref()
+            .is_some_and(chain_runtime_forage_commons_active)
     }
 
     /// S14: the good a **birth** endows — the parent-endowment gate, the parent debit,
@@ -9904,8 +9905,14 @@ impl Settlement {
             // stays byte-identical to the pre-S12 stream. (The FORAGE good id itself is
             // already captured by `known.subsistence` below and `good_entries`.)
             if self.own_labor_subsistence_can_run() {
+                let commons_active = self.forage_commons_active();
                 out.push(1);
-                out.extend_from_slice(&chain.forage_yield.to_le_bytes());
+                let forage_yield = if commons_active {
+                    0
+                } else {
+                    chain.forage_yield
+                };
+                out.extend_from_slice(&forage_yield.to_le_bytes());
                 out.extend_from_slice(&chain.forage_hunger_in.to_le_bytes());
                 out.extend_from_slice(&chain.forage_hunger_out.to_le_bytes());
                 // S14: the FORAGE-commons mode flag. The node's stock/regen/cap are
@@ -9915,7 +9922,7 @@ impl Settlement {
                 // equal to a `0/0/0`-marker config that happens to share node bytes.
                 // Emitted only when on, so a marker-mode (commons-off) chain stays
                 // byte-identical to the pre-S14 stream.
-                if self.forage_commons_active() {
+                if commons_active {
                     out.push(1);
                 }
             }
@@ -10664,11 +10671,46 @@ fn build_agent(
 /// Own-labor subsistence can run (the flag + a forage good) AND a [`ForageCommons`] is
 /// set. Off (every existing config), founders seed the hunger staple, byte-identical.
 fn config_forage_commons_active(config: &SettlementConfig) -> bool {
-    config.chain.as_ref().is_some_and(|chain| {
-        chain.own_labor_subsistence
-            && chain.content.forage().is_some()
-            && chain.forage_commons.is_some()
-    })
+    config
+        .chain
+        .as_ref()
+        .is_some_and(chain_config_forage_commons_active)
+}
+
+fn own_labor_subsistence_fields_active(own_labor_subsistence: bool, forage_present: bool) -> bool {
+    own_labor_subsistence && forage_present
+}
+
+fn forage_commons_fields_active(
+    own_labor_subsistence: bool,
+    forage_present: bool,
+    forage_commons_present: bool,
+) -> bool {
+    own_labor_subsistence_fields_active(own_labor_subsistence, forage_present)
+        && forage_commons_present
+}
+
+fn chain_config_forage_commons_active(chain: &ChainConfig) -> bool {
+    forage_commons_fields_active(
+        chain.own_labor_subsistence,
+        chain.content.forage().is_some(),
+        chain.forage_commons.is_some(),
+    )
+}
+
+fn chain_runtime_own_labor_subsistence_can_run(chain: &ChainRuntime) -> bool {
+    own_labor_subsistence_fields_active(
+        chain.own_labor_subsistence,
+        chain.content.forage().is_some(),
+    )
+}
+
+fn chain_runtime_forage_commons_active(chain: &ChainRuntime) -> bool {
+    forage_commons_fields_active(
+        chain.own_labor_subsistence,
+        chain.content.forage().is_some(),
+        chain.forage_commons.is_some(),
+    )
 }
 
 /// S14: the good a birth endows (parent gate + debit, newborn seed, founder seed) —
@@ -14840,6 +14882,16 @@ mod tests {
             marker.canonical_bytes(),
             commons.canonical_bytes(),
             "the FORAGE-commons mode must be part of the chain config identity"
+        );
+
+        // In commons mode, the S12 fixed-credit yield is retired: varying it cannot
+        // change execution and therefore must not split canonical bytes.
+        let mut commons_yield = commons_cfg.clone();
+        commons_yield.chain.as_mut().expect("chain").forage_yield = 99;
+        assert_eq!(
+            commons.canonical_bytes(),
+            Settlement::generate(7, &commons_yield).canonical_bytes(),
+            "commons mode must ignore the inactive fixed-credit forage_yield"
         );
 
         // The behavior marker is load-bearing on its OWN: even a degenerate `0/0/0`
