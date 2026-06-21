@@ -3110,6 +3110,98 @@ impl SettlementConfig {
         cfg
     }
 
+    /// S14 — **forage carrying capacity** (the endogenous population plateau). Composes
+    /// the S12 own-labor path (hearth food MINT OFF — forage IS the food) + S13 spatial
+    /// households (lineages forage) + the S14.1 capped FORAGE commons + a S14.2
+    /// growth-capable demography that endows children from FORAGE. The colony's
+    /// population GROWS while the commons can feed it and PLATEAUS when it cannot — the
+    /// plateau set by the forage flow (regen/cap), bounded by the birth-hunger
+    /// **preventive check** (births stall when a member's hunger exceeds the ceiling).
+    /// Deaths are **old-age only** (no mortality; `hunger_critical` stays disabled).
+    ///
+    /// Derived from [`Self::frontier_coemergent_strong_provisioned`] (never mutated): the
+    /// non-lineage chain colonists and the bread-chain bootstrap buffers are stripped so
+    /// the only population is the spatial **lineages** foraging the commons, and the
+    /// demography is retuned for growth — `max_household_size` raised to 24 (so the
+    /// artificial knob does not bind; the forage flow does), a long lifespan (so the
+    /// demographic ceiling sits far above the forage-bound plateau), and the
+    /// birth-hunger ceiling set to 8 (below `need_max` 12, so forage scarcity can push a
+    /// member over it and stall births — the preventive check). The hearth food mint is
+    /// off (own-labor), so `endowment[staple] == 0` and the plateau is forage-determined.
+    /// SALT does not promote and the chain does not run — S14 is purely demographic /
+    /// ecological. Gated: with the S14 flags off it reduces to the unchanged S5–S13
+    /// stream, so every existing scenario/golden is byte-identical.
+    pub fn frontier_forage_capacity() -> Self {
+        let mut cfg = Self::frontier_coemergent_strong_provisioned();
+        // Lineage-only: strip the non-lineage chain colonists and the bread-chain
+        // bootstrap buffers so the reproducing spatial lineages are the only foragers
+        // pressing on the commons (a clean carrying-capacity signal). The chain never
+        // runs and SALT never promotes here — S14 is demographic/ecological only.
+        cfg.gatherers = 0;
+        cfg.consumers = 0;
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.millers = 0;
+            chain.bakers = 0;
+            chain.latent_millers = 0;
+            chain.latent_bakers = 0;
+            chain.bread_buffer = 0;
+            chain.consumer_staple_buffer = 0;
+            chain.latent_flour_seed = 0;
+            // Forage aggressively (start at hunger 4, hold until comfortably fed) so a
+            // fed lineage stays below the birth ceiling and a scarce commons is what
+            // pushes it over — the preventive check, not a foraging-threshold artifact.
+            chain.forage_hunger_in = 4;
+            chain.forage_hunger_out = 1;
+            // The capped commons: regen 2/fast-tick is the carrying capacity the
+            // population presses on. Tuned so the forage-bound plateau (~40) sits well
+            // below the size cap (3 × 24 = 72) and the demographic ceiling (~100), so
+            // the plateau is forage-determined (the controls bracket it: uncap the
+            // forage → it rises to the size cap; drop `max_household_size` → the knob
+            // binds instead).
+            chain.forage_commons = Some(ForageCommons {
+                stock: 90,
+                regen: 2,
+                cap: 300,
+            });
+        }
+        if let Some(demo) = cfg.demography.as_mut() {
+            demo.spatial_households = true;
+            // Three lineages, founders 2 each (start pop 6), food/WOOD mints off (food is
+            // foraged; WOOD still hearth-provisioned for non-lethal warmth, which does
+            // not gate births). Children are endowed from FORAGE (the birth-food
+            // selector), so births stall on FORAGE scarcity, not a bread shortage.
+            demo.households.clear();
+            for k in 0..3u16 {
+                demo.households.push(HouseholdSpec {
+                    founders: 2,
+                    // A little spread in time preference so the lineages are not clones.
+                    time_preference_base_bps: 400 + k * 300,
+                    food_provision: 0,
+                    wood_provision: 3,
+                    starting_gold: 0,
+                    starting_food: 6,
+                    starting_wood: 6,
+                });
+            }
+            demo.birth_interval = 4;
+            // The preventive check: a member over hunger 8 (< need_max 12) stalls the
+            // household's birth, so forage scarcity is what bounds the population.
+            demo.birth_hunger_ceiling = 8;
+            // Long lifespan: lifespan ∈ {180, 186, 192, 198} ticks, so old-age deaths are
+            // slow and the demographic ceiling (~100) sits far above the forage plateau —
+            // forage scarcity binds first. Deaths are old-age only (no starvation).
+            demo.old_age_onset_years = 30;
+            demo.lifespan_span_years = 3;
+            demo.ticks_per_year = 6;
+            // The artificial knob, raised high so it does NOT bind on the main path (the
+            // forage flow does). The controls vary this to bracket "endogenous vs knob".
+            demo.max_household_size = 24;
+            demo.child_food_endowment = 4;
+            demo.child_gold_endowment = 0;
+        }
+        cfg
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).
@@ -3579,6 +3671,22 @@ pub struct Settlement {
     births_total: u64,
     /// Lifetime old-age death count (distinct from starvation deaths).
     old_age_deaths_total: u64,
+    /// S14 — **birth-block diagnostics**: lifetime counts of *why* a household that
+    /// was checked did NOT birth this tick, so the endogenous-plateau finding is
+    /// interpretable (does the population stall at the carrying capacity via the
+    /// hunger ceiling — the preventive check — or fail to grow for a demographic
+    /// reason?). Each is incremented at the matching `continue` in [`Self::run_births`]:
+    /// the household was past its interval but at the size cap
+    /// ([`Self::birth_block_size_cap`]), or had a member over the hunger ceiling
+    /// ([`Self::birth_block_hunger_ceiling`]), or no member could endow the child's
+    /// food ([`Self::birth_block_endowment`]), or it was still inside its birth
+    /// interval ([`Self::birth_block_interval`]). Counted for any demography config, but
+    /// serialized into `canonical_bytes` only on the forage-commons path (gated), so
+    /// every existing demography golden is byte-identical.
+    birth_block_interval: u64,
+    birth_block_size_cap: u64,
+    birth_block_hunger_ceiling: u64,
+    birth_block_endowment: u64,
     /// The G5a barter-start overlay config, retained because its knobs steer future
     /// ticks even before they leave a runtime trace. Non-emergent settlements keep
     /// this `None`, so their canonical state layout is unchanged.
@@ -4283,6 +4391,12 @@ impl Settlement {
         let mut households: Vec<HouseholdRuntime> = Vec::new();
         if let Some(demo) = &config.demography {
             let spatial = demo.spatial_households;
+            // S14: on the forage-commons path founders seed their starting food in the
+            // FORAGE subsistence good (the colony's actual food), so the lineage can feed
+            // and reproduce on forage from tick 0 rather than on a bread buffer that is
+            // never replenished (the food mint is retired). Off the path it is the hunger
+            // staple, byte-identical. Uses the SAME selector as the birth endowment.
+            let founder_food = birth_food_good(config_forage_commons_active(config), &known);
             let mut founder_index = 0usize;
             for (household_index, spec) in demo.households.iter().enumerate() {
                 households.push(HouseholdRuntime {
@@ -4300,7 +4414,14 @@ impl Settlement {
                         config.forecast_bias_jitter_bps,
                     );
                     let need = NeedState::rested();
-                    agents.push(build_demography_agent(id, &need, &culture, &known, spec));
+                    agents.push(build_demography_agent(
+                        id,
+                        &need,
+                        &culture,
+                        &known,
+                        spec,
+                        founder_food,
+                    ));
                     if spatial {
                         // Mirror the founder's econ id into the world (generation 0, so
                         // it bumps the world's fresh-id watermark past it). Placement at
@@ -4685,6 +4806,10 @@ impl Settlement {
             birth_seq: 0,
             births_total: 0,
             old_age_deaths_total: 0,
+            birth_block_interval: 0,
+            birth_block_size_cap: 0,
+            birth_block_hunger_ceiling: 0,
+            birth_block_endowment: 0,
             barter: config.barter.clone(),
             // The medium-demand scale extension runs only when a medium is
             // actually supplied (the camp). The control endows none, so its
@@ -4855,6 +4980,10 @@ impl Settlement {
             birth_seq: 0,
             births_total: 0,
             old_age_deaths_total: 0,
+            birth_block_interval: 0,
+            birth_block_size_cap: 0,
+            birth_block_hunger_ceiling: 0,
+            birth_block_endowment: 0,
             barter: None,
             barter_medium: None,
             salt_direct_use: None,
@@ -6155,6 +6284,7 @@ impl Settlement {
                 .last_birth_tick
                 .map_or(demo.birth_interval, |t| t + demo.birth_interval);
             if self.econ_tick < next_eligible {
+                self.birth_block_interval = self.birth_block_interval.saturating_add(1);
                 continue;
             }
 
@@ -6165,25 +6295,36 @@ impl Settlement {
                 .copied()
                 .filter(|&slot| self.colonists[slot].household == Some(h))
                 .collect();
-            if member_slots.is_empty() || member_slots.len() >= usize::from(demo.max_household_size)
-            {
-                continue; // extinct (cannot reproduce) or at the size cap (blowup bound)
+            if member_slots.is_empty() {
+                continue; // extinct (no living member) — not a birth block, nothing to count
+            }
+            if member_slots.len() >= usize::from(demo.max_household_size) {
+                // At the size cap (the blowup bound / the artificial knob). On the
+                // forage-commons path this should NOT be the binding stall — the hunger
+                // ceiling should be — so this counter is the control diagnostic.
+                self.birth_block_size_cap = self.birth_block_size_cap.saturating_add(1);
+                continue;
             }
 
             // Need-security gate: every living member's hunger at or below the ceiling.
+            // This is the **preventive check** — on the forage-commons path forage
+            // scarcity raises hunger above the ceiling and stalls births here, so the
+            // population plateaus at the carrying capacity (the load-bearing diagnostic).
             if !member_slots
                 .iter()
                 .all(|&slot| self.colonists[slot].need.hunger <= demo.birth_hunger_ceiling)
             {
+                self.birth_block_hunger_ceiling = self.birth_block_hunger_ceiling.saturating_add(1);
                 continue;
             }
 
-            // Choose the parent: a member that can endow the child's staple buffer,
+            // Choose the parent: a member that can endow the child's food buffer,
             // preferring the wealthiest (most gold), ties broken to the lowest slot —
-            // a fully deterministic choice. None can endow → skip (poverty of the
-            // staple, which the provision makes rare). The staple is the hunger good
-            // ([`KnownGoods::hunger`]): FOOD on `lineages`, bread on the frontier.
-            let staple = self.known.hunger;
+            // a fully deterministic choice. None can endow → skip. The endowment good is
+            // the BIRTH-FOOD selector: the hunger staple off the forage-commons path
+            // (FOOD on `lineages`, bread on the frontier), the FORAGE subsistence good
+            // on it — so a fed-by-forage colony endows children from forage, not bread.
+            let staple = self.birth_food();
             let parent_slot = member_slots
                 .iter()
                 .copied()
@@ -6200,6 +6341,10 @@ impl Settlement {
                     (gold, std::cmp::Reverse(slot))
                 });
             let Some(parent_slot) = parent_slot else {
+                // No member holds the child's food endowment. On the forage-commons path
+                // the FORAGE selector keeps this rare (parents forage their own food);
+                // a stall here means the forage flow could not even endow a child.
+                self.birth_block_endowment = self.birth_block_endowment.saturating_add(1);
                 continue;
             };
 
@@ -6233,6 +6378,7 @@ impl Settlement {
                 &self.known,
                 0,
                 demo.child_food_endowment,
+                staple,
             );
             let child_id = self.society.add_agent(child_agent);
             if gold_endow > 0 {
@@ -8134,6 +8280,18 @@ impl Settlement {
                 .is_some_and(|chain| chain.forage_commons.is_some())
     }
 
+    /// S14: the good a **birth** endows — the parent-endowment gate, the parent debit,
+    /// the newborn's initial buffer, and (at generation) the founder seed. On the
+    /// forage-commons path it is the FORAGE subsistence good (the colony's *actual*
+    /// food on this path), so births stall on **FORAGE** scarcity (the preventive
+    /// check) rather than a bread shortage; off the path it is the hunger staple
+    /// (`known.hunger`) exactly as before, so every existing config is byte-identical.
+    /// This selects the endowment good ONLY — `known.hunger` is left untouched, so
+    /// consumption / the chain / sales still thread the staple unchanged.
+    fn birth_food(&self) -> GoodId {
+        birth_food_good(self.forage_commons_active(), &self.known)
+    }
+
     /// S13: whether spatial households are active — every lineage member (founders +
     /// newborns) is given a world agent at its exact econ id and is eligible to be
     /// assigned forage/gather/haul tasks. Gated on the demography overlay's flag, so
@@ -9167,6 +9325,35 @@ impl Settlement {
         self.old_age_deaths_total
     }
 
+    /// S14 — birth-block diagnostics: lifetime count of births skipped because the
+    /// household was still inside its birth interval. Read-only.
+    pub fn birth_block_interval(&self) -> u64 {
+        self.birth_block_interval
+    }
+
+    /// S14 — birth-block diagnostics: lifetime count of births skipped because the
+    /// household was at the `max_household_size` cap (the artificial knob / blowup
+    /// bound). On the forage-commons path this should NOT be the binding stall. Read-only.
+    pub fn birth_block_size_cap(&self) -> u64 {
+        self.birth_block_size_cap
+    }
+
+    /// S14 — birth-block diagnostics: lifetime count of births skipped because a member
+    /// was over the birth-hunger ceiling — the **preventive check**. On the
+    /// forage-commons path a genuine carrying-capacity plateau shows up here (forage
+    /// scarcity raises hunger and stalls births). Read-only.
+    pub fn birth_block_hunger_ceiling(&self) -> u64 {
+        self.birth_block_hunger_ceiling
+    }
+
+    /// S14 — birth-block diagnostics: lifetime count of births skipped because no member
+    /// held the child's food endowment. The P1a tripwire: a non-trivial count on the
+    /// forage-commons path would mean births stall on the *endowment*, not the hunger
+    /// ceiling (the plateau would be endowment-bound, not forage-bound). Read-only.
+    pub fn birth_block_endowment(&self) -> u64 {
+        self.birth_block_endowment
+    }
+
     /// The household (lineage) the colonist at generation `index` belongs to, or
     /// `None` for a non-demography colonist.
     pub fn household_of(&self, index: usize) -> Option<usize> {
@@ -9969,6 +10156,16 @@ impl Settlement {
             out.extend_from_slice(&self.birth_seq.to_le_bytes());
             out.extend_from_slice(&self.births_total.to_le_bytes());
             out.extend_from_slice(&self.old_age_deaths_total.to_le_bytes());
+            // S14: the birth-block diagnostic counters are live run state, but they are
+            // counted for ANY demography config — so serialize them ONLY on the
+            // forage-commons path (where they are the load-bearing plateau diagnostic),
+            // keeping every existing demography golden (`lineages`/frontier) byte-identical.
+            if self.forage_commons_active() {
+                out.extend_from_slice(&self.birth_block_interval.to_le_bytes());
+                out.extend_from_slice(&self.birth_block_size_cap.to_le_bytes());
+                out.extend_from_slice(&self.birth_block_hunger_ceiling.to_le_bytes());
+                out.extend_from_slice(&self.birth_block_endowment.to_le_bytes());
+            }
             out.extend_from_slice(&(self.households.len() as u32).to_le_bytes());
             for household in &self.households {
                 match household.last_birth_tick {
@@ -10462,12 +10659,39 @@ fn build_agent(
     }
 }
 
+/// S14: whether the forage-commons path is active for this *config* — the
+/// generation-time analogue of [`Settlement::forage_commons_active`] (no `self` yet).
+/// Own-labor subsistence can run (the flag + a forage good) AND a [`ForageCommons`] is
+/// set. Off (every existing config), founders seed the hunger staple, byte-identical.
+fn config_forage_commons_active(config: &SettlementConfig) -> bool {
+    config.chain.as_ref().is_some_and(|chain| {
+        chain.own_labor_subsistence
+            && chain.content.forage().is_some()
+            && chain.forage_commons.is_some()
+    })
+}
+
+/// S14: the good a birth endows (parent gate + debit, newborn seed, founder seed) —
+/// the FORAGE subsistence good on the forage-commons path (so births stall on FORAGE
+/// scarcity, not bread), else the hunger staple `known.hunger` (byte-identical). The
+/// shared selector behind [`Settlement::birth_food`] and the founder seed at
+/// generation. `known.hunger` itself is never mutated, so consumption / the chain /
+/// sales still key on the staple.
+fn birth_food_good(commons_active: bool, known: &KnownGoods) -> GoodId {
+    if commons_active {
+        known.subsistence.unwrap_or(known.hunger)
+    } else {
+        known.hunger
+    }
+}
+
 /// Build a G4b household member's econ agent (a founder or a newborn): a
-/// non-spatial householder endowed from its household's `spec` (gold + a staple/WOOD
+/// non-spatial householder endowed from its household's `spec` (gold + a food/WOOD
 /// buffer), with a value scale generated from its need state and (inherited)
-/// culture. The staple buffer (`spec.starting_food`) is held in the hunger good
-/// ([`KnownGoods::hunger`]) — FOOD on a `lineages` colony, bread on the frontier —
-/// so the founder starts with a buffer of the good it eats. Like every other colonist
+/// culture. The food buffer (`spec.starting_food`) is held in `food_good` — the hunger
+/// staple (FOOD on a `lineages` colony, bread on the frontier) off the forage-commons
+/// path, and the FORAGE subsistence good on it (S14, via [`birth_food_good`]) — so a
+/// founder starts with a buffer of the good it actually eats. Like every other colonist
 /// it is a `Household`-role agent with neutral price beliefs; it has no labor capacity
 /// and no world agent (it never hauls).
 fn build_demography_agent(
@@ -10476,9 +10700,10 @@ fn build_demography_agent(
     culture: &CultureParams,
     known: &KnownGoods,
     spec: &crate::demography::HouseholdSpec,
+    food_good: GoodId,
 ) -> Agent {
     let mut stock = Stock::new(NET.0);
-    stock.add(known.hunger, spec.starting_food);
+    stock.add(food_good, spec.starting_food);
     stock.add(WOOD, spec.starting_wood);
     Agent {
         id,
@@ -10493,12 +10718,13 @@ fn build_demography_agent(
 }
 
 /// Build a newborn householder's econ agent (G4b): a non-spatial `Household`-role
-/// agent endowed only with the **conserved transfer** its parent gave it (a staple
+/// agent endowed only with the **conserved transfer** its parent gave it (a food
 /// buffer plus, on closed-GOLD M1, any gold gift already represented in `gold`),
 /// its value scale generated from a newborn-rested need state and its
-/// inherited+mutated culture. The `food` buffer is held in the hunger good
-/// ([`KnownGoods::hunger`]) — FOOD on `lineages`, bread on the frontier — the good
-/// the newborn eats. Its `id` is overwritten by [`Society::add_agent`].
+/// inherited+mutated culture. The `food` buffer is held in `food_good` — the hunger
+/// staple (FOOD on `lineages`, bread on the frontier) off the forage-commons path, and
+/// the FORAGE subsistence good on it (S14) — the good the newborn actually eats. Its
+/// `id` is overwritten by [`Society::add_agent`].
 /// It carries no wood — the household provision supplies that from its first tick.
 /// M3 callers install the newborn with zero ledger money and move any gold gift
 /// afterward through [`Society::transfer_gold`], so this mints nothing.
@@ -10508,9 +10734,10 @@ fn build_newborn_agent(
     known: &KnownGoods,
     gold: u64,
     food: u32,
+    food_good: GoodId,
 ) -> Agent {
     let mut stock = Stock::new(NET.0);
-    stock.add(known.hunger, food);
+    stock.add(food_good, food);
     Agent {
         id: AgentId(0), // overwritten by the arena on insert
         scale: regenerate_scale(need, culture, known),
@@ -14644,6 +14871,67 @@ mod tests {
             Settlement::generate(7, &off_commons).canonical_bytes(),
             "with own-labor off, an unused commons must not steer the digest"
         );
+    }
+
+    #[test]
+    fn canonical_bytes_include_birth_block_counters() {
+        // S14: the birth-block diagnostic counters are live run state, serialized ONLY
+        // on the forage-commons path — so on it they split the digest, and off it (a
+        // plain demography golden) the unused counters never do.
+        let mut on = Settlement::generate(1, &SettlementConfig::frontier_forage_capacity());
+        let before = on.canonical_bytes();
+        on.birth_block_hunger_ceiling = on.birth_block_hunger_ceiling.wrapping_add(1);
+        assert_ne!(
+            before,
+            on.canonical_bytes(),
+            "on the forage-commons path the birth-block counters must be part of the digest"
+        );
+
+        let mut off = Settlement::generate(1, &SettlementConfig::lineages());
+        let off_before = off.canonical_bytes();
+        off.birth_block_hunger_ceiling = off.birth_block_hunger_ceiling.wrapping_add(7);
+        off.birth_block_size_cap = off.birth_block_size_cap.wrapping_add(3);
+        assert_eq!(
+            off_before,
+            off.canonical_bytes(),
+            "off the forage-commons path the unused birth-block counters must not steer the digest"
+        );
+    }
+
+    #[test]
+    fn birth_food_selector_seeds_founders_from_forage_not_bread() {
+        // S14.2: on the forage-commons path the birth-food selector routes the founder
+        // seed (and the child endowment) to the FORAGE subsistence good, NOT the bread
+        // staple — so a lineage feeds and reproduces on forage. `known.hunger` (bread)
+        // is left untouched, so founders hold zero bread.
+        let cfg = SettlementConfig::frontier_forage_capacity();
+        let bread = cfg.chain.as_ref().expect("chain").content.bread();
+        let forage = cfg
+            .chain
+            .as_ref()
+            .expect("chain")
+            .content
+            .forage()
+            .expect("forage good");
+        let s = Settlement::generate(1, &cfg);
+        let mut founders_seen = 0usize;
+        for colonist in &s.colonists {
+            if colonist.household.is_none() {
+                continue;
+            }
+            founders_seen += 1;
+            let agent = s.society.agents.get(colonist.id).expect("founder agent");
+            assert_eq!(
+                agent.stock.get(bread),
+                0,
+                "a forage-path founder holds no bread (the staple is untouched)"
+            );
+            assert!(
+                agent.stock.get(forage) > 0,
+                "a forage-path founder is seeded with FORAGE (the birth-food selector)"
+            );
+        }
+        assert!(founders_seen > 0, "the config must seed lineage founders");
     }
 
     #[test]
