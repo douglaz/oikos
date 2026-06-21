@@ -75,6 +75,11 @@ pub enum PlacementError {
     OutOfBounds,
     /// The position is an impassable tile.
     Impassable,
+    /// The numeric slot `id.index()` is already occupied by a live world agent
+    /// (possibly at a different generation). Only [`World::add_agent_with_id`]
+    /// returns this — it mirrors the econ arena's one-live-generation-per-slot
+    /// guarantee, so a stale or reused id can never alias a living agent's slot.
+    SlotOccupied,
 }
 
 /// The per-tick spatial ledger report — the conservation receipt.
@@ -409,6 +414,56 @@ impl World {
                 path: Vec::new(),
             },
         );
+        Ok(id)
+    }
+
+    /// Place an agent at `pos` at the **exact** given [`AgentId`] (generation
+    /// included), rejecting an out-of-bounds or impassable tile. This mirrors the
+    /// econ `AgentArena`'s id space into the world so a colonist's world agent
+    /// shares its econ id *by construction* — founders at generation and newborns
+    /// at birth (S13). Unlike [`World::add_agent`] (which appends a fresh monotonic
+    /// generation-0 id), this admits the arena's reused `slot#gen` ids, so world↔econ
+    /// id coincidence survives the arena's generational slot reuse across deaths.
+    ///
+    /// Two invariants keep the world's id space consistent with the arena's:
+    ///
+    /// - **(a) one live agent per numeric slot.** The insert is rejected
+    ///   ([`PlacementError::SlotOccupied`]) if any live world agent already occupies
+    ///   the numeric slot `id.index()`, even at a different generation — the world
+    ///   mirror of the arena's one-live-generation-per-slot guarantee. A reused
+    ///   `slot#gen` is admissible only once the slot's prior occupant has been
+    ///   removed (a death routes through [`World::remove_agent`]).
+    /// - **(b) the fresh-id watermark stays ahead.** A generation-0 id placed at or
+    ///   above `next_agent_index` advances it past the id, so a later legacy
+    ///   [`World::add_agent`] cannot hand out a colliding id. A reused `slot#gen`
+    ///   (generation ≥ 1) already sits below the watermark and leaves it monotone.
+    pub fn add_agent_with_id(
+        &mut self,
+        id: AgentId,
+        pos: Pos,
+        carry_cap: u32,
+        move_speed: u16,
+    ) -> Result<AgentId, PlacementError> {
+        self.check_placement(pos)?;
+        if self.agents.keys().any(|live| live.index() == id.index()) {
+            return Err(PlacementError::SlotOccupied);
+        }
+        self.agents.insert(
+            id,
+            AgentState {
+                pos,
+                carry: BTreeMap::new(),
+                carry_cap,
+                move_speed,
+                task: Task::Idle,
+                blocked: false,
+                path_target: None,
+                path: Vec::new(),
+            },
+        );
+        if id.generation() == 0 && id.0 >= self.next_agent_index {
+            self.next_agent_index = id.0 + 1;
+        }
         Ok(id)
     }
 
@@ -865,7 +920,7 @@ fn index_to_pos(width: u16, index: usize) -> Pos {
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentStatus, Task, TickReport, World, WorldGen};
+    use super::{AgentStatus, PlacementError, Task, TickReport, World, WorldGen};
     use crate::grid::{Grid, Pos};
     use crate::node::ResourceNode;
     use crate::stockpile::{Stockpile, StockpileId};
@@ -926,6 +981,65 @@ mod tests {
             "regen tick silently destroyed over-cap stock"
         );
         assert_eq!(world.node(node).unwrap().stock, 10);
+    }
+
+    #[test]
+    fn add_agent_with_id_round_trips_an_arena_slot_gen_id() {
+        // An arena-style reused `slot#gen` id (generation 1) inserts at its EXACT
+        // id — world↔econ coincidence by construction, the load-bearing S13 primitive.
+        let mut world = open_world(4, 4);
+        let id = AgentId::with_generation(3, 1);
+        let placed = world.add_agent_with_id(id, Pos::new(1, 1), 10, 1).unwrap();
+        assert_eq!(placed, id);
+        assert_eq!(world.agent_pos(id), Some(Pos::new(1, 1)));
+        assert!(world.agent_ids().contains(&id));
+        // A reused `slot#gen` below the fresh watermark leaves next_agent_index
+        // monotone: the next legacy add_agent still hands out generation-0 id 0.
+        let fresh = world.add_agent(Pos::new(2, 2), 10, 1).unwrap();
+        assert_eq!(fresh, AgentId(0));
+    }
+
+    #[test]
+    fn add_agent_with_id_rejects_a_same_slot_live_insert() {
+        let mut world = open_world(4, 4);
+        let base = world
+            .add_agent_with_id(AgentId(2), Pos::new(0, 0), 10, 1)
+            .unwrap();
+        assert_eq!(base, AgentId(2));
+        // Any generation at the same numeric slot is rejected while the slot is live
+        // (the world mirror of the arena's one-live-generation-per-slot guarantee).
+        assert_eq!(
+            world.add_agent_with_id(AgentId::with_generation(2, 1), Pos::new(1, 0), 10, 1),
+            Err(PlacementError::SlotOccupied)
+        );
+        assert_eq!(
+            world.add_agent_with_id(AgentId(2), Pos::new(1, 0), 10, 1),
+            Err(PlacementError::SlotOccupied)
+        );
+        // Removing the live occupant frees the slot for a reused (bumped-gen) id —
+        // exactly the death→rebirth slot-reuse path the newborn world agent rides.
+        world.remove_agent(AgentId(2));
+        let reused = world
+            .add_agent_with_id(AgentId::with_generation(2, 1), Pos::new(1, 0), 10, 1)
+            .unwrap();
+        assert_eq!(reused, AgentId::with_generation(2, 1));
+    }
+
+    #[test]
+    fn add_agent_with_id_gen0_bumps_next_agent_index() {
+        // A generation-0 id at/above the watermark advances next_agent_index past it,
+        // so a later legacy add_agent cannot collide with the explicitly placed id.
+        let mut world = open_world(4, 4);
+        let placed = world
+            .add_agent_with_id(AgentId(5), Pos::new(0, 0), 10, 1)
+            .unwrap();
+        assert_eq!(placed, AgentId(5));
+        let fresh = world.add_agent(Pos::new(1, 0), 10, 1).unwrap();
+        assert_eq!(
+            fresh,
+            AgentId(6),
+            "next_agent_index advanced past the gen-0 explicit insert"
+        );
     }
 
     #[test]
