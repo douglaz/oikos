@@ -88,11 +88,17 @@ pub const GRAIN_PER_CULTIVATE: u32 = 1;
 /// loaf per grain, vs the tooled mill+oven chain's higher throughput): cultivation
 /// is the crude, own-labor fallback, not the efficient specialized chain.
 pub const BREAD_PER_CULTIVATE: u32 = 1;
-/// S15: the labor a single `Cultivate` application costs — the PRIMARY knob that
-/// makes own-use cultivation **more roundabout** than foraging (the Austrian point).
-/// Foraging is one world task (`GatherFood`-grade labor 1); cultivation is gather
-/// grain (a world task) PLUS this higher per-loaf labor, so a colonist forgoes the
-/// cheaper forage/WOOD only when forage cannot feed it (chosen under scarcity).
+/// S15: the per-loaf labor of the `Cultivate` PRODUCE step — one part of what makes
+/// own-use cultivation **more roundabout** than foraging (the Austrian point), not the
+/// dominant cost on its own. Foraging is one world task (`GatherFood`-grade labor 1)
+/// that yields edible forage directly; cultivation is the longer pipeline — gather grain
+/// (a world task, the forgone forage/WOOD) THEN convert it to bread at this extra
+/// produce-labor cost — over a depleting grain node at a low yield ([`BREAD_PER_CULTIVATE`]).
+/// That whole structure (the forgone world task + the second step + grain depletion + low
+/// yield) is the roundaboutness, so a colonist forgoes the cheaper forage/WOOD only when
+/// forage cannot feed it. Per econ tick the produce labor fits inside a generous own-use
+/// budget that the hauled grain exhausts first: this knob sets each loaf's labor cost, but
+/// the grain FLOW — not labor — bounds the per-tick output.
 pub const CULTIVATE_LABOR: u32 = 2;
 
 /// A code-level content definition: the interned chain goods plus the recipes
