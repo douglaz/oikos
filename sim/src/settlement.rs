@@ -4903,6 +4903,25 @@ impl Settlement {
                     chain.forage_hunger_in < chain.cultivate_hunger_in,
                     "own-use cultivation requires forage_hunger_in < cultivate_hunger_in"
                 );
+                // The sustained-scarcity gate has to span at least one tick. With a
+                // patience of 0 the streak threshold `pressure >= cultivate_patience` is
+                // satisfied even when the pressure streak is 0 (hunger below
+                // `cultivate_hunger_in`), so every eligible colonist would escalate to
+                // cultivation regardless of hunger — bypassing the scarcity gate entirely.
+                assert!(
+                    chain.cultivate_patience > 0,
+                    "own-use cultivation requires cultivate_patience > 0 (a 0 patience \
+                     escalates eligible colonists to cultivation regardless of hunger)"
+                );
+                // The escape valve only relieves hunger if the cultivated bread is
+                // actually eaten through the readback seam. With a draw of 0 cultivators
+                // produce bread but never consume it, so hunger never falls and bread
+                // silently hoards — the gate that would otherwise catch the misconfig.
+                assert!(
+                    chain.cultivate_consume > 0,
+                    "own-use cultivation requires cultivate_consume > 0 (a 0 draw never \
+                     eats the cultivated bread, so the escape valve never relieves hunger)"
+                );
                 if let Some(demo) = &config.demography {
                     assert!(
                         chain.cultivate_hunger_in < demo.birth_hunger_ceiling,
@@ -7257,6 +7276,7 @@ impl Settlement {
         let recipe_id = recipe.id;
         let recipe_labor = recipe.labor;
         let input_good = recipe.input_good.map(|(good, _)| good);
+        let input_qty = recipe.input_good.map_or(0, |(_, qty)| qty);
         debug_assert!(
             recipe_labor > 0,
             "Cultivate must have a positive labor cost"
@@ -7266,6 +7286,11 @@ impl Settlement {
         let hunger_target = 0;
         let hunger_deplete = self.dynamics.hunger_deplete;
         let hunger_per_food = self.dynamics.hunger_per_food;
+        // The goods the need readback counts as hunger relief (mirrors
+        // `update_needs_and_remove_dead`): the hunger staple plus the directly-edible
+        // subsistence food. Used to net out food already eaten this tick (below).
+        let hunger_staple = self.known.hunger;
+        let subsistence_food = self.known.subsistence;
         let live = self.live_colonist_slots.clone();
         for slot in live {
             let (id, cultivating, stock_pending, hunger) = {
@@ -7277,37 +7302,45 @@ impl Settlement {
                     colonist.need.hunger,
                 )
             };
-            let has_settled_input =
-                input_good.is_some_and(|input| self.cultivation_input_in_stock(id, input));
             if !cultivating && !stock_pending {
                 continue;
             }
-            // PRODUCE: convert held grain into bread up to this tick's own-labor
-            // budget. Only agents that entered the cultivation path can drain settled
-            // grain after the steering flag clears; unrelated grain holders keep their
-            // stock. Grain beyond the budget stays in stock and will be drained by a
-            // later cultivation phase. The executor removes grain, credits bread to the
-            // colonist's own stock, and records the recipe labor; we book the conserved
-            // conversion.
-            let mut remaining_labor = OWN_USE_CULTIVATION_LABOR_BUDGET;
-            if has_settled_input {
-                while recipe_labor > 0 && remaining_labor >= recipe_labor {
-                    let Some(applied) = self
-                        .society
-                        .execute_direct_recipe_for_agent_checked_with_labor(
-                            id,
-                            recipe_id,
-                            remaining_labor,
-                        )
-                    else {
-                        break; // out of grain (or no output headroom): nothing more to cultivate
-                    };
-                    remaining_labor = remaining_labor.saturating_sub(applied.labor);
-                    let (out_good, out_qty) = applied.output;
-                    *report.produced.entry(out_good).or_insert(0) += u64::from(out_qty);
-                    if let Some((in_good, in_qty)) = applied.input {
-                        *report.consumed_as_input.entry(in_good).or_insert(0) += u64::from(in_qty);
-                    }
+            // PRODUCE: convert held grain into bread up to this tick's own-labor budget.
+            // Only agents that entered the cultivation path can drain settled grain after
+            // the steering flag clears; unrelated grain holders keep their stock. The
+            // conversion is bounded to grain that is FREE after all reserves, so the recipe
+            // never consumes input backing a live ask: the hauled grain is converted at
+            // home (own-use), never sold. On every shipped pre-money config the cultivator
+            // posts no grain ask, so `free == held` and the whole haul converts at the same
+            // count as an unbounded drain (byte-identical); the bound only bites if
+            // cultivation is later composed onto a chain with a grain market (S16), where
+            // the colonist cultivates whatever grain it still holds after the market and
+            // conservation is preserved. Grain beyond the budget stays in stock and is
+            // drained by a later cultivation phase. The executor removes grain, credits
+            // bread to the colonist's own stock, and records the recipe labor; we book the
+            // conserved conversion.
+            let free_input = input_good.map_or(0, |input| {
+                self.society.free_stock_after_all_reserves(id, input)
+            });
+            let max_runs = free_input.checked_div(input_qty).unwrap_or(0);
+            let grain_labor_budget = max_runs.saturating_mul(recipe_labor);
+            let mut remaining_labor = OWN_USE_CULTIVATION_LABOR_BUDGET.min(grain_labor_budget);
+            while recipe_labor > 0 && remaining_labor >= recipe_labor {
+                let Some(applied) = self
+                    .society
+                    .execute_direct_recipe_for_agent_checked_with_labor(
+                        id,
+                        recipe_id,
+                        remaining_labor,
+                    )
+                else {
+                    break; // out of grain (or no output headroom): nothing more to cultivate
+                };
+                remaining_labor = remaining_labor.saturating_sub(applied.labor);
+                let (out_good, out_qty) = applied.output;
+                *report.produced.entry(out_good).or_insert(0) += u64::from(out_qty);
+                if let Some((in_good, in_qty)) = applied.input {
+                    *report.consumed_as_input.entry(in_good).or_insert(0) += u64::from(in_qty);
                 }
             }
             let has_remaining_input =
@@ -7316,16 +7349,26 @@ impl Settlement {
                 input_good.is_some_and(|input| self.cultivation_input_in_flight(id, input));
             self.colonists[slot].cultivation_stock_pending =
                 cultivating || has_remaining_input || has_input_in_flight;
-            // CONSUME (own-use): eat up to `consume` of the cultivator's OWN bread
-            // through the readback seam, so hunger advances next tick from its own stock
-            // — never a market trade. The surplus stays in stock for the birth endowment.
+            // CONSUME (own-use): eat up to `consume` of the cultivator's OWN bread through
+            // the readback seam, so hunger advances next tick from its own stock — never a
+            // market trade. The surplus stays in stock for the birth endowment. Net out any
+            // food this agent ALREADY ate in this tick's market consume pass (logged after
+            // the log was cleared at the market step's start): that intake advances hunger
+            // on the next readback too, so a cultivator that entered the tick holding bread
+            // from a prior spell does not over-eat and drain the endowment reserve.
             let held = self.society.free_stock_after_all_reserves(id, bread);
-            let eat = consume.min(held).min(food_needed_to_reach_hunger(
-                hunger,
-                hunger_deplete,
-                hunger_per_food,
-                hunger_target,
-            ));
+            let already_food = self
+                .society
+                .consumption_log_last_tick()
+                .iter()
+                .filter(|&&(a, g, _)| {
+                    a == id && (g == hunger_staple || Some(g) == subsistence_food)
+                })
+                .fold(0u32, |acc, &(_, _, qty)| acc.saturating_add(qty));
+            let target =
+                food_needed_to_reach_hunger(hunger, hunger_deplete, hunger_per_food, hunger_target)
+                    .saturating_sub(already_food);
+            let eat = consume.min(held).min(target);
             self.consume_own_use_stock(id, bread, eat);
         }
     }
@@ -16016,6 +16059,27 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "own-use cultivation requires cultivate_patience > 0")]
+    fn active_own_use_cultivation_rejects_zero_patience() {
+        // A 0 patience would satisfy `pressure >= cultivate_patience` even with a 0
+        // pressure streak (hunger below the threshold), escalating fed colonists to
+        // cultivation — the scarcity gate must reject it at config time.
+        let mut cfg = SettlementConfig::frontier_cultivation();
+        cfg.chain.as_mut().expect("chain").cultivate_patience = 0;
+        let _ = Settlement::generate(7, &cfg);
+    }
+
+    #[test]
+    #[should_panic(expected = "own-use cultivation requires cultivate_consume > 0")]
+    fn active_own_use_cultivation_rejects_zero_consume() {
+        // A 0 draw never eats the cultivated bread through the readback, so the escape
+        // valve never relieves hunger and bread silently hoards — rejected at config time.
+        let mut cfg = SettlementConfig::frontier_cultivation();
+        cfg.chain.as_mut().expect("chain").cultivate_consume = 0;
+        let _ = Settlement::generate(7, &cfg);
+    }
+
+    #[test]
     fn cultivation_holds_in_flight_grain_then_drains_settled_stock() {
         let cfg = SettlementConfig::frontier_cultivation();
         let grain = cfg.chain.as_ref().expect("chain").content.grain();
@@ -16159,6 +16223,63 @@ mod tests {
             agent.stock.get(grain),
             starting_grain - budgeted_runs,
             "grain past the labor budget must remain for a later cultivation tick"
+        );
+    }
+
+    #[test]
+    fn own_use_cultivation_nets_out_food_eaten_this_tick() {
+        // P2: a cultivator that already ate food in THIS tick's market consume pass must
+        // not double-feed through the own-use seam. The need readback advances hunger from
+        // the same tick-local log the seam records into, so food already logged this tick
+        // is netted out of the own-use draw — else the seam over-eats and drains the
+        // child-endowment reserve.
+        let cfg = SettlementConfig::frontier_cultivation();
+        let bread = cfg.chain.as_ref().expect("chain").content.bread();
+
+        // Run the CONSUME step with `pre_eaten` staple units already logged this tick, and
+        // return how much bread the own-use seam then eats. A generous draw + plenty of
+        // bread + a low hunger keep the draw bounded by the hunger target, so netting moves
+        // it 1:1.
+        let eat_with = |pre_eaten: u32| -> u64 {
+            let mut s = Settlement::generate(7, &cfg);
+            s.chain.as_mut().expect("chain").cultivate_consume = 1_000;
+            let slot = s.live_colonist_slots[0];
+            let id = s.colonists[slot].id;
+            let staple = s.known.hunger;
+            s.colonists[slot].cultivating = true;
+            s.colonists[slot].need.hunger = 10;
+            s.society
+                .agents
+                .get_mut(id)
+                .expect("agent")
+                .stock
+                .add(bread, 1_000);
+            let held_before = s.society.agents.get(id).expect("agent").stock.get(bread);
+            if pre_eaten > 0 {
+                // Stand in for the market consume pass having already fed this agent.
+                s.society.record_own_use_consumption(id, staple, pre_eaten);
+            }
+            let mut report = EconTickReport::default();
+            s.run_own_use_cultivation(&mut report);
+            let held_after = s.society.agents.get(id).expect("agent").stock.get(bread);
+            // Net out any bread produced this tick, leaving purely the eaten amount.
+            u64::from(held_before) + report.produced_of(bread) - u64::from(held_after)
+        };
+
+        let baseline = eat_with(0);
+        assert!(
+            baseline > 0,
+            "the baseline own-use draw must be positive and hunger-bound"
+        );
+        assert_eq!(
+            eat_with(1),
+            baseline - 1,
+            "one unit of food eaten this tick must net one unit off the own-use draw"
+        );
+        assert_eq!(
+            eat_with(baseline as u32),
+            0,
+            "food already covering the hunger target leaves nothing for the own-use draw"
         );
     }
 
