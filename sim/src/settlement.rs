@@ -10748,10 +10748,12 @@ fn birth_food_good(commons_active: bool, known: &KnownGoods) -> GoodId {
 }
 
 /// Build a G4b household member's econ agent (a founder or a newborn): a
-/// non-spatial householder endowed from its household's `spec` (gold + a food/WOOD
-/// buffer), with a value scale generated from its need state and (inherited)
-/// culture. The food buffer (`spec.starting_food`) is held in `food_good` — the hunger
-/// staple (FOOD on a `lineages` colony, bread on the frontier) off the forage-commons
+/// householder endowed from its household's `spec` (gold + a food/WOOD buffer), with a
+/// value scale generated from its need state and (inherited) culture. (Under
+/// `spatial_households`, S13, the member also gets a mirrored world agent elsewhere; this
+/// builds only the econ side.) The food buffer (`spec.starting_food`) is held in
+/// `food_good` — the hunger staple (FOOD on a `lineages` colony, bread on the frontier)
+/// off the forage-commons
 /// path, and the FORAGE subsistence good on it (S14, via [`birth_food_good`]) — so a
 /// founder starts with a buffer of the good it actually eats. Like every other colonist
 /// it is a `Household`-role agent with neutral price beliefs; it has no labor capacity

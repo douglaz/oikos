@@ -1816,6 +1816,13 @@ the only block), while keeping `max_household_size` low pins it at the **knob** 
 The *endogenous* part is the population's **response** to scarce forage flow — the regen/cap are still
 parameters, stated honestly.
 
+**Honest scope (Codex-reviewed: PASS, no P0/P1).** S14 proves a spatial reproducing population feeds
+from a conserved depleting/regenerating forage commons, grows past the old household cap, and settles
+into a forage-flow-determined demographic plateau via the birth-hunger **preventive** check, with
+starvation mortality still disabled. It does NOT prove cultivation, money, or a full Malthusian
+**positive** check (deaths) — it gives S15 a real scarcity substrate instead of a fixed subsistence
+credit.
+
 All additive/gated: with the S14 flags off the S5–S13 scenarios + the six econ + the
 g5a/g5b/coemergence emergence + the demographic `lineages` goldens are byte-identical (the new state —
 the forage node stock/regen/cap, the `forage_commons` flag, the birth-food selector, the demography
