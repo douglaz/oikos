@@ -1753,6 +1753,74 @@ goldens are byte-identical.
 
 - [x] viewer: the `spatial-households` scenario (`cargo run -p viewer -- run spatial-households`)
 
+## Status: S14 (forage carrying capacity — the endogenous population plateau) — complete
+
+S13 made the reproducing population **spatial** (it can forage). S14 makes FORAGE a real **capped
+commons** and lets population **grow to press on it**, so the colony's carrying capacity becomes
+**endogenous** (forage-flow-determined) via Malthus's **preventive check** — the existing
+birth-hunger gate stalls births when forage scarcity raises hunger — instead of the artificial
+`max_household_size` knob. NO cultivation, NO money, NO mortality (deaths stay old-age only; those
+are the deferred S15→S16 arc). Built, gated, conserving — per `docs/impl-forage-carrying-capacity.md`:
+
+- [x] **S14.1 — FORAGE as a real capped commons (a distinct gated mode).** A new default-off
+      `ChainConfig::forage_commons { stock, regen, cap }`. With it OFF, S12's fixed-credit forage path
+      (the `0/0/0` location marker + the fixed `forage_yield` credit) is **byte-identical**. With it
+      ON, FORAGE is a real depleting `ResourceNode` (stock/regen/cap) created **outside `config.nodes`**
+      (so ordinary gatherer round-robin does not target it — only the forage path does), and foragers
+      run the **depleting** haul cycle (`GoHarvest` → carry → deposit at the exchange → `transfer_pending_deposits`
+      to econ) instead of the fixed credit, so per-capita yield **falls** as the foraging population
+      rises (node regen is the only source). **Deposit-attribution fix:** one helper predicate
+      `carry_is_forage_attributed = colonist.foraging || vocation == Gatherer` gates BOTH the
+      opening-carry snapshot AND the carry-delta attribution, so a foraging `Consumer`/`Unassigned`
+      lineage member's harvested FORAGE is transferred to its econ stock and relieves hunger (a
+      Gatherer that also forages is counted once; non-spatial colonists carry nothing, so they are
+      safe). Acceptance suite `sim/tests/forage_commons.rs` (N foragers draw ≈ the regen budget not
+      N×yield; per-capita falls as N rises; a spatial lineage Consumer's foraged FORAGE is attributed +
+      transferred + relieves hunger; conserved; commons-off byte-identical).
+- [x] **S14.2 — forage child endowment (a selector) + a growth-capable demography + birth
+      diagnostics.** A **birth-food selector** (`birth_food()` = `known.subsistence` on the
+      forage-commons path, else `known.hunger`) routes the parent-endow gate, the debit, the newborn's
+      initial stock, AND the founder seed — `known.hunger` (the bread staple, which threads through
+      consumption/the chain/sales) is left **untouched**, so births stall on **forage** scarcity, not a
+      bread shortage. The demography is retuned for growth (`max_household_size` raised to 24 so the
+      knob does not bind, a long lifespan so the demographic ceiling sits far above the forage-bound
+      plateau, the birth-hunger ceiling at 8 < `need_max` 12 so scarcity can push a member over it).
+      **Birth-block diagnostics:** counters/accessors (`birth_block_size_cap`/`_hunger_ceiling`/
+      `_endowment`/`_interval`) attribute *why* a birth was skipped, so the bound is interpretable.
+      Acceptance suite `sim/tests/forage_demography.rs` (population grows past the old size cap toward
+      the raised cap; child + founder food satisfiable from forage with `known.hunger` unchanged; the
+      birth-block counters attribute stalls; flag-off byte-identical).
+- [x] **S14.3 — the endogenous plateau scenario + DoD.** `SettlementConfig::frontier_forage_capacity`
+      composes S12 own-labor (hearth food mint OFF) + S13 spatial households + the S14.1 capped commons
+      (stock 90 / regen 2 / cap 300) + the S14.2 forage endowment and growth demography (3 lineages,
+      6 founders). The `forage-capacity` viewer scenario is registered. Acceptance suite
+      `sim/tests/forage_carrying_capacity.rs` — the eight named tests
+      (`forage_capacity_run_is_deterministic`, `forage_commons_depletes_and_regenerates`,
+      `population_grows_then_plateaus`, `plateau_tracks_carrying_capacity`, `forage_capacity_conserves`,
+      `controls_bracket_the_plateau`, `births_stall_on_forage_not_bread`, `goldens_unchanged`).
+
+**Does the population grow then plateau at a forage-determined level? Yes — the spec's success
+mode, not the principled-failure path.** With the commons feeding it, the colony grows **past the old
+`max_household_size` of 5** and plateaus at a forage-determined band (windowed mean ~42 living at
+regen 2), and the plateau **tracks the carrying capacity** monotonically (regen 1 → ~30, regen 2 →
+~42, regen 4 → ~47). The bound is the birth-hunger **preventive check**: the hunger-ceiling stall is
+the dominant birth-block reason, with the parent-endowment and size-cap stalls negligible — so it is
+**forage scarcity, not a bread shortage or the knob**, that bounds the colony, and deaths are
+**old-age only** (`hunger_critical` stays disabled). The two controls bracket "endogenous vs knob":
+uncapping the forage (huge regen) lets the population grow to the **raised household cap** (~72, where
+the hunger ceiling never stalls a birth and the size cap is the only block), while keeping
+`max_household_size` low pins it at the **knob** (~15, the old regime). The *endogenous* part is the
+population's **response** to scarce forage flow — the regen/cap are still parameters, stated honestly.
+
+All additive/gated: with the S14 flags off the S5–S13 scenarios + the six econ + the
+g5a/g5b/coemergence emergence + the demographic `lineages` goldens are byte-identical (the new state —
+the forage node stock/regen/cap, the `forage_commons` flag, the birth-food selector, the demography
+values, the birth-block counters — enters `canonical_bytes` ONLY on the flag-on path, with
+`canonical_bytes_include_forage_commons` / `_birth_block_counters` / `_foraging` regressions pinning
+each field's identity).
+
+- [x] viewer: the `forage-capacity` scenario (`cargo run -p viewer -- run forage-capacity`)
+
 ## Build and test
 
 ```bash
