@@ -1832,6 +1832,79 @@ each field's identity).
 
 - [x] viewer: the `forage-capacity` scenario (`cargo run -p viewer -- run forage-capacity`)
 
+## Status: S15 (pre-money own-use cultivation — intensification under pressure) — complete
+
+S14 gave the colony a real **forage carrying capacity** (population plateaus where the land-capped
+forage commons can't feed more). S15 is the **escape valve**: when foraging can't keep a colonist fed,
+it **cultivates bread by its own labor** (haul grain from the abundant grain node → a no-tool
+`Cultivate` recipe, grain → bread → eaten at home) — tapping the more-abundant grain node via a
+**more roundabout, more laborious** process than foraging. So the colony **intensifies under
+population pressure** and its carrying capacity **rises** above the forage-only plateau (Boserup);
+cultivation is *chosen only under scarcity* because it costs more labor than foraging. NO money/SALT
+(the bread is own-use, not traded — that is S16), NO mortality (deaths stay old-age only). Built,
+gated, conserving — per `docs/impl-pre-money-cultivation.md`:
+
+- [x] **S15.1 — the `Cultivate` recipe (enum + tags) + the own-use cultivation phase.** A new closed
+      `RecipeId::Cultivate` enum variant (`econ/src/project.rs`) with its canonical sim tag (`= 7`),
+      `push_recipe_id_bytes` entry, and every exhaustive match updated. A gated, **no-tool** grain → bread
+      recipe whose primary knob is the **higher labor cost** (`CULTIVATE_LABOR = 2`, more roundabout than
+      foraging's single world task — the Austrian point; the low yield is secondary). A
+      `run_own_use_cultivation` phase (template: `run_own_labor_subsistence`) converts a cultivating
+      colonist's hauled grain into bread through the money-free checked direct-recipe seam
+      (`execute_direct_recipe_for_agent_checked_with_labor`), booked `produced` (bread) +
+      `consumed_as_input` (grain) — never minted. Behind `own_use_cultivation` (default off).
+- [x] **S15.2 — the scarcity → cultivation decision + grain gathering + the birth-food broadening +
+      the own-use readback seam.** **Explicit mutually-exclusive steering:** `foraging` XOR
+      `cultivating` per colonist per econ tick (one world task/tick, never both), driven **tick-lagged**
+      off the prior consumption readback — a colonist *still hungry after its last consumption* builds a
+      `cultivate_pressure` streak and, once it reaches `cultivate_patience`, escalates to **GoHarvest the
+      grain node** then cultivate; otherwise it forages. The latch holds `cultivating` while a grain
+      haul is in flight (carried grain or a pending deposit), so a returning haul deposits and converts
+      instead of being abandoned; a colonist whose flag clears mid-walk re-escalates under the same
+      sustained scarcity and deposits its grain on the next cultivation spell (the carry is conserved,
+      never lost). **Birth-food broadening:** on the cultivation path the child-food rule
+      (`birth_food_options`) accepts any edible food the parent holds — bread (`known.hunger`) first,
+      then forage (`known.subsistence`) — so cultivated bread can endow births (else the plateau could
+      not rise). **Own-use readback seam:** cultivated bread is eaten through `consume_own_use_stock`,
+      which debits the bread, **records it in the consumption readback** so hunger actually falls next
+      tick (not a raw stock debit), and books `report.consumed` — run BEFORE the market step, so the
+      bread feeds the cultivator and is never bartered/sold.
+- [x] **S15.3 — the intensification scenario + DoD.** `SettlementConfig::frontier_cultivation` composes
+      the S14 forage-capacity colony + `own_use_cultivation` + a reachable grain node. The `cultivation`
+      viewer scenario is registered. Acceptance suite `sim/tests/pre_money_cultivation.rs` — the nine
+      named tests (`cultivation_run_is_deterministic`, `cultivation_is_produced_not_minted`,
+      `cultivation_intensifies_the_carrying_capacity`, `cultivation_raises_births_not_just_feeds`,
+      `cultivation_is_own_use_not_traded`, `no_cultivation_without_scarcity`, `cultivation_conserves`,
+      `controls_bracket_intensification`, `goldens_unchanged`).
+
+**Does population pressure drive own-labor cultivation that raises the carrying capacity? Yes — the
+spec's success mode, not the principled-failure path.** At the shipped setting the colony plateaus near
+**~125 living with cultivation on versus ~51 forage-only** at the same forage flow, and the new plateau
+**tracks the cultivated-grain flow** — a grain-regen sweep is strictly monotone (a real
+carrying-capacity response, not a one-off bump). Under **abundant** forage nobody is sustained-hungry,
+so the escape valve never fires (cultivation count ~0): cultivation is chosen only under pressure. The
+broadened child-food rule lets cultivated bread endow newborns, so `birth_block_endowment` stays
+negligible and the plateau rise is **more births**, not merely lower hunger. The bread is **own-use**:
+no SALT promotion, zero cultivated-bread trade volume, hunger relief from the cultivator's own stock
+through the readback. Deaths stay **old-age only** (`hunger_critical` disabled — the preventive check
+is still the bound).
+
+**Honest scope.** S15 proves a spatial reproducing population under forage scarcity intensifies by
+own-labor cultivation of the abundant grain node and lifts its plateau above the forage-only level,
+conserving every tick (grain node regen the source; grain `consumed_as_input` → bread `produced`; no
+minted food, `endowment[staple] == 0`). It does NOT introduce money/SALT (the bread is not traded —
+S16) or a Malthusian **positive** check (deaths) — it adds the intensification escape valve on the S14
+scarcity substrate.
+
+All additive/gated: with `own_use_cultivation` off the S5–S14 scenarios + the six econ + the
+g5a/g5b/coemergence emergence + the demographic `lineages` goldens are byte-identical (the new state —
+the `Cultivate` recipe, the `own_use_cultivation` flag, the per-colonist `cultivating`/`cultivate_pressure`
+steering, the cultivation thresholds — enters `canonical_bytes` ONLY on the flag-on path, with
+`canonical_bytes_include_own_use_cultivation` / `_cultivating_state` regressions and the
+`recipe_id_tag(Cultivate)` pin fixing each field's identity).
+
+- [x] viewer: the `cultivation` scenario (`cargo run -p viewer -- run cultivation --ticks 3000`)
+
 ## Build and test
 
 ```bash
