@@ -3693,6 +3693,12 @@ struct Colonist {
     /// cultivation path, so a flag-off colonist block stays byte-identical. `0` off the
     /// cultivation path.
     cultivate_pressure: u16,
+    /// S15: `true` after this colonist has actually entered the cultivation steering
+    /// path and may still have own-use grain stock to drain after the `cultivating`
+    /// steering flag clears. This preserves delayed harvest deposits without letting
+    /// unrelated grain holders run the own-use recipe. Serialized only on the active
+    /// cultivation path because it steers future production.
+    cultivation_stock_pending: bool,
 }
 
 /// A settlement of generated colonists driven over a real `world` + `econ`.
@@ -4543,6 +4549,7 @@ impl Settlement {
                 foraging: false,
                 cultivating: false,
                 cultivate_pressure: 0,
+                cultivation_stock_pending: false,
             });
         }
 
@@ -4628,6 +4635,7 @@ impl Settlement {
                         foraging: false,
                         cultivating: false,
                         cultivate_pressure: 0,
+                        cultivation_stock_pending: false,
                     });
                 }
             }
@@ -6673,6 +6681,7 @@ impl Settlement {
                 foraging: false,
                 cultivating: false,
                 cultivate_pressure: 0,
+                cultivation_stock_pending: false,
             });
             let child_slot = self.colonists.len() - 1;
             self.live_colonist_slots.push(child_slot);
@@ -7135,7 +7144,8 @@ impl Settlement {
                 was_foraging,
                 was_cultivating,
                 was_pressure,
-                has_cultivation_input,
+                was_stock_pending,
+                has_cultivation_input_in_flight,
             ) = {
                 let colonist = &self.colonists[slot];
                 // The spatial poor with spare labor in an untooled-or-latent role
@@ -7162,6 +7172,7 @@ impl Settlement {
                     colonist.foraging,
                     colonist.cultivating,
                     colonist.cultivate_pressure,
+                    colonist.cultivation_stock_pending,
                     cultivate_input
                         .is_some_and(|input| self.cultivation_input_in_flight(colonist.id, input)),
                 )
@@ -7195,7 +7206,8 @@ impl Settlement {
             let cultivate_now = cultivation
                 && eligible
                 && (pressure >= cult_patience
-                    || (was_cultivating && (hunger >= cult_out || has_cultivation_input)));
+                    || (was_cultivating
+                        && (hunger >= cult_out || has_cultivation_input_in_flight)));
             // Mutually exclusive (one world task per econ tick): cultivation takes the
             // task slot when it fires, so the colonist forages XOR cultivates — never
             // both. `cultivate_now` implies `!foraging` here.
@@ -7207,6 +7219,8 @@ impl Settlement {
             self.colonists[slot].foraging = forage_now;
             self.colonists[slot].cultivating = cultivate_now;
             self.colonists[slot].cultivate_pressure = pressure;
+            self.colonists[slot].cultivation_stock_pending =
+                cultivation && eligible && (was_stock_pending || was_cultivating || cultivate_now);
             debug_assert!(
                 !(self.colonists[slot].foraging && self.colonists[slot].cultivating),
                 "a colonist must forage XOR cultivate — never both in one econ tick"
@@ -7254,39 +7268,54 @@ impl Settlement {
         let hunger_per_food = self.dynamics.hunger_per_food;
         let live = self.live_colonist_slots.clone();
         for slot in live {
-            let (id, cultivating, hunger) = {
+            let (id, cultivating, stock_pending, hunger) = {
                 let colonist = &self.colonists[slot];
-                (colonist.id, colonist.cultivating, colonist.need.hunger)
+                (
+                    colonist.id,
+                    colonist.cultivating,
+                    colonist.cultivation_stock_pending,
+                    colonist.need.hunger,
+                )
             };
             let has_settled_input =
                 input_good.is_some_and(|input| self.cultivation_input_in_stock(id, input));
-            if !cultivating && !has_settled_input {
+            if !cultivating && !stock_pending {
                 continue;
             }
             // PRODUCE: convert held grain into bread up to this tick's own-labor
-            // budget. Grain beyond the budget stays in stock and will be drained by a
-            // later cultivation phase, even if the steering flag clears. The executor
-            // removes grain, credits bread to the colonist's own stock, and records the
-            // recipe labor; we book the conserved conversion.
+            // budget. Only agents that entered the cultivation path can drain settled
+            // grain after the steering flag clears; unrelated grain holders keep their
+            // stock. Grain beyond the budget stays in stock and will be drained by a
+            // later cultivation phase. The executor removes grain, credits bread to the
+            // colonist's own stock, and records the recipe labor; we book the conserved
+            // conversion.
             let mut remaining_labor = OWN_USE_CULTIVATION_LABOR_BUDGET;
-            while recipe_labor > 0 && remaining_labor >= recipe_labor {
-                let Some(applied) = self
-                    .society
-                    .execute_direct_recipe_for_agent_checked_with_labor(
-                        id,
-                        recipe_id,
-                        remaining_labor,
-                    )
-                else {
-                    break; // out of grain (or no output headroom): nothing more to cultivate
-                };
-                remaining_labor = remaining_labor.saturating_sub(applied.labor);
-                let (out_good, out_qty) = applied.output;
-                *report.produced.entry(out_good).or_insert(0) += u64::from(out_qty);
-                if let Some((in_good, in_qty)) = applied.input {
-                    *report.consumed_as_input.entry(in_good).or_insert(0) += u64::from(in_qty);
+            if has_settled_input {
+                while recipe_labor > 0 && remaining_labor >= recipe_labor {
+                    let Some(applied) = self
+                        .society
+                        .execute_direct_recipe_for_agent_checked_with_labor(
+                            id,
+                            recipe_id,
+                            remaining_labor,
+                        )
+                    else {
+                        break; // out of grain (or no output headroom): nothing more to cultivate
+                    };
+                    remaining_labor = remaining_labor.saturating_sub(applied.labor);
+                    let (out_good, out_qty) = applied.output;
+                    *report.produced.entry(out_good).or_insert(0) += u64::from(out_qty);
+                    if let Some((in_good, in_qty)) = applied.input {
+                        *report.consumed_as_input.entry(in_good).or_insert(0) += u64::from(in_qty);
+                    }
                 }
             }
+            let has_remaining_input =
+                input_good.is_some_and(|input| self.cultivation_input_in_stock(id, input));
+            let has_input_in_flight =
+                input_good.is_some_and(|input| self.cultivation_input_in_flight(id, input));
+            self.colonists[slot].cultivation_stock_pending =
+                cultivating || has_remaining_input || has_input_in_flight;
             // CONSUME (own-use): eat up to `consume` of the cultivator's OWN bread
             // through the readback seam, so hunger advances next tick from its own stock
             // — never a market trade. The surplus stays in stock for the birth endowment.
@@ -10915,6 +10944,10 @@ impl Settlement {
                 // escalates to cultivation, so two states identical but for it diverge on
                 // a future tick — part of the identity whenever the cultivation phase runs.
                 out.extend_from_slice(&colonist.cultivate_pressure.to_le_bytes());
+                // S15: delayed own-use grain drains are provenance-tracked. This latch
+                // steers whether settled grain can still be converted after the visible
+                // cultivating flag clears.
+                out.push(u8::from(colonist.cultivation_stock_pending));
             }
             if role_choice_active {
                 // The latent specialty (G3b) steers each tick's role-choice
@@ -15685,10 +15718,10 @@ mod tests {
 
     #[test]
     fn canonical_bytes_include_cultivating_state() {
-        // S15: the per-colonist `cultivating` flag and `cultivate_pressure` streak steer
-        // the next world task and WHEN the colonist next escalates, so two cultivation
+        // S15: the per-colonist `cultivating` flag, `cultivate_pressure` streak, and
+        // pending-stock latch steer the next world task / drain, so two cultivation
         // states differing only in them must digest apart — and an off-cultivation chain
-        // must NOT serialize either (byte-identical).
+        // must NOT serialize them (byte-identical).
         let mut on = Settlement::generate(7, &SettlementConfig::frontier_cultivation());
         let before = on.canonical_bytes();
         on.colonists[0].cultivating = !on.colonists[0].cultivating;
@@ -15704,11 +15737,19 @@ mod tests {
             on.canonical_bytes(),
             "with cultivation on, the cultivate-pressure streak must be in the digest"
         );
+        let before = on.canonical_bytes();
+        on.colonists[0].cultivation_stock_pending = !on.colonists[0].cultivation_stock_pending;
+        assert_ne!(
+            before,
+            on.canonical_bytes(),
+            "with cultivation on, the pending cultivation-stock latch must be in the digest"
+        );
 
         let mut off = Settlement::generate(7, &SettlementConfig::frontier_forage_capacity());
         let off_before = off.canonical_bytes();
         off.colonists[0].cultivating = !off.colonists[0].cultivating;
         off.colonists[0].cultivate_pressure = off.colonists[0].cultivate_pressure.wrapping_add(5);
+        off.colonists[0].cultivation_stock_pending = !off.colonists[0].cultivation_stock_pending;
         assert_eq!(
             off_before,
             off.canonical_bytes(),
@@ -16021,6 +16062,51 @@ mod tests {
             report.consumed_as_input_of(grain),
             1,
             "draining settled grain must book the conserved input"
+        );
+    }
+
+    #[test]
+    fn own_use_cultivation_ignores_grain_held_outside_cultivation_path() {
+        let cfg = SettlementConfig::frontier_cultivation();
+        let grain = cfg.chain.as_ref().expect("chain").content.grain();
+        let bread = cfg.chain.as_ref().expect("chain").content.bread();
+        let mut s = Settlement::generate(7, &cfg);
+        let slot = s.live_colonist_slots[0];
+        let id = s.colonists[slot].id;
+        s.colonists[slot].vocation = Vocation::Miller;
+        s.colonists[slot].foraging = false;
+        s.colonists[slot].cultivating = false;
+        s.colonists[slot].cultivation_stock_pending = false;
+        s.society
+            .agents
+            .get_mut(id)
+            .expect("agent exists")
+            .stock
+            .add(grain, 2);
+
+        let mut report = EconTickReport::default();
+        s.run_own_use_cultivation(&mut report);
+
+        let agent = s.society.agents.get(id).expect("agent exists");
+        assert_eq!(
+            report.produced_of(bread),
+            0,
+            "non-cultivation grain must not produce own-use bread"
+        );
+        assert_eq!(
+            report.consumed_as_input_of(grain),
+            0,
+            "non-cultivation grain must not be consumed by own-use cultivation"
+        );
+        assert_eq!(
+            agent.stock.get(grain),
+            2,
+            "a grain-holding producer must keep its recipe input"
+        );
+        assert_eq!(
+            agent.stock.get(bread),
+            0,
+            "own-use cultivation must not credit bread to a non-cultivator"
         );
     }
 
