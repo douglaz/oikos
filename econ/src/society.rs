@@ -3857,6 +3857,21 @@ impl Society {
         &self.consumption_log
     }
 
+    /// S15 own-use cultivation seam: record `qty` units of `good` consumed by `agent`
+    /// outside the market consume passes (own-use eating of self-cultivated stock),
+    /// appending to the same tick-local consumption log the readback reads. The CALLER
+    /// debits the agent's stock; this only logs the consumption so the `sim` need
+    /// readback advances hunger from it (a stock debit alone would conserve but never
+    /// feed). Must be called AFTER the market step (which clears the log at its start),
+    /// so the entry survives into the next tick's readback. A no-op when logging is
+    /// disabled (every lab golden), so the emergence/conformance digests are unchanged.
+    pub fn record_own_use_consumption(&mut self, agent: AgentId, good: GoodId, qty: u32) {
+        if qty == 0 || !self.consumption_log_enabled {
+            return;
+        }
+        self.consumption_log.push((agent, good, qty));
+    }
+
     /// Tick-local labor usage by agent for the most recently completed tick.
     ///
     /// Read accessor only; the engine already maintains this tally for labor

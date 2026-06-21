@@ -81,6 +81,20 @@ pub const FLOUR_PER_CONFECT: u32 = 1;
 /// Pastry produced per confect application — the tier-2 good's yield.
 pub const PASTRY_PER_CONFECT: u32 = 2;
 
+/// S15 own-use cultivation: grain consumed per `Cultivate` application (the
+/// conserved conversion's input ratio).
+pub const GRAIN_PER_CULTIVATE: u32 = 1;
+/// S15: bread produced per `Cultivate` application — a deliberately LOW yield (one
+/// loaf per grain, vs the tooled mill+oven chain's higher throughput): cultivation
+/// is the crude, own-labor fallback, not the efficient specialized chain.
+pub const BREAD_PER_CULTIVATE: u32 = 1;
+/// S15: the labor a single `Cultivate` application costs — the PRIMARY knob that
+/// makes own-use cultivation **more roundabout** than foraging (the Austrian point).
+/// Foraging is one world task (`GatherFood`-grade labor 1); cultivation is gather
+/// grain (a world task) PLUS this higher per-loaf labor, so a colonist forgoes the
+/// cheaper forage/WOOD only when forage cannot feed it (chosen under scarcity).
+pub const CULTIVATE_LABOR: u32 = 2;
+
 /// A code-level content definition: the interned chain goods plus the recipes
 /// that transform them. Built once at generation and then read-only.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -258,6 +272,29 @@ impl ContentSet {
         self
     }
 
+    /// S15: append the **no-tool** `Cultivate` recipe (grain → bread) to this content
+    /// set's recipes, returning the extended set. Unlike the tooled Mill/Bake chain it
+    /// needs no capital gate — a hungry colonist runs it by its own labor — but it is
+    /// deliberately the more-roundabout, higher-labor ([`CULTIVATE_LABOR`]), low-yield
+    /// ([`BREAD_PER_CULTIVATE`]) path. It interns no new good (grain and bread already
+    /// exist) and is carried only by a cultivation content set, so every other set is
+    /// byte-identical (its recipes vector is unchanged). The `sim` own-use cultivation
+    /// phase applies it directly; no vocation maps to it, so the producer phase never
+    /// runs it.
+    pub fn with_cultivate(mut self) -> Self {
+        self.recipes.push(Recipe {
+            id: RecipeId::Cultivate,
+            name: "Cultivate",
+            labor: CULTIVATE_LABOR,
+            input_good: Some((self.grain, GRAIN_PER_CULTIVATE)),
+            required_tool: None,
+            output_good: self.bread,
+            output_qty: BREAD_PER_CULTIVATE,
+            enabled: true,
+        });
+        self
+    }
+
     /// The raw, gathered good (the only chain good a world node produces).
     pub fn grain(&self) -> GoodId {
         self.grain
@@ -339,6 +376,16 @@ impl ContentSet {
     /// the settlement flips on unlock.
     pub fn tier2_recipe_id(&self) -> Option<RecipeId> {
         self.tier2_recipe().map(|recipe| recipe.id)
+    }
+
+    /// S15: the no-tool `Cultivate` recipe (grain → bread), or `None` for a content
+    /// set without [`Self::with_cultivate`]. Resolved by [`RecipeId`], like
+    /// [`Self::mill_recipe`]. Its presence is the gate the `sim` own-use cultivation
+    /// path keys on, so a non-cultivation set returns `None` and stays byte-identical.
+    pub fn cultivate_recipe(&self) -> Option<&Recipe> {
+        self.recipes
+            .iter()
+            .find(|recipe| recipe.id == RecipeId::Cultivate)
     }
 
     /// Set the `enabled` flag of the recipe with `id` (the tier-2 unlock keeps the
@@ -616,6 +663,45 @@ mod tests {
             research_forage.forage().map(|g| g.0),
             Some(research_forage.atelier().unwrap().0 + 1)
         );
+    }
+
+    #[test]
+    fn with_cultivate_adds_a_no_tool_grain_to_bread_recipe() {
+        // S15: the cultivation recipe is a no-tool grain → bread conversion appended to
+        // the set's recipes; it interns no new good (grain/bread already exist) and is
+        // the more-laborious, low-yield own-use path. The base set without it is
+        // byte-identical (no extra recipe, same goods).
+        let base = ContentSet::grain_flour_bread();
+        let cult = ContentSet::grain_flour_bread().with_cultivate();
+        assert!(
+            base.cultivate_recipe().is_none(),
+            "the plain chain has none"
+        );
+        assert_eq!(
+            cult.recipes().len(),
+            base.recipes().len() + 1,
+            "with_cultivate appends exactly one recipe"
+        );
+        assert_eq!(cult.goods(), base.goods(), "no new good is interned");
+
+        let recipe = cult.cultivate_recipe().expect("with_cultivate adds it");
+        assert_eq!(recipe.id, RecipeId::Cultivate);
+        assert_eq!(recipe.input_good, Some((cult.grain(), GRAIN_PER_CULTIVATE)));
+        assert_eq!(recipe.output_good, cult.bread());
+        assert_eq!(recipe.output_qty, BREAD_PER_CULTIVATE);
+        assert_eq!(
+            recipe.required_tool, None,
+            "cultivation needs no capital gate"
+        );
+        assert_eq!(
+            recipe.labor, CULTIVATE_LABOR,
+            "the labor cost is the more-roundabout knob"
+        );
+        assert!(
+            recipe.labor > base.mill_recipe().labor,
+            "cultivation must cost more labor than a tooled chain step (more roundabout)"
+        );
+        assert!(recipe.enabled);
     }
 
     #[test]

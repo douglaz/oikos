@@ -831,6 +831,40 @@ pub struct ChainConfig {
     /// `None` keeps the S12 fixed-credit path exactly, so every existing config stays
     /// byte-identical.
     pub forage_commons: Option<ForageCommons>,
+    /// S15 — **own-use cultivation** (default `false`, byte-identical when off). When
+    /// `true` *and* the content set carries the no-tool [`econ::project::RecipeId::Cultivate`]
+    /// recipe (via [`crate::content::ContentSet::with_cultivate`]) on the active
+    /// own-labor/forage-commons path, a colonist *still hungry after foraging* (the
+    /// second hysteresis tier below) is steered to GoHarvest the abundant grain node and
+    /// cultivate bread by own labor — booked `produced`/`consumed_as_input`, eaten at
+    /// home through the consumption readback (never traded). The escape valve that lets
+    /// the colony **intensify** past the forage-only plateau. Off keeps the S14 path
+    /// exactly, so every existing config is byte-identical.
+    pub own_use_cultivation: bool,
+    /// S15: the hunger at/above which a (still-hungry) forager escalates to cultivation,
+    /// and (paired with [`Self::cultivate_hunger_out`]) the hysteresis exit below which
+    /// it reverts to plain foraging. A **second tier** above [`Self::forage_hunger_in`]
+    /// (so cultivation is the fallback forage could not relieve), and below the
+    /// birth-hunger ceiling (so cultivating pulls hunger back under the preventive
+    /// check). Consulted only while `own_use_cultivation` is active.
+    pub cultivate_hunger_in: u16,
+    /// S15: the hunger below which a cultivating colonist drops back to foraging. Must
+    /// sit strictly below [`Self::cultivate_hunger_in`]. Consulted only while
+    /// `own_use_cultivation` is active.
+    pub cultivate_hunger_out: u16,
+    /// S15: the bread a cultivating colonist eats from its OWN freshly-cultivated stock
+    /// per econ tick, through the consumption readback seam (so hunger actually falls).
+    /// The own-use subsistence draw; the remainder of a tick's cultivated bread stays in
+    /// stock to endow children (the broadened birth-food rule). Consulted only while
+    /// `own_use_cultivation` is active.
+    pub cultivate_consume: u32,
+    /// S15: the **patience** — how many CONSECUTIVE econ ticks a colonist's hunger must
+    /// stay at/above [`Self::cultivate_hunger_in`] before it escalates to cultivation. A
+    /// transient forage-haul hunger spike resets the streak, so cultivation fires only on
+    /// SUSTAINED hunger (genuine forage scarcity), never when forage is merely catching
+    /// up — this is what makes "no cultivation without scarcity" hold. Consulted only
+    /// while `own_use_cultivation` is active.
+    pub cultivate_patience: u16,
     /// EXPERIMENTAL (capital-advance probe): when `true` *and* money has emerged,
     /// each econ tick a conserved working-capital advance moves real money from
     /// the richest saver to any cashless active chain producer (Miller/Baker), so
@@ -1109,6 +1143,14 @@ impl ChainConfig {
             forage_commons: None,
             forage_hunger_in: 8,
             forage_hunger_out: 4,
+            // Own-use cultivation off by default (S15): no Cultivate recipe, the steering
+            // and phase are inert, and these knobs are unused — so every existing config
+            // and its goldens are byte-identical.
+            own_use_cultivation: false,
+            cultivate_hunger_in: 6,
+            cultivate_hunger_out: 3,
+            cultivate_consume: 0,
+            cultivate_patience: 4,
             capital_advance: false,
             perishable_decay_bps: 0,
             subsistence_advance: false,
@@ -1189,6 +1231,14 @@ impl ChainConfig {
             forage_commons: None,
             forage_hunger_in: 8,
             forage_hunger_out: 4,
+            // Own-use cultivation off by default (S15): no Cultivate recipe, the steering
+            // and phase are inert, and these knobs are unused — so every existing config
+            // and its goldens are byte-identical.
+            own_use_cultivation: false,
+            cultivate_hunger_in: 6,
+            cultivate_hunger_out: 3,
+            cultivate_consume: 0,
+            cultivate_patience: 4,
             capital_advance: false,
             perishable_decay_bps: 0,
             subsistence_advance: false,
@@ -3205,6 +3255,64 @@ impl SettlementConfig {
         cfg
     }
 
+    /// S15 — the **own-use cultivation** scenario: the S14 forage-capacity colony with
+    /// the escape valve enabled. Composed from [`Self::frontier_forage_capacity`] (never
+    /// mutated structurally) plus: the no-tool `Cultivate` recipe on the content set, the
+    /// `own_use_cultivation` gate + its hysteresis tier, a binding **grain node** the
+    /// cultivators GoHarvest (a real depleting resource, so the intensified plateau
+    /// tracks the grain FLOW), and headroom on the size cap / lifespan so the new plateau
+    /// is grain-flow-bound, not knob- or demographic-ceiling-bound.
+    ///
+    /// Under forage scarcity a *still-hungry* forager escalates to cultivation — hauling
+    /// grain and making bread by its own labor, eaten at home — so the colony
+    /// **intensifies** and its carrying capacity rises above the forage-only (S14)
+    /// plateau (Boserup). Under abundant forage nobody is still hungry, so nobody pays
+    /// the cultivation labor cost (the escape valve fires only under pressure). NO money
+    /// (the bread is own-use, never traded) and NO mortality (deaths stay old-age only).
+    /// Gated: with `own_use_cultivation` off it reduces to the S14 stream, so every
+    /// existing scenario/golden is byte-identical.
+    pub fn frontier_cultivation() -> Self {
+        let mut cfg = Self::frontier_forage_capacity();
+        if let Some(chain) = cfg.chain.as_mut() {
+            // The no-tool grain → bread recipe the own-use cultivation phase applies.
+            chain.content = chain.content.clone().with_cultivate();
+            chain.own_use_cultivation = true;
+            // The second hysteresis tier: escalate above the forage band (`forage_hunger_in`
+            // 4) and below the birth-hunger ceiling (8), so a still-hungry forager
+            // cultivates and pulls its hunger back under the preventive check (lifting the
+            // plateau) rather than stalling births.
+            chain.cultivate_hunger_in = 6;
+            chain.cultivate_hunger_out = 3;
+            // The per-tick own-use bread draw (eaten through the readback); the rest of a
+            // tick's cultivated bread stays in stock to endow children (broadened rule).
+            chain.cultivate_consume = 4;
+            // Sustained-hunger gate: a colonist must be hungry (>= cult_in) for this many
+            // CONSECUTIVE ticks before cultivating, so a transient forage-haul spike never
+            // triggers it (cultivation fires only under real, persistent scarcity).
+            chain.cultivate_patience = 4;
+        }
+        // Turn the inherited grain node into a binding "commons" the cultivation taps: a
+        // real depleting resource whose REGEN sets the cultivated-grain flow (so the
+        // intensified plateau tracks it — the sweep). Lower than the frontier's 8000/64
+        // so it binds at a population the colony actually reaches.
+        let grain = cfg.chain.as_ref().expect("chain").content.grain();
+        for node in cfg.nodes.iter_mut() {
+            if node.good == grain {
+                node.stock = 120;
+                node.regen = 4;
+                node.cap = 300;
+            }
+        }
+        if let Some(demo) = cfg.demography.as_mut() {
+            // Raise the size cap and the demographic ceiling (longer lifespan) well above
+            // the forage-only plateau so the INTENSIFIED plateau is grain-flow-bound, not
+            // capped by the artificial knob or by old-age turnover.
+            demo.max_household_size = 100;
+            demo.old_age_onset_years = 60;
+        }
+        cfg
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).
@@ -3550,6 +3658,26 @@ struct Colonist {
     /// flag-off colonist block stays byte-identical to pre-S12. Always `false` for a
     /// non-own-labor settlement.
     foraging: bool,
+    /// S15 own-use cultivation: `true` while this colonist (still hungry after foraging)
+    /// is cultivating bread by own labor — it STEERS the next fast loop to GoHarvest the
+    /// grain node (instead of foraging/WOOD, the structural opportunity cost) so the
+    /// cultivation phase can convert that grain to bread. **Mutually exclusive with
+    /// [`Self::foraging`]** (one world task per econ tick — never both). Set/cleared by
+    /// `run_own_labor_subsistence`'s second tier; part of the future-behaviour identity
+    /// whenever the cultivation phase can run, serialized only under that gate so a
+    /// flag-off colonist block stays byte-identical. Always `false` off the cultivation
+    /// path.
+    cultivating: bool,
+    /// S15: the cultivation **pressure** — the count of CONSECUTIVE econ ticks this
+    /// colonist's hunger has stayed at/above `cultivate_hunger_in`. It resets the moment
+    /// hunger drops below that threshold (forage caught up), and once it reaches
+    /// `cultivate_patience` the colonist escalates to cultivation. The sustained-hunger
+    /// gate that keeps a transient forage-haul spike from triggering cultivation (so the
+    /// escape valve fires only under real scarcity). Steers the cultivation decision, so
+    /// it is part of the future-behaviour identity; serialized only on the active
+    /// cultivation path, so a flag-off colonist block stays byte-identical. `0` off the
+    /// cultivation path.
+    cultivate_pressure: u16,
 }
 
 /// A settlement of generated colonists driven over a real `world` + `econ`.
@@ -3886,6 +4014,14 @@ struct ChainRuntime {
     /// `None` for every existing config, so the FORAGE node stays a `0/0/0` marker and
     /// the S12 fixed-credit path is byte-identical.
     forage_commons: Option<ForageCommons>,
+    /// S15: the own-use cultivation gate + its hysteresis tier + the per-tick own-use
+    /// bread draw (see [`ChainConfig::own_use_cultivation`]). `false`/`0` for every
+    /// existing config, so the cultivation steering/phase are inert and byte-identical.
+    own_use_cultivation: bool,
+    cultivate_hunger_in: u16,
+    cultivate_hunger_out: u16,
+    cultivate_consume: u32,
+    cultivate_patience: u16,
     /// S6: the productive-re-entry phase gate + hysteresis thresholds (see
     /// [`ChainConfig::productive_reentry`]). `false`/unused for every existing config.
     productive_reentry: bool,
@@ -4390,6 +4526,8 @@ impl Settlement {
                 estate_destination: None,
                 acquired_tool: false,
                 foraging: false,
+                cultivating: false,
+                cultivate_pressure: 0,
             });
         }
 
@@ -4473,6 +4611,8 @@ impl Settlement {
                         estate_destination: None,
                         acquired_tool: false,
                         foraging: false,
+                        cultivating: false,
+                        cultivate_pressure: 0,
                     });
                 }
             }
@@ -4771,6 +4911,11 @@ impl Settlement {
                 forage_hunger_in: chain.forage_hunger_in,
                 forage_hunger_out: chain.forage_hunger_out,
                 forage_commons: chain.forage_commons,
+                own_use_cultivation: chain.own_use_cultivation,
+                cultivate_hunger_in: chain.cultivate_hunger_in,
+                cultivate_hunger_out: chain.cultivate_hunger_out,
+                cultivate_consume: chain.cultivate_consume,
+                cultivate_patience: chain.cultivate_patience,
                 productive_reentry: chain.productive_reentry,
                 reentry_hunger_in: chain.reentry_hunger_in,
                 reentry_hunger_out: chain.reentry_hunger_out,
@@ -5270,6 +5415,16 @@ impl Settlement {
         // for a plain settlement (no chain).
         self.run_production(&mut report);
 
+        // ---- 6a-bis. OWN-USE CULTIVATION (S15): each cultivating colonist converts the
+        // grain it hauled this tick into bread by its own labor (booked
+        // produced/consumed_as_input, never minted) and eats part of it through the
+        // consumption-readback seam so its hunger falls — the rest stays in stock to
+        // endow children. After the market (so the bread is minted post-clearing and
+        // never offered for sale — own-use) and BEFORE births (so a parent's
+        // just-cultivated bread can endow this tick's newborn). A no-op off the gated
+        // cultivation path, so every other run is byte-identical.
+        self.run_own_use_cultivation(&mut report);
+
         // ---- 6b. BIRTHS (G4b): each food-secure household under its size cap and
         // past its birth interval bears one child — a new colonist with an inherited,
         // mutated culture and a conserved endowment transferred from a parent, added
@@ -5603,6 +5758,14 @@ impl Settlement {
         let mut deposited: BTreeMap<(AgentId, GoodId), u32> = BTreeMap::new();
         let mut foraged: BTreeSet<AgentId> = BTreeSet::new();
         let detect_forage = self.own_labor_subsistence_can_run();
+        // S15: a cultivator harvests grain whose deposit may LAND a tick later (the haul
+        // straddles the econ-tick boundary), by which point its `cultivating` flag may
+        // have flipped off (the hysteresis). So on the cultivation path also attribute a
+        // colonist that is currently CARRYING — any carry decrease is a deposit to the
+        // exchange regardless of the flag, so this keeps the in-flight grain accounted.
+        // Gated, so every non-cultivation run keeps the S14 flag-only attribution
+        // (byte-identical).
+        let cultivation_active = self.own_use_cultivation_active();
         // Opening carry baseline (the current escrow), per attributed colonist/good.
         // S14: a Gatherer deposits its harvested WOOD/grain, but a *forager* (a Consumer
         // or Unassigned colonist marked `foraging`, including a spatial lineage member)
@@ -5613,9 +5776,22 @@ impl Settlement {
         // carry, so the predicate is harmless for them; off the own-labor path no colonist
         // is `foraging`, so this reduces to the pre-S14 Gatherer-only set (byte-identical).
         let mut prev_carry: BTreeMap<(AgentId, GoodId), u32> = BTreeMap::new();
+        // S15: ids that are CARRYING at the snapshot but are not flag-attributed — a
+        // cultivator whose grain deposit lands this interval though its `cultivating`
+        // flag has since flipped off. Captured by snapshot carry (not the post-deposit
+        // carry, which is already drained), so the in-flight grain is still attributed.
+        // Empty off the cultivation path, so the carry-delta loop reduces to the S14
+        // flag-only set (byte-identical).
+        let mut carrying_ids: BTreeSet<AgentId> = BTreeSet::new();
         for &slot in &self.live_colonist_slots {
             let colonist = &self.colonists[slot];
-            if Self::carry_is_forage_attributed(colonist) {
+            let flagged = Self::carry_is_forage_attributed(colonist);
+            let carrying =
+                cultivation_active && !flagged && self.world.agent_carry_total(colonist.id) > 0;
+            if flagged || carrying {
+                if carrying {
+                    carrying_ids.insert(colonist.id);
+                }
                 for &good in &self.goods {
                     prev_carry.insert(
                         (colonist.id, good),
@@ -5659,7 +5835,9 @@ impl Settlement {
             }
             for &slot in &self.live_colonist_slots {
                 let colonist = &self.colonists[slot];
-                if !Self::carry_is_forage_attributed(colonist) {
+                if !Self::carry_is_forage_attributed(colonist)
+                    && !carrying_ids.contains(&colonist.id)
+                {
                     continue;
                 }
                 for &good in &self.goods {
@@ -5803,11 +5981,24 @@ impl Settlement {
     /// attribution, so a Gatherer that also forages is counted once. Off the own-labor
     /// path no colonist is `foraging`, so this is exactly the pre-S14 Gatherer-only set.
     fn carry_is_forage_attributed(colonist: &Colonist) -> bool {
-        colonist.foraging || colonist.vocation == Vocation::Gatherer
+        // S15: a cultivating colonist deposits harvested GRAIN through the same haul
+        // cycle, so it joins the attributed set too (else its grain would carry/deposit
+        // but never transfer to econ). Off the cultivation path no colonist is
+        // `cultivating`, so this reduces to the S14 forager/Gatherer set (byte-identical).
+        colonist.foraging || colonist.cultivating || colonist.vocation == Vocation::Gatherer
     }
 
     fn assign_idle_gatherer_tasks(&mut self) {
         let forage_node = self.forage_node();
+        // S15: a cultivating colonist HARVESTS the grain node (the abundant resource the
+        // cultivation phase converts to bread), then deposits — the same haul cycle as
+        // foraging, but on grain. Resolved only on the active cultivation path, so every
+        // other run never touches it (byte-identical).
+        let grain_node = if self.own_use_cultivation_active() {
+            self.grain_node()
+        } else {
+            None
+        };
         // S14: in the capped-commons mode a forager HARVESTS the FORAGE node (depleting
         // it, so per-capita yield falls), then deposits — the real haul cycle. In the
         // S12 marker mode it forages (relocating nothing) and is credited a fixed yield.
@@ -5817,6 +6008,20 @@ impl Settlement {
             let id = colonist.id;
             if self.world.agent_status(id) != Some(AgentStatus::Idle) {
                 continue;
+            }
+            // S15: cultivating takes the world-task slot (it is mutually exclusive with
+            // `foraging`). Deposit any carry first (incl. FORAGE from a just-ended forage
+            // spell), then GoHarvest the grain node so the cultivation phase has grain.
+            if colonist.cultivating {
+                if let Some(grain_node) = grain_node {
+                    let task = if self.world.agent_carry_total(id) > 0 {
+                        Task::GoDeposit(self.exchange)
+                    } else {
+                        Task::GoHarvest(grain_node, self.carry_cap)
+                    };
+                    self.world.assign_task(id, task);
+                    continue;
+                }
             }
             if colonist.foraging {
                 if let Some(forage_node) = forage_node {
@@ -6428,6 +6633,8 @@ impl Settlement {
                 estate_destination: None,
                 acquired_tool: false,
                 foraging: false,
+                cultivating: false,
+                cultivate_pressure: 0,
             });
             let child_slot = self.colonists.len() - 1;
             self.live_colonist_slots.push(child_slot);
@@ -6863,9 +7070,22 @@ impl Settlement {
         // fast loop's forage-vs-WOOD steering) is still set below; only the credit is
         // gated off, so per-capita yield falls with the foraging population.
         let commons = self.forage_commons_active();
+        // S15: the cultivation second tier. When active, a *still hungry* eligible
+        // forager (forage could not keep its hunger down) escalates from foraging to
+        // cultivating — steered (mutually exclusively) to GoHarvest the grain node and
+        // cultivate bread instead. Off (every pre-S15 config) `cultivation` is false, so
+        // `cultivating` is never set and the `foraging` steering is exactly S14.
+        let cultivation = self.own_use_cultivation_active();
+        let (cult_in, cult_out, cult_patience) = self.chain.as_ref().map_or((0, 0, 0), |c| {
+            (
+                c.cultivate_hunger_in,
+                c.cultivate_hunger_out,
+                c.cultivate_patience,
+            )
+        });
         let live = self.live_colonist_slots.clone();
         for slot in live {
-            let (id, eligible, hunger, was_foraging) = {
+            let (id, eligible, hunger, was_foraging, was_cultivating, was_pressure) = {
                 let colonist = &self.colonists[slot];
                 // The spatial poor with spare labor in an untooled-or-latent role
                 // (`Consumer`/`Gatherer`/`Unassigned`). An actively-producing role
@@ -6889,6 +7109,8 @@ impl Settlement {
                     eligible,
                     colonist.need.hunger,
                     colonist.foraging,
+                    colonist.cultivating,
+                    colonist.cultivate_pressure,
                 )
             };
             // Hysteresis: start foraging at/above `h_in`, stop below `h_out`, else hold.
@@ -6903,10 +7125,116 @@ impl Settlement {
             } else {
                 was_foraging
             };
+            // S15 second tier (the SUSTAINED-hunger gate): build a pressure streak while
+            // hunger stays at/above `cult_in` (forage isn't bringing it down) and reset it
+            // the moment hunger falls below `cult_in` (forage caught up — a transient
+            // haul spike). Off the cultivation path the streak stays 0.
+            let pressure = if cultivation && eligible && hunger >= cult_in {
+                was_pressure.saturating_add(1)
+            } else {
+                0
+            };
+            // Escalate to cultivation once the streak reaches `cult_patience` (sustained
+            // scarcity, not a transient spike), and HOLD cultivating until hunger drops
+            // below `cult_out` (so a started grain haul completes instead of thrashing).
+            let cultivate_now = cultivation
+                && eligible
+                && (pressure >= cult_patience || (was_cultivating && hunger >= cult_out));
+            // Mutually exclusive (one world task per econ tick): cultivation takes the
+            // task slot when it fires, so the colonist forages XOR cultivates — never
+            // both. `cultivate_now` implies `!foraging` here.
+            let (forage_now, cultivate_now) = if cultivate_now {
+                (false, true)
+            } else {
+                (forage_now, false)
+            };
             self.colonists[slot].foraging = forage_now;
+            self.colonists[slot].cultivating = cultivate_now;
+            self.colonists[slot].cultivate_pressure = pressure;
+            debug_assert!(
+                !(self.colonists[slot].foraging && self.colonists[slot].cultivating),
+                "a colonist must forage XOR cultivate — never both in one econ tick"
+            );
             if !commons && completed_forage.contains(&id) {
                 self.credit_produced(id, forage, yield_units, report);
             }
+        }
+    }
+
+    /// OWN-USE CULTIVATION phase (S15): each *cultivating* colonist converts the grain
+    /// it hauled this tick into bread by its OWN labor (the no-tool `Cultivate` recipe —
+    /// booked `produced`/`consumed_as_input`, never minted), then eats up to
+    /// [`ChainConfig::cultivate_consume`] of that bread through the consumption-readback
+    /// seam so its hunger actually falls next tick. The remaining cultivated bread stays
+    /// in stock to endow children (the broadened birth-food rule). Runs AFTER the market
+    /// step (so the freshly-cultivated bread is minted after clearing and is never
+    /// offered for sale — own-use) and AFTER production, BEFORE births (so a parent's
+    /// just-cultivated bread can endow this tick's newborn). A no-op unless the gated
+    /// cultivation path is active, so every other run is byte-identical. Deterministic:
+    /// slot order, integer thresholds, nothing drawn.
+    fn run_own_use_cultivation(&mut self, report: &mut EconTickReport) {
+        if !self.own_use_cultivation_active() {
+            return;
+        }
+        let chain = self
+            .chain
+            .as_ref()
+            .expect("the cultivation path carries a chain");
+        let bread = chain.content.bread();
+        let consume = chain.cultivate_consume;
+        // A safety cap on conversions per colonist per tick. Grain inflow is haul-bounded
+        // (one carry load per round trip), so this only guards against a pathological
+        // grain hoard spinning the loop; it never binds on the shipped haul rate.
+        const MAX_CULTIVATE_PER_TICK: u32 = 256;
+        let live = self.live_colonist_slots.clone();
+        for slot in live {
+            let (id, cultivating) = {
+                let colonist = &self.colonists[slot];
+                (colonist.id, colonist.cultivating)
+            };
+            if !cultivating {
+                continue;
+            }
+            // PRODUCE: convert ALL the grain this colonist holds into bread, so grain
+            // does not accumulate and the plateau tracks grain FLOW (mirroring how the
+            // forage haul converts straight to subsistence). The executor removes grain,
+            // credits bread to the colonist's own stock, and records the recipe labor
+            // (the more-roundabout cost); we book the conserved conversion.
+            for _ in 0..MAX_CULTIVATE_PER_TICK {
+                let Some(applied) = self
+                    .society
+                    .execute_direct_recipe_for_agent_checked(id, RecipeId::Cultivate)
+                else {
+                    break; // out of grain (or no output headroom): nothing more to cultivate
+                };
+                let (out_good, out_qty) = applied.output;
+                *report.produced.entry(out_good).or_insert(0) += u64::from(out_qty);
+                if let Some((in_good, in_qty)) = applied.input {
+                    *report.consumed_as_input.entry(in_good).or_insert(0) += u64::from(in_qty);
+                }
+            }
+            // CONSUME (own-use): eat up to `consume` of the cultivator's OWN bread
+            // through the readback seam, so hunger advances next tick from its own stock
+            // — never a market trade. The surplus stays in stock for the birth endowment.
+            let held = self.society.free_stock_after_all_reserves(id, bread);
+            let eat = consume.min(held);
+            self.consume_own_use_stock(id, bread, eat);
+        }
+    }
+
+    /// S15 own-use readback seam: debit `qty` of `good` from `agent`'s OWN stock and
+    /// record the consumption in the readback log, so the `sim` need readback advances
+    /// the agent's hunger from it next tick (a debit alone would conserve but never feed
+    /// — Base Fact 8). `report.consumed` is booked by the end-of-tick log aggregation
+    /// (the same path the market consume uses), so this only debits + logs. Called after
+    /// the market step (which clears the log at its start), so the entry survives into
+    /// the next tick's needs phase. A no-op for `qty == 0` or a debit that cannot clear.
+    fn consume_own_use_stock(&mut self, id: AgentId, good: GoodId, qty: u32) {
+        if qty == 0 {
+            return;
+        }
+        if self.society.debit_stock(id, good, qty) {
+            self.society.record_own_use_consumption(id, good, qty);
         }
     }
 
@@ -8299,6 +8627,20 @@ impl Settlement {
             .is_some_and(chain_runtime_forage_commons_active)
     }
 
+    /// S15: whether the **own-use cultivation** path can run this tick — the
+    /// `own_use_cultivation` flag is on, the content set carries the no-tool `Cultivate`
+    /// recipe, AND the own-labor/forage path it composes on is active (so the foraging
+    /// eligibility + the FORAGE node it escalates from exist). When this holds, a
+    /// still-hungry forager is steered to GoHarvest the grain node and cultivate bread
+    /// (the [`Self::run_own_use_cultivation`] phase), births broaden to endow from any
+    /// edible food, and the cultivation steering state + config knobs enter the digest.
+    /// Off (every existing config), the S14 path is unchanged and byte-identical.
+    fn own_use_cultivation_active(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(chain_runtime_own_use_cultivation_active)
+    }
+
     /// S14: the good a **birth** endows — the parent-endowment gate, the parent debit,
     /// the newborn's initial buffer, and (at generation) the founder seed. On the
     /// forage-commons path it is the FORAGE subsistence good (the colony's *actual*
@@ -8553,6 +8895,29 @@ impl Settlement {
     /// goods-for-goods volume). Zero for a designated-money settlement.
     pub fn barter_trade_count(&self) -> usize {
         self.society.barter_trades.len()
+    }
+
+    /// S15: the total units of `good` that have changed hands across the whole run — the
+    /// realized market trades plus the spatial barter trades. The acceptance suite reads
+    /// it to prove cultivated bread is **own-use** (never bartered/sold): on the
+    /// cultivation path the bread is produced and eaten after the market clears, so its
+    /// trade volume stays zero. Read-only over the conserved trade tapes.
+    pub fn trade_volume_of(&self, good: GoodId) -> u64 {
+        let market: u64 = self
+            .society
+            .trades
+            .iter()
+            .filter(|trade| trade.good == good)
+            .map(|trade| u64::from(trade.qty))
+            .sum();
+        let barter: u64 = self
+            .society
+            .barter_trades
+            .iter()
+            .filter(|trade| trade.a_gives == good || trade.b_gives == good)
+            .map(|trade| u64::from(trade.qty))
+            .sum();
+        market + barter
     }
 
     /// The adopted Mengerian envelope this camp drives, or `None` for a
@@ -9245,6 +9610,20 @@ impl Settlement {
     /// floor (the own-labor path). Always `false` for a non-own-labor settlement.
     pub fn is_foraging(&self, index: usize) -> bool {
         self.colonists.get(index).is_some_and(|c| c.foraging)
+    }
+
+    /// S15: whether the colonist at generation `index` is currently cultivating (hauling
+    /// grain to make bread by own labor). Always `false` off the cultivation path.
+    /// Mutually exclusive with [`Self::is_foraging`] — never both true in one econ tick.
+    pub fn is_cultivating(&self, index: usize) -> bool {
+        self.colonists.get(index).is_some_and(|c| c.cultivating)
+    }
+
+    /// S15: the chain's bread good (the cultivation output / hunger staple), or `None`
+    /// for a non-chain settlement. The acceptance suite reads cultivated-bread
+    /// production through it.
+    pub fn bread_good(&self) -> Option<GoodId> {
+        Some(self.chain.as_ref()?.content.bread())
     }
 
     /// S7.1: whether the colonist at generation `index` is ELIGIBLE to adopt a chain
@@ -9946,6 +10325,20 @@ impl Settlement {
                     out.push(1);
                 }
             }
+            // S15: the own-use cultivation gate + its hysteresis tier + the per-tick
+            // own-use bread draw. All steer future ticks (who escalates to cultivation,
+            // and how much bread is eaten via the readback) only while the path is
+            // active, so they are emitted ONLY when on (the gated-block discipline) — a
+            // cultivation-off chain stays byte-identical to the pre-S15 stream. (The
+            // `Cultivate` recipe itself is already in the recipe bytes above, and the
+            // grain node's stock/regen/cap are in `world.canonical_bytes`.)
+            if self.own_use_cultivation_active() {
+                out.push(1);
+                out.extend_from_slice(&chain.cultivate_hunger_in.to_le_bytes());
+                out.extend_from_slice(&chain.cultivate_hunger_out.to_le_bytes());
+                out.extend_from_slice(&chain.cultivate_consume.to_le_bytes());
+                out.extend_from_slice(&chain.cultivate_patience.to_le_bytes());
+            }
             // The staple mapping steers the next needs/scale phase for *any* chain,
             // role-choice or not, so it is included whenever a chain is active. The
             // G3b no-spread control shares the emergent config's physical state but
@@ -10299,6 +10692,11 @@ impl Settlement {
         // active-phase predicate, so a non-own-labor config keeps its pre-S12
         // per-colonist layout byte-identical.
         let own_labor_serialized = self.own_labor_subsistence_can_run();
+        // S15: the per-colonist `cultivating` flag steers the next fast loop (GoHarvest
+        // grain vs forage/WOOD) only while the cultivation phase can run; gate its byte
+        // on the active-phase predicate, so every pre-S15 config keeps its per-colonist
+        // layout byte-identical.
+        let cultivation_serialized = self.own_use_cultivation_active();
         out.extend_from_slice(&(self.colonists.len() as u32).to_le_bytes());
         for colonist in &self.colonists {
             out.extend_from_slice(&colonist.id.0.to_le_bytes());
@@ -10351,6 +10749,19 @@ impl Settlement {
                 // on the next task, so it is part of the future-behaviour identity
                 // whenever the own-labor phase runs.
                 out.push(u8::from(colonist.foraging));
+            }
+            if cultivation_serialized {
+                // S15: whether the colonist is cultivating — it steers the next fast loop
+                // (GoHarvest the grain node instead of foraging/WOOD) and the cultivation
+                // phase. Mutually exclusive with `foraging`, so two states with identical
+                // current vocation/node but different cultivating flags diverge on the
+                // next task — part of the future-behaviour identity whenever the
+                // cultivation phase runs.
+                out.push(u8::from(colonist.cultivating));
+                // S15: the cultivation pressure streak steers WHEN the colonist next
+                // escalates to cultivation, so two states identical but for it diverge on
+                // a future tick — part of the identity whenever the cultivation phase runs.
+                out.extend_from_slice(&colonist.cultivate_pressure.to_le_bytes());
             }
             if role_choice_active {
                 // The latent specialty (G3b) steers each tick's role-choice
@@ -10731,6 +11142,16 @@ fn chain_runtime_forage_commons_active(chain: &ChainRuntime) -> bool {
         chain.content.forage().is_some(),
         chain.forage_commons.is_some(),
     )
+}
+
+/// S15: own-use cultivation is active iff the flag is on, the `Cultivate` recipe is
+/// present, and the own-labor/forage path it composes on can run (so the foraging
+/// eligibility + FORAGE node exist). Off (every existing config) it is `false`, so the
+/// cultivation steering/phase/digest surface never engages and the run is byte-identical.
+fn chain_runtime_own_use_cultivation_active(chain: &ChainRuntime) -> bool {
+    chain.own_use_cultivation
+        && chain.content.cultivate_recipe().is_some()
+        && chain_runtime_own_labor_subsistence_can_run(chain)
 }
 
 /// S14: the good a birth endows (parent gate + debit, newborn seed, founder seed) —
@@ -12366,6 +12787,7 @@ fn recipe_id_tag(recipe: RecipeId) -> u8 {
         RecipeId::Bake => 4,
         RecipeId::Research => 5,
         RecipeId::Confect => 6,
+        RecipeId::Cultivate => 7,
     }
 }
 
@@ -12653,6 +13075,9 @@ fn push_recipe_id_bytes(out: &mut Vec<u8>, id: RecipeId) {
         // digests are byte-identical.
         RecipeId::Research => 5,
         RecipeId::Confect => 6,
+        // S15 own-use cultivation; carried only by the gated cultivation content set,
+        // so every pre-S15 config's recipe stream is byte-identical.
+        RecipeId::Cultivate => 7,
     });
 }
 
@@ -12727,6 +13152,7 @@ mod tests {
         assert_eq!(recipe_id_tag(RecipeId::Bake), 4);
         assert_eq!(recipe_id_tag(RecipeId::Research), 5);
         assert_eq!(recipe_id_tag(RecipeId::Confect), 6);
+        assert_eq!(recipe_id_tag(RecipeId::Cultivate), 7);
 
         assert_eq!(cantillon_sector_tag(CantillonSector::Capitalists), 0);
         assert_eq!(cantillon_sector_tag(CantillonSector::Households), 1);
@@ -15035,6 +15461,77 @@ mod tests {
             off_before,
             off.canonical_bytes(),
             "with own-labor off, the unused foraging flag must not steer the digest"
+        );
+    }
+
+    #[test]
+    fn canonical_bytes_include_own_use_cultivation() {
+        // S15: the own-use cultivation gate + its thresholds steer who escalates to
+        // cultivation and how much bread is eaten, so a cultivation config must digest
+        // apart from the same config with the flag off — and an OFF config must NOT
+        // serialize the (unused) thresholds.
+        let on = Settlement::generate(7, &SettlementConfig::frontier_cultivation());
+        let mut off_cfg = SettlementConfig::frontier_cultivation();
+        off_cfg.chain.as_mut().expect("chain").own_use_cultivation = false;
+        let off = Settlement::generate(7, &off_cfg);
+        assert_ne!(
+            on.canonical_bytes(),
+            off.canonical_bytes(),
+            "the own_use_cultivation flag + thresholds must be part of the identity"
+        );
+
+        // With cultivation off, the unused thresholds cannot steer a future tick, so
+        // varying one must NOT split the digest.
+        let mut off2 = off_cfg.clone();
+        off2.chain.as_mut().expect("chain").cultivate_consume = 99;
+        off2.chain.as_mut().expect("chain").cultivate_patience = 17;
+        assert_eq!(
+            off.canonical_bytes(),
+            Settlement::generate(7, &off2).canonical_bytes(),
+            "with cultivation off the unused thresholds must not steer the digest"
+        );
+
+        // A non-cultivation chain (no Cultivate recipe) likewise ignores the thresholds.
+        let base = Settlement::generate(7, &SettlementConfig::frontier_forage_capacity());
+        let mut base_cfg = SettlementConfig::frontier_forage_capacity();
+        base_cfg.chain.as_mut().expect("chain").cultivate_consume = 42;
+        assert_eq!(
+            base.canonical_bytes(),
+            Settlement::generate(7, &base_cfg).canonical_bytes(),
+            "off the cultivation path the cultivate thresholds must not steer the digest"
+        );
+    }
+
+    #[test]
+    fn canonical_bytes_include_cultivating_state() {
+        // S15: the per-colonist `cultivating` flag and `cultivate_pressure` streak steer
+        // the next world task and WHEN the colonist next escalates, so two cultivation
+        // states differing only in them must digest apart — and an off-cultivation chain
+        // must NOT serialize either (byte-identical).
+        let mut on = Settlement::generate(7, &SettlementConfig::frontier_cultivation());
+        let before = on.canonical_bytes();
+        on.colonists[0].cultivating = !on.colonists[0].cultivating;
+        assert_ne!(
+            before,
+            on.canonical_bytes(),
+            "with cultivation on, a colonist's cultivating flag must be in the digest"
+        );
+        let before = on.canonical_bytes();
+        on.colonists[0].cultivate_pressure = on.colonists[0].cultivate_pressure.wrapping_add(1);
+        assert_ne!(
+            before,
+            on.canonical_bytes(),
+            "with cultivation on, the cultivate-pressure streak must be in the digest"
+        );
+
+        let mut off = Settlement::generate(7, &SettlementConfig::frontier_forage_capacity());
+        let off_before = off.canonical_bytes();
+        off.colonists[0].cultivating = !off.colonists[0].cultivating;
+        off.colonists[0].cultivate_pressure = off.colonists[0].cultivate_pressure.wrapping_add(5);
+        assert_eq!(
+            off_before,
+            off.canonical_bytes(),
+            "with cultivation off, the unused cultivating state must not steer the digest"
         );
     }
 

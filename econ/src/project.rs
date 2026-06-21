@@ -21,6 +21,14 @@ pub enum RecipeId {
     /// flipped `true` by the `sim` unlock once Knowledge crosses the threshold). A
     /// content recipe, applied by the `sim` producer phase, never by the lab planner.
     Confect,
+    /// S15 own-use cultivation: a **no-tool** grain → bread recipe a hungry colonist
+    /// runs by its OWN labor (the more-roundabout, more-laborious alternative to
+    /// foraging), applied by the `sim` own-use cultivation phase, never by the lab
+    /// planner or the producer phase. Its conversion is booked `produced`/
+    /// `consumed_as_input` and the bread is eaten at home (own-use) — not traded. A
+    /// content recipe carried only by the gated cultivation content set, so every
+    /// other config is byte-identical.
+    Cultivate,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
