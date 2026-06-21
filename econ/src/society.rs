@@ -5582,6 +5582,9 @@ impl Society {
             .iter()
             .find(|recipe| recipe.id == recipe_id)?
             .clone();
+        // An intentional fast-path, not a missed dedup: `execute_direct_recipe_for_agent`
+        // re-checks the same `recipe.labor > remaining_labor` guard, but bailing here
+        // skips the output-headroom preflight below for a recipe that cannot run anyway.
         if recipe.labor > remaining_labor {
             return None;
         }
