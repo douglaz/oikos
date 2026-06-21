@@ -196,6 +196,12 @@ const SCENARIOS: &[Scenario] = &[
         build: build_provisioned,
     },
     Scenario {
+        name: "spatial-households",
+        description:
+            "S13: SPATIAL HOUSEHOLDS — the G5b frontier with the reproducing population unified into the spatial model: every lineage member (founders + newborns) now gets a WORLD AGENT at its exact econ id (world_id == econ_id, even after a death recycled an arena slot), so the colony that GROWS can now forage/gather/haul like anyone else. Purely structural: no forage scarcity, cultivation, or mortality yet (those are S14+), so with the hearth still feeding the lineages the spatial members sit idle and demography is unchanged — the milestone grants the CAPABILITY that unblocks the scarcity arc.",
+        build: build_spatial_households,
+    },
+    Scenario {
         name: "millisats-1x",
         description:
             "EXPERIMENT: frontier at coarse (x1) money precision — the unit-starved baseline that freezes (~320 money units)",
@@ -407,6 +413,10 @@ fn build_entrepreneurial() -> SettlementConfig {
 
 fn build_provisioned() -> SettlementConfig {
     SettlementConfig::frontier_coemergent_strong_provisioned()
+}
+
+fn build_spatial_households() -> SettlementConfig {
+    SettlementConfig::frontier_spatial_households()
 }
 
 fn build_millisats_1x() -> SettlementConfig {

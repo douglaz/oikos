@@ -2436,6 +2436,27 @@ impl SettlementConfig {
         }
     }
 
+    /// S13 — **spatial households**: the G5b [`Self::frontier`] (never mutated) with
+    /// the demography overlay's `spatial_households` flag flipped on. Every lineage
+    /// member (founders at generation + newborns at birth) now gets a **world agent**
+    /// at its exact econ id, so the reproducing population is spatial and *can* be
+    /// assigned forage/gather/haul tasks — the structural unification that unblocks the
+    /// scarcity arc (S14+).
+    ///
+    /// It is **purely structural**: there is no forage scarcity yet (the food hearth
+    /// still feeds the lineages), so the motivation to forage is absent and the
+    /// demography behaves exactly as `frontier`'s — the spatial world agents sit Idle.
+    /// The milestone adds the *capability*, not a behavior change. Derived by flipping
+    /// a single flag, so with it reverted it is byte-identical to `frontier`.
+    pub fn frontier_spatial_households() -> Self {
+        let mut cfg = Self::frontier();
+        cfg.demography
+            .as_mut()
+            .expect("the frontier carries a demography overlay")
+            .spatial_households = true;
+        cfg
+    }
+
     /// EXPERIMENTAL (progression probe — not a golden path): `frontier` with the
     /// whole productive bundle scaled by `scale` — the food supply (grain/WOOD
     /// node regen, cap, stock), the gathering labor force, and the chain
@@ -6580,22 +6601,29 @@ impl Settlement {
         let yield_units = chain.forage_yield;
         let h_in = chain.forage_hunger_in;
         let h_out = chain.forage_hunger_out;
+        // S13: with spatial households on, a lineage member is itself spatial (it has a
+        // world agent), so it joins the forage-eligible set — the ONE scoped behavior
+        // change that lets the reproducing population forage. Off the flag the gate is
+        // exactly `household.is_none()` (the pre-S13 non-lineage poor), so every other run
+        // is byte-identical.
+        let spatial_active = self.spatial_households_active();
         let live = self.live_colonist_slots.clone();
         for slot in live {
             let (id, eligible, hunger, was_foraging) = {
                 let colonist = &self.colonists[slot];
-                // The spatial non-lineage poor with spare labor (`household: None`,
-                // untooled-or-latent role). An actively-producing role (Miller/Baker/
-                // Scholar/Confectioner) is excluded: it spends its one world-task slot
-                // producing and is meant to earn its food by buying bread. TRACKED GAP:
-                // with its staple mint retired, an active producer's only food path is
-                // the bread market — unreachable on this path because SALT never
-                // monetizes, so no active producer ever forms (asserted in
-                // `producer_food_path_is_feasible`). Before any own-labor config that DOES
-                // monetize (the differentiated-food / S13 follow-on), an active producer
-                // must get a forage-when-too-hungry-to-produce path, or it would starve.
-                // A lineage member is non-spatial (no world task) and fed through the market.
-                let eligible = colonist.household.is_none()
+                // The spatial poor with spare labor in an untooled-or-latent role
+                // (`Consumer`/`Gatherer`/`Unassigned`). An actively-producing role
+                // (Miller/Baker/Scholar/Confectioner) is excluded: it spends its one
+                // world-task slot producing and is meant to earn its food by buying bread.
+                // TRACKED GAP: with its staple mint retired, an active producer's only food
+                // path is the bread market — unreachable on the non-spatial own-labor path
+                // because SALT never monetizes, so no active producer ever forms (asserted
+                // in `producer_food_path_is_feasible`). Before any own-labor config that
+                // DOES monetize, an active producer must get a forage-when-too-hungry path.
+                // Pre-S13 a lineage member is non-spatial and excluded (`household: None`
+                // only); S13 spatial households make it spatial too, so it joins the set.
+                let spatial_member = colonist.household.is_none() || spatial_active;
+                let eligible = spatial_member
                     && matches!(
                         colonist.vocation,
                         Vocation::Consumer | Vocation::Gatherer | Vocation::Unassigned
@@ -7318,14 +7346,20 @@ impl Settlement {
         let Some(grain_node) = self.node_for_good(grain) else {
             return;
         };
+        // S13: with spatial households on, a lineage member is spatial and may itself
+        // re-enter grain gathering when hungry (carry rises → deposit), so it is no
+        // longer skipped here. Off the flag the skip is exactly the pre-S13 gate
+        // (`household.is_some()`), so every existing run is byte-identical.
+        let spatial_active = self.spatial_households_active();
         for &slot in &self.live_colonist_slots {
             let colonist = &self.colonists[slot];
-            // Lineage members are hearth-fed; the tooled chain producers (latent or
-            // active Miller/Baker/Scholar/Confectioner) are the S7 path — skip both.
-            // This includes a formerly non-latent tool-holder that adopted Miller/Baker
-            // earlier this same tick: its home role is still spatial, but re-entry must
-            // not revert an active capital holder before market/production.
-            if colonist.household.is_some()
+            // Pre-S13 lineage members are hearth-fed and skipped; the tooled chain
+            // producers (latent or active Miller/Baker/Scholar/Confectioner) are the S7
+            // path — skip both. This includes a formerly non-latent tool-holder that
+            // adopted Miller/Baker earlier this same tick: its home role is still spatial,
+            // but re-entry must not revert an active capital holder before market/
+            // production. With spatial households on, a lineage member is no longer skipped.
+            if (colonist.household.is_some() && !spatial_active)
                 || colonist.latent.is_some()
                 || matches!(
                     colonist.vocation,
@@ -15118,7 +15152,11 @@ mod tests {
                 "population diverged at tick {tick}"
             );
             for i in 0..base.population() {
-                assert_eq!(base.is_alive(i), spatial.is_alive(i), "liveness at {i}/{tick}");
+                assert_eq!(
+                    base.is_alive(i),
+                    spatial.is_alive(i),
+                    "liveness at {i}/{tick}"
+                );
                 assert_eq!(
                     base.need_of(i).map(|n| (n.hunger, n.warmth, n.rest)),
                     spatial.need_of(i).map(|n| (n.hunger, n.warmth, n.rest)),

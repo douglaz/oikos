@@ -1709,6 +1709,44 @@ feeding the tail by a non-bread floor removes the bread trade that monetizes SAL
 deliberately out of S12 scope. Landed honestly as a finding (`docs/finding-household-subsistence.md`),
 not forced with re-minted food or raw-grain edibility.
 
+## Status: S13 (spatial households — unify the colonist model) — complete
+
+S12's finding exposed the structural obstacle underneath the scarcity arc: the colony had **two
+disjoint populations** — a *spatial* non-lineage roster (world agents that forage/gather/haul) that
+**never reproduces**, and *non-spatial* lineage members (econ-only, hearth-fed) that **do reproduce**.
+So the population that *grows* could not *forage*, and a forage-carrying-capacity story was impossible.
+S13 **unifies the model**: it makes lineage members (founders + newborns) **spatial**, so the
+reproducing population can forage like anyone else. Built, gated, conserving — behind a default-off
+`DemographyConfig::spatial_households`, per `docs/impl-spatial-households.md`:
+
+- [x] **S13.0 — `World::add_agent_with_id` (the id-mirror primitive).** Inserts a world agent at the
+      **exact** econ `AgentId` (generation included), so the world mirrors the econ `AgentArena`'s id
+      space. Two invariants keep the spaces consistent: a same-numeric-slot live insert is rejected at
+      ANY generation (one live generation per slot), and a generation-0 id at/above the watermark
+      advances `next_agent_index` so a later legacy `add_agent` cannot collide. `add_agent` is retained.
+- [x] **S13.1 — founders spatial at generation.** Each lineage founder gets a world agent via
+      `add_agent_with_id(founder_econ_id, …)` at the exchange, so `world_id == econ_id` by construction.
+      Founders stay Idle and fed exactly as before.
+- [x] **S13.2 — newborns spatial at birth.** `run_births` mirrors the newborn's econ id (a reused arena
+      `slot#gen` after a death recycled the slot) into the world, so coincidence holds mid-run too.
+      Death already removes the world agent (`collect_estate`), so there is no leak.
+- [x] **S13.3 — lineage forage/gather eligibility + the `spatial-households` scenario.** The one scoped
+      behavior change: the own-labor forage gate and the productive-re-entry skip now admit spatial
+      lineage members (gated by `spatial_households`), so the reproducing population can be ASSIGNED
+      forage/gather/haul tasks. `SettlementConfig::frontier_spatial_households` is the shipped scenario
+      (no forage scarcity yet — the hearth still feeds the lineages, so the spatial members sit idle and
+      demography is unchanged). Acceptance suite `sim/tests/spatial_households.rs` (determinism, id
+      coincidence across births AND deaths, conservation, a lineage member foraging from its own labor,
+      feeding/demography unchanged in substance, goldens unchanged).
+
+**Purely structural**: id coincidence holds for every living colonist on every tick (founders, the
+roster, AND mid-run newborns including after arena slot reuse), conservation and determinism hold, and
+the reproducing population can now forage. NO forage scarcity, cultivation, or mortality is added — those
+are the deferred S14→S16 arc this unblocks. All additive/gated: with the flag off the S5–S12 scenarios +
+the econ + g5a/g5b/coemergence + the demographic `lineages` goldens are byte-identical.
+
+- [x] viewer: the `spatial-households` scenario (`cargo run -p viewer -- run spatial-households`)
+
 ## Build and test
 
 ```bash
