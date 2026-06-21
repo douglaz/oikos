@@ -491,8 +491,16 @@ fn checked_direct_recipe_respects_external_labor_budget() {
         "a recipe must not run when the caller's labor budget is too small"
     );
     let agent = society.agents.get(AgentId(0)).expect("agent exists");
-    assert_eq!(agent.stock.get(content.grain()), 2, "input was consumed");
-    assert_eq!(agent.stock.get(content.bread()), 0, "output was produced");
+    assert_eq!(
+        agent.stock.get(content.grain()),
+        2,
+        "input was not consumed"
+    );
+    assert_eq!(
+        agent.stock.get(content.bread()),
+        0,
+        "output was not produced"
+    );
     assert!(society.labor_used_last_tick().is_empty());
 
     let applied = society

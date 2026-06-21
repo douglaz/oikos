@@ -4895,6 +4895,28 @@ impl Settlement {
                 "own-labor subsistence hysteresis requires forage_hunger_out < forage_hunger_in"
             );
             if chain_config_own_use_cultivation_active(chain) {
+                let cultivate = chain
+                    .content
+                    .cultivate_recipe()
+                    .expect("active cultivation carries a Cultivate recipe");
+                assert!(
+                    chain.content.bread() == known.hunger,
+                    "own-use cultivation requires cultivated bread to be the hunger good"
+                );
+                assert!(
+                    cultivate
+                        .input_good
+                        .is_some_and(|(good, _)| good == chain.content.grain())
+                        && cultivate.output_good == chain.content.bread(),
+                    "own-use cultivation requires Cultivate to convert grain into bread"
+                );
+                assert!(
+                    config
+                        .nodes
+                        .iter()
+                        .any(|spec| spec.good == chain.content.grain()),
+                    "own-use cultivation requires a grain resource node"
+                );
                 assert!(
                     chain.cultivate_hunger_out < chain.cultivate_hunger_in,
                     "own-use cultivation requires cultivate_hunger_out < cultivate_hunger_in"
@@ -16076,6 +16098,30 @@ mod tests {
         // valve never relieves hunger and bread silently hoards — rejected at config time.
         let mut cfg = SettlementConfig::frontier_cultivation();
         cfg.chain.as_mut().expect("chain").cultivate_consume = 0;
+        let _ = Settlement::generate(7, &cfg);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "own-use cultivation requires cultivated bread to be the hunger good"
+    )]
+    fn active_own_use_cultivation_rejects_non_staple_bread() {
+        // The own-use phase consumes `content.bread()` and the need readback only feeds
+        // hunger from known edible goods. If bread is not the hunger staple, cultivated
+        // bread would be debited/logged without relieving hunger.
+        let mut cfg = SettlementConfig::frontier_cultivation();
+        cfg.chain.as_mut().expect("chain").bread_is_staple = false;
+        let _ = Settlement::generate(7, &cfg);
+    }
+
+    #[test]
+    #[should_panic(expected = "own-use cultivation requires a grain resource node")]
+    fn active_own_use_cultivation_rejects_missing_grain_node() {
+        // Cultivators are steered to GoHarvest the grain node before applying the
+        // recipe. Without one they would stop foraging but never receive input.
+        let mut cfg = SettlementConfig::frontier_cultivation();
+        let grain = cfg.chain.as_ref().expect("chain").content.grain();
+        cfg.nodes.retain(|spec| spec.good != grain);
         let _ = Settlement::generate(7, &cfg);
     }
 
