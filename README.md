@@ -1732,18 +1732,24 @@ reproducing population can forage like anyone else. Built, gated, conserving —
       Death already removes the world agent (`collect_estate`), so there is no leak.
 - [x] **S13.3 — lineage forage/gather eligibility + the `spatial-households` scenario.** The one scoped
       behavior change: the own-labor forage gate and the productive-re-entry skip now admit spatial
-      lineage members (gated by `spatial_households`), so the reproducing population can be ASSIGNED
-      forage/gather/haul tasks. `SettlementConfig::frontier_spatial_households` is the shipped scenario
-      (no forage scarcity yet — the hearth still feeds the lineages, so the spatial members sit idle and
-      demography is unchanged). Acceptance suite `sim/tests/spatial_households.rs` (determinism, id
-      coincidence across births AND deaths, conservation, a lineage member foraging from its own labor,
-      feeding/demography unchanged in substance, goldens unchanged).
+      lineage members (gated by `spatial_households`), so the reproducing population enters the
+      forage/gather eligibility sets. `SettlementConfig::frontier_spatial_households` is the shipped
+      scenario (no forage scarcity yet — the hearth still feeds the lineages, so the spatial members sit
+      idle and demography is unchanged). Acceptance suite `sim/tests/spatial_households.rs` (determinism,
+      id coincidence across births AND deaths, conservation, a lineage member foraging from its own labor,
+      feeding/demography unchanged in substance, goldens unchanged). **Scope honesty (Codex):** the test
+      proves the **forage** path (eligibility → `produced[FORAGE]` → hunger relief); the full `GoHarvest`
+      carry→deposit→transfer **haul** cycle for a lineage member is *wired* but exercised by S14, not
+      proven here.
 
-**Purely structural**: id coincidence holds for every living colonist on every tick (founders, the
-roster, AND mid-run newborns including after arena slot reuse), conservation and determinism hold, and
-the reproducing population can now forage. NO forage scarcity, cultivation, or mortality is added — those
-are the deferred S14→S16 arc this unblocks. All additive/gated: with the flag off the S5–S12 scenarios +
-the econ + g5a/g5b/coemergence + the demographic `lineages` goldens are byte-identical.
+**Structural prerequisite (Codex-reviewed: PASS, no P0/P1).** S13.0–S13.2 are purely structural (idle
+mirrored world agents, no behavior change); **S13.3 is the one scoped behavior change** (lineage members
+enter the forage/re-entry eligibility sets). id coincidence holds for every living colonist on every tick
+(founders, the roster, AND mid-run newborns including after arena slot reuse — the P0 case is exercised),
+conservation and determinism hold, and the reproducing population can now forage. NO forage scarcity,
+cultivation, or mortality is added — those are the deferred S14→S16 arc this unblocks. All additive/gated:
+with the flag off the S5–S12 scenarios + the econ + g5a/g5b/coemergence + the demographic `lineages`
+goldens are byte-identical.
 
 - [x] viewer: the `spatial-households` scenario (`cargo run -p viewer -- run spatial-households`)
 
