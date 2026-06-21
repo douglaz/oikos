@@ -114,6 +114,15 @@ pub const FAST_TICKS_PER_ECON_TICK: u64 = 24;
 /// `econ` direct-labor capacity at zero so they do not run content recipes through the
 /// generic market path; this external budget is the time envelope the own-use phase
 /// spends through the checked direct-recipe seam.
+///
+/// The budget is a deliberately generous *produce ceiling*, not a per-tick rate target.
+/// At [`CULTIVATE_LABOR`] = 2 it allows up to 24 loaves/cultivator/econ-tick versus a
+/// [`ChainConfig::cultivate_consume`] of 4 eaten — a ~6× gap whose surplus accrues in
+/// stock as the child-endowment reserve (the broadened birth-food rule endows newborns
+/// from a parent's cultivated bread). In practice it is GRAIN-flow-bound, never
+/// labor-bound: the phase stops as soon as the colonist's hauled grain runs out, so the
+/// real per-tick output tracks the grain the cultivator could carry, well under the
+/// ceiling. The headroom only ensures a bumper haul is fully converted in one tick.
 const OWN_USE_CULTIVATION_LABOR_BUDGET: u32 = 48;
 
 /// Econ ticks per settlement "year" — the horizon unit the smoke test counts in.
@@ -6575,13 +6584,14 @@ impl Settlement {
             // on it — so a fed-by-forage colony endows children from forage, not bread.
             // S15: on the cultivation path this BROADENS to any edible food the parent
             // holds (bread first, then forage), so cultivated bread can endow children.
-            let foods = self.birth_food_options();
+            let mut food_buf = [self.known.hunger; 2];
+            let foods = self.birth_food_options(&mut food_buf);
             let parent_slot = member_slots
                 .iter()
                 .copied()
                 .filter(|&slot| {
                     let pid = self.colonists[slot].id;
-                    self.parent_birth_food(pid, &foods, demo.child_food_endowment)
+                    self.parent_birth_food(pid, foods, demo.child_food_endowment)
                         .is_some()
                 })
                 .max_by_key(|&slot| {
@@ -6601,7 +6611,7 @@ impl Settlement {
             // The endowment good the chosen parent actually holds (the first option in
             // preference order). With one option this is exactly the S14 `birth_food()`.
             let staple = self
-                .parent_birth_food(parent_id, &foods, demo.child_food_endowment)
+                .parent_birth_food(parent_id, foods, demo.child_food_endowment)
                 .expect("the parent was filtered for holding an endowment food");
             let parent_culture = self.colonists[parent_slot].culture;
             let parent_seed = self.colonists[parent_slot].seed;
@@ -8719,6 +8729,16 @@ impl Settlement {
             .map(|(good, _)| good)
     }
 
+    /// S15: whether a cultivator's grain haul is still IN FLIGHT, so the steering latch
+    /// holds `cultivating` until the grain reaches econ stock — the colonist is CARRYING
+    /// the input good (the return-with-grain leg) or it has a PENDING DEPOSIT of it (the
+    /// just-landed leg). The empty-carry walk-out leg is deliberately NOT a latch leg:
+    /// under scarcity (the only regime that escalates to cultivation) hunger climbs back
+    /// over `cultivate_hunger_in`, so a colonist that cleared the flag mid-walk
+    /// re-escalates and deposits its harvested grain on the next cultivation spell — the
+    /// carry is held (conserved, attributed by the [`Self::run_fast_loop`] carry-snapshot),
+    /// never lost. Latching the walk leg too would instead hold the colonist cultivating
+    /// CONTINUOUSLY, which shifts the carrying-capacity equilibrium.
     fn cultivation_input_in_flight(&self, id: AgentId, input: GoodId) -> bool {
         self.world.agent_carry(id, input) > 0
             || self
@@ -8756,17 +8776,22 @@ impl Settlement {
     /// cultivator's own bread can endow children. Without this a fed-by-cultivation
     /// colony would still stall births on a FORAGE shortage (the cultivators gather grain,
     /// not forage), and the intensified plateau could not rise (Base Fact 7).
-    fn birth_food_options(&self) -> Vec<GoodId> {
+    fn birth_food_options<'a>(&self, buf: &'a mut [GoodId; 2]) -> &'a [GoodId] {
         if self.own_use_cultivation_active() {
-            let mut foods = vec![self.known.hunger];
+            buf[0] = self.known.hunger;
+            let mut len = 1;
             if let Some(sub) = self.known.subsistence {
                 if sub != self.known.hunger {
-                    foods.push(sub);
+                    buf[1] = sub;
+                    len = 2;
                 }
             }
-            foods
+            &buf[..len]
         } else {
-            vec![self.birth_food()]
+            // The single S14 selector — kept a stack write (no allocation) on the shared
+            // off-cultivation `run_births` hot path.
+            buf[0] = self.birth_food();
+            &buf[..1]
         }
     }
 
@@ -15700,9 +15725,10 @@ mod tests {
         let forage_cfg = SettlementConfig::frontier_forage_capacity();
         let forage = forage_cfg.chain.as_ref().unwrap().content.forage().unwrap();
         let s = Settlement::generate(1, &forage_cfg);
+        let mut buf = [s.known.hunger; 2];
         assert_eq!(
-            s.birth_food_options(),
-            vec![forage],
+            s.birth_food_options(&mut buf),
+            [forage].as_slice(),
             "off cultivation the birth-food rule is the single S14 (forage) selector"
         );
 
@@ -15710,9 +15736,10 @@ mod tests {
         let bread = cult_cfg.chain.as_ref().unwrap().content.bread();
         let forage = cult_cfg.chain.as_ref().unwrap().content.forage().unwrap();
         let s = Settlement::generate(1, &cult_cfg);
+        let mut buf = [s.known.hunger; 2];
         assert_eq!(
-            s.birth_food_options(),
-            vec![bread, forage],
+            s.birth_food_options(&mut buf),
+            [bread, forage].as_slice(),
             "on cultivation the rule broadens to bread first, then forage"
         );
     }
