@@ -214,6 +214,12 @@ const SCENARIOS: &[Scenario] = &[
         build: build_cultivation,
     },
     Scenario {
+        name: "money-from-cultivation",
+        description:
+            "S16: MONEY FROM PRODUCED BREAD — the keystone. The S15 cultivation colony with a SALT-rich consumer BUY side restored and the cultivators' SURPLUS produced bread traded for SALT (the mint is OFF, so the only bread is cultivated): does money emerge against PRODUCED, not minted, bread? FINDING (principled failure, robust across the grain-flow sweep): the seam WORKS — the produced surplus is traded for SALT (a material, supply-scaling volume the provenance ledger attributes wholly to PRODUCED) — but SALT NEVER PROMOTES. With the mint retired the colony is hunger-stressed, so BREAD itself becomes the dominant saleable good (consumed food, it cannot be money) and the durable medium never leads, so its indirect-exchange breadth stays ZERO. This sharpens S12: the minted bread kept hunger low enough for a non-food good to become the money hub. Controls bracket it — minted-bread S9 promotes; no cultivation leaves zero bread→SALT volume. Run with more ticks (e.g. 3000).",
+        build: build_money_from_cultivation,
+    },
+    Scenario {
         name: "millisats-1x",
         description:
             "EXPERIMENT: frontier at coarse (x1) money precision — the unit-starved baseline that freezes (~320 money units)",
@@ -437,6 +443,10 @@ fn build_forage_capacity() -> SettlementConfig {
 
 fn build_cultivation() -> SettlementConfig {
     SettlementConfig::frontier_cultivation()
+}
+
+fn build_money_from_cultivation() -> SettlementConfig {
+    SettlementConfig::frontier_money_from_cultivation()
 }
 
 fn build_millisats_1x() -> SettlementConfig {

@@ -10769,6 +10769,26 @@ impl Settlement {
             .collect()
     }
 
+    /// S16 causality probe (read-only): whether the chain **bread** is among the **medium**
+    /// candidate's saleability counterpart goods — i.e. bread is materially traded against
+    /// the medium in the saleability the promotion gate reads, not incidental. Distinguishes
+    /// the third outcome (the medium promotes on WOOD/forage breadth with bread incidental)
+    /// from a real produced-bread channel. `false` for a settlement with no medium/chain.
+    /// Reads only.
+    pub fn bread_in_medium_saleability(&self) -> bool {
+        let (Some((medium, _)), Some(content), Some(emergence)) =
+            (self.barter_medium, self.content(), self.society.emergence())
+        else {
+            return false;
+        };
+        let bread = content.bread();
+        emergence
+            .tracker()
+            .candidate_saleability()
+            .find(|candidate| candidate.good == medium)
+            .is_some_and(|candidate| candidate.counterpart_goods.contains(&bread))
+    }
+
     /// S8.0 emergence probe (read-only): the working capital of every living chain
     /// producer — active (Miller/Baker) and latent (an `Unassigned` colonist holding
     /// a mill/oven, distinguished into latent Miller/Baker by its latent recipe). For

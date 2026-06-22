@@ -1909,6 +1909,81 @@ steering, the cultivation thresholds — enters `canonical_bytes` ONLY on the fl
 
 - [x] viewer: the `cultivation` scenario (`cargo run -p viewer -- run cultivation --ticks 3000`)
 
+## Status: S16 (money from PRODUCED bread — the keystone) — complete (principled-failure finding)
+
+S12's deep analysis showed the strong-bar money emergence (S9) was **not provision-autarkic**: SALT
+monetized against a **minted** demographic bread stream — the minted hearth was the load-bearing
+*supply* the SALT-holding consumers circulated against. S13→S15 built the missing piece (a spatial
+reproducing population that, under forage scarcity, **cultivates bread by its own labor**). S16 closes
+the loop: let that **produced** bread be **traded** for SALT, and test whether **money emerges against
+produced (not minted) bread**. Both a success and a deeper characterized finding were first-class; the
+honest outcome is the **principled failure** (`produced_bread_does_not_monetize`) — which **sharpens**
+S12 rather than faking around it. Built, gated, conserving — per `docs/impl-money-from-produced-bread.md`:
+
+- [x] **S16.1 — the cultivated-bread → market surplus seam + the buy/sell split.** A default-off
+      `cultivation_sells_surplus` flag (`ChainConfig`/`ChainRuntime` + the active-path helpers). The
+      **surplus seam needs no new offer code**: a satiated cultivator leaves its surplus produced bread
+      free in stock and the **existing S9 direct/indirect barter** (`generate_*_barter_offers`, reading
+      `positive_goods`) offers it for the cultivator's *normal* unsatisfied wants — no special SALT want
+      (avoids circular demand; SALT monetizes via the existing direct/indirect logic). The **buy/sell
+      split** (Codex P1c) scopes forage/cultivation eligibility to **lineage** spatial members
+      (`household.is_some() && spatial_active`), so the seeded SALT-rich consumers stay the goods-poor
+      **buy side** and never self-cultivate. `frontier_money_from_cultivation` composes the strong-bar
+      SALT machinery + S13 spatial + S14 forage commons + S15 cultivation + the flag, with the **mint
+      off** and the bread buffers absent.
+- [x] **S16.2 — the produced-bread provenance LEDGER (stock-origin, not role).** Role/cultivating-state
+      at trade time is unsound (S15 bread is produced post-market and sold a *later* tick, and a buyer
+      can resell), so provenance follows the **stock origin**: a per-agent produced-bread counter
+      (the other-origin pool is the residual `stock − produced`), credited on a production event
+      (cultivation or a chain baker) and **debited produced-first** (deterministic FIFO, in stock-removal
+      order) when bread leaves stock — a **sink** (eaten/spoiled/estate→commons) to a sunk counter, a
+      **transfer** (sale/birth endowment/estate→heir) moving the drawn produced units to the receiver, so
+      a resold produced loaf stays produced and a resold minted loaf stays minted (not mis-attributed). A
+      bread→medium trade is attributed produced to the extent the seller's debit draws produced, else
+      minted. Exposes `bread_for_salt_volume_by_provenance` (produced vs minted) + the pre-promotion
+      split + the instrumentation. A per-tick conservation receipt (`credited == sunk + held`, and each
+      living agent's `produced ≤ stock`) is `debug_assert`ed.
+- [x] **S16.3 — the co-emergence scenario + DoD.** The `money-from-cultivation` viewer scenario is
+      registered. Acceptance suite `sim/tests/money_from_produced_bread.rs` (+ `bread_provenance.rs`,
+      `cultivation_surplus_market.rs`) — `money_from_cultivation_run_is_deterministic`,
+      `produced_bread_does_not_monetize`, `the_monetizing_bread_is_produced_not_minted`,
+      `produced_bread_is_material_not_incidental`, `cultivation_division_of_labor_forms`,
+      `money_from_cultivation_conserves`, `controls_close_the_finding`,
+      `produced_bread_market_scales_with_supply`, `goldens_unchanged`.
+
+**Does money emerge against produced bread? No — the principled failure, robust across the sweep.** The
+surplus **seam works**: the cultivators' produced bread reaches the barter and is traded for SALT — a
+material, **supply-scaling** volume (it grows monotonically with the cultivated-grain flow) that the
+provenance ledger attributes **wholly to PRODUCED** (minted **provably zero**, buffers absent), and
+bread is **material** in SALT's saleability (not incidental). **But SALT never promotes.** The
+characterized reason (timing/breadth): with the mint retired the colony is **hunger-stressed**, so
+**BREAD itself becomes the dominant saleable good** — but bread is consumed food and cannot be money —
+so the durable medium is never the provisional leader and its **indirect-exchange breadth (what the
+strong-bar gate requires) is identically ZERO**. This **sharpens S12**: the minted bread was
+load-bearing not merely as *supply* but because it kept hunger low enough that a **durable non-food
+good** could become the saleability hub. The controls bracket it: the minted-bread **S9 colony does
+promote SALT** (the gate works — the finding is about the *supply*, not a broken gate), and **disabling
+cultivation leaves zero** bread→medium volume (no produced supply, nothing to trade). The finding is
+**not** rescued by re-minting bread (the false third outcome — SALT promoting via WOOD/forage with bread
+incidental — does not occur and is guarded against).
+
+**Honest scope.** S16 proves the produced-bread → SALT seam is real (the surplus is traded, attributed
+produced by stock origin, conserved every tick — grain regen the source; grain `consumed_as_input` →
+bread `produced` → consumed/traded; no minted food, `endowment[staple] == 0`) but that, under a
+mint-off composition, **produced bread cannot replace the minted bread as the supply that monetizes
+SALT** — because removing the mint makes *food itself* the dominant saleable good. The
+`warmth_per_wood`/`wood_provision` scenario knobs are **not** tuned to force an outcome (SALT never
+promotes at any setting); they remove a barter offer-ordering artifact (WOOD, a lower good id, would
+otherwise preempt bread in the one-offer-per-agent barter) so the produced surplus actually reaches the
+market and the real economic question can be observed.
+
+All additive/gated: with `cultivation_sells_surplus` off the S5–S15 scenarios + the six econ +
+g5a/g5b/coemergence emergence + the demographic `lineages` goldens are byte-identical (the new state —
+the flag and the per-agent produced-bread provenance counters — enters `canonical_bytes` ONLY on the
+flag-on path, with `canonical_bytes_include_cultivation_sells_surplus` / `_bread_provenance` regressions).
+
+- [x] viewer: the `money-from-cultivation` scenario (`cargo run -p viewer -- run money-from-cultivation --ticks 3000`)
+
 ## Build and test
 
 ```bash
