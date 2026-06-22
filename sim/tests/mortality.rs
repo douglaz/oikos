@@ -23,6 +23,10 @@ use world::Pos;
 
 // ---- shared helpers -----------------------------------------------------
 
+fn living(s: &Settlement) -> usize {
+    (0..s.population()).filter(|&i| s.is_alive(i)).count()
+}
+
 /// A minimal econ agent for probing arena slot reuse (mirrors the g4a harness).
 fn fresh_agent() -> Agent {
     Agent {
@@ -54,6 +58,22 @@ fn dieoff_config() -> SettlementConfig {
         cap: 4_000,
     }];
     cfg
+}
+
+fn corr(xs: &[f64], ys: &[f64]) -> f64 {
+    let n = xs.len() as f64;
+    let mx = xs.iter().sum::<f64>() / n;
+    let my = ys.iter().sum::<f64>() / n;
+    let (mut sxy, mut sxx, mut syy) = (0.0, 0.0, 0.0);
+    for i in 0..xs.len() {
+        sxy += (xs[i] - mx) * (ys[i] - my);
+        sxx += (xs[i] - mx).powi(2);
+        syy += (ys[i] - my).powi(2);
+    }
+    if sxx == 0.0 || syy == 0.0 {
+        return 0.0;
+    }
+    sxy / (sxx.sqrt() * syy.sqrt())
 }
 
 // ---- streak-gated + conserved ------------------------------------------
@@ -233,6 +253,150 @@ fn deaths_are_attributable() {
     assert!(
         m.old_age_deaths_total() > 0,
         "old age must still fire on the mortality scenario"
+    );
+}
+
+// ---- the carrying-capacity band (the core claim) -----------------------
+
+#[test]
+fn population_settles_in_a_carrying_capacity_band() {
+    // THE CORE CLAIM, by windowed PHASE behavior (not mere nonzero churn). At the
+    // principled threshold the colony oscillates in a carrying-capacity band: deaths and
+    // births phase-track hunger (the negative feedback), the population neither goes
+    // extinct nor drifts downward, and hunger oscillates across the critical ceiling.
+    let cfg = SettlementConfig::frontier_mortality();
+    let crit = cfg.dynamics.hunger_critical;
+    let warmup = 500u64;
+    let measure = 3000u64;
+    let w = 50u64;
+
+    let mut s = Settlement::generate(1, &cfg);
+    s.run(warmup);
+
+    let (mut hunger, mut births, mut starv, mut pop, mut minpop) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut psum, mut hsum, mut n, mut minp) = (0u64, 0u64, 0u64, usize::MAX);
+    let (mut at_crit, mut below) = (0u64, 0u64);
+    let mut prev_b = s.births_total();
+    let mut prev_s = s.starvation_deaths_total();
+    for tick in 0..measure {
+        let r = s.econ_tick();
+        assert!(r.conserves(), "conservation broke at tick {tick}");
+        let p = living(&s);
+        psum += p as u64;
+        let h = s.max_living_hunger();
+        hsum += u64::from(h);
+        if h >= crit {
+            at_crit += 1;
+        } else {
+            below += 1;
+        }
+        minp = minp.min(p);
+        n += 1;
+        if (tick + 1) % w == 0 {
+            let b = s.births_total();
+            let st = s.starvation_deaths_total();
+            pop.push(psum as f64 / n as f64);
+            hunger.push(hsum as f64 / n as f64);
+            births.push((b - prev_b) as f64);
+            starv.push((st - prev_s) as f64);
+            minpop.push(minp);
+            prev_b = b;
+            prev_s = st;
+            psum = 0;
+            hsum = 0;
+            n = 0;
+            minp = usize::MAX;
+        }
+    }
+
+    // NOT the redundant outcome: starvation is the substantial, binding positive check,
+    // and births keep the colony alive — the full Malthusian system, not a plateau.
+    let total_starv = s.starvation_deaths_total();
+    assert!(
+        total_starv > 200,
+        "starvation must be a substantial, binding check (not redundant): {total_starv}"
+    );
+    assert!(s.births_total() > 200, "births must keep replenishing");
+    assert!(
+        s.old_age_deaths_total() > 0,
+        "old age still operates alongside the positive check"
+    );
+
+    // (a) THE NEGATIVE-FEEDBACK PHASE. Contemporaneously, high-hunger windows carry more
+    // starvation deaths (positive correlation) and fewer births (negative correlation).
+    let c_hs = corr(&hunger, &starv);
+    let c_hb = corr(&hunger, &births);
+    assert!(
+        c_hs > 0.3,
+        "starvation deaths must rise with hunger (negative feedback): corr {c_hs:+.3}"
+    );
+    assert!(
+        c_hb < -0.3,
+        "births must fall as hunger rises (the preventive arm): corr {c_hb:+.3}"
+    );
+
+    // (a, the literal phasing) high-hunger windows are FOLLOWED by more starvation deaths
+    // than low-hunger windows are, and low-hunger windows are FOLLOWED by more births.
+    let mut sorted = hunger.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
+    let med = sorted[sorted.len() / 2];
+    let (mut hi_s, mut hi_n, mut lo_s, mut lo_n, mut hi_b, mut lo_b) =
+        (0.0, 0u32, 0.0, 0u32, 0.0, 0.0);
+    for i in 0..hunger.len() - 1 {
+        if hunger[i] >= med {
+            hi_s += starv[i + 1];
+            hi_b += births[i + 1];
+            hi_n += 1;
+        } else {
+            lo_s += starv[i + 1];
+            lo_b += births[i + 1];
+            lo_n += 1;
+        }
+    }
+    let (hi_s, lo_s) = (hi_s / f64::from(hi_n), lo_s / f64::from(lo_n));
+    let (hi_b, lo_b) = (hi_b / f64::from(hi_n), lo_b / f64::from(lo_n));
+    assert!(
+        hi_s > lo_s,
+        "high-hunger windows must be FOLLOWED by more starvation deaths \
+         (hi {hi_s:.2} > lo {lo_s:.2})"
+    );
+    assert!(
+        lo_b > hi_b,
+        "low-hunger windows must be FOLLOWED by more births (lo {lo_b:.2} > hi {hi_b:.2})"
+    );
+
+    // (b) bounded away from extinction.
+    let min_window_pop = *minpop.iter().min().expect("windows");
+    assert!(
+        min_window_pop > 40,
+        "the population must not collapse — windowed min {min_window_pop} must stay well above 0"
+    );
+
+    // (c) no downward drift: late-window mean ≈ early-window mean (oscillating/flat, not
+    // a slow collapse and not runaway growth).
+    let early = &pop[..pop.len() / 3];
+    let late = &pop[pop.len() * 2 / 3..];
+    let em = early.iter().sum::<f64>() / early.len() as f64;
+    let lm = late.iter().sum::<f64>() / late.len() as f64;
+    assert!(
+        lm > em * 0.85,
+        "the population must not drift downward (early {em:.1} -> late {lm:.1})"
+    );
+    assert!(
+        lm < em * 1.20,
+        "the population must settle in a band, not grow without bound (early {em:.1} -> late {lm:.1})"
+    );
+
+    // (d) hunger oscillates across the critical ceiling: it spends a substantial fraction
+    // of ticks AT the ceiling (driving deaths) AND a substantial fraction BELOW it
+    // (recovery), rather than pinned at either.
+    let frac_at = at_crit as f64 / measure as f64;
+    let frac_below = below as f64 / measure as f64;
+    assert!(
+        frac_at > 0.1 && frac_below > 0.1,
+        "max hunger must oscillate across the critical ceiling \
+         (at-ceiling {frac_at:.3}, below {frac_below:.3})"
     );
 }
 
