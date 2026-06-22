@@ -1889,12 +1889,16 @@ no SALT promotion, zero cultivated-bread trade volume, hunger relief from the cu
 through the readback. Deaths stay **old-age only** (`hunger_critical` disabled — the preventive check
 is still the bound).
 
-**Honest scope.** S15 proves a spatial reproducing population under forage scarcity intensifies by
-own-labor cultivation of the abundant grain node and lifts its plateau above the forage-only level,
-conserving every tick (grain node regen the source; grain `consumed_as_input` → bread `produced`; no
-minted food, `endowment[staple] == 0`). It does NOT introduce money/SALT (the bread is not traded —
-S16) or a Malthusian **positive** check (deaths) — it adds the intensification escape valve on the S14
-scarcity substrate.
+**Honest scope (Codex-reviewed: PASS, no P0/P1).** S15 proves a spatial reproducing population under
+forage scarcity intensifies by own-labor cultivation of the abundant grain node and lifts its plateau
+above the forage-only level, conserving every tick (grain node regen the source; grain
+`consumed_as_input` → bread `produced`; no minted food, `endowment[staple] == 0`). It does NOT
+introduce money/SALT (the bread is not traded — S16) or a Malthusian **positive** check (deaths) — it
+adds the intensification escape valve on the S14 scarcity substrate. **S16 boundary note (Codex P3):**
+the "own-use, never traded" guarantee here is *scenario-local* — cultivation runs after the market and
+the S15 scenario has no money, but surplus cultivated bread remains ordinary stock (it endows births),
+so S16 must *deliberately* design where that produced bread becomes tradable (the cultivated-bread →
+SALT seam) rather than letting it leak into barter.
 
 All additive/gated: with `own_use_cultivation` off the S5–S14 scenarios + the six econ + the
 g5a/g5b/coemergence emergence + the demographic `lineages` goldens are byte-identical (the new state —
