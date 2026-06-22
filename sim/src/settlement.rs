@@ -3876,6 +3876,10 @@ pub struct Settlement {
     /// they steer no future tick and are deliberately absent from `canonical_bytes`.
     peak_pre_promotion_hunger: u16,
     critical_ticks_pre_promotion: u64,
+    /// S16: the produced-bread provenance ledger (see [`BreadProvenance`]). Maintained only
+    /// while [`Self::cultivation_sells_surplus_active`] holds; an empty default ledger
+    /// otherwise, so every pre-S16 config keeps its identity and is byte-identical.
+    bread_provenance: BreadProvenance,
     econ_tick: u64,
     last_report: EconTickReport,
     /// The settlement **commons** (G4a real death): the conserved sink that holds a
@@ -4166,6 +4170,112 @@ struct CapitalBuild {
     slot: usize,
     template: ProjectTemplate,
     project: Project,
+}
+
+/// S16: the **produced-bread provenance ledger** — a per-agent, stock-origin balance that
+/// classifies a bread→medium trade as **produced** (the seller's bread was cultivated, the
+/// claim S16 makes) vs **minted/residual** (seeded buffer or a hearth mint). Role/
+/// cultivating-state at trade time is unsound (S15 bread is produced post-market and sold a
+/// LATER tick when `cultivating` may be false, and a consumer can resell bought bread), so
+/// provenance must follow the STOCK ORIGIN, not the role (Base Fact 8).
+///
+/// The ledger stores one counter per agent — `produced[id]`, the produced-origin bread that
+/// agent currently holds. The other-origin (minted/residual) bread an agent holds is the
+/// residual `stock(bread) − produced[id]`, so the two-counter (produced vs other) split is
+/// represented without a second map and is conserved by construction: every bread DEBIT
+/// draws produced-origin FIRST (deterministic FIFO, in stock-removal order; never
+/// proportional), so `produced[id] ≤ stock(bread)` holds for every living agent.
+///
+/// - **Credit** `produced` when a producer books bread `produced` (cultivation or a chain
+///   baker). A MINT (demography/producer-subsistence hearth) or a seeded buffer is NOT
+///   credited, so it falls into the residual other-origin pool automatically.
+/// - **Debit** produced-first when bread leaves an agent's stock: a SINK (eaten, spoiled,
+///   or estate→commons) draws to `produced_sunk`; a TRANSFER (sale, birth endowment, or
+///   estate→heir) moves the drawn produced units to the receiver, preserving origin (so a
+///   resold produced loaf stays produced, and a resold MINTED loaf stays minted — the
+///   resold-bought-bread case is not mis-attributed).
+/// - A bread→medium trade's bread is **produced** to the extent the seller's debit draws
+///   produced, else **minted**.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct BreadProvenance {
+    /// Produced-origin bread each living agent currently holds. `stock(bread) − produced`
+    /// is the agent's other-origin (minted/residual) bread.
+    produced: BTreeMap<AgentId, u64>,
+    /// Whole-run conservation accumulators. `produced_credited`: produced bread ever booked
+    /// by a production event. `produced_sunk`: produced bread ever removed by a true sink
+    /// (eaten/spoiled/estate→commons). Transfers move produced units between agents and
+    /// touch neither, so `produced_credited == produced_sunk + Σ produced[id]` holds.
+    produced_credited: u64,
+    produced_sunk: u64,
+    /// Cumulative bread→medium trade volume attributed by stock origin.
+    salt_volume_produced: u64,
+    salt_volume_minted: u64,
+    /// The same split, accumulated only on pre-promotion ticks (frozen at the promotion
+    /// tick, inclusive) — the causality probe for whether produced bread drove a promotion.
+    pre_promotion_salt_volume_produced: u64,
+    pre_promotion_salt_volume_minted: u64,
+    /// Instrumentation (diagnostic): the first econ tick a produced surplus was held, and
+    /// the first econ tick a produced bread→medium trade cleared.
+    first_produced_surplus_tick: Option<u64>,
+    first_produced_bread_for_salt_tick: Option<u64>,
+}
+
+impl BreadProvenance {
+    /// Credit `qty` produced-origin bread to `agent` (a production event).
+    fn credit_produced(&mut self, agent: AgentId, qty: u64) {
+        if qty == 0 {
+            return;
+        }
+        *self.produced.entry(agent).or_insert(0) += qty;
+        self.produced_credited += qty;
+    }
+
+    /// Draw `qty` of `agent`'s bread, produced-origin FIRST; returns the produced units
+    /// drawn. The caller decides whether the drawn units are a sink or a transfer.
+    fn draw(&mut self, agent: AgentId, qty: u64) -> u64 {
+        let held = self.produced.get(&agent).copied().unwrap_or(0);
+        let drawn = held.min(qty);
+        if drawn > 0 {
+            let remaining = held - drawn;
+            if remaining == 0 {
+                self.produced.remove(&agent);
+            } else {
+                self.produced.insert(agent, remaining);
+            }
+        }
+        drawn
+    }
+
+    /// A SINK debit (eaten/spoiled/estate→commons): draw produced-first to `produced_sunk`.
+    fn sink(&mut self, agent: AgentId, qty: u64) -> u64 {
+        let drawn = self.draw(agent, qty);
+        self.produced_sunk += drawn;
+        drawn
+    }
+
+    /// A TRANSFER debit (sale/endowment/inheritance): draw produced-first from `from` and
+    /// credit the same produced units to `to`, preserving origin. Returns the produced
+    /// units moved (the produced share of the transfer).
+    fn transfer(&mut self, from: AgentId, to: AgentId, qty: u64) -> u64 {
+        let drawn = self.draw(from, qty);
+        if drawn > 0 {
+            *self.produced.entry(to).or_insert(0) += drawn;
+        }
+        drawn
+    }
+
+    /// Drop a removed agent's produced balance to a sink (the conserved exit when its bread
+    /// could not be routed to a living heir — estate→commons). Returns the sunk units.
+    fn drop_to_sink(&mut self, agent: AgentId) -> u64 {
+        let held = self.produced.remove(&agent).unwrap_or(0);
+        self.produced_sunk += held;
+        held
+    }
+
+    /// Total produced-origin bread held across all living agents.
+    fn total_held(&self) -> u64 {
+        self.produced.values().copied().sum()
+    }
 }
 
 impl Settlement {
@@ -5121,6 +5231,7 @@ impl Settlement {
             last_capital_decisions: Vec::new(),
             peak_pre_promotion_hunger: 0,
             critical_ticks_pre_promotion: 0,
+            bread_provenance: BreadProvenance::default(),
             econ_tick: 0,
             last_report: EconTickReport::default(),
             commons_gold: Gold::ZERO,
@@ -5297,6 +5408,7 @@ impl Settlement {
             last_capital_decisions: Vec::new(),
             peak_pre_promotion_hunger: 0,
             critical_ticks_pre_promotion: 0,
+            bread_provenance: BreadProvenance::default(),
             econ_tick: 0,
             last_report: EconTickReport::default(),
             commons_gold: Gold::ZERO,
@@ -5519,6 +5631,9 @@ impl Settlement {
         // transition (and the gold checkpoints account the minted gold).
         let money_good_before = self.society.current_money_good();
         let society_gold_before = self.society.total_gold();
+        // S16: the produced-bread provenance ledger reads THIS tick's new barter trades as
+        // the suffix past here (the retained log survives the promotion barter-book wipe).
+        let provenance_trades_start = self.society.barter_trades.len();
         if self.barter.is_some() {
             self.society
                 .step_rejecting_v2_money_goods(&self.money_rejection_goods);
@@ -5560,6 +5675,13 @@ impl Settlement {
             }
         }
 
+        // ---- 5b-bis. PROVENANCE: MARKET (S16): sink this tick's market-consume bread and
+        // attribute the bread→medium trades produced-vs-minted, in the within-step order
+        // (consume eats before the barter clears). The cursor marks the consumed-log prefix
+        // already sinked, so the own-use consume below is not re-counted. No-op off the path.
+        let provenance_consume_cursor =
+            self.run_bread_provenance_market(provenance_trades_start, was_pre_promotion);
+
         // ---- 5c. IN-KIND INPUT ADVANCE (EXPERIMENT): a capitalist buys each
         // active producer's recipe input in kind from the richest holder and
         // places it in the producer's hands — before production, so the producer
@@ -5585,6 +5707,10 @@ impl Settlement {
         // cultivation path, so every other run is byte-identical.
         self.run_own_use_cultivation(&mut report);
 
+        // ---- 6a-ter. PROVENANCE: OWN-USE CONSUME (S16): sink the cultivators' own-use bread
+        // consume (the consumed-log tail past the market pass), produced-first. No-op off path.
+        self.run_bread_provenance_own_use(provenance_consume_cursor);
+
         // ---- 6b. BIRTHS (G4b): each food-secure household under its size cap and
         // past its birth interval bears one child — a new colonist with an inherited,
         // mutated culture and a conserved endowment transferred from a parent, added
@@ -5609,6 +5735,9 @@ impl Settlement {
         // it decays end-of-tick holdings, before the whole-system snapshot so the
         // conservation identity accounts it. A no-op unless enabled.
         self.run_spoilage(&mut report);
+        // ---- 7b. PROVENANCE FINALIZE (S16): record the first produced-surplus tick and
+        // assert the provenance ledger conserves. A no-op off the path.
+        self.finalize_bread_provenance();
         for &good in &self.goods {
             report
                 .whole_system_after
@@ -6424,6 +6553,11 @@ impl Settlement {
                 *self.commons_stock.entry(good).or_insert(0) += qty;
             }
         }
+        // S16: the dead colonist's produced bread leaves the living population for the
+        // commons — a conserved sink for the provenance ledger.
+        if self.bread_provenance_active() {
+            self.bread_provenance.drop_to_sink(id);
+        }
         self.record_estate_destination(id, EstateDestination::Commons);
         true
     }
@@ -6491,6 +6625,23 @@ impl Settlement {
                     if qty > 0 {
                         *self.commons_stock.entry(good).or_insert(0) += qty;
                     }
+                }
+            }
+        }
+        // S16: route the dead colonist's produced bread with its estate — to the heir (a
+        // conserved transfer that keeps the produced origin in the living population, since
+        // the heir received the estate bread) or, for the extinct-lineage commons fallback,
+        // to the sink. Headroom never bites at these quantities (asserted above).
+        if self.bread_provenance_active() {
+            match destination {
+                Some(EstateDestination::Household { heir, .. }) => {
+                    let dead = self.bread_provenance.produced.remove(&id).unwrap_or(0);
+                    if dead > 0 {
+                        *self.bread_provenance.produced.entry(heir).or_insert(0) += dead;
+                    }
+                }
+                _ => {
+                    self.bread_provenance.drop_to_sink(id);
                 }
             }
         }
@@ -6774,6 +6925,16 @@ impl Settlement {
                 staple,
             );
             let child_id = self.society.add_agent(child_agent);
+            // S16: a bread birth endowment is a conserved TRANSFER — move the parent's drawn
+            // produced origin to the newborn (so an inherited produced loaf stays produced).
+            // Off the bread endowment (forage path) or off the ledger this is a no-op.
+            if self.bread_provenance_active() && Some(staple) == self.provenance_bread_good() {
+                self.bread_provenance.transfer(
+                    parent_id,
+                    child_id,
+                    u64::from(demo.child_food_endowment),
+                );
+            }
             if gold_endow > 0 {
                 let transferred = self
                     .society
@@ -6968,6 +7129,13 @@ impl Settlement {
         let throughput = chain.throughput;
         let mill_recipe = chain.content.mill_recipe().id;
         let bake_recipe = chain.content.bake_recipe().id;
+        // S16: a chain baker's bread is PRODUCED — credit the provenance ledger so a
+        // baker-supplied bread→medium trade is attributed produced like a cultivator's.
+        let provenance_bread = if self.bread_provenance_active() {
+            self.provenance_bread_good()
+        } else {
+            None
+        };
         // G6b content recipes (`None` for a plain G3a/G3b/G5b chain).
         let research_recipe = chain.content.research_recipe().map(|recipe| recipe.id);
         let confect_recipe = chain.content.tier2_recipe().map(|recipe| recipe.id);
@@ -7022,6 +7190,10 @@ impl Settlement {
                     self.knowledge = self.knowledge.saturating_add(amount);
                 } else {
                     *report.produced.entry(out_good).or_insert(0) += u64::from(out_qty);
+                    if Some(out_good) == provenance_bread {
+                        self.bread_provenance
+                            .credit_produced(id, u64::from(out_qty));
+                    }
                 }
                 // Conserved good INPUTS to any recipe — research included — are accounted
                 // exactly like consumption (the conservation ledger sees every consumed
@@ -7400,6 +7572,9 @@ impl Settlement {
         );
         let bread = chain.content.bread();
         let consume = chain.cultivate_consume;
+        // S16: cultivated bread is PRODUCED-origin — credit the provenance ledger as each
+        // loaf is booked (the own-use consume below is sinked by the provenance own-use pass).
+        let provenance = self.bread_provenance_active();
         let hunger_target = 0;
         let hunger_deplete = self.dynamics.hunger_deplete;
         let hunger_per_food = self.dynamics.hunger_per_food;
@@ -7456,6 +7631,10 @@ impl Settlement {
                 remaining_labor = remaining_labor.saturating_sub(applied.labor);
                 let (out_good, out_qty) = applied.output;
                 *report.produced.entry(out_good).or_insert(0) += u64::from(out_qty);
+                if provenance && out_good == bread {
+                    self.bread_provenance
+                        .credit_produced(id, u64::from(out_qty));
+                }
                 if let Some((in_good, in_qty)) = applied.input {
                     *report.consumed_as_input.entry(in_good).or_insert(0) += u64::from(in_qty);
                 }
@@ -7880,6 +8059,14 @@ impl Settlement {
             Some(chain) if chain.perishable_decay_bps > 0 => u64::from(chain.perishable_decay_bps),
             _ => return,
         };
+        // S16: spoiled bread is a true sink — draw it produced-first from the provenance
+        // ledger. `None` (every shipped S16 config sets `perishable_decay_bps = 0`, so this
+        // phase never runs there) or off the ledger leaves it untouched.
+        let provenance_bread = if self.bread_provenance_active() {
+            self.provenance_bread_good()
+        } else {
+            None
+        };
         // Spoil the **staple** food a satiated agent hoards (and the subsistence
         // food, if any) — NOT the chain's intermediates (grain/flour), whose
         // small working stocks and large bootstrap seed buffers must survive for
@@ -7913,6 +8100,9 @@ impl Settlement {
                 let spoil = u32::try_from(decay(held)).unwrap_or(u32::MAX);
                 if spoil > 0 && self.society.debit_stock(id, good, spoil) {
                     *report.spoiled.entry(good).or_insert(0) += u64::from(spoil);
+                    if Some(good) == provenance_bread {
+                        self.bread_provenance.sink(id, u64::from(spoil));
+                    }
                 }
             }
             let commons_held = self.commons_stock.get(&good).copied().unwrap_or(0);
@@ -8919,6 +9109,151 @@ impl Settlement {
         self.chain
             .as_ref()
             .is_some_and(chain_runtime_cultivation_sells_surplus_active)
+    }
+
+    /// S16: whether the produced-bread provenance ledger is maintained this tick — exactly
+    /// the money-from-produced-bread path. Off (every existing config), the ledger stays the
+    /// empty default, so no hook fires and the run is byte-identical.
+    fn bread_provenance_active(&self) -> bool {
+        self.cultivation_sells_surplus_active()
+    }
+
+    /// S16: the bread good, when a chain carries one (the good the ledger tracks).
+    fn provenance_bread_good(&self) -> Option<GoodId> {
+        self.content().map(ContentSet::bread)
+    }
+
+    /// S16: the produced-bread provenance market pass — runs right after `society.step()`,
+    /// in the within-step order (the consume pass eats BEFORE the barter clears). Sinks this
+    /// tick's market-consume bread (produced-first), then for each bread trade transfers the
+    /// drawn produced origin from seller to buyer and, for a bread→MEDIUM trade, attributes
+    /// the produced vs minted split. Returns the consumption-log cursor so the later own-use
+    /// consume pass is not re-counted. A no-op (returns 0) off the path.
+    fn run_bread_provenance_market(
+        &mut self,
+        trades_start: usize,
+        was_pre_promotion: bool,
+    ) -> usize {
+        if !self.bread_provenance_active() {
+            return 0;
+        }
+        let Some(bread) = self.provenance_bread_good() else {
+            return 0;
+        };
+        let medium = self.barter_medium.map(|(good, _)| good);
+        // The whole consumption log so far is this tick's MARKET consume (cleared at the
+        // step's start; the own-use consume has not run yet). Sink its bread, produced-first.
+        let market_consume: Vec<(AgentId, u64)> = self
+            .society
+            .consumption_log_last_tick()
+            .iter()
+            .filter(|&&(_, good, _)| good == bread)
+            .map(|&(agent, _, qty)| (agent, u64::from(qty)))
+            .collect();
+        let cursor = self.society.consumption_log_last_tick().len();
+        for (agent, qty) in market_consume {
+            self.bread_provenance.sink(agent, qty);
+        }
+        // This tick's barter trades that moved bread (seller = the bread giver). Transfer the
+        // produced origin to the buyer for EVERY bread trade (so a resold loaf keeps its
+        // origin), and attribute the produced/minted split for a bread→MEDIUM trade.
+        let bread_trades: Vec<(AgentId, AgentId, GoodId, u64)> = self.society.barter_trades
+            [trades_start..]
+            .iter()
+            .filter_map(|trade| {
+                if trade.a_gives == bread {
+                    Some((trade.a, trade.b, trade.b_gives, u64::from(trade.qty)))
+                } else if trade.b_gives == bread {
+                    Some((trade.b, trade.a, trade.a_gives, u64::from(trade.qty)))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for (seller, buyer, other_good, qty) in bread_trades {
+            let drawn_produced = self.bread_provenance.transfer(seller, buyer, qty);
+            if Some(other_good) == medium {
+                let minted = qty - drawn_produced;
+                self.bread_provenance.salt_volume_produced += drawn_produced;
+                self.bread_provenance.salt_volume_minted += minted;
+                if was_pre_promotion {
+                    self.bread_provenance.pre_promotion_salt_volume_produced += drawn_produced;
+                    self.bread_provenance.pre_promotion_salt_volume_minted += minted;
+                }
+                if drawn_produced > 0
+                    && self
+                        .bread_provenance
+                        .first_produced_bread_for_salt_tick
+                        .is_none()
+                {
+                    self.bread_provenance.first_produced_bread_for_salt_tick = Some(self.econ_tick);
+                }
+            }
+        }
+        cursor
+    }
+
+    /// S16: sink this tick's OWN-USE cultivation bread consume (the log tail past the market
+    /// pass's `cursor`), produced-first. Runs right after `run_own_use_cultivation`.
+    fn run_bread_provenance_own_use(&mut self, cursor: usize) {
+        if !self.bread_provenance_active() {
+            return;
+        }
+        let Some(bread) = self.provenance_bread_good() else {
+            return;
+        };
+        let own_use: Vec<(AgentId, u64)> = self
+            .society
+            .consumption_log_last_tick()
+            .iter()
+            .skip(cursor)
+            .filter(|&&(_, good, _)| good == bread)
+            .map(|&(agent, _, qty)| (agent, u64::from(qty)))
+            .collect();
+        for (agent, qty) in own_use {
+            self.bread_provenance.sink(agent, qty);
+        }
+    }
+
+    /// S16: end-of-tick provenance bookkeeping — record the first produced-surplus tick and
+    /// assert the ledger conserves. A no-op off the path.
+    fn finalize_bread_provenance(&mut self) {
+        if !self.bread_provenance_active() {
+            return;
+        }
+        if self.bread_provenance.first_produced_surplus_tick.is_none()
+            && self.bread_provenance.total_held() > 0
+        {
+            self.bread_provenance.first_produced_surplus_tick = Some(self.econ_tick);
+        }
+        debug_assert!(
+            self.bread_provenance_conserves(),
+            "bread provenance ledger broke at econ tick {}",
+            self.econ_tick
+        );
+    }
+
+    /// S16: the provenance conservation receipt. (1) Global: produced bread credited equals
+    /// produced bread sunk plus produced bread still held — production and sinks are the only
+    /// terms; transfers move produced units between agents without changing the total.
+    /// (2) Per living agent: produced-origin bread held never exceeds the agent's bread
+    /// stock (so the residual other-origin pool is non-negative).
+    fn bread_provenance_conserves(&self) -> bool {
+        let bp = &self.bread_provenance;
+        if bp.produced_credited != bp.produced_sunk + bp.total_held() {
+            return false;
+        }
+        let Some(bread) = self.provenance_bread_good() else {
+            return bp.produced.is_empty();
+        };
+        bp.produced.iter().all(|(&id, &produced)| {
+            let held = self
+                .society
+                .agents
+                .get(id)
+                .map_or(0, |agent| u64::from(agent.stock.get(bread)));
+            produced <= held
+        })
     }
 
     fn cultivation_input_good(&self) -> Option<GoodId> {
@@ -10492,6 +10827,58 @@ impl Settlement {
             .sum()
     }
 
+    /// S16 — the produced-bread provenance trace (read-only): the cumulative bread→medium
+    /// trade volume split by STOCK ORIGIN — `(produced, minted)`. `produced` is the share
+    /// the provenance ledger drew from cultivators' (or chain bakers') produced-bread
+    /// balance; `minted` is the residual (seeded buffer / a hearth mint). Their sum equals
+    /// [`Self::bread_for_salt_volume`]. This is the proof that closes the S12 caveat:
+    /// whether the bread that monetizes the medium is produced (the S16 claim) or minted.
+    /// `(0, 0)` off the money-from-produced-bread path. Reads only.
+    pub fn bread_for_salt_volume_by_provenance(&self) -> (u64, u64) {
+        (
+            self.bread_provenance.salt_volume_produced,
+            self.bread_provenance.salt_volume_minted,
+        )
+    }
+
+    /// S16 (read-only): the same produced/minted bread→medium split, accumulated only over
+    /// PRE-promotion ticks (frozen at the promotion tick, inclusive) — the causality probe
+    /// for whether produced bread was material in the volume that fired (or failed to fire)
+    /// the promotion. `(0, 0)` off the path.
+    pub fn pre_promotion_bread_for_salt_by_provenance(&self) -> (u64, u64) {
+        (
+            self.bread_provenance.pre_promotion_salt_volume_produced,
+            self.bread_provenance.pre_promotion_salt_volume_minted,
+        )
+    }
+
+    /// S16 (read-only): total produced-origin bread currently held across living agents —
+    /// the produced surplus inventory. `0` off the path.
+    pub fn produced_bread_held(&self) -> u64 {
+        self.bread_provenance.total_held()
+    }
+
+    /// S16 (read-only): the provenance conservation accumulators `(credited, sunk)` —
+    /// produced bread ever booked by a production event, and ever removed by a true sink
+    /// (eaten/spoiled/estate→commons). `credited == sunk + produced_bread_held()`.
+    pub fn produced_bread_credited_and_sunk(&self) -> (u64, u64) {
+        (
+            self.bread_provenance.produced_credited,
+            self.bread_provenance.produced_sunk,
+        )
+    }
+
+    /// S16 (read-only): the first econ tick a produced surplus was held, and the first econ
+    /// tick a produced bread→medium trade cleared — the instrumentation the DoD reports.
+    pub fn first_produced_surplus_tick(&self) -> Option<u64> {
+        self.bread_provenance.first_produced_surplus_tick
+    }
+
+    /// See [`Self::first_produced_surplus_tick`].
+    pub fn first_produced_bread_for_salt_tick(&self) -> Option<u64> {
+        self.bread_provenance.first_produced_bread_for_salt_tick
+    }
+
     /// S8.0 emergence probe (read-only): the highest hunger any living colonist
     /// reached while the colony was still in barter, before any money promoted — the
     /// starvation pressure the emergence window has to survive (Tension A). Frozen at
@@ -11178,6 +11565,23 @@ impl Settlement {
                     }
                     None => out.push(0),
                 }
+            }
+        }
+
+        // S16: the produced-bread provenance ledger's per-agent counters. They steer the
+        // future origin attribution of every bread→medium trade (a resold produced loaf
+        // stays produced), so two settlements differing only in a per-agent produced balance
+        // diverge on a future trade's attribution — part of the identity whenever the ledger
+        // runs. Emitted ONLY on the active path (the gated-block discipline), so every
+        // pre-S16 config keeps its canonical layout byte-identical. The whole-run
+        // accumulators are pure functions of these counters plus the realized trades, so
+        // they need no separate bytes (like the never-serialized emergence-probe diagnostics).
+        if self.bread_provenance_active() {
+            let produced = &self.bread_provenance.produced;
+            out.extend_from_slice(&(produced.len() as u32).to_le_bytes());
+            for (id, qty) in produced {
+                out.extend_from_slice(&id.0.to_le_bytes());
+                out.extend_from_slice(&qty.to_le_bytes());
             }
         }
 
@@ -15938,6 +16342,87 @@ mod tests {
             base.canonical_bytes(),
             Settlement::generate(7, &base_cfg).canonical_bytes(),
             "off the cultivation path the cultivation_sells_surplus flag must not steer the digest"
+        );
+    }
+
+    #[test]
+    fn bread_provenance_draws_produced_first_and_preserves_origin() {
+        // The ledger's core rule: a debit draws produced-origin FIRST, a transfer moves the
+        // drawn produced units to the receiver (so a resold PRODUCED loaf stays produced —
+        // the resold-bought-bread case), a sink draws to `produced_sunk`, and the whole-run
+        // identity `credited == sunk + held` holds throughout.
+        let mut bp = BreadProvenance::default();
+        let (a, b, c) = (AgentId(1), AgentId(2), AgentId(3));
+        bp.credit_produced(a, 5);
+        assert_eq!(bp.produced_credited, 5);
+        assert_eq!(bp.total_held(), 5);
+        // a SELLS 3 produced loaves to b (a transfer): origin preserved at the buyer.
+        assert_eq!(bp.transfer(a, b, 3), 3);
+        assert_eq!(bp.produced.get(&a).copied().unwrap_or(0), 2);
+        assert_eq!(bp.produced.get(&b).copied().unwrap_or(0), 3);
+        // b RESELLS the 3 bought loaves to c — produced origin is preserved (not minted).
+        assert_eq!(bp.transfer(b, c, 3), 3);
+        assert_eq!(bp.produced.get(&c).copied().unwrap_or(0), 3);
+        // c eats 2 (a sink) — produced-first to the sunk counter.
+        assert_eq!(bp.sink(c, 2), 2);
+        assert_eq!(bp.produced_sunk, 2);
+        assert_eq!(bp.produced_credited, bp.produced_sunk + bp.total_held());
+    }
+
+    #[test]
+    fn bread_provenance_does_not_misattribute_minted_bread() {
+        // A minted/buffer loaf is NEVER credited produced, so it sits in the residual
+        // other-origin pool: drawing it (sale or resale) yields ZERO produced — attributed
+        // minted, never mis-attributed produced. A mixed holder draws produced-first.
+        let mut bp = BreadProvenance::default();
+        let (holder, buyer, third) = (AgentId(1), AgentId(2), AgentId(3));
+        // holder sells 4 MINTED loaves (none ever credited produced): 0 produced drawn.
+        assert_eq!(bp.transfer(holder, buyer, 4), 0);
+        assert_eq!(bp.produced.get(&buyer).copied().unwrap_or(0), 0);
+        // the buyer reselling that minted bread is likewise not mis-attributed.
+        assert_eq!(bp.transfer(buyer, third, 4), 0);
+        // a MIXED holder (2 produced + minted residual): a 5-loaf sale draws the 2 produced.
+        bp.credit_produced(holder, 2);
+        assert_eq!(bp.transfer(holder, buyer, 5), 2);
+        assert_eq!(bp.produced.get(&holder).copied().unwrap_or(0), 0);
+        assert_eq!(bp.produced.get(&buyer).copied().unwrap_or(0), 2);
+        // estate→commons drops a dead agent's produced bread to the sink (conserved exit).
+        bp.credit_produced(third, 3);
+        assert_eq!(bp.drop_to_sink(third), 3);
+        assert_eq!(bp.produced_credited, bp.produced_sunk + bp.total_held());
+    }
+
+    #[test]
+    fn canonical_bytes_include_bread_provenance() {
+        // S16: the per-agent produced-bread counters steer the future origin attribution of
+        // every bread→medium trade, so two settlements differing only in a produced balance
+        // must digest apart — and an off-path settlement must NOT serialize them.
+        let mut on = Settlement::generate(7, &SettlementConfig::frontier_money_from_cultivation());
+        let before = on.canonical_bytes();
+        let id = on.society.agents.iter().next().expect("an agent exists").id;
+        *on.bread_provenance.produced.entry(id).or_insert(0) += 1;
+        assert_ne!(
+            before,
+            on.canonical_bytes(),
+            "with the ledger active a per-agent produced balance must be in the digest"
+        );
+
+        // Off the money-from-produced-bread path the ledger is the empty default and is
+        // never serialized: poking it must not steer the digest (byte-identical to pre-S16).
+        let mut off = Settlement::generate(7, &SettlementConfig::frontier_cultivation());
+        let off_before = off.canonical_bytes();
+        let off_id = off
+            .society
+            .agents
+            .iter()
+            .next()
+            .expect("an agent exists")
+            .id;
+        *off.bread_provenance.produced.entry(off_id).or_insert(0) += 7;
+        assert_eq!(
+            off_before,
+            off.canonical_bytes(),
+            "off the path the provenance ledger must not steer the digest"
         );
     }
 
