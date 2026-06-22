@@ -4183,8 +4183,9 @@ struct CapitalBuild {
 /// agent currently holds. The other-origin (minted/residual) bread an agent holds is the
 /// residual `stock(bread) − produced[id]`, so the two-counter (produced vs other) split is
 /// represented without a second map and is conserved by construction: every bread DEBIT
-/// draws produced-origin FIRST (deterministic FIFO, in stock-removal order; never
-/// proportional), so `produced[id] ≤ stock(bread)` holds for every living agent.
+/// draws produced-origin FIRST (deterministic produced-first priority, in stock-removal
+/// order; never proportional, and not first-in-first-out by acquisition order), so
+/// `produced[id] ≤ stock(bread)` holds for every living agent.
 ///
 /// - **Credit** `produced` when a producer books bread `produced` (cultivation or a chain
 ///   baker). A MINT (demography/producer-subsistence hearth) or a seeded buffer is NOT
@@ -4262,6 +4263,30 @@ impl BreadProvenance {
             *self.produced.entry(to).or_insert(0) += drawn;
         }
         drawn
+    }
+
+    /// Attribute a cleared bread→medium trade by STOCK ORIGIN: the `drawn_produced` units
+    /// the seller's debit drew are PRODUCED, the residual `qty - drawn_produced` is MINTED
+    /// (seeded buffer / a hearth mint). Accumulates the run-total split, the pre-promotion-
+    /// only split (the causality probe, frozen at the promotion tick), and latches the first
+    /// produced bread→medium tick exactly once. `tick` is the current econ tick for the latch.
+    fn attribute_medium_sale(
+        &mut self,
+        drawn_produced: u64,
+        qty: u64,
+        was_pre_promotion: bool,
+        tick: u64,
+    ) {
+        let minted = qty - drawn_produced;
+        self.salt_volume_produced += drawn_produced;
+        self.salt_volume_minted += minted;
+        if was_pre_promotion {
+            self.pre_promotion_salt_volume_produced += drawn_produced;
+            self.pre_promotion_salt_volume_minted += minted;
+        }
+        if drawn_produced > 0 && self.first_produced_bread_for_salt_tick.is_none() {
+            self.first_produced_bread_for_salt_tick = Some(tick);
+        }
     }
 
     /// Drop a removed agent's produced balance to a sink (the conserved exit when its bread
@@ -7746,7 +7771,10 @@ impl Settlement {
     /// want; provisioning that want frees the money so it bids for grain. The
     /// food moves holder→producer and is later eaten — conserved, no new sink.
     /// A no-op unless enabled and money has emerged. Deterministic: id-ordered,
-    /// integer; donor chosen by most staple held (ties → lowest id).
+    /// integer; donor chosen by most staple held (ties → lowest id). S16: when the
+    /// staple is the tracked bread the move also follows in the produced-bread
+    /// provenance ledger (donor→producer), so the produced origin tracks the
+    /// physical loaf instead of stranding on the donor.
     fn run_subsistence_advance(&mut self) {
         let enabled = self
             .chain
@@ -7800,7 +7828,22 @@ impl Settlement {
                 if give > 0 && self.society.debit_stock(donor_id, staple, give) {
                     // Conserved transfer; roll back to the donor if the credit
                     // can't land (overflow), so no food is created or destroyed.
-                    if !self.society.credit_stock(producer_id, staple, give) {
+                    if self.society.credit_stock(producer_id, staple, give) {
+                        // S16: this in-kind staple move is a conserved TRANSFER, so when the
+                        // advanced staple IS the tracked bread the provenance ledger must
+                        // follow the physical loaf donor→producer (a produced loaf stays
+                        // produced). Without this mirror the produced origin strands on the
+                        // donor and the per-agent invariant (`produced ≤ stock`) breaks once
+                        // the producer eats or sells the advanced bread. A no-op off the
+                        // ledger or when the staple is not the tracked bread good — so every
+                        // existing config stays byte-identical.
+                        if self.bread_provenance_active()
+                            && Some(staple) == self.provenance_bread_good()
+                        {
+                            self.bread_provenance
+                                .transfer(donor_id, producer_id, u64::from(give));
+                        }
+                    } else {
                         self.society.credit_stock(donor_id, staple, give);
                     }
                 }
@@ -9207,24 +9250,16 @@ impl Settlement {
                     ))
                 }),
         );
+        let tick = self.econ_tick;
         for (seller, buyer, other_good, qty) in bread_trades {
             let drawn_produced = self.bread_provenance.transfer(seller, buyer, qty);
             if other_good == medium {
-                let minted = qty - drawn_produced;
-                self.bread_provenance.salt_volume_produced += drawn_produced;
-                self.bread_provenance.salt_volume_minted += minted;
-                if was_pre_promotion {
-                    self.bread_provenance.pre_promotion_salt_volume_produced += drawn_produced;
-                    self.bread_provenance.pre_promotion_salt_volume_minted += minted;
-                }
-                if drawn_produced > 0
-                    && self
-                        .bread_provenance
-                        .first_produced_bread_for_salt_tick
-                        .is_none()
-                {
-                    self.bread_provenance.first_produced_bread_for_salt_tick = Some(self.econ_tick);
-                }
+                self.bread_provenance.attribute_medium_sale(
+                    drawn_produced,
+                    qty,
+                    was_pre_promotion,
+                    tick,
+                );
             }
         }
         cursor
@@ -16525,6 +16560,102 @@ mod tests {
         assert!(
             s.bread_provenance_conserves(),
             "spot bread sales must preserve produced-origin conservation"
+        );
+    }
+
+    #[test]
+    fn bread_provenance_attributes_medium_sale_split() {
+        // The bread→medium attribution arm: a cleared sale splits produced vs minted by the
+        // produced units the seller's debit drew, accumulates the pre-promotion-only split
+        // (the causality probe), and latches the first produced bread→medium tick exactly
+        // once. The shipped finding is principled-failure (SALT never promotes), so no live
+        // promotion reaches this accumulation on the spot tape — `bread_provenance_tracks_-
+        // spot_bread_sales` covers the spot-tape transfer wiring; this exercises the
+        // produced/minted accumulation arm directly so it never runs untested.
+        let mut bp = BreadProvenance::default();
+        // A pre-promotion 5-loaf sale that drew 3 produced: 3 produced, 2 minted; pre-
+        // promotion split mirrors the run total, the first-produced latch fires at tick 10.
+        bp.attribute_medium_sale(3, 5, true, 10);
+        assert_eq!((bp.salt_volume_produced, bp.salt_volume_minted), (3, 2));
+        assert_eq!(
+            (
+                bp.pre_promotion_salt_volume_produced,
+                bp.pre_promotion_salt_volume_minted
+            ),
+            (3, 2)
+        );
+        assert_eq!(bp.first_produced_bread_for_salt_tick, Some(10));
+        // A later, post-promotion 4-loaf MINTED sale (0 produced drawn): minted only, the
+        // pre-promotion split is FROZEN, and the first-produced latch does not move.
+        bp.attribute_medium_sale(0, 4, false, 20);
+        assert_eq!((bp.salt_volume_produced, bp.salt_volume_minted), (3, 6));
+        assert_eq!(
+            (
+                bp.pre_promotion_salt_volume_produced,
+                bp.pre_promotion_salt_volume_minted
+            ),
+            (3, 2),
+            "the pre-promotion causality split freezes after promotion"
+        );
+        assert_eq!(
+            bp.first_produced_bread_for_salt_tick,
+            Some(10),
+            "the first produced bread→medium latch fires exactly once"
+        );
+    }
+
+    #[test]
+    fn subsistence_advance_provenance_follows_in_kind_bread() {
+        // The in-kind subsistence advance moves the bread staple donor→producer BEFORE the
+        // market. When the staple is the tracked bread the provenance ledger must follow the
+        // physical loaf (the fix): without the mirror the produced origin strands on the
+        // donor and the per-agent invariant (`produced ≤ stock`) breaks once the producer
+        // holds the advanced bread.
+        let mut s = Settlement::generate(7, &SettlementConfig::frontier_money_from_cultivation());
+        let bread = s.provenance_bread_good().expect("chain bread");
+        let ids = s
+            .society
+            .agents
+            .iter()
+            .map(|agent| agent.id)
+            .take(2)
+            .collect::<Vec<_>>();
+        let (donor, producer) = (ids[0], ids[1]);
+
+        // Isolate the move: clear both agents' bread, give the donor 3 produced loaves.
+        s.bread_provenance = BreadProvenance::default();
+        for id in [donor, producer] {
+            let stock = &mut s.society.agents.get_mut(id).expect("agent").stock;
+            let held = stock.get(bread);
+            assert!(stock.remove(bread, held));
+        }
+        s.society
+            .agents
+            .get_mut(donor)
+            .expect("donor")
+            .stock
+            .add(bread, 3);
+        s.bread_provenance.credit_produced(donor, 3);
+
+        // The advance's conserved in-kind move of 2 loaves donor→producer. The PHYSICAL move
+        // alone strands the produced origin: the donor's produced (3) now exceeds its bread
+        // stock (1) — the invariant the fix restores is provably broken here.
+        assert!(s.society.debit_stock(donor, bread, 2));
+        assert!(s.society.credit_stock(producer, bread, 2));
+        assert!(
+            !s.bread_provenance_conserves(),
+            "the physical in-kind move alone strands the produced origin on the donor"
+        );
+
+        // The fix mirrors the in-kind move in the ledger: the produced origin follows the
+        // loaf donor→producer, so a produced loaf the producer later sells stays produced and
+        // the per-agent invariant is restored.
+        s.bread_provenance.transfer(donor, producer, 2);
+        assert_eq!(s.bread_provenance.produced.get(&donor).copied(), Some(1));
+        assert_eq!(s.bread_provenance.produced.get(&producer).copied(), Some(2));
+        assert!(
+            s.bread_provenance_conserves(),
+            "mirroring the in-kind staple advance keeps the provenance ledger conserved"
         );
     }
 

@@ -1935,8 +1935,9 @@ S12 rather than faking around it. Built, gated, conserving — per `docs/impl-mo
       at trade time is unsound (S15 bread is produced post-market and sold a *later* tick, and a buyer
       can resell), so provenance follows the **stock origin**: a per-agent produced-bread counter
       (the other-origin pool is the residual `stock − produced`), credited on a production event
-      (cultivation or a chain baker) and **debited produced-first** (deterministic FIFO, in stock-removal
-      order) when bread leaves stock — a **sink** (eaten/spoiled/estate→commons) to a sunk counter, a
+      (cultivation or a chain baker) and **debited produced-first** (deterministic produced-first priority,
+      in stock-removal order — not first-in-first-out by acquisition order) when bread leaves stock — a
+      **sink** (eaten/spoiled/estate→commons) to a sunk counter, a
       **transfer** (sale/birth endowment/estate→heir) moving the drawn produced units to the receiver, so
       a resold produced loaf stays produced and a resold minted loaf stays minted (not mis-attributed). A
       bread→medium trade is attributed produced to the extent the seller's debit draws produced, else
