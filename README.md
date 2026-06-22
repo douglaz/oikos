@@ -1994,6 +1994,78 @@ flag-on path, with `canonical_bytes_include_cultivation_sells_surplus` / `_bread
 
 - [x] viewer: the `money-from-cultivation` scenario (`cargo run -p viewer -- run money-from-cultivation --ticks 3000`)
 
+## Status: S17 (mortality — the Malthusian positive check) — complete (the BAND)
+
+The last foundational praxeology piece. S14 gave the colony an endogenous carrying capacity via the
+**preventive** check (births stall when hunger rises); S15 let it intensify by cultivation. But action
+under scarcity still had no **survival** consequence — `hunger_critical` was set to `need_max + 1`, so
+starvation death could never fire. S17 turns the **positive** check back on, at the **principled**
+lab-default threshold `hunger_critical = need_max` (`death_window = 3`, `birth_hunger_ceiling` as-is —
+NOT tuned to manufacture a band), so on the fed-and-plateaued cultivation colony sustained critical
+hunger kills. Population is now bounded by **births AND deaths** both responding to the carrying
+capacity — the full Malthusian system. Independent of money (the bread stays own-use). The death
+machinery (streak-gated kill, `settle_death → collect_estate → commons/heirs`, the `can_remove_agent`
+guard) is **reused unchanged**. Built, gated, conserving — per `docs/impl-mortality.md`:
+
+- [x] **S17.1 — enable starvation + attribute it.** A `starvation_deaths_total` accumulator
+      (mirrors `old_age_deaths_total`) incremented from the death count
+      `update_needs_and_remove_dead` returns, with an accessor. It is **runtime-observability ONLY —
+      NOT in `canonical_bytes`**: `old_age_deaths_total` *is* digested, and existing configs already
+      carry live starvation (`g4a_death`, `starved_hauler`), so digesting this counter would break
+      their goldens (and even a zero `u64` shifts every layout). Determinism is already pinned by the
+      existing digest (the deaths live in the colonist liveness/estate state); the counter is a pure
+      diagnostic the tests read via the accessor (`canonical_bytes_exclude_starvation_deaths_total` is
+      the regression). The positive check is enabled on the new scenario via `hunger_critical =
+      need_max` (config-only, no edit to the death machinery); the existing scarcity/frontier configs
+      keep `need_max + 1`, untouched.
+- [x] **S17.2 — the carrying-capacity band (the characterization).** On `frontier_cultivation` +
+      mortality, over a ≥3000-tick window, the trajectory is measured for **windowed phase behavior,
+      not just nonzero churn**: high-hunger windows are FOLLOWED by starvation deaths and lower-hunger
+      windows by births (the negative feedback), windowed `min_living` bounded away from 0, the
+      population not drifting downward, and `max_living_hunger` oscillating across the critical ceiling.
+- [x] **S17.3 — the Malthusian response + DoD.** `SettlementConfig::frontier_mortality`
+      (`frontier_cultivation` + the positive check on — the ONLY change is `hunger_critical`). The
+      `mortality` viewer scenario is registered. Acceptance suite `sim/tests/mortality.rs` —
+      `mortality_run_is_deterministic`, `starvation_is_streak_gated_and_conserved`,
+      `deaths_are_attributable`, `population_settles_in_a_carrying_capacity_band`,
+      `more_food_raises_the_band_and_cuts_starvation`, `mortality_conserves`, `goldens_unchanged`.
+
+**What does the Malthusian system do at the principled threshold? The BAND (the hoped-for success,
+characterized not tuned).** At seed 1 over a 3000-tick window the colony settles into a
+carrying-capacity band (living ≈ 80–110), with the negative feedback plainly **phased**: high-hunger
+windows carry **more starvation deaths and fewer births**, low-hunger windows the reverse
+(`corr(hunger, starvation) ≈ +0.65`, `corr(hunger, births) ≈ −0.68`; and the lagged median-split
+agrees — high-hunger windows are *followed by* more deaths, low-hunger windows by more births).
+`max_living_hunger` **oscillates across the critical ceiling** (~47% of ticks at the ceiling driving
+deaths, ~53% below recovering), the population neither **drifts downward** (late-window mean ≈
+early-window mean, ratio ≈ 0.99) nor **collapses** (windowed `min_living` ≈ 83). All three channels are
+substantial over the window — starvation ≈ 990, old-age ≈ 700, births ≈ 1800 — and the two death types
+stay **attributable** via the separate counters (starvation only after `death_window` sustained
+critical ticks). The **food response** is a clean carrying-capacity response: sweeping the forage flow
+up **raises the living band** (≈ 81 → 100 → 119) **and cuts starvation frequency** (≈ 0.33 → 0.29 →
+0.25 deaths/tick), and **cultivation-on yields a higher viable band than off** (≈ 100 vs ≈ 52) with
+lower starvation — the S15 control, now with mortality. This is the full Malthusian dynamic, not the
+preventive-only plateau (S14) and not a redundant latent positive check.
+
+**Honest scope (the principled-threshold discipline).** The thresholds are the lab defaults, not
+searched for the one band-producing config — the disclosed food-flow sweep characterizes the response,
+it does not manufacture the band. The three outcomes were all first-class: **redundant** (the preventive
+check absorbs all pressure, starvation ≈ 0 — the *expected* result), **the band** (births AND starvation
+both phase-track hunger), and **collapse/extinction** (the positive check too harsh). The observed
+outcome is **the band**, and it is reported as the measured trajectory rather than a tuned target.
+Conservation holds on every tick across births + starvation + old-age deaths (estate to commons/heirs;
+no minted food, `endowment[staple] == 0`; no leak) — an estate/conservation break would be an
+implementation bug, not a finding, and none occurs.
+
+All additive/gated: with the `mortality` scenario absent / `hunger_critical = need_max + 1` the S5–S16
+scenarios + the six econ + g5a/g5b/coemergence emergence + the demographic `lineages` + the
+`g4a_death` goldens are **byte-identical** — `starvation_deaths_total` is runtime-only (NOT in
+`canonical_bytes`, so it shifts no digest), and the enabled `hunger_critical` lives only in
+`frontier_mortality` (which, with the check reverted to `need_max + 1`, is byte-identical to
+`frontier_cultivation`).
+
+- [x] viewer: the `mortality` scenario (`cargo run -p viewer -- run mortality --ticks 4000`)
+
 ## Build and test
 
 ```bash

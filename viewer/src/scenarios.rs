@@ -220,6 +220,12 @@ const SCENARIOS: &[Scenario] = &[
         build: build_money_from_cultivation,
     },
     Scenario {
+        name: "mortality",
+        description:
+            "S17: MORTALITY — the Malthusian POSITIVE check. The S15 cultivation colony with starvation death turned back ON at the principled threshold (hunger_critical = need_max, the lab default — the only change from `cultivation`). On the fed-and-plateaued colony sustained critical hunger now KILLS, so the population is bounded by BIRTHS AND DEATHS both responding to the carrying capacity — the full Malthusian system the S14 preventive check started. FINDING (the BAND, characterized not tuned): the colony oscillates in a carrying-capacity band (living ~80-110) with the negative feedback plainly phased — high-hunger windows carry MORE starvation deaths and FEWER births, low-hunger windows the reverse (corr(hunger, starvation) ~ +0.65, corr(hunger, births) ~ -0.68); hunger oscillates across the critical ceiling, the population neither drifts down nor goes extinct, and the two death types stay attributable. More food (forage/grain flow) raises the band AND cuts starvation; cultivation-on yields a higher viable band than off. Independent of money (the bread stays own-use). Run with more ticks (e.g. 4000) to see the band.",
+        build: build_mortality,
+    },
+    Scenario {
         name: "millisats-1x",
         description:
             "EXPERIMENT: frontier at coarse (x1) money precision — the unit-starved baseline that freezes (~320 money units)",
@@ -447,6 +453,10 @@ fn build_cultivation() -> SettlementConfig {
 
 fn build_money_from_cultivation() -> SettlementConfig {
     SettlementConfig::frontier_money_from_cultivation()
+}
+
+fn build_mortality() -> SettlementConfig {
+    SettlementConfig::frontier_mortality()
 }
 
 fn build_millisats_1x() -> SettlementConfig {

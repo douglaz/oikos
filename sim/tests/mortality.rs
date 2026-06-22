@@ -1,30 +1,45 @@
-//! S17 — mortality: the Malthusian positive check. Mechanism + attribution slice (S17.1).
+//! S17 acceptance suite — mortality: the Malthusian positive check (the DoD).
 //!
 //! S14 gave the colony an endogenous carrying capacity via the **preventive** check
-//! (births stall when hunger rises); S15 let it intensify by cultivation. But action under
-//! scarcity still had no survival consequence — `hunger_critical = need_max + 1`, so
-//! starvation death could never fire. S17 turns the **positive** check back on at the
+//! (births stall when hunger rises); S15 let it intensify by cultivation. But action
+//! under scarcity still had no survival consequence — `hunger_critical = need_max + 1`,
+//! so starvation death could never fire. S17 turns the **positive** check back on, at the
 //! principled lab-default threshold `hunger_critical = need_max` (the only change in
-//! `frontier_mortality`), so on the fed-and-plateaued cultivation colony sustained critical
-//! hunger kills.
+//! `frontier_mortality`), so on the fed-and-plateaued cultivation colony sustained
+//! critical hunger kills. Population is now bounded by **births AND deaths** both
+//! responding to the carrying capacity — the full Malthusian system.
 //!
-//! This slice proves the un-dodged kill is streak-gated, attributed, and conserving: a
-//! colonist dies only after `death_window` consecutive critical ticks (the built-in
-//! hysteresis — one bad tick never kills), the death is attributed to a
-//! `starvation_deaths_total` counter distinct from `old_age_deaths_total`, and the estate
-//! settles conserving (the g4a guarantees, now under the positive check). Because the
-//! counter is a runtime-only diagnostic NOT in `canonical_bytes`, every existing golden
-//! (incl. the live-starvation `g4a_death` configs) stays byte-identical.
+//! FINDING (the BAND — the hoped-for success, characterized at the principled threshold,
+//! NOT tuned). At seed 1 over a 3000-tick window the colony settles into a
+//! carrying-capacity band (living ~80–110), with the negative feedback plainly phased:
+//! high-hunger windows carry MORE starvation deaths and FEWER births, low-hunger windows
+//! the reverse (`corr(hunger, starvation) ≈ +0.65`, `corr(hunger, births) ≈ −0.68`).
+//! Hunger oscillates across the critical ceiling (~47% of ticks at the ceiling, ~53%
+//! below), the population does not drift (late-window mean ≈ early-window mean) and never
+//! collapses (window min ≈ 83). All three death/birth channels are substantial (starvation,
+//! old-age, and births all in the hundreds–thousands over the window) and the two death
+//! types stay **attributable** via separate counters. More food (forage/grain flow) raises
+//! the living band AND cuts starvation frequency; cultivation-on yields a higher viable
+//! band than off. Conservation holds on every tick across all of it.
+//!
+//! Determinism note: `starvation_deaths_total` is a runtime-only diagnostic (NOT in
+//! `canonical_bytes`); the deaths themselves live in the colonist liveness/estate state
+//! the digest already pins, so the band is a fixed, reproducible trajectory and every
+//! existing golden (incl. the live-starvation `g4a_death` configs) is byte-identical.
 
 use econ::agent::{Agent, AgentId, Role};
-use econ::good::{Gold, Stock, FOOD, WOOD};
-use sim::{NodeSpec, Settlement, SettlementConfig};
+use econ::good::{Gold, GoodId, Stock, FOOD, WOOD};
+use sim::{ForageCommons, NodeSpec, Settlement, SettlementConfig};
 use world::Pos;
 
 // ---- shared helpers -----------------------------------------------------
 
 fn living(s: &Settlement) -> usize {
     (0..s.population()).filter(|&i| s.is_alive(i)).count()
+}
+
+fn bread_good(cfg: &SettlementConfig) -> GoodId {
+    cfg.chain.as_ref().expect("chain").content.bread()
 }
 
 /// A minimal econ agent for probing arena slot reuse (mirrors the g4a harness).
@@ -60,6 +75,22 @@ fn dieoff_config() -> SettlementConfig {
     cfg
 }
 
+/// (windowed-mean living population, starvation deaths PER TICK) over `[warmup,
+/// warmup+measure)` on `cfg` at seed 1 — the carrying-capacity-response metric.
+fn band(cfg: &SettlementConfig, warmup: u64, measure: u64) -> (f64, f64) {
+    let mut s = Settlement::generate(1, cfg);
+    s.run(warmup);
+    let starv0 = s.starvation_deaths_total();
+    let (mut sum, mut n) = (0u64, 0u64);
+    for _ in 0..measure {
+        s.econ_tick();
+        sum += living(&s) as u64;
+        n += 1;
+    }
+    let starv = (s.starvation_deaths_total() - starv0) as f64 / measure as f64;
+    (sum as f64 / n as f64, starv)
+}
+
 fn corr(xs: &[f64], ys: &[f64]) -> f64 {
     let n = xs.len() as f64;
     let mx = xs.iter().sum::<f64>() / n;
@@ -76,7 +107,44 @@ fn corr(xs: &[f64], ys: &[f64]) -> f64 {
     sxy / (sxx.sqrt() * syy.sqrt())
 }
 
-// ---- streak-gated + conserved ------------------------------------------
+// ---- 1. determinism -----------------------------------------------------
+
+#[test]
+fn mortality_run_is_deterministic() {
+    // Byte-identical `(seed, config)` at ≥3000 ticks: the positive check changes only
+    // `hunger_critical`, and the resulting deaths live in the colonist liveness/estate
+    // state that canonical_bytes already pins (the runtime-only `starvation_deaths_total`
+    // is NOT digested). The band is a fixed, reproducible trajectory.
+    let cfg = SettlementConfig::frontier_mortality();
+    let mut a = Settlement::generate(1, &cfg);
+    let mut b = Settlement::generate(1, &cfg);
+    a.run(3200);
+    b.run(3200);
+    assert_eq!(
+        a.canonical_bytes(),
+        b.canonical_bytes(),
+        "the mortality run must be byte-identical for the same (seed, config)"
+    );
+    assert_eq!(a.digest(), b.digest());
+
+    // The run actually exercised the positive check (else the determinism claim is
+    // vacuous): both Malthusian checks fired.
+    assert!(
+        a.starvation_deaths_total() > 0,
+        "the determinism run must exercise the positive check (starvation)"
+    );
+    assert!(
+        a.old_age_deaths_total() > 0,
+        "the determinism run must also see old-age deaths"
+    );
+
+    // The seed matters (founder cultures are drawn from it), so it is a real run.
+    let mut c = Settlement::generate(2, &cfg);
+    c.run(3200);
+    assert_ne!(a.digest(), c.digest(), "the seed must change the run");
+}
+
+// ---- 2. streak-gated + conserved ---------------------------------------
 
 #[test]
 fn starvation_is_streak_gated_and_conserved() {
@@ -185,7 +253,7 @@ fn starvation_is_streak_gated_and_conserved() {
     );
 }
 
-// ---- attributable -------------------------------------------------------
+// ---- 3. attributable ----------------------------------------------------
 
 #[test]
 fn deaths_are_attributable() {
@@ -256,7 +324,7 @@ fn deaths_are_attributable() {
     );
 }
 
-// ---- the carrying-capacity band (the core claim) -----------------------
+// ---- 4. the carrying-capacity band (the core claim) --------------------
 
 #[test]
 fn population_settles_in_a_carrying_capacity_band() {
@@ -400,7 +468,109 @@ fn population_settles_in_a_carrying_capacity_band() {
     );
 }
 
-// ---- goldens unchanged --------------------------------------------------
+// ---- 5. the food response (a disclosed carrying-capacity sweep) --------
+
+#[test]
+fn more_food_raises_the_band_and_cuts_starvation() {
+    // The carrying-capacity response. Sweeping the food flow UP raises the living band
+    // AND lowers starvation frequency (more food → fewer starve, more survive); and
+    // cultivation-on yields a higher viable band than off (the S15 control, now with
+    // mortality). A DISCLOSED sweep characterizing the response — the thresholds are NOT
+    // tuned; only the food flow varies, holding everything else fixed.
+    let warmup = 400u64;
+    let measure = 1600u64;
+
+    // Forage-flow sweep (cultivation on, mortality on): band strictly up, starvation
+    // strictly down as forage regen rises.
+    let mut points = Vec::new();
+    for fregen in [1u32, 2, 3] {
+        let mut cfg = SettlementConfig::frontier_mortality();
+        cfg.chain.as_mut().expect("chain").forage_commons = Some(ForageCommons {
+            stock: fregen * 45,
+            regen: fregen,
+            cap: 300,
+        });
+        points.push(band(&cfg, warmup, measure));
+    }
+    for w in points.windows(2) {
+        assert!(
+            w[1].0 > w[0].0,
+            "more forage must RAISE the living band: {:?}",
+            points.iter().map(|p| p.0).collect::<Vec<_>>()
+        );
+        assert!(
+            w[1].1 < w[0].1,
+            "more forage must CUT starvation frequency: {:?}",
+            points.iter().map(|p| p.1).collect::<Vec<_>>()
+        );
+    }
+    assert!(
+        points.last().unwrap().0 - points.first().unwrap().0 > 20.0,
+        "a higher food flow must give a meaningfully higher band: {:?}",
+        points.iter().map(|p| p.0).collect::<Vec<_>>()
+    );
+
+    // Cultivation on vs off (mortality on): the escape valve lifts the viable band well
+    // above forage-only AND cuts starvation frequency.
+    let (on_band, on_starv) = band(&SettlementConfig::frontier_mortality(), warmup, measure);
+    let mut off = SettlementConfig::frontier_forage_capacity();
+    off.dynamics.hunger_critical = off.dynamics.need_max; // the positive check, forage-only
+    let (off_band, off_starv) = band(&off, warmup, measure);
+    assert!(
+        on_band > off_band + 25.0,
+        "cultivation-on must yield a higher viable band than forage-only \
+         (on {on_band:.1} vs off {off_band:.1})"
+    );
+    assert!(
+        on_starv < off_starv,
+        "cultivation-on must cut starvation frequency vs forage-only \
+         (on {on_starv:.3} vs off {off_starv:.3})"
+    );
+}
+
+// ---- 6. conservation ----------------------------------------------------
+
+#[test]
+fn mortality_conserves() {
+    // Whole-system conservation EVERY tick across births + starvation deaths + old-age
+    // deaths, with no minted food (the staple mint is off — the only bread is cultivated)
+    // and no leak. Births + deaths churn the arena slot rapidly over the long run; every
+    // live colonist keeps resolving (world_id == econ_id holds through the churn).
+    let cfg = SettlementConfig::frontier_mortality();
+    let bread = bread_good(&cfg);
+    let mut s = Settlement::generate(2, &cfg);
+    for tick in 0..1800u64 {
+        let r = s.econ_tick();
+        assert!(r.conserves(), "conservation broke at tick {tick}");
+        assert_eq!(
+            r.endowment_of(bread),
+            0,
+            "no minted food: bread is cultivated (produced), never minted (tick {tick})"
+        );
+        if tick % 200 == 0 {
+            for i in 0..s.population() {
+                if !s.is_alive(i) {
+                    continue;
+                }
+                let id = s.colonist_id(i).expect("a live colonist has an id");
+                assert!(
+                    s.society().agents.get(id).is_some(),
+                    "a live colonist's id must resolve in the arena (no dangling slot)"
+                );
+            }
+        }
+    }
+    // All three channels actually churned (conservation across them, not a quiet run).
+    assert!(
+        s.starvation_deaths_total() > 0 && s.old_age_deaths_total() > 0 && s.births_total() > 0,
+        "births + starvation + old-age must all churn (starv {}, old {}, births {})",
+        s.starvation_deaths_total(),
+        s.old_age_deaths_total(),
+        s.births_total(),
+    );
+}
+
+// ---- 7. goldens unchanged ----------------------------------------------
 
 #[test]
 fn goldens_unchanged() {
