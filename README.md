@@ -1954,13 +1954,15 @@ S12 rather than faking around it. Built, gated, conserving — per `docs/impl-mo
 
 **Does money emerge against produced bread? No — the principled failure, robust across the sweep.** The
 surplus **seam works**: the cultivators' produced bread reaches the barter and is traded for SALT — a
-material, **supply-scaling** volume (it grows monotonically with the cultivated-grain flow) that the
-provenance ledger attributes **wholly to PRODUCED** (minted **provably zero**, buffers absent), and
-bread is **material** in SALT's saleability (not incidental). **But SALT never promotes.** The
-characterized reason (timing/breadth): with the mint retired the colony is **hunger-stressed**, so
-**BREAD itself becomes the dominant saleable good** — but bread is consumed food and cannot be money —
-so the durable medium is never the provisional leader and its **indirect-exchange breadth (what the
-strong-bar gate requires) is identically ZERO**. This **sharpens S12**: the minted bread was
+material volume that **rises from the low (grain regen 4) to the high (regen 16) supply control** (a
+two-point response, not a full logged sweep), which the provenance ledger attributes **wholly to
+PRODUCED** (minted **provably zero**, buffers absent), and bread is **material** in SALT's saleability
+(not incidental). **But SALT never promotes.** What the suite *proves* is the characterized reason:
+SALT accrues **ZERO indirect-exchange breadth** (`salt_indirect_acceptances == 0`) so the strong-bar
+gate never fires. The *inferred* mechanism (not separately asserted by a provisional-leader trace):
+with the mint retired the colony is **hunger-stressed**, so **food (bread) itself becomes the dominant
+saleable good** — but bread is consumed food and cannot be money — so the durable medium never becomes
+the saleability hub. This **sharpens S12**: the minted bread was
 load-bearing not merely as *supply* but because it kept hunger low enough that a **durable non-food
 good** could become the saleability hub. The controls bracket it: the minted-bread **S9 colony does
 promote SALT** (the gate works — the finding is about the *supply*, not a broken gate), and **disabling
@@ -1968,15 +1970,22 @@ cultivation leaves zero** bread→medium volume (no produced supply, nothing to 
 **not** rescued by re-minting bread (the false third outcome — SALT promoting via WOOD/forage with bread
 incidental — does not occur and is guarded against).
 
-**Honest scope.** S16 proves the produced-bread → SALT seam is real (the surplus is traded, attributed
-produced by stock origin, conserved every tick — grain regen the source; grain `consumed_as_input` →
-bread `produced` → consumed/traded; no minted food, `endowment[staple] == 0`) but that, under a
-mint-off composition, **produced bread cannot replace the minted bread as the supply that monetizes
-SALT** — because removing the mint makes *food itself* the dominant saleable good. The
-`warmth_per_wood`/`wood_provision` scenario knobs are **not** tuned to force an outcome (SALT never
-promotes at any setting); they remove a barter offer-ordering artifact (WOOD, a lower good id, would
-otherwise preempt bread in the one-offer-per-agent barter) so the produced surplus actually reaches the
-market and the real economic question can be observed.
+**Honest scope (Codex-reviewed: PASS, no P0/P1).** S16 proves the produced-bread → SALT seam is real
+(the surplus is traded, attributed produced by stock origin, conserved every tick — grain regen the
+source; grain `consumed_as_input` → bread `produced` → consumed/traded; no minted food,
+`endowment[staple] == 0`) but that, under a mint-off composition, **produced bread cannot replace the
+minted bread as the supply that monetizes SALT** — because removing the mint makes *food itself* the
+dominant saleable good. The `warmth_per_wood`/`wood_provision` scenario knobs are **not** tuned to force
+an outcome (SALT never promotes at any setting); they remove a barter offer-ordering artifact (WOOD, a
+lower good id, would otherwise preempt bread in the one-offer-per-agent barter) so the produced surplus
+actually reaches the market and the real economic question can be observed. **What this means (the
+reframing):** S16 does NOT close S12 in the strong sense — it closes the narrower **supply** objection
+(produced bread *can* be the bread-for-SALT counterparty) and **reframes** the deeper problem: Mengerian
+money needs a *multi-good* exchange economy where the durable medium is accepted as a **means** to reach
+goods *other* than the directly-traded food. Subsistence-pressure cultivation, alone, doesn't generate
+that breadth. The next real step toward money-from-produced-goods is therefore **not "more bread"** but a
+produced multi-good economy (cultivators spending the medium on other goods) — a separate milestone, not
+a tuning of this one.
 
 All additive/gated: with `cultivation_sells_surplus` off the S5–S15 scenarios + the six econ +
 g5a/g5b/coemergence emergence + the demographic `lineages` goldens are byte-identical (the new state —
