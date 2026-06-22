@@ -3403,6 +3403,30 @@ impl SettlementConfig {
         cfg
     }
 
+    /// S17 — **mortality** (the Malthusian positive check): the S15
+    /// [`Self::frontier_cultivation`] colony with starvation death turned back on at the
+    /// **principled** lab-default threshold `hunger_critical = need_max` (the others keep
+    /// the `need_max + 1` dodge). On the fed-and-plateaued cultivation colony, sustained
+    /// critical hunger now kills, so the population is bounded by **births AND deaths**
+    /// both responding to the carrying capacity — the full Malthusian system the S14
+    /// preventive check started.
+    ///
+    /// The ONLY change from `frontier_cultivation` is `dynamics.hunger_critical`; the death
+    /// machinery (streak-gated kill, `settle_death → collect_estate → commons/heirs`) is
+    /// reused unchanged. With it reverted to `need_max + 1` this is byte-identical to
+    /// `frontier_cultivation`. Independent of money (the bread stays own-use). Whether the
+    /// positive check is binding (a band), latent (the preventive check absorbs all
+    /// pressure — the expected outcome), or too harsh (collapse) is the characterization,
+    /// NOT tuned: the threshold and `death_window` (3) are the lab defaults.
+    pub fn frontier_mortality() -> Self {
+        let mut cfg = Self::frontier_cultivation();
+        // Turn ON the positive check: `hunger` clamps at `need_max`, so `hunger_critical =
+        // need_max` is the lowest reachable critical ceiling — the principled threshold,
+        // config-only, no edit to the death machinery.
+        cfg.dynamics.hunger_critical = cfg.dynamics.need_max;
+        cfg
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).
@@ -3910,6 +3934,15 @@ pub struct Settlement {
     births_total: u64,
     /// Lifetime old-age death count (distinct from starvation deaths).
     old_age_deaths_total: u64,
+    /// S17 — lifetime **starvation** (positive-check) death count, accumulated from the
+    /// death count [`Self::update_needs_and_remove_dead`] returns. Distinct from
+    /// `old_age_deaths_total` so the two Malthusian checks are attributable. It is a
+    /// **runtime-only diagnostic**: NOT serialized into `canonical_bytes` (the deaths
+    /// themselves live in the colonist liveness/estate state the digest already pins, and
+    /// existing configs — `g4a_death`, `starved_hauler` — already carry live starvation,
+    /// so digesting this counter would break their goldens). The asymmetry with
+    /// `old_age_deaths_total` (which IS digested) is intentional — it avoids golden churn.
+    starvation_deaths_total: u64,
     /// S14 — **birth-block diagnostics**: lifetime counts of *why* a household that
     /// was checked did NOT birth this tick, so the endogenous-plateau finding is
     /// interpretable (does the population stall at the carrying capacity via the
@@ -5266,6 +5299,7 @@ impl Settlement {
             birth_seq: 0,
             births_total: 0,
             old_age_deaths_total: 0,
+            starvation_deaths_total: 0,
             birth_block_interval: 0,
             birth_block_size_cap: 0,
             birth_block_hunger_ceiling: 0,
@@ -5443,6 +5477,7 @@ impl Settlement {
             birth_seq: 0,
             births_total: 0,
             old_age_deaths_total: 0,
+            starvation_deaths_total: 0,
             birth_block_interval: 0,
             birth_block_size_cap: 0,
             birth_block_hunger_ceiling: 0,
@@ -6468,6 +6503,12 @@ impl Settlement {
         for id in dying {
             deaths += u32::from(self.settle_death(id));
         }
+        // S17 — attribute the positive check: accumulate the starvation death count into
+        // the runtime-only counter (mirrors `old_age_deaths_total` in `age_and_remove_elderly`,
+        // but is NOT digested). A no-death tick adds zero, so a pre-S17 run reads the same.
+        self.starvation_deaths_total = self
+            .starvation_deaths_total
+            .saturating_add(u64::from(deaths));
         deaths
     }
 
@@ -10484,6 +10525,15 @@ impl Settlement {
     /// Lifetime old-age deaths so far (G4b) — distinct from starvation deaths.
     pub fn old_age_deaths_total(&self) -> u64 {
         self.old_age_deaths_total
+    }
+
+    /// S17 — lifetime **starvation** (positive-check) deaths so far, distinct from
+    /// `old_age_deaths_total` so the two Malthusian checks are attributable. A
+    /// runtime-only diagnostic (NOT in `canonical_bytes`): it shifts no digest, so every
+    /// existing golden — including the live-starvation `g4a_death` / `starved_hauler`
+    /// configs — is byte-identical. Read-only.
+    pub fn starvation_deaths_total(&self) -> u64 {
+        self.starvation_deaths_total
     }
 
     /// S14 — birth-block diagnostics: lifetime count of births skipped because the
@@ -16308,6 +16358,38 @@ mod tests {
             off_before,
             off.canonical_bytes(),
             "off the forage-commons path the unused birth-block counters must not steer the digest"
+        );
+    }
+
+    #[test]
+    fn canonical_bytes_exclude_starvation_deaths_total() {
+        // S17 (the P1 tripwire): the starvation-death counter is a runtime-only
+        // diagnostic — it must NEVER enter canonical_bytes, or it would shift the
+        // digest of every live-starvation config (`g4a_death`, `starved_hauler`) and
+        // break their goldens. Mutating it leaves the bytes byte-identical, on a
+        // live-starvation config AND on the demographic mortality scenario.
+        let mut s = Settlement::generate(1, &SettlementConfig::starved_hauler());
+        s.run(40); // exercise a real starvation death so the counter is non-zero
+        assert!(
+            s.starvation_deaths_total() > 0,
+            "the starved hauler must record a starvation death"
+        );
+        let before = s.canonical_bytes();
+        s.starvation_deaths_total = s.starvation_deaths_total.wrapping_add(1);
+        assert_eq!(
+            before,
+            s.canonical_bytes(),
+            "starvation_deaths_total must NOT enter canonical_bytes (the digest tripwire)"
+        );
+
+        let mut d = Settlement::generate(1, &SettlementConfig::frontier_mortality());
+        d.run(50);
+        let d_before = d.canonical_bytes();
+        d.starvation_deaths_total = d.starvation_deaths_total.wrapping_add(9);
+        assert_eq!(
+            d_before,
+            d.canonical_bytes(),
+            "starvation_deaths_total must not steer the digest on the mortality scenario"
         );
     }
 
