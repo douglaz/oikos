@@ -880,6 +880,22 @@ pub struct ChainConfig {
     /// up — this is what makes "no cultivation without scarcity" hold. Consulted only
     /// while `own_use_cultivation` is active.
     pub cultivate_patience: u16,
+    /// S16 — **money from PRODUCED bread** (default `false`, byte-identical when off).
+    /// When `true` *and* the own-use cultivation path is active, two gated behaviors turn
+    /// on. (1) The **buy/sell split**: forage/cultivation eligibility is scoped to
+    /// **lineage** spatial household members (`household.is_some() && spatial_active`), so
+    /// non-lineage colonists — the seeded SALT-holding consumers S16 needs as the buy
+    /// side — no longer self-forage/cultivate (off the flag eligibility is the S13/S14
+    /// `household.is_none() || spatial_active`, so consumers would feed themselves and
+    /// never buy). (2) The **produced-bread provenance ledger**: a per-agent stock-origin
+    /// balance (produced vs minted) is maintained and bread→medium trades are attributed
+    /// to produced vs minted (the proof that money emerges against produced, not minted,
+    /// bread). The cultivated **surplus** itself needs no new offer code — it stays free
+    /// in stock (the S15 own-use consume is reserve-aware) and the existing S9
+    /// direct/indirect barter offers it for the cultivator's normal unsatisfied wants (no
+    /// special medium want — Base Fact 7). Off keeps the S15 path exactly, so every
+    /// existing config and its goldens are byte-identical.
+    pub cultivation_sells_surplus: bool,
     /// EXPERIMENTAL (capital-advance probe): when `true` *and* money has emerged,
     /// each econ tick a conserved working-capital advance moves real money from
     /// the richest saver to any cashless active chain producer (Miller/Baker), so
@@ -1166,6 +1182,8 @@ impl ChainConfig {
             cultivate_hunger_out: 6,
             cultivate_consume: 0,
             cultivate_patience: 4,
+            // S16 off by default: no buy/sell split, no provenance ledger — byte-identical.
+            cultivation_sells_surplus: false,
             capital_advance: false,
             perishable_decay_bps: 0,
             subsistence_advance: false,
@@ -1254,6 +1272,8 @@ impl ChainConfig {
             cultivate_hunger_out: 6,
             cultivate_consume: 0,
             cultivate_patience: 4,
+            // S16 off by default: no buy/sell split, no provenance ledger — byte-identical.
+            cultivation_sells_surplus: false,
             capital_advance: false,
             perishable_decay_bps: 0,
             subsistence_advance: false,
@@ -3328,6 +3348,61 @@ impl SettlementConfig {
         cfg
     }
 
+    /// S16 — **money from PRODUCED bread** (the keystone): the S15 cultivation colony with
+    /// a SALT-holding consumer BUY side restored and the `cultivation_sells_surplus` path
+    /// on, so the cultivators' **surplus produced bread** is traded for SALT and the test
+    /// is whether **money emerges against produced (not minted) bread** — closing the S12
+    /// finding. Composes the strong-bar SALT machinery (the medium endowment + the
+    /// heterogeneous direct use + the indirect-breadth gate, all inherited unchanged) +
+    /// S13 spatial lineages + S14 forage commons + S15 own-use cultivation + the S16 flag.
+    ///
+    /// Derived from [`Self::frontier_cultivation`] (never mutated): the **minted bread is
+    /// OFF** (the own-labor path retires the hearth food mints, so the only bread is the
+    /// lineages' cultivated bread) and the bread bootstrap buffers are absent (inherited 0
+    /// from `frontier_forage_capacity`). The single composed change is the
+    /// `cultivation_sells_surplus` flag (which turns on the buy/sell split + the
+    /// provenance ledger) plus restoring the consumers `frontier_forage_capacity` stripped
+    /// — the goods-poor, SALT-rich (`consumer_medium_endowment 80`) buyers that, under the
+    /// buy/sell split, do NOT self-cultivate, so a produced-bread market must form. With
+    /// `cultivation_sells_surplus` reverted it is byte-identical to `frontier_cultivation`.
+    pub fn frontier_money_from_cultivation() -> Self {
+        let mut cfg = Self::frontier_cultivation();
+        if let Some(chain) = cfg.chain.as_mut() {
+            // The S16 gate: the buy/sell split (lineage-only cultivation, so the consumers
+            // below stay the buy side) + the produced-bread provenance ledger.
+            chain.cultivation_sells_surplus = true;
+        }
+        // Restore the SALT-holding consumer BUY side that S14 (`frontier_forage_capacity`)
+        // stripped to isolate the carrying-capacity signal. These non-lineage consumers
+        // hold the inherited `consumer_medium_endowment` (SALT) and — under the buy/sell
+        // split — never forage or cultivate, so their only food path is BUYING the
+        // lineages' surplus produced bread with SALT. The inherited bread/consumer-staple
+        // buffers are 0, so they are goods-poor and buy from the first ticks. No mortality
+        // (`hunger_critical` disabled upstream), so a consumer that cannot buy yet survives
+        // the bootstrap. Gatherers stay 0 — the spatial lineages do all the foraging and
+        // cultivating; the consumers are the pure demand side.
+        cfg.consumers = 6;
+        // Let the cultivators' PRODUCED surplus actually reach the barter. These knobs do
+        // NOT force promotion (the labor/grain-flow sweep shows SALT never promotes at any
+        // setting); they remove a barter offer-ordering ARTIFACT so the real economic
+        // question — does produced bread monetize SALT — can be observed rather than masked.
+        // The one-offer-per-agent barter offers an agent's LOWEST-good-id surplus first
+        // (`post_first_direct_barter_offer`), and WOOD (id < bread) would otherwise always
+        // preempt bread: a fed lineage that warms from a hearth surplus offers WOOD, never
+        // its bread. So: drop the WOOD node (no idle-harvest WOOD flood) and size the hearth
+        // warmth to a clean wash — `warmth_per_wood = 1` with `wood_provision = 1` means each
+        // tick's WOOD is consumed for that tick's warmth (no WOOD surplus accrues), the
+        // cultivator stays warm AND holds no WOOD, so its only offerable surplus is bread.
+        cfg.nodes.retain(|n| n.good != WOOD);
+        cfg.dynamics.warmth_per_wood = 1;
+        if let Some(demo) = cfg.demography.as_mut() {
+            for household in &mut demo.households {
+                household.wood_provision = 1;
+            }
+        }
+        cfg
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).
@@ -4043,6 +4118,10 @@ struct ChainRuntime {
     cultivate_hunger_out: u16,
     cultivate_consume: u32,
     cultivate_patience: u16,
+    /// S16: the money-from-produced-bread gate (see [`ChainConfig::cultivation_sells_surplus`]).
+    /// `false` for every existing config, so the buy/sell split and the provenance ledger
+    /// are inert and the run is byte-identical.
+    cultivation_sells_surplus: bool,
     /// S6: the productive-re-entry phase gate + hysteresis thresholds (see
     /// [`ChainConfig::productive_reentry`]). `false`/unused for every existing config.
     productive_reentry: bool,
@@ -4996,6 +5075,7 @@ impl Settlement {
                 cultivate_hunger_out: chain.cultivate_hunger_out,
                 cultivate_consume: chain.cultivate_consume,
                 cultivate_patience: chain.cultivate_patience,
+                cultivation_sells_surplus: chain.cultivation_sells_surplus,
                 productive_reentry: chain.productive_reentry,
                 reentry_hunger_in: chain.reentry_hunger_in,
                 reentry_hunger_out: chain.reentry_hunger_out,
@@ -7164,6 +7244,14 @@ impl Settlement {
         // cultivate bread instead. Off (every pre-S15 config) `cultivation` is false, so
         // `cultivating` is never set and the `foraging` steering is exactly S14.
         let cultivation = self.own_use_cultivation_active();
+        // S16 buy/sell split (Codex P1c): when money-from-produced-bread is on, scope
+        // forage/cultivation eligibility to LINEAGE spatial members
+        // (`household.is_some() && spatial_active`), so the seeded SALT-holding consumers
+        // (`household: None`) stay the goods-poor BUY side and do NOT self-forage/cultivate
+        // — the division of labor S16 needs. Off the flag eligibility stays the S13/S14
+        // `household.is_none() || spatial_active` exactly, so every existing run is
+        // byte-identical.
+        let buy_sell_split = self.cultivation_sells_surplus_active();
         let cultivate_input = if cultivation {
             self.cultivation_input_good()
         } else {
@@ -7200,7 +7288,14 @@ impl Settlement {
                 // DOES monetize, an active producer must get a forage-when-too-hungry path.
                 // Pre-S13 a lineage member is non-spatial and excluded (`household: None`
                 // only); S13 spatial households make it spatial too, so it joins the set.
-                let spatial_member = colonist.household.is_none() || spatial_active;
+                // S16: with the buy/sell split on, only LINEAGE spatial members are eligible
+                // (the seeded SALT consumers stay the buy side); off the flag this reduces
+                // to the S13/S14 gate exactly (byte-identical).
+                let spatial_member = if buy_sell_split {
+                    colonist.household.is_some() && spatial_active
+                } else {
+                    colonist.household.is_none() || spatial_active
+                };
                 let eligible = spatial_member
                     && matches!(
                         colonist.vocation,
@@ -8812,6 +8907,18 @@ impl Settlement {
         self.chain
             .as_ref()
             .is_some_and(chain_runtime_own_use_cultivation_active)
+    }
+
+    /// S16: whether the **money-from-produced-bread** path is active this tick — the
+    /// `cultivation_sells_surplus` flag is on AND own-use cultivation can run. When this
+    /// holds, two gated behaviors engage: the buy/sell split (only lineage spatial members
+    /// forage/cultivate, so seeded SALT consumers stay the buy side) and the produced-bread
+    /// provenance ledger (the stock-origin attribution of bread→medium trades). Off (every
+    /// existing config), both are inert and the run is byte-identical.
+    fn cultivation_sells_surplus_active(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(chain_runtime_cultivation_sells_surplus_active)
     }
 
     fn cultivation_input_good(&self) -> Option<GoodId> {
@@ -10586,6 +10693,15 @@ impl Settlement {
                 out.extend_from_slice(&chain.cultivate_consume.to_le_bytes());
                 out.extend_from_slice(&chain.cultivate_patience.to_le_bytes());
             }
+            // S16: the money-from-produced-bread gate steers BOTH the buy/sell split (who
+            // forages/cultivates) and the provenance ledger, so it is part of the
+            // future-behaviour identity whenever it can run. Emitted only when on (the same
+            // gated-block discipline as S15 above), so a flag-off chain stays byte-identical
+            // to the pre-S16 stream. (The per-agent provenance counters it maintains are
+            // serialized with the colonist roster below.)
+            if self.cultivation_sells_surplus_active() {
+                out.push(1);
+            }
             // The staple mapping steers the next needs/scale phase for *any* chain,
             // role-choice or not, so it is included whenever a chain is active. The
             // G3b no-spread control shares the emergent config's physical state but
@@ -11412,6 +11528,14 @@ fn chain_runtime_own_use_cultivation_active(chain: &ChainRuntime) -> bool {
     chain.own_use_cultivation
         && chain.content.cultivate_recipe().is_some()
         && chain_runtime_own_labor_subsistence_can_run(chain)
+}
+
+/// S16: money-from-produced-bread is active iff the flag is on AND own-use cultivation is
+/// active (it composes strictly on the S15 path). Off (every existing config) it is
+/// `false`, so the buy/sell split and the provenance ledger never engage and the run is
+/// byte-identical.
+fn chain_runtime_cultivation_sells_surplus_active(chain: &ChainRuntime) -> bool {
+    chain.cultivation_sells_surplus && chain_runtime_own_use_cultivation_active(chain)
 }
 
 fn food_needed_to_reach_hunger(
@@ -15778,6 +15902,42 @@ mod tests {
             base.canonical_bytes(),
             Settlement::generate(7, &base_cfg).canonical_bytes(),
             "off the cultivation path the cultivate thresholds must not steer the digest"
+        );
+    }
+
+    #[test]
+    fn canonical_bytes_include_cultivation_sells_surplus() {
+        // S16: the money-from-produced-bread gate steers the buy/sell split (who
+        // forages/cultivates) and the provenance ledger, so a flag-on config must digest
+        // apart from the same config with the flag off.
+        let on = Settlement::generate(7, &SettlementConfig::frontier_money_from_cultivation());
+        let mut off_cfg = SettlementConfig::frontier_money_from_cultivation();
+        off_cfg
+            .chain
+            .as_mut()
+            .expect("chain")
+            .cultivation_sells_surplus = false;
+        let off = Settlement::generate(7, &off_cfg);
+        assert_ne!(
+            on.canonical_bytes(),
+            off.canonical_bytes(),
+            "the cultivation_sells_surplus flag must be part of the identity"
+        );
+
+        // Off the cultivation path (no Cultivate recipe) the flag is inert: it composes on
+        // own-use cultivation, so toggling it on a forage-only config must NOT split the
+        // digest — preserving the pre-S16 layout for every existing config.
+        let base = Settlement::generate(7, &SettlementConfig::frontier_forage_capacity());
+        let mut base_cfg = SettlementConfig::frontier_forage_capacity();
+        base_cfg
+            .chain
+            .as_mut()
+            .expect("chain")
+            .cultivation_sells_surplus = true;
+        assert_eq!(
+            base.canonical_bytes(),
+            Settlement::generate(7, &base_cfg).canonical_bytes(),
+            "off the cultivation path the cultivation_sells_surplus flag must not steer the digest"
         );
     }
 
