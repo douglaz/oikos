@@ -5631,9 +5631,11 @@ impl Settlement {
         // transition (and the gold checkpoints account the minted gold).
         let money_good_before = self.society.current_money_good();
         let society_gold_before = self.society.total_gold();
-        // S16: the produced-bread provenance ledger reads THIS tick's new barter trades as
-        // the suffix past here (the retained log survives the promotion barter-book wipe).
-        let provenance_trades_start = self.society.barter_trades.len();
+        // S16: the produced-bread provenance ledger reads THIS tick's market trades as
+        // the suffixes past here. Pre-promotion bread moves on the retained barter log;
+        // post-promotion bread moves on the spot tape.
+        let provenance_barter_trades_start = self.society.barter_trades.len();
+        let provenance_spot_trades_start = self.society.trades.len();
         if self.barter.is_some() {
             self.society
                 .step_rejecting_v2_money_goods(&self.money_rejection_goods);
@@ -5679,8 +5681,11 @@ impl Settlement {
         // attribute the bread→medium trades produced-vs-minted, in the within-step order
         // (consume eats before the barter clears). The cursor marks the consumed-log prefix
         // already sinked, so the own-use consume below is not re-counted. No-op off the path.
-        let provenance_consume_cursor =
-            self.run_bread_provenance_market(provenance_trades_start, was_pre_promotion);
+        let provenance_consume_cursor = self.run_bread_provenance_market(
+            provenance_barter_trades_start,
+            provenance_spot_trades_start,
+            was_pre_promotion,
+        );
 
         // ---- 5c. IN-KIND INPUT ADVANCE (EXPERIMENT): a capitalist buys each
         // active producer's recipe input in kind from the richest holder and
@@ -6584,6 +6589,13 @@ impl Settlement {
             household: self.colonist_household(id).unwrap_or_default(),
             heir,
         });
+        let provenance_bread = if self.bread_provenance_active() {
+            self.provenance_bread_good()
+        } else {
+            None
+        };
+        let mut bread_placed_with_heir = 0u64;
+        let mut bread_placed_with_commons = 0u64;
         match destination {
             Some(EstateDestination::Household { heir, .. }) => {
                 if !self.credit_estate_gold_to_heir(heir, gold) {
@@ -6617,6 +6629,10 @@ impl Settlement {
                     if qty > placed {
                         *self.commons_stock.entry(good).or_insert(0) += qty - placed;
                     }
+                    if Some(good) == provenance_bread {
+                        bread_placed_with_heir += placed;
+                        bread_placed_with_commons += qty - placed;
+                    }
                 }
             }
             Some(EstateDestination::Commons) | None => {
@@ -6625,20 +6641,26 @@ impl Settlement {
                     if qty > 0 {
                         *self.commons_stock.entry(good).or_insert(0) += qty;
                     }
+                    if Some(good) == provenance_bread {
+                        bread_placed_with_commons += qty;
+                    }
                 }
             }
         }
-        // S16: route the dead colonist's produced bread with its estate — to the heir (a
-        // conserved transfer that keeps the produced origin in the living population, since
-        // the heir received the estate bread) or, for the extinct-lineage commons fallback,
-        // to the sink. Headroom never bites at these quantities (asserted above).
+        // S16: route the dead colonist's produced bread with the bread units the estate
+        // actually placed. Heir headroom can split physical bread between heir and commons,
+        // so the produced-origin counter follows that same split.
         if self.bread_provenance_active() {
             match destination {
                 Some(EstateDestination::Household { heir, .. }) => {
-                    let dead = self.bread_provenance.produced.remove(&id).unwrap_or(0);
-                    if dead > 0 {
-                        *self.bread_provenance.produced.entry(heir).or_insert(0) += dead;
-                    }
+                    self.bread_provenance
+                        .transfer(id, heir, bread_placed_with_heir);
+                    self.bread_provenance.sink(id, bread_placed_with_commons);
+                    let residual = self.bread_provenance.drop_to_sink(id);
+                    debug_assert_eq!(
+                        residual, 0,
+                        "estate provenance routing must account for every produced bread unit"
+                    );
                 }
                 _ => {
                     self.bread_provenance.drop_to_sink(id);
@@ -9124,14 +9146,16 @@ impl Settlement {
     }
 
     /// S16: the produced-bread provenance market pass — runs right after `society.step()`,
-    /// in the within-step order (the consume pass eats BEFORE the barter clears). Sinks this
+    /// in the within-step order (the consume pass eats BEFORE the market clears). Sinks this
     /// tick's market-consume bread (produced-first), then for each bread trade transfers the
     /// drawn produced origin from seller to buyer and, for a bread→MEDIUM trade, attributes
-    /// the produced vs minted split. Returns the consumption-log cursor so the later own-use
-    /// consume pass is not re-counted. A no-op (returns 0) off the path.
+    /// the produced vs minted split. Pre-promotion bread moves on the barter tape;
+    /// post-promotion bread moves on the spot tape. Returns the consumption-log cursor so
+    /// the later own-use consume pass is not re-counted. A no-op (returns 0) off the path.
     fn run_bread_provenance_market(
         &mut self,
-        trades_start: usize,
+        barter_trades_start: usize,
+        spot_trades_start: usize,
         was_pre_promotion: bool,
     ) -> usize {
         if !self.bread_provenance_active() {
@@ -9154,25 +9178,38 @@ impl Settlement {
         for (agent, qty) in market_consume {
             self.bread_provenance.sink(agent, qty);
         }
-        // This tick's barter trades that moved bread (seller = the bread giver). Transfer the
-        // produced origin to the buyer for EVERY bread trade (so a resold loaf keeps its
-        // origin), and attribute the produced/minted split for a bread→MEDIUM trade.
-        let bread_trades: Vec<(AgentId, AgentId, GoodId, u64)> = self.society.barter_trades
-            [trades_start..]
-            .iter()
-            .filter_map(|trade| {
-                if trade.a_gives == bread {
-                    Some((trade.a, trade.b, trade.b_gives, u64::from(trade.qty)))
-                } else if trade.b_gives == bread {
-                    Some((trade.b, trade.a, trade.a_gives, u64::from(trade.qty)))
-                } else {
-                    None
-                }
-            })
-            .collect();
+        // This tick's bread trades (seller = the bread giver). Transfer the produced origin
+        // to the buyer for EVERY bread trade (so a resold loaf keeps its origin), and
+        // attribute the produced/minted split for a bread→MEDIUM trade.
+        let mut bread_trades: Vec<(AgentId, AgentId, Option<GoodId>, u64)> =
+            self.society.barter_trades[barter_trades_start..]
+                .iter()
+                .filter_map(|trade| {
+                    if trade.a_gives == bread {
+                        Some((trade.a, trade.b, Some(trade.b_gives), u64::from(trade.qty)))
+                    } else if trade.b_gives == bread {
+                        Some((trade.b, trade.a, Some(trade.a_gives), u64::from(trade.qty)))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+        let spot_medium = self.society.current_money_good();
+        bread_trades.extend(
+            self.society.trades[spot_trades_start..]
+                .iter()
+                .filter_map(|trade| {
+                    (trade.good == bread).then_some((
+                        trade.seller,
+                        trade.buyer,
+                        spot_medium,
+                        u64::from(trade.qty),
+                    ))
+                }),
+        );
         for (seller, buyer, other_good, qty) in bread_trades {
             let drawn_produced = self.bread_provenance.transfer(seller, buyer, qty);
-            if Some(other_good) == medium {
+            if other_good == medium {
                 let minted = qty - drawn_produced;
                 self.bread_provenance.salt_volume_produced += drawn_produced;
                 self.bread_provenance.salt_volume_minted += minted;
@@ -10825,18 +10862,21 @@ impl Settlement {
         out
     }
 
-    /// S8.0 emergence probe (read-only): the cumulative units of the chain staple
+    /// S8.0/S16 emergence probe (read-only): the cumulative units of the chain staple
     /// (bread) exchanged against the barter MEDIUM (SALT) over the run — the
-    /// bread-for-SALT leg of indirect exchange that actually monetizes SALT. Derived
-    /// from the society's retained barter-trade log (which survives the promotion
-    /// barter-book wipe), so it is the realized volume, not an estimate. `0` for a
-    /// settlement with no chain or no barter medium. Reads only.
+    /// bread-for-SALT leg of indirect exchange that can monetize SALT. Pre-promotion
+    /// volume is derived from the retained barter-trade log (which survives the
+    /// promotion barter-book wipe); if the configured medium later promotes, post-
+    /// promotion bread spot sales are included too because the money phase represents
+    /// those as bread-for-current-money trades. `0` for a settlement with no chain or
+    /// no barter medium. Reads only.
     pub fn bread_for_salt_volume(&self) -> u64 {
         let (Some((medium, _)), Some(content)) = (self.barter_medium, self.content()) else {
             return 0;
         };
         let staple = content.bread();
-        self.society
+        let barter_volume: u64 = self
+            .society
             .barter_trades
             .iter()
             .filter(|trade| {
@@ -10844,7 +10884,18 @@ impl Settlement {
                     || (trade.a_gives == medium && trade.b_gives == staple)
             })
             .map(|trade| u64::from(trade.qty))
-            .sum()
+            .sum();
+        let spot_volume: u64 = if self.society.current_money_good() == Some(medium) {
+            self.society
+                .trades
+                .iter()
+                .filter(|trade| trade.good == staple)
+                .map(|trade| u64::from(trade.qty))
+                .sum()
+        } else {
+            0
+        };
+        barter_volume + spot_volume
     }
 
     /// S16 — the produced-bread provenance trace (read-only): the cumulative bread→medium
@@ -16410,6 +16461,144 @@ mod tests {
         bp.credit_produced(third, 3);
         assert_eq!(bp.drop_to_sink(third), 3);
         assert_eq!(bp.produced_credited, bp.produced_sunk + bp.total_held());
+    }
+
+    #[test]
+    fn bread_provenance_tracks_spot_bread_sales() {
+        // Post-promotion V2 money trades live on the spot tape, not the barter tape. The
+        // provenance pass must still transfer produced-origin bread from seller to buyer
+        // after the market has moved the physical stock.
+        let mut s = Settlement::generate(7, &SettlementConfig::frontier_money_from_cultivation());
+        let bread = s.provenance_bread_good().expect("chain bread");
+        let agents = s
+            .society
+            .agents
+            .iter()
+            .map(|agent| agent.id)
+            .take(2)
+            .collect::<Vec<_>>();
+        let seller = agents[0];
+        let buyer = agents[1];
+
+        s.bread_provenance = BreadProvenance::default();
+        s.bread_provenance.credit_produced(seller, 3);
+        s.society
+            .agents
+            .get_mut(seller)
+            .expect("seller")
+            .stock
+            .add(bread, 3);
+
+        let barter_start = s.society.barter_trades.len();
+        let spot_start = s.society.trades.len();
+
+        // Mirror a filled spot ask for two bread: stock has already moved, and the spot
+        // tape is the only record the provenance pass can read.
+        assert!(
+            s.society
+                .agents
+                .get_mut(seller)
+                .expect("seller")
+                .stock
+                .remove(bread, 2),
+            "seller starts with enough bread"
+        );
+        s.society
+            .agents
+            .get_mut(buyer)
+            .expect("buyer")
+            .stock
+            .add(bread, 2);
+        s.society.trades.push(econ::market::Trade {
+            tick: s.econ_tick,
+            good: bread,
+            buyer,
+            seller,
+            price: Gold(1),
+            qty: 2,
+        });
+
+        s.run_bread_provenance_market(barter_start, spot_start, false);
+
+        assert_eq!(s.bread_provenance.produced.get(&seller).copied(), Some(1));
+        assert_eq!(s.bread_provenance.produced.get(&buyer).copied(), Some(2));
+        assert!(
+            s.bread_provenance_conserves(),
+            "spot bread sales must preserve produced-origin conservation"
+        );
+    }
+
+    #[test]
+    fn estate_provenance_follows_heir_headroom_split() {
+        // Physical estate settlement credits the heir first, then sends any bread that
+        // cannot fit at the heir to the commons. Produced-origin bread must follow that
+        // exact split instead of moving the dead agent's whole counter to the heir.
+        let mut s = Settlement::generate(7, &SettlementConfig::frontier_money_from_cultivation());
+        let bread = s.provenance_bread_good().expect("chain bread");
+        let household = s
+            .live_colonist_slots
+            .iter()
+            .filter_map(|&slot| s.colonists[slot].household)
+            .find(|&household| {
+                s.live_colonist_slots
+                    .iter()
+                    .filter(|&&slot| s.colonists[slot].household == Some(household))
+                    .count()
+                    >= 2
+            })
+            .expect("a lineage with an heir");
+        let members = s
+            .live_colonist_slots
+            .iter()
+            .copied()
+            .filter(|&slot| s.colonists[slot].household == Some(household))
+            .take(2)
+            .collect::<Vec<_>>();
+        assert!(members.len() >= 2, "test needs a same-household heir");
+        let deceased_slot = members[0];
+        let deceased = s.colonists[deceased_slot].id;
+        s.mark_colonist_dead(deceased_slot);
+        let heir = s.heir_for(deceased).expect("same-household heir");
+
+        for id in [deceased, heir] {
+            let stock = &mut s.society.agents.get_mut(id).expect("agent").stock;
+            let held = stock.get(bread);
+            assert!(stock.remove(bread, held));
+        }
+        s.society
+            .agents
+            .get_mut(heir)
+            .expect("heir")
+            .stock
+            .add(bread, u32::MAX - 1);
+        s.society
+            .agents
+            .get_mut(deceased)
+            .expect("deceased")
+            .stock
+            .add(bread, 4);
+        s.bread_provenance = BreadProvenance::default();
+        s.bread_provenance.credit_produced(deceased, 4);
+
+        let commons_before = s.commons_stock_of(bread);
+        assert!(s.settle_estate_to_heirs(deceased));
+
+        assert_eq!(
+            s.society.agents.get(heir).expect("heir").stock.get(bread),
+            u32::MAX,
+            "the heir receives only its one unit of bread headroom"
+        );
+        assert_eq!(
+            s.commons_stock_of(bread),
+            commons_before + 3,
+            "the estate bread that cannot fit at the heir routes to commons"
+        );
+        assert_eq!(s.bread_provenance.produced.get(&heir).copied(), Some(1));
+        assert_eq!(s.bread_provenance.produced_sunk, 3);
+        assert!(
+            s.bread_provenance_conserves(),
+            "estate provenance must conserve after an heir/commons split"
+        );
     }
 
     #[test]
