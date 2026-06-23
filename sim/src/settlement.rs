@@ -63,6 +63,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use econ::agent::{Agent, AgentId, Role, Want, WantKind};
 use econ::agio::{provisioning_bitmap_for_money, TemporalEndowment};
 use econ::bank::{Bank, BankPolicy};
+use econ::barter::BarterReason;
 use econ::bundle::{
     appraise_project_bundle_for_money, ProjectBundleCandidate, ProjectBundleEndowment,
 };
@@ -4443,6 +4444,78 @@ struct MultigoodMoney {
     /// the promotion tick, inclusive) — the WOOD leg of the indirect exchange.
     wood_for_salt: u64,
     pre_promotion_wood_for_salt: u64,
+    /// The **pending-indirect-SALT round-trip ledger** (Codex P1c). Per `(agent, target)`:
+    /// the medium accepted `IndirectFor{target}` but not yet spent on that target. Credited
+    /// when an agent accepts the medium as a MEANS to `target`; decremented when it later
+    /// trades medium→target. Tracing the actual sequence is stronger than net-acquiring the
+    /// target (which could come from direct barter, buffers, or an estate). Maintained
+    /// whenever a barter medium exists, so it works on any emergent economy.
+    pending: BTreeMap<(AgentId, GoodId), u64>,
+    /// Cumulative medium accepted `IndirectFor{target}` (the round-trip denominator).
+    indirect_accepted: u64,
+    /// Cumulative pending-indirect medium later SPENT on its earmarked target (the round-trip
+    /// numerator — the means role completing, the medium actually intermediating).
+    indirect_spent_on_target: u64,
+}
+
+impl MultigoodMoney {
+    /// Credit pending medium an agent accepted as a means to `target`.
+    fn credit_indirect(&mut self, agent: AgentId, target: GoodId, qty: u64) {
+        *self.pending.entry((agent, target)).or_insert(0) += qty;
+        self.indirect_accepted = self.indirect_accepted.saturating_add(qty);
+    }
+
+    /// Decrement when an agent spends earmarked medium on its target — the round-trip leg
+    /// completing. Draws the lesser of the spend and the standing pending (only the means
+    /// role completes; a spend beyond it is ordinary spending, not a round-trip).
+    fn spend_on_target(&mut self, agent: AgentId, target: GoodId, qty: u64) {
+        if let Some(pending) = self.pending.get_mut(&(agent, target)) {
+            let drawn = (*pending).min(qty);
+            *pending -= drawn;
+            if *pending == 0 {
+                self.pending.remove(&(agent, target));
+            }
+            self.indirect_spent_on_target = self.indirect_spent_on_target.saturating_add(drawn);
+        }
+    }
+
+    /// The standing pending-indirect medium an agent still holds earmarked for `target`.
+    fn pending_of(&self, agent: AgentId, target: GoodId) -> u64 {
+        self.pending.get(&(agent, target)).copied().unwrap_or(0)
+    }
+
+    /// The round-trip fraction in basis points: of the medium accepted as a means, the share
+    /// later spent on its target. `0` when nothing was accepted indirectly (no division by
+    /// zero) — distinct from "accepted but hoarded" (accepted > 0, spent ≈ 0).
+    fn round_trip_fraction_bps(&self) -> u32 {
+        if self.indirect_accepted == 0 {
+            return 0;
+        }
+        ((u128::from(self.indirect_spent_on_target) * 10_000) / u128::from(self.indirect_accepted))
+            as u32
+    }
+}
+
+/// S18: fold one side of a barter trade into the round-trip ledger. A side that ACCEPTS the
+/// medium `IndirectFor{target}` credits pending; a side that SPENDS the medium for a good it
+/// had earmarked decrements it (the means role completing). A free function so it borrows
+/// only the ledger, not the whole settlement.
+fn observe_round_trip_side(
+    ledger: &mut MultigoodMoney,
+    agent: AgentId,
+    gives: GoodId,
+    receives: GoodId,
+    reason: BarterReason,
+    medium: GoodId,
+    qty: u64,
+) {
+    if receives == medium {
+        if let BarterReason::IndirectFor { target } = reason {
+            ledger.credit_indirect(agent, target, qty);
+        }
+    } else if gives == medium {
+        ledger.spend_on_target(agent, receives, qty);
+    }
 }
 
 impl Settlement {
@@ -5889,9 +5962,16 @@ impl Settlement {
         );
 
         // ---- 5b-ter. MULTI-GOOD MONEY INSTRUMENTATION (S18): trace this tick's barter
-        // trades for the WOOD↔medium leg (the WOOD provenance bound). Runtime-only (not
-        // digested), a no-op off the multi-good path.
-        self.run_multigood_instrumentation(provenance_barter_trades_start, was_pre_promotion);
+        // trades for the WOOD↔medium leg (the WOOD provenance bound) and the
+        // pending-indirect-SALT round-trip ledger. The round-trip ledger also reads this
+        // tick's spot trades, so a means role that completes only POST-promotion (the medium
+        // accepted in barter, spent on the target as money) still counts. Runtime-only (not
+        // digested), a no-op for a settlement with no barter medium.
+        self.run_multigood_instrumentation(
+            provenance_barter_trades_start,
+            provenance_spot_trades_start,
+            was_pre_promotion,
+        );
 
         // ---- 5c. IN-KIND INPUT ADVANCE (EXPERIMENT): a capitalist buys each
         // active producer's recipe input in kind from the richest holder and
@@ -9506,28 +9586,58 @@ impl Settlement {
 
     /// S18: the multi-good money instrumentation pass — runs right after the bread
     /// provenance market pass, reading THIS tick's barter trades (the suffix past
-    /// `barter_trades_start`). It accumulates the WOOD↔medium (SALT) trade volume (the WOOD
-    /// leg of the indirect exchange, split pre/post promotion) — bounded by `wood_gathered`,
-    /// the WOOD provenance proof. Runtime-only (not digested); a no-op off the multi-good path.
+    /// `barter_trades_start`). Two concerns: (1) the **pending-indirect-SALT round-trip
+    /// ledger** (Codex P1c) — traced for ANY emergent barter medium, so it works on S9 too,
+    /// where SALT actually round-trips; (2) the **WOOD↔medium leg** (the WOOD provenance
+    /// bound), accumulated only on the multi-good path. Runtime-only (not digested); a no-op
+    /// for a settlement with no barter medium.
     fn run_multigood_instrumentation(
         &mut self,
         barter_trades_start: usize,
+        spot_trades_start: usize,
         was_pre_promotion: bool,
     ) {
-        if !self.multigood_money_active() {
-            return;
-        }
         let Some((medium, _)) = self.barter_medium else {
             return;
         };
+        let multigood = self.multigood_money_active();
         for index in barter_trades_start..self.society.barter_trades.len() {
             let trade = &self.society.barter_trades[index];
-            let qty = u64::from(trade.qty);
-            // The WOOD leg: a WOOD↔medium swap (either side gives WOOD for the medium). With
-            // every WOOD buffer + the mint zeroed, the WOOD here was gathered (bounded by
-            // `wood_gathered`) — the provenance proof for the traded WOOD.
-            if (trade.a_gives == WOOD && trade.b_gives == medium)
-                || (trade.a_gives == medium && trade.b_gives == WOOD)
+            let (a, b, a_gives, b_gives, a_reason, b_reason, qty) = (
+                trade.a,
+                trade.b,
+                trade.a_gives,
+                trade.b_gives,
+                trade.a_reason,
+                trade.b_reason,
+                u64::from(trade.qty),
+            );
+            // The round-trip ledger: trace each side's use of the medium (accept-as-means vs
+            // spend-on-target). Tracks SALT actually intermediating, not just net stock.
+            observe_round_trip_side(
+                &mut self.multigood,
+                a,
+                a_gives,
+                b_gives,
+                a_reason,
+                medium,
+                qty,
+            );
+            observe_round_trip_side(
+                &mut self.multigood,
+                b,
+                b_gives,
+                a_gives,
+                b_reason,
+                medium,
+                qty,
+            );
+            // The WOOD leg (multi-good only): a WOOD↔medium swap. With every WOOD buffer + the
+            // mint zeroed, the WOOD here was gathered (bounded by `wood_gathered`) — the
+            // provenance proof for the traded WOOD.
+            if multigood
+                && ((a_gives == WOOD && b_gives == medium)
+                    || (a_gives == medium && b_gives == WOOD))
             {
                 self.multigood.wood_for_salt = self.multigood.wood_for_salt.saturating_add(qty);
                 if was_pre_promotion {
@@ -9537,6 +9647,16 @@ impl Settlement {
                         .saturating_add(qty);
                 }
             }
+        }
+        // Post-promotion the medium IS money (SALT→gold at promotion) and the market clears in
+        // gold on the spot tape: a buyer acquiring its earmarked target with that money is the
+        // means role completing as money. Decrement pending on each spot purchase of a target
+        // (a no-op for a buyer with nothing earmarked), so SALT accepted-in-barter and spent-
+        // as-money still round-trips (otherwise a real monetization would read as hoarding).
+        for index in spot_trades_start..self.society.trades.len() {
+            let trade = &self.society.trades[index];
+            self.multigood
+                .spend_on_target(trade.buyer, trade.good, u64::from(trade.qty));
         }
     }
 
@@ -11092,6 +11212,25 @@ impl Settlement {
             .collect()
     }
 
+    /// S18 (read-only): the DISTINCT indirect target goods `good` has accrued as a
+    /// saleability candidate — the `IndirectFor{target}` MEMBERSHIP the strong-bar gate
+    /// counts (`min_indirect_target_goods`) but [`Self::emergence_acceptances`] collapses to
+    /// a count. Surfaces the `&[GoodId]` membership (`menger.rs`) so the DoD can assert the
+    /// two-sided produced breadth `indirect_target_goods(SALT) ⊇ {bread, WOOD}` — bread
+    /// sellers `IndirectFor{WOOD}` AND woodcutters `IndirectFor{bread}`. Sorted; empty for a
+    /// non-emergent settlement or an untracked good. Reads only.
+    pub fn indirect_target_goods(&self, good: GoodId) -> Vec<GoodId> {
+        let Some(emergence) = self.society.emergence() else {
+            return Vec::new();
+        };
+        emergence
+            .tracker()
+            .candidate_saleability()
+            .find(|candidate| candidate.good == good)
+            .map(|candidate| candidate.indirect_target_goods.to_vec())
+            .unwrap_or_default()
+    }
+
     /// S16 causality probe (read-only): whether the chain **bread** is among the **medium**
     /// candidate's saleability counterpart goods — i.e. bread is materially traded against
     /// the medium in the saleability the promotion gate reads, not incidental. Distinguishes
@@ -11235,6 +11374,35 @@ impl Settlement {
     /// minted. `0` off the path. Reads only.
     pub fn wood_gathered_total(&self) -> u64 {
         self.multigood.wood_gathered
+    }
+
+    /// S18 (read-only): the traced pending-indirect-SALT round-trip totals `(spent, accepted)`
+    /// — of the medium accepted `IndirectFor{target}` (`accepted`), the share later SPENT on
+    /// that same target (`spent`, the means role completing). The round-trip metric
+    /// (`spent / accepted`) is the proof that the medium actually intermediates, not just
+    /// pools on one side — `accepted > 0 && spent ≈ 0` is the hoarding failure. Maintained
+    /// for any emergent barter medium. Reads only.
+    pub fn salt_round_trip(&self) -> (u64, u64) {
+        (
+            self.multigood.indirect_spent_on_target,
+            self.multigood.indirect_accepted,
+        )
+    }
+
+    /// S18 (read-only): the round-trip fraction in basis points (`spent / accepted`). `0`
+    /// when nothing was accepted indirectly (no division by zero). See [`Self::salt_round_trip`].
+    pub fn salt_round_trip_fraction_bps(&self) -> u32 {
+        self.multigood.round_trip_fraction_bps()
+    }
+
+    /// S18 (read-only): the standing pending-indirect medium the agent at generation `index`
+    /// still holds earmarked for `target` (accepted as a means, not yet spent on it). `0`
+    /// off the path or for an unknown agent. Reads only.
+    pub fn pending_indirect_salt(&self, index: usize, target: GoodId) -> u64 {
+        self.colonists
+            .get(index)
+            .map(|c| self.multigood.pending_of(c.id, target))
+            .unwrap_or(0)
     }
 
     /// S16 (read-only): the provenance conservation accumulators `(credited, sunk)` —
@@ -16815,11 +16983,12 @@ mod tests {
     #[test]
     fn canonical_bytes_exclude_multigood_instrumentation() {
         // S18 (the digest tripwire): the multi-good money instrumentation (the WOOD source
-        // bound) is a runtime-only diagnostic — it must NEVER enter canonical_bytes, or it
-        // would shift the digest of the multi-good scenario. Mutating it leaves the bytes
-        // byte-identical.
+        // bound + the pending-indirect-SALT round-trip ledger) is a runtime-only diagnostic —
+        // it must NEVER enter canonical_bytes, or it would shift the digest of any barter
+        // scenario the ledger runs on (it now traces ALL emergent economies) and break their
+        // goldens. Mutating it leaves the bytes byte-identical.
         let mut s = Settlement::generate(1, &SettlementConfig::frontier_multigood());
-        s.run(80); // exercise the WOOD haul so the counter is non-zero
+        s.run(80); // exercise the WOOD haul + barter so the counters are non-zero
         assert!(
             s.wood_gathered_total() > 0,
             "the woodcutters must have gathered WOOD so the tripwire is non-vacuous"
@@ -16827,13 +16996,74 @@ mod tests {
         let before = s.canonical_bytes();
         s.multigood.wood_gathered = s.multigood.wood_gathered.wrapping_add(1);
         s.multigood.wood_for_salt = s.multigood.wood_for_salt.wrapping_add(7);
-        s.multigood.pre_promotion_wood_for_salt =
-            s.multigood.pre_promotion_wood_for_salt.wrapping_add(3);
+        s.multigood.indirect_accepted = s.multigood.indirect_accepted.wrapping_add(3);
+        s.multigood.indirect_spent_on_target = s.multigood.indirect_spent_on_target.wrapping_add(2);
+        s.multigood.pending.insert((AgentId(0), WOOD), 5);
         assert_eq!(
             before,
             s.canonical_bytes(),
             "the multi-good instrumentation must NOT enter canonical_bytes (the digest tripwire)"
         );
+
+        // It must not steer the digest on an existing emergence scenario either (the round-trip
+        // ledger runs there too).
+        let mut e = Settlement::generate(2, &SettlementConfig::frontier_coemergent_strong());
+        e.run(60);
+        let e_before = e.canonical_bytes();
+        e.multigood.indirect_accepted = e.multigood.indirect_accepted.wrapping_add(9);
+        assert_eq!(
+            e_before,
+            e.canonical_bytes(),
+            "the round-trip ledger must not steer the digest on the strong-bar scenario"
+        );
+    }
+
+    #[test]
+    fn round_trip_ledger_credits_decrements_and_detects_hoarding() {
+        // S18: the pending-indirect-SALT round-trip ledger's core rule. A credit (accept the
+        // medium IndirectFor{target}) raises pending + the accept-side total; a spend on that
+        // target draws the lesser of the spend and the pending (only the means role completes),
+        // raising the spent total; a spend with nothing earmarked is inert; and the fraction is
+        // `spent / accepted` — `0` with nothing accepted (no division by zero), and the
+        // HOARDING signature (accepted > 0, spent ≈ 0) reads as fraction 0.
+        let a = AgentId(1);
+        let mut m = MultigoodMoney::default();
+
+        // Hoarding: credit without ever spending on the target.
+        m.credit_indirect(a, WOOD, 10);
+        assert_eq!(m.pending_of(a, WOOD), 10);
+        assert_eq!(m.indirect_accepted, 10);
+        assert_eq!(m.indirect_spent_on_target, 0);
+        assert_eq!(
+            m.round_trip_fraction_bps(),
+            0,
+            "accepted but not spent on target => round-trip 0 (the hoarding signature)"
+        );
+
+        // A spend on the WRONG target is inert (nothing earmarked there).
+        m.spend_on_target(a, SALT, 4);
+        assert_eq!(m.indirect_spent_on_target, 0, "wrong-target spend is inert");
+        assert_eq!(m.pending_of(a, WOOD), 10);
+
+        // A spend on the earmarked target draws the round-trip leg.
+        m.spend_on_target(a, WOOD, 4);
+        assert_eq!(m.indirect_spent_on_target, 4);
+        assert_eq!(m.pending_of(a, WOOD), 6);
+        assert_eq!(m.round_trip_fraction_bps(), 4000, "4 of 10 spent => 40%");
+
+        // A spend beyond the standing pending caps at it (the excess is ordinary spending).
+        m.spend_on_target(a, WOOD, 99);
+        assert_eq!(m.indirect_spent_on_target, 10);
+        assert_eq!(m.pending_of(a, WOOD), 0);
+        assert_eq!(
+            m.round_trip_fraction_bps(),
+            10_000,
+            "fully round-tripped => 100%"
+        );
+
+        // Nothing accepted at all => fraction 0, no division by zero.
+        let empty = MultigoodMoney::default();
+        assert_eq!(empty.round_trip_fraction_bps(), 0);
     }
 
     #[test]

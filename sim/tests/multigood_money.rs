@@ -1,26 +1,44 @@
-//! S18.1 — the woodcutter role + a market WOOD supply (the second produced good).
+//! S18 — money from a produced MULTI-GOOD economy.
 //!
 //! `frontier_multigood` re-adds the WOOD node S16 dropped and fields a WOODCUTTER role:
 //! non-lineage `Gatherer`s pinned to the WOOD node (the `multigood_money` seam, not the
 //! round-robin), who produce + sell WOOD and want bread/food — alongside the inherited bread
 //! CULTIVATORS (lineages, sell surplus bread, want WOOD) and the SALT-anchor consumers. WOOD
 //! is market-supplied AND provenance-clean: `wood_provision = 0` (no mint) and every initial
-//! WOOD buffer zeroed, so traded WOOD can ONLY come from node-gathering. This slice pins the
-//! role structure + the WOOD provenance; the monetization question is the S18.3 DoD.
+//! WOOD buffer zeroed, so traded WOOD can ONLY come from node-gathering.
+//!
+//! This file covers S18.1 (the woodcutter role + the WOOD provenance) and S18.2 (the
+//! indirect-breadth instrumentation: the by-target accessor + the traced round-trip ledger).
+//! The monetization DoD is the S18.3 acceptance suite.
 
 use econ::good::{GoodId, WOOD};
 use sim::{Settlement, SettlementConfig, Vocation};
 
 const RUN_TICKS: u64 = 1500;
 
+fn salt_good(cfg: &SettlementConfig) -> GoodId {
+    cfg.barter.as_ref().expect("a barter overlay").medium_good
+}
+
 fn bread_good(cfg: &SettlementConfig) -> GoodId {
     cfg.chain.as_ref().expect("a chain").content.bread()
 }
 
+fn run(cfg: &SettlementConfig, ticks: u64) -> Settlement {
+    let mut s = Settlement::generate(1, cfg);
+    for _ in 0..ticks {
+        s.econ_tick();
+    }
+    s
+}
+
+// ---- S18.1: the woodcutter role + a clean WOOD market --------------------
+
 #[test]
 fn multigood_run_is_deterministic() {
-    // Byte-identical `(seed, config)`: a fixed, reproducible trajectory. The runtime-only WOOD
-    // instrumentation is NOT digested, so it cannot perturb the identity.
+    // Byte-identical `(seed, config)`: a fixed, reproducible trajectory. The runtime-only
+    // instrumentation (the WOOD source bound + the round-trip ledger) is NOT digested, so it
+    // cannot perturb the identity.
     let cfg = SettlementConfig::frontier_multigood();
     let mut a = Settlement::generate(1, &cfg);
     let mut b = Settlement::generate(1, &cfg);
@@ -146,12 +164,94 @@ fn multigood_conserves() {
     }
 }
 
+// ---- S18.2: the indirect-breadth instrumentation -------------------------
+
+#[test]
+fn by_target_breadth_accessor_surfaces_membership() {
+    // The by-target accessor surfaces the `IndirectFor{target}` MEMBERSHIP (the `&[GoodId]`)
+    // the strong-bar gate counts but the emergence probe collapses to a count. On a real
+    // medium (S9) it returns the actual target set; on the multi-good scenario (where SALT
+    // never leads) it is empty.
+    let s9_cfg = SettlementConfig::frontier_coemergent_strong();
+    let s9 = run(&s9_cfg, 600);
+    let s9_targets = s9.indirect_target_goods(salt_good(&s9_cfg));
+    assert!(
+        !s9_targets.is_empty(),
+        "on a real medium the by-target accessor returns SALT's indirect target set: {s9_targets:?}"
+    );
+
+    let mg_cfg = SettlementConfig::frontier_multigood();
+    let mg = run(&mg_cfg, RUN_TICKS);
+    assert!(
+        mg.indirect_target_goods(salt_good(&mg_cfg)).is_empty(),
+        "on the multi-good scenario SALT never leads, so its indirect target set is empty"
+    );
+}
+
+#[test]
+fn salt_round_trips_not_hoarded() {
+    // The traced round-trip ledger is the means-role guard. On the multi-good scenario SALT is
+    // never even accepted as a means, so the round-trip is `0/0` — the means role never begins.
+    // To prove the GUARD itself discriminates (it is not vacuously zero), run it on a REAL
+    // medium: the S9 strong-bar economy, where SALT IS accepted IndirectFor a target.
+    let multigood = run(&SettlementConfig::frontier_multigood(), RUN_TICKS);
+    assert_eq!(
+        multigood.salt_round_trip(),
+        (0, 0),
+        "in the multi-good scenario SALT is never accepted as a means, so it never round-trips"
+    );
+
+    let s9 = SettlementConfig::frontier_coemergent_strong();
+
+    // Pre-promotion (the hoarding WINDOW): SALT is accepted IndirectFor a target, but the
+    // round-trip stays ~0 — the acceptor uses a lower-good-id surplus to reach the target and
+    // HOARDS the SALT (the gate counts acceptance at receipt, the Codex concern).
+    let early = run(&s9, 400);
+    let (early_spent, early_accepted) = early.salt_round_trip();
+    assert!(
+        early.promoted_at_tick().is_none(),
+        "the early window is pre-promotion (the hoarding window)"
+    );
+    assert!(
+        early_accepted > 0,
+        "SALT IS accepted as a means on a real medium (accept-side volume > 0)"
+    );
+    assert_eq!(
+        early_spent, 0,
+        "pre-promotion the means role is incomplete — SALT is hoarded, not round-tripped"
+    );
+    assert_eq!(
+        early.salt_round_trip_fraction_bps(),
+        0,
+        "the hoarding signature: accept-side volume > 0 while the round-trip fraction ~ 0"
+    );
+
+    // Run on to promotion: the means role then COMPLETES as money — the SALT accepted as a
+    // means is spent acquiring its target, so the round-trip becomes material.
+    let late = run(&s9, 1200);
+    assert_eq!(
+        late.current_money_good(),
+        Some(salt_good(&s9)),
+        "SALT monetizes on the real (no-double-coincidence) medium"
+    );
+    let (late_spent, late_accepted) = late.salt_round_trip();
+    assert!(late_accepted > 0, "credits accrue on real indirect accepts");
+    assert!(
+        late_spent > 0,
+        "the means role completes — SALT accepted as a means is later spent on its target"
+    );
+    assert!(
+        late_spent <= late_accepted,
+        "the round-trip can never spend more than was accepted as a means"
+    );
+}
+
 #[test]
 fn goldens_unchanged() {
     // The additive + gated changes leave every existing identity untouched. The
     // `multigood_money` flag emits its canonical marker only when active, and the runtime-only
-    // WOOD instrumentation is excluded from `canonical_bytes` (both covered by the settlement
-    // unit tests). The `lineages` + `g4a_death` tripwires must stay byte-identical.
+    // instrumentation is excluded from `canonical_bytes` (both covered by the settlement unit
+    // tests). The `lineages` + `g4a_death` tripwires must stay byte-identical.
     let digest = |cfg: &SettlementConfig, ticks: u64| {
         let mut s = Settlement::generate(1, cfg);
         s.run(ticks);
