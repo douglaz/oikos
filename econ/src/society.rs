@@ -2110,7 +2110,12 @@ impl Society {
         agent: AgentId,
         receive_goods: &[GoodId],
         leader: GoodId,
-    ) -> bool {
+    ) {
+        // The spend lane runs first each tick. Drop any stale non-lane offers
+        // (pre-leader direct barters that were live before the medium emerged) so an
+        // agent never carries more than the two medium lanes; a live sell lane is
+        // preserved here for the sell pass to refresh.
+        self.cancel_non_lane_barter_offers_for_agent(agent, leader);
         let previous = self.cancel_live_barter_spend_offers_for_agent(agent, leader);
         for receive_good in receive_goods {
             if *receive_good == leader {
@@ -2123,11 +2128,10 @@ impl Society {
                 BarterReason::DirectWant,
                 Some(leader),
             ) {
-                return true;
+                return;
             }
         }
         self.restore_barter_offers(previous, Some(leader));
-        false
     }
 
     fn generate_indirect_barter_offers(&mut self, provisional_leader: Option<GoodId>) {
@@ -2204,11 +2208,15 @@ impl Society {
         agent_id: AgentId,
         target_goods: &[GoodId],
         leader: GoodId,
-    ) -> bool {
-        let previous = self.cancel_live_barter_sell_offers_for_agent(agent_id, leader);
+    ) {
         if target_goods.contains(&leader) {
-            return false;
+            // Edge case (b): the agent's relevant want is for the leader DIRECTLY,
+            // so it must not post an indirect sell lane (that would mislabel genuine
+            // direct demand as indirect exchange). Checked BEFORE cancelling so an
+            // already-live sell lane is left intact rather than silently dropped.
+            return;
         }
+        let previous = self.cancel_live_barter_sell_offers_for_agent(agent_id, leader);
         let give_goods = self.agents[agent_index]
             .stock
             .positive_goods()
@@ -2234,12 +2242,11 @@ impl Society {
                     BarterReason::IndirectFor { target: *target },
                     Some(leader),
                 ) {
-                    return true;
+                    return;
                 }
             }
         }
         self.restore_barter_offers(previous, Some(leader));
-        false
     }
 
     fn replace_live_barter_offers_for_agent_with(
@@ -2269,15 +2276,28 @@ impl Society {
         false
     }
 
+    /// The spend lane shape: `give leader → receive a non-leader want` (DirectWant).
+    fn is_medium_spend_lane(offer: &BarterOffer, leader: GoodId) -> bool {
+        offer.give_good == leader
+            && offer.receive_good != leader
+            && matches!(offer.reason, BarterReason::DirectWant)
+    }
+
+    /// The sell-for-medium lane shape: `give a non-leader surplus → receive leader`
+    /// (IndirectFor{target}).
+    fn is_medium_sell_lane(offer: &BarterOffer, leader: GoodId) -> bool {
+        offer.give_good != leader
+            && offer.receive_good == leader
+            && matches!(offer.reason, BarterReason::IndirectFor { .. })
+    }
+
     fn cancel_live_barter_spend_offers_for_agent(
         &mut self,
         agent: AgentId,
         leader: GoodId,
     ) -> Vec<BarterOffer> {
         self.cancel_live_barter_offers_for_agent_matching(agent, |offer| {
-            offer.give_good == leader
-                && offer.receive_good != leader
-                && matches!(offer.reason, BarterReason::DirectWant)
+            Self::is_medium_spend_lane(offer, leader)
         })
     }
 
@@ -2287,10 +2307,19 @@ impl Society {
         leader: GoodId,
     ) -> Vec<BarterOffer> {
         self.cancel_live_barter_offers_for_agent_matching(agent, |offer| {
-            offer.give_good != leader
-                && offer.receive_good == leader
-                && matches!(offer.reason, BarterReason::IndirectFor { .. })
+            Self::is_medium_sell_lane(offer, leader)
         })
+    }
+
+    /// Enforce the S20 "exactly two lanes" invariant: cancel every live offer for
+    /// the agent that is neither the spend lane nor the sell lane. These are
+    /// pre-leader direct barters that were posted before the medium emerged; left
+    /// live they would be a third order and could even clear as a direct cycle-good
+    /// swap, bypassing the medium. Dropped outright (not restored) — they are stale.
+    fn cancel_non_lane_barter_offers_for_agent(&mut self, agent: AgentId, leader: GoodId) {
+        self.cancel_live_barter_offers_for_agent_matching(agent, |offer| {
+            !Self::is_medium_spend_lane(offer, leader) && !Self::is_medium_sell_lane(offer, leader)
+        });
     }
 
     fn cancel_live_barter_offers_for_agent_matching(
