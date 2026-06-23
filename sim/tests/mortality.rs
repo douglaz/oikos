@@ -576,10 +576,12 @@ fn mortality_conserves() {
 fn goldens_unchanged() {
     // The S17 additions are gated and additive: the new `starvation_deaths_total` is
     // runtime-only (NOT in canonical_bytes, so it shifts no digest), and the enabled
-    // `hunger_critical` lives ONLY in the new `frontier_mortality` scenario — every
-    // existing config keeps the `need_max + 1` dodge. So the cross-history demographic
-    // and emergence goldens are BYTE-IDENTICAL (the `lineages` golden is the key
-    // tripwire), and the live-starvation g4a no-death digest is untouched.
+    // `hunger_critical` lives ONLY in the new `frontier_mortality` scenario — the existing
+    // scarcity/frontier configs keep the `need_max + 1` dodge (the live-starvation harnesses
+    // like g4a_death / starved_hauler already run starvation and are unaffected precisely
+    // because the new counter is not digested). So the cross-history demographic and
+    // emergence goldens are BYTE-IDENTICAL (the `lineages` golden is the key tripwire), and
+    // the live-starvation g4a no-death digest is untouched.
     let digest = |cfg: &SettlementConfig, ticks: u64| {
         let mut s = Settlement::generate(1, cfg);
         s.run(ticks);

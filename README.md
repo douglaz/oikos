@@ -2047,15 +2047,19 @@ up **raises the living band** (≈ 81 → 100 → 119) **and cuts starvation fre
 lower starvation — the S15 control, now with mortality. This is the full Malthusian dynamic, not the
 preventive-only plateau (S14) and not a redundant latent positive check.
 
-**Honest scope (the principled-threshold discipline).** The thresholds are the lab defaults, not
-searched for the one band-producing config — the disclosed food-flow sweep characterizes the response,
-it does not manufacture the band. The three outcomes were all first-class: **redundant** (the preventive
-check absorbs all pressure, starvation ≈ 0 — the *expected* result), **the band** (births AND starvation
-both phase-track hunger), and **collapse/extinction** (the positive check too harsh). The observed
-outcome is **the band**, and it is reported as the measured trajectory rather than a tuned target.
-Conservation holds on every tick across births + starvation + old-age deaths (estate to commons/heirs;
-no minted food, `endowment[staple] == 0`; no leak) — an estate/conservation break would be an
-implementation bug, not a finding, and none occurs.
+**Honest scope (Codex-reviewed: PASS, no P0/P1 — the principled-threshold discipline).** The thresholds
+are the lab defaults, not searched for the one band-producing config — the disclosed food-flow sweep
+characterizes the response, it does not manufacture the band. The three outcomes were all first-class:
+**redundant** (the preventive check absorbs all pressure, starvation ≈ 0 — the *expected* result), **the
+band** (births AND starvation both phase-track hunger), and **collapse/extinction** (the positive check
+too harsh). The observed outcome is **the band**, and it is reported as the measured trajectory rather
+than a tuned target. (Codex's own prior was *redundant*; it confirmed the band is genuine and untuned —
+the insight it had missed: the **preventive** check binds on *potential births* while the **positive**
+check binds on *already-living marginal mouths*, so both operate at once.) The phase correlations are the
+expected **feedback signature**, not a formal causal decomposition — the food-flow sweep + the lagged
+median-split corroborate them. Conservation holds on every tick across births + starvation + old-age
+deaths (estate to commons/heirs; no minted food, `endowment[staple] == 0`; no leak) — an
+estate/conservation break would be an implementation bug, not a finding, and none occurs.
 
 All additive/gated: with the `mortality` scenario absent / `hunger_critical = need_max + 1` the S5–S16
 scenarios + the six econ + g5a/g5b/coemergence emergence + the demographic `lineages` + the
