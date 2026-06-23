@@ -2070,6 +2070,15 @@ impl Society {
                     continue;
                 }
             }
+            if self.multi_offer_medium {
+                // No provisional leader: the legacy one-live-offer policy applies.
+                // The two-lane path can leave a second `DirectWant` lane live from
+                // an earlier leader tick (an agent that both directly wanted the
+                // leader and spent it), and `cancel_invalid(.., None)` only drops
+                // `IndirectFor` offers — so collapse to the agent's oldest live
+                // offer before the one-live-offer skip, restoring legacy behaviour.
+                self.collapse_to_single_barter_offer_for_agent(agent_id);
+            }
             if self.agent_has_live_barter_offer(agent_id) {
                 continue;
             }
@@ -2137,6 +2146,11 @@ impl Society {
                 return;
             }
         }
+        // Failure path: no direct-leader bid could be posted, so restore only the
+        // prior DirectWant receive-leader offers. Any prior IndirectFor sell lane
+        // is intentionally dropped here — this agent now wants the leader DIRECTLY
+        // (edge case b), so `post_first_medium_sell_offer` deliberately won't
+        // re-post it, and leaving it live would mislabel direct demand as indirect.
         let previous_direct = previous
             .into_iter()
             .filter(|offer| matches!(offer.reason, BarterReason::DirectWant))
@@ -2358,6 +2372,27 @@ impl Society {
             !Self::is_medium_spend_lane(offer, leader)
                 && !Self::is_medium_receive_leader_lane(offer, leader)
         });
+    }
+
+    /// Restore the legacy one-live-offer policy for `agent`: keep only its oldest
+    /// (lowest-`seq`) live offer and cancel the rest. Used in the no-leader direct
+    /// pass under `multi_offer_medium`, where the two-lane path may have left a
+    /// second `DirectWant` lane live from an earlier leader tick.
+    fn collapse_to_single_barter_offer_for_agent(&mut self, agent: AgentId) {
+        let mut seqs = self
+            .barter_book
+            .live_offers()
+            .iter()
+            .filter(|offer| offer.agent == agent)
+            .map(|offer| offer.seq)
+            .collect::<Vec<_>>();
+        if seqs.len() <= 1 {
+            return;
+        }
+        seqs.sort_unstable();
+        for seq in seqs.into_iter().skip(1) {
+            self.barter_book.cancel_offer(seq);
+        }
     }
 
     fn cancel_live_barter_offers_for_agent_matching(
@@ -8568,6 +8603,104 @@ mod tests {
         assert!(matches!(trades[0].b_reason, BarterReason::DirectWant));
         assert_eq!(society.agents[0].stock.get(SALT), 1);
         assert_eq!(society.agents[1].stock.get(FOOD), 1);
+    }
+
+    #[test]
+    fn two_lane_collapses_extra_lane_when_leader_disappears() {
+        // Under a leader the two-lane path can leave an agent holding two live
+        // `DirectWant` offers (the direct-leader bid `give output -> leader` plus
+        // the spend lane `give leader -> input`). If the provisional leader later
+        // becomes `None`, `cancel_invalid(.., None)` keeps both (it only drops
+        // `IndirectFor` offers), so the no-leader direct pass must collapse them
+        // back to the legacy one-live-offer policy. Two clean `DirectWant` offers
+        // reproduce that post-leader state (once the leader is gone the goods are
+        // ordinary, so only the lane count matters).
+        let agent = Agent {
+            id: AgentId(1),
+            scale: scale_entries(&[
+                (WantKind::Good(SALT), Horizon::Next, 1),
+                (WantKind::Good(CLOTH), Horizon::Next, 1),
+            ]),
+            stock: {
+                let mut stock = Stock::new(CLOTH.0);
+                stock.add(FOOD, 1);
+                stock.add(WOOD, 1);
+                stock
+            },
+            gold: Gold::ZERO,
+            labor_capacity: 0,
+            hunger_deficit: 0,
+            roles: vec![Role::Trader],
+            expect: Vec::new(),
+        };
+        let mut society = Society::from_scenario(MarketScenario {
+            name: "two-lane-collapse",
+            scenario: ScenarioName::MengerSaltMoney,
+            seed: 1,
+            periods: 1,
+            agents: vec![agent],
+            recipes: Vec::new(),
+            events: Vec::new(),
+            money: MarketMoneyConfig::Emergent(MengerianConfig {
+                candidate_goods: vec![FOOD, WOOD, CLOTH, SALT],
+                multi_offer_medium: true,
+                ..MengerianConfig::default()
+            }),
+        });
+
+        assert!(society.barter_book.post_offer(
+            society.agents.as_slice(),
+            BarterOffer {
+                agent: AgentId(1),
+                give_good: FOOD,
+                receive_good: SALT,
+                qty: 1,
+                reason: BarterReason::DirectWant,
+                seq: 1,
+                expires_tick: 100,
+            },
+            0,
+        ));
+        assert!(society.barter_book.post_offer(
+            society.agents.as_slice(),
+            BarterOffer {
+                agent: AgentId(1),
+                give_good: WOOD,
+                receive_good: CLOTH,
+                qty: 1,
+                reason: BarterReason::DirectWant,
+                seq: 2,
+                expires_tick: 100,
+            },
+            0,
+        ));
+
+        // The leader has disappeared; `cancel_invalid(.., None)` keeps both
+        // `DirectWant` lanes — the leak this fix addresses.
+        society
+            .barter_book
+            .cancel_invalid(society.agents.as_slice(), None);
+        assert_eq!(
+            society
+                .live_barter_offers()
+                .iter()
+                .filter(|offer| offer.agent == AgentId(1))
+                .count(),
+            2,
+            "cancel_invalid(.., None) leaves both direct lanes live"
+        );
+
+        society.generate_direct_barter_offers(None);
+
+        assert_eq!(
+            society
+                .live_barter_offers()
+                .iter()
+                .filter(|offer| offer.agent == AgentId(1))
+                .count(),
+            1,
+            "the no-leader direct pass must restore the one-live-offer policy"
+        );
     }
 
     #[test]
