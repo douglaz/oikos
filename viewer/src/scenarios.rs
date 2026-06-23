@@ -226,6 +226,12 @@ const SCENARIOS: &[Scenario] = &[
         build: build_mortality,
     },
     Scenario {
+        name: "multigood",
+        description:
+            "S18: MONEY FROM A PRODUCED MULTI-GOOD ECONOMY — closing the S16 reframing. A real division of labor with TWO produced/gathered goods and role-separated cross-demand: bread CULTIVATORS (lineages, sell surplus bread, want WOOD) ⇄ WOODCUTTERS (non-lineage gatherers pinned to the WOOD node, sell WOOD, want bread) ⇄ SALT-anchor consumers (buy both). Mints off (food AND WOOD), WOOD provenance-clean (every buffer + the mint zeroed), min_indirect_target_goods=2, mortality off. FINDING (principled failure, the anticipated one — robust across the WOOD-flow / role-count sweep): SALT does NOT promote. The two-good complementary division of labor is a PERFECT DOUBLE COINCIDENCE OF WANTS — cultivators want exactly what woodcutters produce and vice versa — so the two roles barter bread↔WOOD DIRECTLY and no medium is needed. WOOD (the most-gathered good) becomes the rejected provisional saleability leader; SALT never leads, so its by-target indirect breadth is EMPTY (not {bread,WOOD}) and the traced round-trip is 0/0. This DEEPENS S16: it is not just hunger-stress — money emerges to bridge the ABSENCE of a double coincidence (S9's ≥3-good economy promotes SALT), and a two-good complementary economy is precisely the case where it does not. The instrumentation proves the negative: by-target breadth empty, round-trip 0, WOOD provenance-clean (endowment[WOOD]==0). Run with more ticks (e.g. 3000).",
+        build: build_multigood,
+    },
+    Scenario {
         name: "millisats-1x",
         description:
             "EXPERIMENT: frontier at coarse (x1) money precision — the unit-starved baseline that freezes (~320 money units)",
@@ -457,6 +463,10 @@ fn build_money_from_cultivation() -> SettlementConfig {
 
 fn build_mortality() -> SettlementConfig {
     SettlementConfig::frontier_mortality()
+}
+
+fn build_multigood() -> SettlementConfig {
+    SettlementConfig::frontier_multigood()
 }
 
 fn build_millisats_1x() -> SettlementConfig {

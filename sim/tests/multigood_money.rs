@@ -1,20 +1,32 @@
-//! S18 — money from a produced MULTI-GOOD economy.
+//! S18 — money from a produced MULTI-GOOD economy (the DoD acceptance suite).
 //!
-//! `frontier_multigood` re-adds the WOOD node S16 dropped and fields a WOODCUTTER role:
-//! non-lineage `Gatherer`s pinned to the WOOD node (the `multigood_money` seam, not the
-//! round-robin), who produce + sell WOOD and want bread/food — alongside the inherited bread
-//! CULTIVATORS (lineages, sell surplus bread, want WOOD) and the SALT-anchor consumers. WOOD
-//! is market-supplied AND provenance-clean: `wood_provision = 0` (no mint) and every initial
-//! WOOD buffer zeroed, so traded WOOD can ONLY come from node-gathering.
+//! `frontier_multigood` builds a real division of labor with TWO produced/gathered goods and
+//! role-separated cross-demand: bread CULTIVATORS (lineages, sell surplus bread, want WOOD) ⇄
+//! WOODCUTTERS (non-lineage gatherers pinned to the WOOD node, sell WOOD, want bread) ⇄
+//! SALT-anchor consumers (hold SALT, buy both). Mints off (food AND WOOD), WOOD
+//! provenance-clean (every buffer + the mint zeroed), `min_indirect_target_goods = 2`,
+//! mortality off. The question: does money emerge from a produced multi-good economy?
 //!
-//! This file covers S18.1 (the woodcutter role + the WOOD provenance) and S18.2 (the
-//! indirect-breadth instrumentation: the by-target accessor + the traced round-trip ledger).
-//! The monetization DoD is the S18.3 acceptance suite.
+//! THE OUTCOME — **PRINCIPLED FAILURE** (the anticipated one — `multigood_money_finding`),
+//! robust across the WOOD-flow / role-count sweep: SALT does NOT promote. The two-good
+//! complementary division of labor is a **perfect double coincidence of wants** — the
+//! cultivators want exactly what the woodcutters produce (WOOD) and the woodcutters want
+//! exactly what the cultivators produce (bread) — so the two roles barter bread↔WOOD
+//! DIRECTLY and no medium is needed. WOOD (the most-gathered good) becomes the rejected
+//! provisional saleability leader; SALT, with only its heterogeneous direct-use anchor, never
+//! leads, so its by-target indirect breadth is EMPTY (not `{bread, WOOD}`) and the traced
+//! round-trip is `0/0` — SALT never even begins to intermediate. This DEEPENS the S16
+//! finding: it is not just hunger-stress — money emerges to bridge the ABSENCE of a double
+//! coincidence (S9's ≥3-good economy promotes SALT), and a two-good complementary economy is
+//! precisely the case where it does not. The instrumentation proves the negative (by-target
+//! breadth empty, round-trip 0, WOOD provenance-clean) and the controls bracket it (S9
+//! promotes; dropping the WOOD market or the SALT anchor keeps no-promotion). The finding is
+//! NOT rescued by minting or by inventing a want.
 
 use econ::good::{GoodId, WOOD};
 use sim::{Settlement, SettlementConfig, Vocation};
 
-const RUN_TICKS: u64 = 1500;
+const RUN_TICKS: u64 = 2000;
 
 fn salt_good(cfg: &SettlementConfig) -> GoodId {
     cfg.barter.as_ref().expect("a barter overlay").medium_good
@@ -32,13 +44,23 @@ fn run(cfg: &SettlementConfig, ticks: u64) -> Settlement {
     s
 }
 
-// ---- S18.1: the woodcutter role + a clean WOOD market --------------------
+/// The acceptances accrued by `good` as a money candidate (the direct-acceptance saleability
+/// the provisional-leader rule reads).
+fn acceptances(s: &Settlement, good: GoodId) -> u64 {
+    s.emergence_acceptances()
+        .into_iter()
+        .find(|c| c.good == good)
+        .map(|c| c.acceptances)
+        .unwrap_or(0)
+}
+
+// ---- 1. determinism ------------------------------------------------------
 
 #[test]
 fn multigood_run_is_deterministic() {
-    // Byte-identical `(seed, config)`: a fixed, reproducible trajectory. The runtime-only
-    // instrumentation (the WOOD source bound + the round-trip ledger) is NOT digested, so it
-    // cannot perturb the identity.
+    // Byte-identical `(seed, config)`: the run is a fixed, reproducible trajectory. The
+    // runtime-only instrumentation (the WOOD source bound + the round-trip ledger) is NOT
+    // digested, so it cannot perturb the identity.
     let cfg = SettlementConfig::frontier_multigood();
     let mut a = Settlement::generate(1, &cfg);
     let mut b = Settlement::generate(1, &cfg);
@@ -50,162 +72,228 @@ fn multigood_run_is_deterministic() {
         "the multi-good run must be byte-identical for the same (seed, config)"
     );
     assert_eq!(a.digest(), b.digest());
+
+    // The seed matters (founder cultures + woodcutter cultures are drawn from it).
     let mut c = Settlement::generate(2, &cfg);
     c.run(RUN_TICKS);
     assert_ne!(a.digest(), c.digest(), "the seed must change the run");
 }
 
+// ---- 2. role separation / no preemption ----------------------------------
+
 #[test]
-fn woodcutters_supply_a_clean_wood_market() {
-    // The role structure: WOODCUTTERS (non-lineage Gatherers on the WOOD node) hold a WOOD
-    // surplus and run bread-short; bread CULTIVATORS (lineages) hold a bread surplus and run
-    // WOOD-short. Each role's only surplus is its produced good. The WOOD they trade is
-    // GATHERED (no mint, no buffer): nothing holds WOOD at generation, WOOD is never minted,
-    // and the WOOD that circulates is bounded by the node→econ haul.
+fn two_clean_surplus_goods_no_preemption() {
+    // The role separation is clean enough that the lowest-good-id preemption
+    // (`post_first_direct_barter_offer` offers WOOD (id 2) before bread (id 9)) never
+    // suppresses a producer's primary surplus: WOOD is offered ONLY by the woodcutter role
+    // (so no cultivator ever holds WOOD to preempt its bread), and BOTH bread and WOOD reach
+    // the barter book with a substantial, sustained volume. The woodcutters are on the WOOD
+    // node, not grain.
     let cfg = SettlementConfig::frontier_multigood();
     let bread = bread_good(&cfg);
+    let s = run(&cfg, RUN_TICKS);
 
-    // Provenance-clean at generation: nothing is seeded holding WOOD or bread.
-    let s0 = Settlement::generate(1, &cfg);
-    let init_wood: u64 = (0..s0.population()).map(|i| s0.stock_of(i, WOOD)).sum();
-    let init_bread: u64 = (0..s0.population()).map(|i| s0.stock_of(i, bread)).sum();
-    assert_eq!(init_wood, 0, "no WOOD is seeded (every WOOD buffer zeroed)");
-    assert_eq!(init_bread, 0, "no bread is seeded");
+    // Both produced goods reach the book — neither is preempted into silence.
+    assert!(
+        s.trade_volume_of(bread) > 100,
+        "bread must reach the barter book with a material volume"
+    );
+    assert!(
+        s.trade_volume_of(WOOD) > 100,
+        "WOOD must reach the barter book with a material volume"
+    );
 
-    // The woodcutters are pinned to the WOOD node, not grain.
-    let wood_node = s0.wood_node().expect("a WOOD node");
-    let grain_node = s0.grain_node().expect("a grain node");
+    // WOOD is offered ONLY by the woodcutter role (non-lineage Gatherers). The crux: no
+    // LINEAGE cultivator ever offers WOOD, so a cultivator never holds both surplus classes
+    // and its bread is never preempted by a lower-good-id WOOD offer.
+    let wood_givers = s.barter_givers_of(WOOD);
+    assert!(!wood_givers.is_empty(), "the WOOD market must have sellers");
+    for giver in &wood_givers {
+        let index = (0..s.population())
+            .find(|&i| s.colonist_id(i) == Some(*giver))
+            .expect("a live WOOD giver maps to a generation index");
+        assert_eq!(
+            s.vocation_of(index),
+            Some(Vocation::Gatherer),
+            "every WOOD seller must be a woodcutter (a Gatherer), not a cultivator"
+        );
+        assert_eq!(
+            s.household_of(index),
+            None,
+            "every WOOD seller must be a NON-lineage woodcutter (the role-separation guard)"
+        );
+    }
+
+    // The woodcutters are pinned to the WOOD node (Codex P1b), not the grain node.
+    let wood_node = s.wood_node().expect("a WOOD node");
+    let grain_node = s.grain_node().expect("a grain node");
     assert_ne!(wood_node, grain_node, "WOOD and grain are distinct nodes");
     let mut woodcutters = 0;
-    for i in 0..s0.population() {
-        if s0.is_alive(i)
-            && s0.vocation_of(i) == Some(Vocation::Gatherer)
-            && s0.household_of(i).is_none()
+    for i in 0..s.population() {
+        if s.is_alive(i)
+            && s.vocation_of(i) == Some(Vocation::Gatherer)
+            && s.household_of(i).is_none()
         {
             woodcutters += 1;
             assert_eq!(
-                s0.node_of(i),
+                s.node_of(i),
                 Some(wood_node),
-                "a woodcutter must be pinned to the WOOD node, not grain (the seam)"
+                "a woodcutter must harvest the WOOD node, not grain"
             );
         }
     }
     assert!(woodcutters > 0, "the colony must field woodcutters");
+}
 
-    // Run, asserting WOOD is never minted, and watch the role holdings cross the clean states.
+// ---- 3. the finding ------------------------------------------------------
+
+#[test]
+fn multigood_money_finding() {
+    // THE FINDING. In the produced two-good economy SALT does NOT promote — the role-separated
+    // cross-demand is a PERFECT DOUBLE COINCIDENCE OF WANTS (cultivators want exactly what the
+    // woodcutters produce and vice versa), so the two roles barter bread↔WOOD DIRECTLY and a
+    // medium is superfluous. The characterized reason, by the instrumentation:
+    let cfg = SettlementConfig::frontier_multigood();
+    let salt = salt_good(&cfg);
+    let bread = bread_good(&cfg);
+    let s = run(&cfg, RUN_TICKS);
+
+    // (i) No promotion: no money good emerges.
+    assert!(
+        s.promoted_at_tick().is_none(),
+        "SALT must NOT promote against the two-good complementary division of labor"
+    );
+    assert!(s.current_money_good().is_none(), "no money good emerges");
+
+    // (ii) The provisional-leader trace: a PRODUCED/gathered good out-leads SALT. WOOD (the
+    // most-gathered good) dominates the direct-acceptance saleability; SALT, with only its
+    // heterogeneous anchor, is barely accepted — so it never becomes the provisional leader.
+    let salt_acc = acceptances(&s, salt);
+    let wood_acc = acceptances(&s, WOOD);
+    let bread_acc = acceptances(&s, bread);
+    assert!(
+        wood_acc > salt_acc && bread_acc > salt_acc,
+        "both produced goods (WOOD {wood_acc}, bread {bread_acc}) must out-accept SALT {salt_acc}"
+    );
+    assert!(
+        wood_acc > 10 * salt_acc.max(1),
+        "WOOD must DOMINATE the saleability — the rejected provisional leader, not SALT"
+    );
+
+    // (iii) The by-target indirect breadth is EMPTY: SALT never leads, so no agent posts an
+    // `IndirectFor{...}` offer accepting SALT — the two-sided produced breadth {bread, WOOD}
+    // the strong-bar gate requires never forms.
+    let targets = s.indirect_target_goods(salt);
+    assert!(
+        !(targets.contains(&bread) && targets.contains(&WOOD)),
+        "the two-sided breadth {{bread, WOOD}} must NOT form (it never even leads): {targets:?}"
+    );
+    assert!(
+        targets.is_empty(),
+        "SALT accrues ZERO indirect target goods (it is never the provisional leader): {targets:?}"
+    );
+
+    // (iv) The traced round-trip is 0/0: SALT is never even accepted as a means, so it never
+    // begins to intermediate (the strongest form of "means role incomplete").
+    let (spent, accepted) = s.salt_round_trip();
+    assert_eq!(
+        (spent, accepted),
+        (0, 0),
+        "SALT never round-trips because it is never accepted IndirectFor a target"
+    );
+
+    // (v) The mechanism: bread and WOOD are traded for EACH OTHER, not for SALT — the direct
+    // double coincidence. The bread→medium volume is identically zero.
+    assert_eq!(
+        s.bread_for_salt_volume(),
+        0,
+        "bread is bartered for WOOD directly, never for SALT (the double coincidence)"
+    );
+    assert!(
+        s.trade_volume_of(WOOD) > 0 && s.trade_volume_of(bread) > 0,
+        "yet both produced goods ARE traded — directly, against each other"
+    );
+}
+
+// ---- 4. provenance: the traded goods are produced/gathered, not minted ---
+
+#[test]
+fn the_traded_goods_are_gathered_not_minted() {
+    // Even though SALT does not monetize, the goods that reach the market are provenance-clean:
+    // bread is PRODUCED (cultivated) and WOOD is GATHERED — neither is minted or seeded.
+    let cfg = SettlementConfig::frontier_multigood();
+    let bread = bread_good(&cfg);
+
+    // Nothing is seeded holding WOOD or bread at generation (every buffer zeroed).
+    let s0 = Settlement::generate(1, &cfg);
+    let init_wood: u64 = (0..s0.population()).map(|i| s0.stock_of(i, WOOD)).sum();
+    let init_bread: u64 = (0..s0.population()).map(|i| s0.stock_of(i, bread)).sum();
+    assert_eq!(init_wood, 0, "no WOOD is seeded (every WOOD buffer zeroed)");
+    assert_eq!(
+        init_bread, 0,
+        "no bread is seeded (the bread buffers absent)"
+    );
+
+    // Run, asserting no minting of either good on any tick.
     let mut s = Settlement::generate(1, &cfg);
-    let mut saw_cultivator_bread_no_wood = false;
-    let mut saw_woodcutter_wood_no_bread = false;
-    for _ in 0..RUN_TICKS {
+    for tick in 0..RUN_TICKS {
         let report = s.econ_tick();
-        assert_eq!(report.endowment_of(WOOD), 0, "WOOD must never be minted");
-        for i in 0..s.population() {
-            if !s.is_alive(i) {
-                continue;
-            }
-            let (bread_held, wood_held) = (s.stock_of(i, bread), s.stock_of(i, WOOD));
-            // A lineage cultivator with a bread surplus and zero WOOD (it must BUY WOOD).
-            if s.household_of(i).is_some() && bread_held > 0 && wood_held == 0 {
-                saw_cultivator_bread_no_wood = true;
-            }
-            // A woodcutter with a WOOD surplus and zero bread (it must BUY bread).
-            if s.household_of(i).is_none()
-                && s.vocation_of(i) == Some(Vocation::Gatherer)
-                && wood_held > 0
-                && bread_held == 0
-            {
-                saw_woodcutter_wood_no_bread = true;
-            }
-        }
+        assert_eq!(
+            report.endowment_of(WOOD),
+            0,
+            "WOOD must never be minted (wood_provision = 0, mint off) at tick {tick}"
+        );
+        assert_eq!(
+            report.endowment_of(bread),
+            0,
+            "bread must never be minted (own-labor path, mint off) at tick {tick}"
+        );
     }
-    assert!(
-        saw_cultivator_bread_no_wood,
-        "a cultivator must hold a bread surplus with zero WOOD (genuinely WOOD-short)"
-    );
-    assert!(
-        saw_woodcutter_wood_no_bread,
-        "a woodcutter must hold a WOOD surplus with zero bread (genuinely bread-short)"
-    );
 
-    // The WOOD that circulates is GATHERED: it entered the economy only by the node→econ
-    // haul, and the traded WOOD→medium volume cannot exceed that gather (the provenance bound).
+    // WOOD enters the economy ONLY by node-gathering, and the traded WOOD→medium leg is
+    // bounded by that gather (the WOOD provenance bound, Codex P1a).
     assert!(
         s.wood_gathered_total() > 0,
         "WOOD must enter the economy by node-gathering"
     );
     assert!(
+        s.pre_promotion_wood_for_salt_volume() <= s.wood_gathered_total(),
+        "the traded WOOD→medium volume cannot exceed the WOOD gathered (provenance bound)"
+    );
+    assert!(
         s.trade_volume_of(WOOD) > 0,
         "the gathered WOOD reaches a real market"
     );
-    assert!(
-        s.pre_promotion_wood_for_salt_volume() <= s.wood_gathered_total(),
-        "traded WOOD→medium cannot exceed the WOOD gathered (the provenance bound)"
-    );
+
+    // Bread is produced (cultivated): the provenance ledger credited produced bread, and the
+    // minted bread→medium contribution is provably zero.
+    let (credited, _sunk) = s.produced_bread_credited_and_sunk();
+    assert!(credited > 0, "bread is produced by cultivation");
+    let (_produced, minted) = s.bread_for_salt_volume_by_provenance();
+    assert_eq!(minted, 0, "the minted bread→medium contribution is zero");
 }
 
-#[test]
-fn multigood_conserves() {
-    // Whole-system conservation every tick: the grain + WOOD nodes regen the sources, bread is
-    // produced, WOOD is gathered, and NOTHING is minted (no food/WOOD endowment).
-    let cfg = SettlementConfig::frontier_multigood();
-    let bread = bread_good(&cfg);
-    let mut s = Settlement::generate(1, &cfg);
-    for tick in 0..RUN_TICKS {
-        let report = s.econ_tick();
-        assert!(
-            report.conserves(),
-            "whole-system conservation must hold at tick {tick}"
-        );
-        assert_eq!(
-            report.endowment_of(WOOD) + report.endowment_of(bread),
-            0,
-            "no food/WOOD may be minted at tick {tick}"
-        );
-    }
-}
-
-// ---- S18.2: the indirect-breadth instrumentation -------------------------
-
-#[test]
-fn by_target_breadth_accessor_surfaces_membership() {
-    // The by-target accessor surfaces the `IndirectFor{target}` MEMBERSHIP (the `&[GoodId]`)
-    // the strong-bar gate counts but the emergence probe collapses to a count. On a real
-    // medium (S9) it returns the actual target set; on the multi-good scenario (where SALT
-    // never leads) it is empty.
-    let s9_cfg = SettlementConfig::frontier_coemergent_strong();
-    let s9 = run(&s9_cfg, 600);
-    let s9_targets = s9.indirect_target_goods(salt_good(&s9_cfg));
-    assert!(
-        !s9_targets.is_empty(),
-        "on a real medium the by-target accessor returns SALT's indirect target set: {s9_targets:?}"
-    );
-
-    let mg_cfg = SettlementConfig::frontier_multigood();
-    let mg = run(&mg_cfg, RUN_TICKS);
-    assert!(
-        mg.indirect_target_goods(salt_good(&mg_cfg)).is_empty(),
-        "on the multi-good scenario SALT never leads, so its indirect target set is empty"
-    );
-}
+// ---- 5. the round-trip ledger (the means-role guard) ---------------------
 
 #[test]
 fn salt_round_trips_not_hoarded() {
-    // The traced round-trip ledger is the means-role guard. On the multi-good scenario SALT is
-    // never even accepted as a means, so the round-trip is `0/0` — the means role never begins.
-    // To prove the GUARD itself discriminates (it is not vacuously zero), run it on a REAL
-    // medium: the S9 strong-bar economy, where SALT IS accepted IndirectFor a target.
+    // The traced round-trip ledger is the means-role guard. On the multi-good flagship SALT is
+    // never even accepted as a means (the finding), so the round-trip is `0/0` — the means
+    // role never begins. To prove the GUARD itself discriminates (it is not vacuously zero),
+    // run it on a REAL medium: the S9 strong-bar economy, where SALT IS accepted IndirectFor a
+    // target and DOES monetize.
     let multigood = run(&SettlementConfig::frontier_multigood(), RUN_TICKS);
     assert_eq!(
         multigood.salt_round_trip(),
         (0, 0),
-        "in the multi-good scenario SALT is never accepted as a means, so it never round-trips"
+        "in the finding SALT is never accepted as a means, so it never round-trips"
     );
 
     let s9 = SettlementConfig::frontier_coemergent_strong();
 
     // Pre-promotion (the hoarding WINDOW): SALT is accepted IndirectFor a target, but the
-    // round-trip stays ~0 — the acceptor uses a lower-good-id surplus to reach the target and
-    // HOARDS the SALT (the gate counts acceptance at receipt, the Codex concern).
+    // barter round-trip stays ~0 — the acceptor uses a lower-good-id surplus to reach the
+    // target and HOARDS the SALT (the gate counts acceptance at receipt, the Codex concern).
     let early = run(&s9, 400);
     let (early_spent, early_accepted) = early.salt_round_trip();
     assert!(
@@ -246,12 +334,121 @@ fn salt_round_trips_not_hoarded() {
     );
 }
 
+// ---- 6. the by-target breadth accessor (S18.2) ---------------------------
+
+#[test]
+fn by_target_breadth_accessor_surfaces_membership() {
+    // The by-target accessor surfaces the `IndirectFor{target}` MEMBERSHIP (the `&[GoodId]`)
+    // the strong-bar gate counts but the emergence probe collapses to a count. On a real
+    // medium (S9) it returns the actual target set; on the multi-good finding it is empty.
+    let s9 = run(&SettlementConfig::frontier_coemergent_strong(), 600);
+    let s9_salt = salt_good(&SettlementConfig::frontier_coemergent_strong());
+    let s9_targets = s9.indirect_target_goods(s9_salt);
+    assert!(
+        !s9_targets.is_empty(),
+        "on a real medium the by-target accessor returns SALT's indirect target set: {s9_targets:?}"
+    );
+
+    let mg = run(&SettlementConfig::frontier_multigood(), RUN_TICKS);
+    let mg_salt = salt_good(&SettlementConfig::frontier_multigood());
+    assert!(
+        mg.indirect_target_goods(mg_salt).is_empty(),
+        "on the finding SALT never leads, so its indirect target set is empty"
+    );
+}
+
+// ---- 7. conservation -----------------------------------------------------
+
+#[test]
+fn multigood_conserves() {
+    // Whole-system conservation every tick: the grain + WOOD nodes regen the sources, bread is
+    // produced, WOOD is gathered, and NOTHING is minted (no food/WOOD endowment).
+    let cfg = SettlementConfig::frontier_multigood();
+    let bread = bread_good(&cfg);
+    let mut s = Settlement::generate(1, &cfg);
+    for tick in 0..RUN_TICKS {
+        let report = s.econ_tick();
+        assert!(
+            report.conserves(),
+            "whole-system conservation must hold at tick {tick}"
+        );
+        assert_eq!(
+            report.endowment_of(WOOD) + report.endowment_of(bread),
+            0,
+            "no food/WOOD may be minted at tick {tick}"
+        );
+    }
+}
+
+// ---- 8. controls that bracket the finding --------------------------------
+
+#[test]
+fn controls_close_the_finding() {
+    // The controls isolate "the perfect double coincidence is what suppresses SALT".
+
+    // (contrast) The S9 strong-bar economy — ≥3 traded goods (grain, WOOD, bread) with NO
+    // clean double coincidence — DOES promote SALT. The gate/mechanism works; the multi-good
+    // failure is structural (the double coincidence), not a broken gate.
+    let s9 = run(&SettlementConfig::frontier_coemergent_strong(), 1200);
+    assert_eq!(
+        s9.current_money_good(),
+        Some(salt_good(&SettlementConfig::frontier_coemergent_strong())),
+        "the strong-bar mechanism monetizes SALT when there is no clean double coincidence"
+    );
+
+    // (a) No WOOD market (drop the woodcutters): the economy collapses to the S16 single
+    // produced good (bread) — no WOOD is traded and SALT still does not promote.
+    let mut no_wood = SettlementConfig::frontier_multigood();
+    no_wood.gatherers = 0;
+    let s_no_wood = run(&no_wood, RUN_TICKS);
+    assert!(
+        s_no_wood.promoted_at_tick().is_none(),
+        "with no WOOD market the economy is S16 single-good — SALT still does not promote"
+    );
+    assert_eq!(
+        s_no_wood.trade_volume_of(WOOD),
+        0,
+        "dropping the woodcutters removes the WOOD market entirely"
+    );
+
+    // (c) No SALT direct-use anchor: with nothing directly wanting SALT it has even less
+    // saleability and never leads — SALT does not promote.
+    let mut no_anchor = SettlementConfig::frontier_multigood();
+    if let Some(barter) = no_anchor.barter.as_mut() {
+        barter.salt_direct_use_qty = 0;
+        barter.salt_direct_use_period = 0;
+    }
+    let s_no_anchor = run(&no_anchor, RUN_TICKS);
+    assert!(
+        s_no_anchor.promoted_at_tick().is_none(),
+        "without the SALT anchor SALT does not lead and does not promote"
+    );
+
+    // (b) Indirect acceptance disabled: no agent posts an IndirectFor offer, so no indirect
+    // breadth can accrue — SALT does not promote.
+    let mut no_indirect = SettlementConfig::frontier_multigood();
+    if let Some(barter) = no_indirect.barter.as_mut() {
+        barter.menger.allow_indirect_acceptance = false;
+    }
+    let s_no_indirect = run(&no_indirect, RUN_TICKS);
+    assert!(
+        s_no_indirect.promoted_at_tick().is_none(),
+        "with indirect acceptance disabled SALT cannot accrue breadth and does not promote"
+    );
+}
+
+// ---- 9. the gate holds: existing goldens are byte-identical --------------
+
 #[test]
 fn goldens_unchanged() {
-    // The additive + gated changes leave every existing identity untouched. The
-    // `multigood_money` flag emits its canonical marker only when active, and the runtime-only
-    // instrumentation is excluded from `canonical_bytes` (both covered by the settlement unit
-    // tests). The `lineages` + `g4a_death` tripwires must stay byte-identical.
+    // With the S18 scenario absent, the additive + gated changes leave every existing
+    // identity untouched. The `multigood_money` flag emits its canonical marker only when
+    // active (covered by the settlement unit test `canonical_bytes_include_multigood_money`),
+    // and the runtime-only instrumentation is excluded from `canonical_bytes` (covered by
+    // `canonical_bytes_exclude_multigood_instrumentation`). The cross-scenario golden digests
+    // (the `lineages` + `g4a_death` tripwires, the S5–S17 + econ + emergence goldens) live in
+    // their own suites (`forage_carrying_capacity`, `g4a_death`, the econ/emergence tests) and
+    // stay green; this test pins the two key demographic/death tripwires directly.
     let digest = |cfg: &SettlementConfig, ticks: u64| {
         let mut s = Settlement::generate(1, cfg);
         s.run(ticks);
@@ -267,6 +464,7 @@ fn goldens_unchanged() {
         0x3ffd78e50842d934,
         "the long `lineages` run must be byte-identical"
     );
+    // The g4a_death no-death golden (the live-starvation tripwire family).
     let mut viable = Settlement::generate(0xC0FFEE, &SettlementConfig::viable());
     viable.run(60);
     assert_eq!(

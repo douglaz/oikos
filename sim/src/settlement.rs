@@ -3485,6 +3485,14 @@ impl SettlementConfig {
                 household.starting_wood = 0;
             }
         }
+        // Gate-align the two-sided bar (Codex P1d): S9's strong scenario uses
+        // `min_indirect_target_goods = 1`; S18 claims emergence from the {bread, WOOD}
+        // two-target breadth, so the honest gate is 2 — SALT cannot promote until BOTH targets
+        // are present as indirect goods. The mechanism (the S9 strong-bar gate) is unchanged;
+        // only this scenario parameter is stricter.
+        if let Some(barter) = cfg.barter.as_mut() {
+            barter.menger.min_indirect_target_goods = 2;
+        }
         cfg
     }
 
@@ -10034,6 +10042,25 @@ impl Settlement {
             .map(|trade| u64::from(trade.qty))
             .sum();
         market + barter
+    }
+
+    /// S18 (read-only): the DISTINCT agents who have OFFERED `good` as a barter surplus (gave
+    /// it in a cleared barter trade) over the whole run. The role-separation probe: with clean
+    /// role separation each agent offers only ONE surplus good, so the giver-sets of two
+    /// surplus goods (bread, WOOD) are disjoint and the lowest-good-id preemption cannot fire.
+    /// Reads only over the conserved barter tape.
+    pub fn barter_givers_of(&self, good: GoodId) -> Vec<AgentId> {
+        let mut givers: Vec<AgentId> = Vec::new();
+        for trade in &self.society.barter_trades {
+            if trade.a_gives == good && !givers.contains(&trade.a) {
+                givers.push(trade.a);
+            }
+            if trade.b_gives == good && !givers.contains(&trade.b) {
+                givers.push(trade.b);
+            }
+        }
+        givers.sort();
+        givers
     }
 
     /// The adopted Mengerian envelope this camp drives, or `None` for a
