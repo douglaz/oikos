@@ -2124,6 +2124,64 @@ source counters and pending round-trip ledger are runtime-only and excluded from
 
 - [x] viewer: the `multigood` scenario (`cargo run -p viewer -- run multigood --ticks 3000`)
 
+## Status: S19 (imperfect-double-coincidence money — the 3-good cycle) — complete (the deepest finding)
+
+The live frontier: can a neutral token (SALT) emerge as money endogenously from a PRODUCED economy via
+the canonical Jevons/Menger structure, where S16 (single good) and S18 (two-good perfect coincidence)
+both failed? S19 builds a **3-good production cycle** — A makes X (needs Z), B makes Y (needs X), C makes
+Z (needs Y) — with **no pairwise double coincidence** (the holder of a role's input never wants that
+role's output), demand **derived from the producer-input want** (not invented taste), survival isolated
+off-market (so the universal hunger/warmth ladders don't flood the book), and SALT the neutral token +
+the heterogeneous direct-use anchor. Built, gated, conserving — per `docs/impl-cycle-money.md`:
+
+- [x] **S19.1 — the 3-good production cycle.** 3 goods X/Y/Z + 3 recipes (A: Z→X, B: X→Y, C: Y→Z) + 3
+      cycle vocations; demand is the derived `Horizon::Next` input want driving generic pre-money barter
+      offers (the project-input bid overrides are post-promotion only). Survival off-market for all.
+- [x] **S19.2 — SALT buyer-side + the anchor density sweep + the saleability-race metric.** The cycle
+      producers hold a small neutral SALT commodity balance (the buyer-side path); the by-good
+      `direct = total − indirect` accessor; the round-trip ledger; a pinned `salt_direct_use` period
+      sweep `{8,6,4,3,2}` + a `period 1` universal control. The cycle-producer subsistence cap is a
+      named, disclosed `CYCLE_PRODUCER_SUBSISTENCE_CAP`.
+- [x] **S19.3 — the `cycle` scenario + DoD.** `frontier_cycle`; the `sim/tests/cycle_money.rs` suite
+      (11 tests: determinism, no-pairwise-coincidence, survival-off-market, the saleability split, the
+      density sweep, conservation, controls, goldens, and the finding).
+
+**Does SALT emerge as money from imperfect double coincidence? It LEADS but does not PROMOTE — the
+deepest finding, and a real advance (Codex-reviewed: PASS, no P0/P1).** Imperfect double coincidence
+does exactly what theory predicts: the cycle goods are **bad direct media** (no pair clears directly),
+so the **neutral token wins the saleability-leader race** — `saleability_leader() == Some(SALT)`, the
+step BEYOND S18 (where the abundant necessity WOOD dominated and SALT never even led). But SALT does NOT
+promote (`current_money_good() == None`): indirect SALT offers *are* posted, yet **no indirect SALT trade
+clears**, so `indirect_target_goods(SALT)` stays empty and the strong-bar breadth never forms; the
+round-trip ledger is `(0,0)`. The precise barrier (Codex): the **one-live-offer-per-agent book combined
+with `generate_indirect_barter_offers` replacing an agent's direct *SALT-spend* offer with an indirect
+*SALT-receive* offer** — in the cycle everyone wants a non-SALT input, so the book fills with "give
+output, receive SALT" and *loses* the complementary "give SALT, receive input" side, so the indirect
+exchange can never clear bilaterally. Across the swept anchor densities `{8,6,4,3,2}` no cell promotes
+(the universal `period 1` control suppresses indirect breadth, as expected); the sweep is reported as a
+per-cell classification (diagnostic), and the `CYCLE_PRODUCER_SUBSISTENCE_CAP` is disclosed (survival is
+off-market and the deadlock is in clearing, so it is not the lever) — neither is presented as a tuned or
+universally-proven robustness result.
+
+**Honest scope + the arc's money map.** S19 is an **artificial exchange-topology test** (a closed input
+loop, no terminal consumer; survival isolated off-market by a hearth scaffold) — not "scaffold-free."
+What it earns is precise and deep: it **isolates the exact remaining barrier** to endogenous token money
+in this model. Across the arc — **S9** (emergence under a minted scaffold), **S16** (produced single
+good → no indirect breadth), **S18** (produced two-good perfect coincidence → the necessity beats the
+token), **S19** (produced three-good imperfect coincidence → the token *leads* but bilateral one-offer
+clearing deadlocks indirect exchange) — the blocker is no longer the want structure or the saleability
+race; it is the **barter-clearing institution itself** (one live offer per agent, no coordinated
+sell-then-spend). The next step is a NEW research branch — a richer exchange institution (multi-offer per
+agent, or a clearing-house / path-clearing mechanism that can execute "sell output for SALT, spend SALT
+on input" as one coordinated indirect exchange) — not polish on S19.
+
+All additive/gated: with the `cycle` scenario absent, the S5–S18 scenarios + the six econ +
+g5a/g5b/coemergence emergence + the demographic `lineages` + the `g4a_death` goldens are byte-identical;
+the new cycle goods/recipes/vocations/scenario are gated, the derived accessor is read-only, the
+round-trip ledger is runtime-only.
+
+- [x] viewer: the `cycle` scenario (`cargo run -p viewer -- run cycle --ticks 3000`)
+
 ## Build and test
 
 ```bash
