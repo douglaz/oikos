@@ -1494,6 +1494,11 @@ pub struct BarterConfig {
     /// surplus FOOD/WOOD for it, accumulating the acceptances the saleability rule
     /// reads. Zero in the control: no medium to monetize.
     pub consumer_medium_endowment: u32,
+    /// S19: units of the medium commodity seeded to each 3-good-cycle producer.
+    /// This is a neutral stock endowment, not a designated-money balance and not a
+    /// medium want. It lets the agents that carry derived producer-input demand bid
+    /// SALT for X/Y/Z before any money good exists. Zero for every pre-S19 config.
+    pub cycle_producer_medium_endowment: u32,
     /// S9 — the **heterogeneous real direct use** of the medium good (SALT). How
     /// many fixed `Good(medium)/Now` consumption wants the SELECTED subset of
     /// colonists carries each pre-promotion tick (injected like
@@ -2413,6 +2418,7 @@ impl SettlementConfig {
                 medium_want_qty: 6,
                 gatherer_medium_endowment: gatherer_salt,
                 consumer_medium_endowment: consumer_salt,
+                cycle_producer_medium_endowment: 0,
                 salt_direct_use_qty: 0,
                 salt_direct_use_period: 0,
             }),
@@ -2665,6 +2671,7 @@ impl SettlementConfig {
                 medium_want_qty: 6,
                 gatherer_medium_endowment: 0,
                 consumer_medium_endowment: 80,
+                cycle_producer_medium_endowment: 0,
                 salt_direct_use_qty: 0,
                 salt_direct_use_period: 0,
             }),
@@ -2754,6 +2761,8 @@ impl SettlementConfig {
         if let Some(b) = cfg.barter.as_mut() {
             b.consumer_medium_endowment = b.consumer_medium_endowment.saturating_mul(precision);
             b.gatherer_medium_endowment = b.gatherer_medium_endowment.saturating_mul(precision);
+            b.cycle_producer_medium_endowment =
+                b.cycle_producer_medium_endowment.saturating_mul(precision);
             b.medium_want_qty = b.medium_want_qty.saturating_mul(precision);
         }
         cfg
@@ -2786,6 +2795,7 @@ impl SettlementConfig {
             let gatherers = u32::from(cfg.gatherers).max(1);
             b.gatherer_medium_endowment = total_salt / gatherers;
             b.consumer_medium_endowment = 0;
+            b.cycle_producer_medium_endowment = 0;
         }
         cfg
     }
@@ -3860,6 +3870,17 @@ pub struct CandidateAcceptances {
     pub indirect_acceptances: u64,
     pub indirect_acceptor_agents: usize,
     pub indirect_target_goods: usize,
+}
+
+/// S19 emergence probe: direct vs indirect acceptances by candidate good. This is
+/// derived from [`CandidateAcceptances`] (`direct = total - indirect`) so it reads the
+/// same saleability tracker without adding runtime state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DirectIndirectAcceptances {
+    pub good: GoodId,
+    pub total: u64,
+    pub direct: u64,
+    pub indirect: u64,
 }
 
 /// S8.0 emergence probe: a chain producer's role for the working-capital trace —
@@ -5677,8 +5698,9 @@ impl Settlement {
             // the pair a clean falsification twin: the medium (its demand AND its
             // supply) is the only difference.
             barter_medium: config.barter.as_ref().and_then(|barter| {
-                let supplied =
-                    barter.gatherer_medium_endowment > 0 || barter.consumer_medium_endowment > 0;
+                let supplied = barter.gatherer_medium_endowment > 0
+                    || barter.consumer_medium_endowment > 0
+                    || barter.cycle_producer_medium_endowment > 0;
                 supplied.then_some((barter.medium_good, barter.medium_want_qty))
             }),
             // S9: the heterogeneous real direct use of the medium (SALT). Active only
@@ -7490,6 +7512,17 @@ impl Settlement {
             } else {
                 regenerate_scale(&colonist.need, &colonist.culture, &self.known)
             };
+            let selected_direct_use = self.salt_direct_use.and_then(|(good, qty, period)| {
+                (self.society.current_money_good().is_none()
+                    && period > 0
+                    && colonist.id.index().is_multiple_of(u32::from(period)))
+                .then_some((good, qty))
+            });
+            let cycle_direct_use_before_input = selected_direct_use.is_some()
+                && matches!(
+                    colonist.vocation,
+                    Vocation::CycleA | Vocation::CycleB | Vocation::CycleC
+                );
             if let Some(chain) = &self.chain {
                 // A producer's tool/input wants follow its production specialty —
                 // its adopted vocation (Miller/Baker, seeded or chosen) or, for a
@@ -7559,7 +7592,20 @@ impl Settlement {
                             _ => 0,
                         }
                     };
-                    producer_scale_extension(&mut scale, tool, input, input_wants);
+                    if let (true, Some((direct_good, direct_qty))) =
+                        (cycle_direct_use_before_input, selected_direct_use)
+                    {
+                        cycle_producer_scale_extension(
+                            &mut scale,
+                            tool,
+                            input,
+                            input_wants,
+                            direct_good,
+                            direct_qty,
+                        );
+                    } else {
+                        producer_scale_extension(&mut scale, tool, input, input_wants);
+                    }
                 }
             }
             // G5a: while still in barter (no money good has emerged), extend the
@@ -7585,11 +7631,8 @@ impl Settlement {
             // only pre-promotion (SALT delists to money on promotion); consumed into
             // the `consumed` bucket by the existing `Horizon::Now` consume arm. Pure
             // and deterministic; draws no randomness.
-            if let Some((good, qty, period)) = self.salt_direct_use {
-                if self.society.current_money_good().is_none()
-                    && period > 0
-                    && colonist.id.index().is_multiple_of(u32::from(period))
-                {
+            if let Some((good, qty)) = selected_direct_use {
+                if !cycle_direct_use_before_input {
                     direct_use_scale_extension(&mut scale, good, qty);
                 }
             }
@@ -7837,14 +7880,13 @@ impl Settlement {
                 let colonist = &self.colonists[slot];
                 (colonist.id, colonist.vocation, colonist.latent)
             };
-            let is_producer = matches!(
+            let is_cycle_producer = matches!(
                 vocation,
-                Vocation::Miller
-                    | Vocation::Baker
-                    | Vocation::CycleA
-                    | Vocation::CycleB
-                    | Vocation::CycleC
-            ) || (vocation == Vocation::Unassigned && latent.is_some());
+                Vocation::CycleA | Vocation::CycleB | Vocation::CycleC
+            );
+            let is_producer = is_cycle_producer
+                || matches!(vocation, Vocation::Miller | Vocation::Baker)
+                || (vocation == Vocation::Unassigned && latent.is_some());
             if !is_producer {
                 continue;
             }
@@ -7855,6 +7897,19 @@ impl Settlement {
             // line is retired (only WOOD stays).
             for good in [staple, WOOD] {
                 if good == staple && !mint_staple {
+                    continue;
+                }
+                let target = if is_cycle_producer {
+                    let need = self.colonists[slot].need;
+                    match good {
+                        g if g == staple => u32::from(need.hunger.min(4)),
+                        WOOD => u32::from(need.warmth.min(4)),
+                        _ => target,
+                    }
+                } else {
+                    target
+                };
+                if target == 0 {
                     continue;
                 }
                 let held = self
@@ -11478,6 +11533,21 @@ impl Settlement {
             .collect()
     }
 
+    /// S19 (read-only): by-good acceptance split derived from the existing emergence
+    /// tracker. `direct` is the ordinary direct-want saleability count and `indirect`
+    /// is the `IndirectFor{target}` count the strong-bar gate uses.
+    pub fn direct_indirect_acceptances(&self) -> Vec<DirectIndirectAcceptances> {
+        self.emergence_acceptances()
+            .into_iter()
+            .map(|c| DirectIndirectAcceptances {
+                good: c.good,
+                total: c.acceptances,
+                direct: c.acceptances.saturating_sub(c.indirect_acceptances),
+                indirect: c.indirect_acceptances,
+            })
+            .collect()
+    }
+
     /// S18 (read-only): the DISTINCT indirect target goods `good` has accrued as a
     /// saleability candidate — the `IndirectFor{target}` MEMBERSHIP the strong-bar gate
     /// counts (`min_indirect_target_goods`) but [`Self::emergence_acceptances`] collapses to
@@ -12725,12 +12795,16 @@ fn build_agent(
     // camp (G5a, `None` chain) and the G5b frontier (a chain *and* a barter overlay) —
     // a chain colonist demands and barters for the medium exactly like a camp colonist,
     // so the endowment must land on the chain path too (it did not in the G5a-only
-    // code, which only reached the `None` branch). Zero in the no-medium control and
-    // for producers (they earn the medium by selling surplus, never a seed).
+    // code, which only reached the `None` branch). S19 additionally lets the cycle
+    // producers hold a small neutral SALT commodity balance so their derived input
+    // demand can spend it before any money good exists.
     if let Some(barter) = &config.barter {
         let medium = match vocation {
             Vocation::Gatherer => barter.gatherer_medium_endowment,
             Vocation::Consumer => barter.consumer_medium_endowment,
+            Vocation::CycleA | Vocation::CycleB | Vocation::CycleC => {
+                barter.cycle_producer_medium_endowment
+            }
             _ => 0,
         };
         stock.add(barter.medium_good, medium);
@@ -13915,6 +13989,46 @@ fn producer_scale_extension(
     scale.extend(base);
 }
 
+fn cycle_producer_scale_extension(
+    scale: &mut Vec<Want>,
+    tool: GoodId,
+    input_good: GoodId,
+    input_wants: u32,
+    direct_good: GoodId,
+    direct_wants: u32,
+) {
+    let insert_at = scale_input_insert_position(scale);
+    let input_wants = input_wants as usize;
+    let direct_wants = direct_wants as usize;
+    let mut base = std::mem::take(scale);
+    scale.reserve(base.len() + input_wants + direct_wants + 1);
+
+    scale.push(Want {
+        kind: WantKind::Good(tool),
+        horizon: Horizon::Next,
+        qty: 1,
+        satisfied: false,
+    });
+    scale.extend(base.drain(..insert_at));
+    for _ in 0..direct_wants {
+        scale.push(Want {
+            kind: WantKind::Good(direct_good),
+            horizon: Horizon::Now,
+            qty: 1,
+            satisfied: false,
+        });
+    }
+    for _ in 0..input_wants {
+        scale.push(Want {
+            kind: WantKind::Good(input_good),
+            horizon: Horizon::Next,
+            qty: 1,
+            satisfied: false,
+        });
+    }
+    scale.extend(base);
+}
+
 /// G5a: extend a colonist's need scale with `qty` `Horizon::Next` "hold the
 /// medium" wants for `medium`, the demand that drives barter for the emergent
 /// medium. The wants are inserted **just below** the present consumption block —
@@ -14019,6 +14133,12 @@ fn push_barter_config_bytes(out: &mut Vec<u8>, barter: &BarterConfig) {
     // barter config's prefix is unchanged.
     out.extend_from_slice(&barter.salt_direct_use_qty.to_le_bytes());
     out.extend_from_slice(&barter.salt_direct_use_period.to_le_bytes());
+    // S19: zero is omitted so every pre-cycle barter scenario keeps its exact bytes;
+    // nonzero cycle producer SALT seed must split the digest because it changes
+    // generation holdings and future barter.
+    if barter.cycle_producer_medium_endowment > 0 {
+        out.extend_from_slice(&barter.cycle_producer_medium_endowment.to_le_bytes());
+    }
 }
 
 fn push_money_system_bytes(out: &mut Vec<u8>, money_system: &econ::ledger::MoneySystem) {

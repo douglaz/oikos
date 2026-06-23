@@ -1171,6 +1171,11 @@ impl Society {
         self.barter_book.live_offers().len()
     }
 
+    /// Read-only snapshot of live barter offers, in book order.
+    pub fn live_barter_offers(&self) -> &[BarterOffer] {
+        self.barter_book.live_offers()
+    }
+
     pub fn live_spot_quote_count_for_good(&self, good: GoodId) -> usize {
         self.live_quotes
             .iter()
