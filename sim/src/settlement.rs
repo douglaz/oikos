@@ -3670,6 +3670,21 @@ impl SettlementConfig {
         cfg
     }
 
+    /// S20 — the S19 3-good cycle with the gated two-lane medium book enabled.
+    ///
+    /// The S19 builder remains the flag-off control. This sibling changes only the
+    /// barter-institution gate, so the existing cycle finding stays byte-identical
+    /// while the viewer can run the cleared cycle directly.
+    pub fn frontier_cycle_cleared() -> Self {
+        let mut cfg = Self::frontier_cycle();
+        cfg.barter
+            .as_mut()
+            .expect("cycle barter overlay")
+            .menger
+            .multi_offer_medium = true;
+        cfg
+    }
+
     /// S17 — **mortality** (the Malthusian positive check): the S15
     /// [`Self::frontier_cultivation`] colony with starvation death turned back on at the
     /// **principled** lab-default threshold `hunger_critical = need_max` (the others keep

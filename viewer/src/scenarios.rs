@@ -234,7 +234,7 @@ const SCENARIOS: &[Scenario] = &[
     Scenario {
         name: "cycle",
         description:
-            "S19: IMPERFECT-DOUBLE-COINCIDENCE 3-GOOD CYCLE — A consumes Z→X, B consumes X→Y, C consumes Y→Z. X/Y/Z demand is derived only from producer-input wants, survival is hearth-isolated, and SALT is a neutral commodity seed plus heterogeneous direct-use anchor (no medium want, no designated money). FINDING: SALT can become the provisional leader at the disclosed period-4 density, but no IndirectFor trade clears, so indirect breadth stays empty and SALT does not promote.",
+            "S20: TWO-LANE IMPERFECT-DOUBLE-COINCIDENCE CYCLE — the S19 3-good produced input loop with the gated two-lane medium book enabled. A consumes Z→X, B consumes X→Y, C consumes Y→Z; survival stays hearth-isolated; SALT is a neutral commodity seed plus heterogeneous direct-use anchor. The spend lane (SALT→input) and sell lane (output→SALT) coexist, so pairwise barter lets SALT round-trip and promote without a planner or ring matcher.",
         build: build_cycle,
     },
     Scenario {
@@ -476,7 +476,7 @@ fn build_multigood() -> SettlementConfig {
 }
 
 fn build_cycle() -> SettlementConfig {
-    SettlementConfig::frontier_cycle()
+    SettlementConfig::frontier_cycle_cleared()
 }
 
 fn build_millisats_1x() -> SettlementConfig {
