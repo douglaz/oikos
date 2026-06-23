@@ -4493,8 +4493,11 @@ impl MultigoodMoney {
     }
 
     /// The round-trip fraction in basis points: of the medium accepted as a means, the share
-    /// later spent on its target. `0` when nothing was accepted indirectly (no division by
-    /// zero) — distinct from "accepted but hoarded" (accepted > 0, spent ≈ 0).
+    /// later spent on its target. Post-promotion spot trades record target-good quantity
+    /// rather than the original medium units, so the pending cap makes this a conservative
+    /// completion metric, not a price-denominated exact ratio. `0` when nothing was
+    /// accepted indirectly (no division by zero) — distinct from "accepted but hoarded"
+    /// (accepted > 0, spent ≈ 0).
     fn round_trip_fraction_bps(&self) -> u32 {
         if self.indirect_accepted == 0 {
             return 0;
@@ -11417,7 +11420,9 @@ impl Settlement {
     }
 
     /// S18 (read-only): the round-trip fraction in basis points (`spent / accepted`). `0`
-    /// when nothing was accepted indirectly (no division by zero). See [`Self::salt_round_trip`].
+    /// when nothing was accepted indirectly (no division by zero). Post-promotion spot
+    /// spends are target-good quantities capped by pending medium, so this is conservative
+    /// rather than an exact price-denominated SALT ratio. See [`Self::salt_round_trip`].
     pub fn salt_round_trip_fraction_bps(&self) -> u32 {
         self.multigood.round_trip_fraction_bps()
     }

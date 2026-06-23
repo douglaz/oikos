@@ -260,6 +260,11 @@ fn the_traded_goods_are_gathered_not_minted() {
         s.pre_promotion_wood_for_salt_volume() <= s.wood_gathered_total(),
         "the traded WOOD→medium volume cannot exceed the WOOD gathered (provenance bound)"
     );
+    assert_eq!(
+        s.wood_for_salt_volume(),
+        s.pre_promotion_wood_for_salt_volume(),
+        "with no promotion in the finding, every WOOD→medium trade is pre-promotion"
+    );
     assert!(
         s.trade_volume_of(WOOD) > 0,
         "the gathered WOOD reaches a real market"
@@ -312,6 +317,17 @@ fn salt_round_trips_not_hoarded() {
         early.salt_round_trip_fraction_bps(),
         0,
         "the hoarding signature: accept-side volume > 0 while the round-trip fraction ~ 0"
+    );
+    let early_targets = early.indirect_target_goods(salt_good(&s9));
+    let mut pending_total = 0;
+    for index in 0..early.population() {
+        for &target in &early_targets {
+            pending_total += early.pending_indirect_salt(index, target);
+        }
+    }
+    assert!(
+        pending_total > 0,
+        "accepted-as-means SALT must remain visible in the pending ledger during the hoarding window"
     );
 
     // Run on to promotion: the means role then COMPLETES as money — the SALT accepted as a
@@ -434,6 +450,63 @@ fn controls_close_the_finding() {
     assert!(
         s_no_indirect.promoted_at_tick().is_none(),
         "with indirect acceptance disabled SALT cannot accrue breadth and does not promote"
+    );
+
+    // (d) No role separation: collapse one producer group by seeding the WOOD sellers
+    // with a large bread surplus too. Restore a non-consuming medium-holding want in this
+    // control only, so the collapsed producers have an observable reason to sell while the
+    // SALT-rich buyers still retain stock. Those same agents now hold WOOD (lower good id)
+    // and bread, so the one-offer-per-agent book offers WOOD first and their bread never
+    // gets a clean surplus-offer lane. The result is no two-sided indirect breadth and no
+    // promotion.
+    let mut no_roles = SettlementConfig::frontier_multigood();
+    if let Some(chain) = no_roles.chain.as_mut() {
+        chain.bread_buffer = 5_000;
+    }
+    if let Some(barter) = no_roles.barter.as_mut() {
+        barter.medium_want_qty = 1;
+    }
+    let no_role_bread = bread_good(&no_roles);
+    let s_no_roles_initial = Settlement::generate(1, &no_roles);
+    let seeded_woodcutters = (0..s_no_roles_initial.population())
+        .filter(|&index| {
+            s_no_roles_initial.vocation_of(index) == Some(Vocation::Gatherer)
+                && s_no_roles_initial.household_of(index).is_none()
+                && s_no_roles_initial.stock_of(index, no_role_bread) > 0
+        })
+        .count();
+    assert!(
+        seeded_woodcutters > 0,
+        "the collapsed-role control must seed bread on the WOOD-seller group"
+    );
+    let s_no_roles = run(&no_roles, RUN_TICKS);
+    assert!(
+        s_no_roles.promoted_at_tick().is_none(),
+        "without role separation SALT still does not promote"
+    );
+    let no_role_wood_givers = s_no_roles.barter_givers_of(WOOD);
+    assert!(
+        !no_role_wood_givers.is_empty(),
+        "the collapsed-role control must be non-vacuous: collapsed producers do sell WOOD"
+    );
+    let no_role_bread_givers = s_no_roles.barter_givers_of(no_role_bread);
+    for giver in &no_role_wood_givers {
+        let index = (0..s_no_roles.population())
+            .find(|&i| s_no_roles.colonist_id(i) == Some(*giver))
+            .expect("a live WOOD giver maps to a generation index");
+        if s_no_roles.vocation_of(index) == Some(Vocation::Gatherer)
+            && s_no_roles.household_of(index).is_none()
+        {
+            assert!(
+                !no_role_bread_givers.contains(giver),
+                "a collapsed WOOD seller that also held bread must have its bread preempted by WOOD"
+            );
+        }
+    }
+    let no_role_targets = s_no_roles.indirect_target_goods(salt_good(&no_roles));
+    assert!(
+        !(no_role_targets.contains(&no_role_bread) && no_role_targets.contains(&WOOD)),
+        "without role separation the two-sided indirect breadth must not form: {no_role_targets:?}"
     );
 }
 

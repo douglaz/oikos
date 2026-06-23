@@ -2070,6 +2070,48 @@ scenarios + the six econ + g5a/g5b/coemergence emergence + the demographic `line
 
 - [x] viewer: the `mortality` scenario (`cargo run -p viewer -- run mortality --ticks 4000`)
 
+## Status: S18 (money from a produced MULTI-GOOD economy) — complete (principled-failure finding)
+
+S16 showed that produced bread can supply a market, but a single produced market good gives SALT only
+direct bread↔SALT trades and no indirect-exchange breadth. S18 adds the deeper test: a produced
+multi-good division of labor with bread cultivators (lineages that sell surplus bread and want WOOD),
+WOODCUTTERS (non-lineage gatherers pinned to the WOOD node, selling WOOD and wanting bread), and
+SALT-anchor consumers (holding SALT, buying both). Food and WOOD mints are off in the flagship,
+mortality is off, WOOD buffers are zeroed, and the strong-bar gate is reused unchanged except for the
+scenario parameter `min_indirect_target_goods = 2`. Built, gated, conserving — per
+`docs/impl-multigood-money.md`:
+
+- [x] **S18.1 — the woodcutter role + market WOOD supply.** `frontier_multigood` re-adds a real WOOD
+      node to the produced-bread frontier, adds non-lineage `Gatherer` woodcutters, and routes them
+      explicitly to the WOOD node instead of the normal round-robin assignment. Every seeded WOOD
+      buffer and per-tick WOOD provision is zeroed, so traded WOOD is bounded by node→econ gathered
+      volume. Cultivators stay off the WOOD node; each role's only surplus good is its produced good.
+- [x] **S18.2 — by-target breadth + round-trip instrumentation.** The settlement exposes the actual
+      `indirect_target_goods(good)` membership, not only the count, and keeps a runtime-only
+      pending-indirect-SALT ledger. The ledger credits SALT accepted as `IndirectFor{target}` and
+      decrements when that agent later spends the medium on the target, distinguishing real
+      intermediation from hoarding.
+- [x] **S18.3 — the multi-good scenario + DoD.** The `multigood` viewer scenario is registered and the
+      `sim/tests/multigood_money.rs` suite pins determinism, role separation, WOOD provenance,
+      conservation, controls, unchanged goldens, by-target breadth, and the round-trip guard.
+
+**Does money emerge from the two-produced-good economy? No — the principled failure.** The division of
+labor works too cleanly: cultivators want exactly what woodcutters produce, and woodcutters want
+exactly what cultivators produce, so the economy has a perfect double coincidence of wants and clears
+bread↔WOOD directly. WOOD and bread both out-accept SALT; SALT never becomes the provisional leader;
+`indirect_target_goods(SALT)` stays empty rather than reaching `{bread, WOOD}`; and the traced
+round-trip is `0/0` because SALT is never accepted as a means. This deepens S16: money is not created
+by "two produced goods" alone, but by exchange paths where agents need a more saleable intermediary to
+bridge absent double coincidence. The S9 strong-bar economy remains the contrast: with a broader
+non-coincident exchange field, SALT does promote and the round-trip guard becomes material.
+
+All additive/gated: with the `multigood` scenario absent, the S5-S17 scenarios + the six econ +
+g5a/g5b/coemergence emergence + the demographic `lineages` + the `g4a_death` goldens are
+byte-identical. The `multigood_money` flag is serialized only when its behavior can run; the WOOD
+source counters and pending round-trip ledger are runtime-only and excluded from `canonical_bytes`.
+
+- [x] viewer: the `multigood` scenario (`cargo run -p viewer -- run multigood --ticks 3000`)
+
 ## Build and test
 
 ```bash
@@ -2101,6 +2143,7 @@ cargo run -p viewer -- run scaling --ticks 1600              # S6: productive re
 cargo run -p viewer -- run capital --ticks 1600              # S7: colonists build mills/ovens under unmet demand — more tools + higher bread than scaling
 cargo run -p viewer -- run coemergent --ticks 1600          # S8: money + chain + capital CO-EMERGE from a no-money barter start (era goes barter → money, then bread sustains)
 cargo run -p viewer -- run strong-emergence --ticks 1600    # S9: strong-bar emergence — money emerges from real indirect-exchange breadth (no configured medium want)
+cargo run -p viewer -- run multigood --ticks 3000           # S18: produced bread + gathered WOOD division of labor (principled no-money finding)
 cargo run -p viewer -- run originary --ticks 1600           # S10: originary interest — capital forms by a PER-AGENT intertemporal choice; patient colonists build, present-biased ones do not
 cargo run -p viewer -- run entrepreneurial --ticks 1600     # S11: entrepreneurial uncertainty — decisions weigh a PER-AGENT fallible forecast; a wrong forecast is borne as profit/loss through capital
 #                                                              # G6a: the frontier/barter-camp dashboards show an era
