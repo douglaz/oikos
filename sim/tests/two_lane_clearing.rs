@@ -198,19 +198,49 @@ fn money_does_the_work_not_a_ring_matcher() {
     let cfg = two_lane_cycle_config();
     let goods = cycle_goods(&cfg);
     let (s, _) = run_with_trace(11, &cfg, S20_TICKS);
+    let cycle = BTreeSet::from([goods.x, goods.y, goods.z]);
+    let promotion_tick = s.promoted_at_tick().unwrap_or(u64::MAX);
+    let mut mediated_pairs = 0usize;
+    let mut mediated_targets = BTreeSet::new();
+
+    for trade in s
+        .society()
+        .barter_trades
+        .iter()
+        .filter(|trade| trade.tick <= promotion_tick)
+    {
+        match (trade.a_gives, trade.b_gives, trade.a_reason, trade.b_reason) {
+            (SALT, received, BarterReason::DirectWant, BarterReason::IndirectFor { target })
+                if cycle.contains(&received) =>
+            {
+                mediated_pairs += 1;
+                mediated_targets.insert(target);
+            }
+            (given, SALT, BarterReason::IndirectFor { target }, BarterReason::DirectWant)
+                if cycle.contains(&given) =>
+            {
+                mediated_pairs += 1;
+                mediated_targets.insert(target);
+            }
+            _ => {}
+        }
+    }
 
     assert_eq!(
         pre_promotion_cycle_barter_without_salt(&s, goods),
         0,
         "pre-promotion cycle-good acquisitions must have SALT on one side"
     );
-    assert!(s.society().barter_trades.iter().all(|trade| {
-        trade.a != trade.b
-            && (matches!(trade.a_reason, BarterReason::DirectWant)
-                || matches!(trade.a_reason, BarterReason::IndirectFor { .. }))
-            && (matches!(trade.b_reason, BarterReason::DirectWant)
-                || matches!(trade.b_reason, BarterReason::IndirectFor { .. }))
-    }));
+    assert!(
+        mediated_pairs > 0,
+        "pre-promotion clearing must include pairwise SALT-mediated barter"
+    );
+    assert!(
+        mediated_targets.contains(&goods.x)
+            && mediated_targets.contains(&goods.y)
+            && mediated_targets.contains(&goods.z),
+        "SALT-mediated pairs must span all cycle targets, got {mediated_targets:?}"
+    );
 }
 
 #[test]

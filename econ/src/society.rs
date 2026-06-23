@@ -2047,6 +2047,13 @@ impl Society {
                 .collect::<Vec<_>>();
             if let Some(leader) = provisional_leader {
                 if self.multi_offer_medium {
+                    self.cancel_non_lane_barter_offers_for_agent(agent_id, leader);
+                    self.post_first_direct_leader_offer(
+                        agent_id,
+                        &receive_goods,
+                        &give_goods,
+                        leader,
+                    );
                     self.post_first_medium_spend_offer(agent_id, &receive_goods, leader);
                     continue;
                 }
@@ -2105,17 +2112,44 @@ impl Society {
         false
     }
 
+    fn post_first_direct_leader_offer(
+        &mut self,
+        agent: AgentId,
+        receive_goods: &[GoodId],
+        give_goods: &[GoodId],
+        leader: GoodId,
+    ) {
+        if !receive_goods.contains(&leader) {
+            return;
+        }
+        let previous = self.cancel_live_barter_receive_leader_offers_for_agent(agent, leader);
+        for give_good in give_goods {
+            if *give_good == leader {
+                continue;
+            }
+            if self.post_barter_offer(
+                agent,
+                *give_good,
+                leader,
+                BarterReason::DirectWant,
+                Some(leader),
+            ) {
+                return;
+            }
+        }
+        let previous_direct = previous
+            .into_iter()
+            .filter(|offer| matches!(offer.reason, BarterReason::DirectWant))
+            .collect();
+        self.restore_barter_offers(previous_direct, Some(leader));
+    }
+
     fn post_first_medium_spend_offer(
         &mut self,
         agent: AgentId,
         receive_goods: &[GoodId],
         leader: GoodId,
     ) {
-        // The spend lane runs first each tick. Drop any stale non-lane offers
-        // (pre-leader direct barters that were live before the medium emerged) so an
-        // agent never carries more than the two medium lanes; a live sell lane is
-        // preserved here for the sell pass to refresh.
-        self.cancel_non_lane_barter_offers_for_agent(agent, leader);
         let previous = self.cancel_live_barter_spend_offers_for_agent(agent, leader);
         for receive_good in receive_goods {
             if *receive_good == leader {
@@ -2211,12 +2245,11 @@ impl Society {
     ) {
         if target_goods.contains(&leader) {
             // Edge case (b): the agent's relevant want is for the leader DIRECTLY,
-            // so it must not post an indirect sell lane (that would mislabel genuine
-            // direct demand as indirect exchange). Checked BEFORE cancelling so an
-            // already-live sell lane is left intact rather than silently dropped.
+            // so it must not post an indirect sell lane. The direct pass owns any
+            // direct receive-leader bid and leaves it live here.
             return;
         }
-        let previous = self.cancel_live_barter_sell_offers_for_agent(agent_id, leader);
+        let previous = self.cancel_live_barter_receive_leader_offers_for_agent(agent_id, leader);
         let give_goods = self.agents[agent_index]
             .stock
             .positive_goods()
@@ -2283,12 +2316,15 @@ impl Society {
             && matches!(offer.reason, BarterReason::DirectWant)
     }
 
-    /// The sell-for-medium lane shape: `give a non-leader surplus → receive leader`
-    /// (IndirectFor{target}).
-    fn is_medium_sell_lane(offer: &BarterOffer, leader: GoodId) -> bool {
+    /// The receive-leader lane is either direct leader demand or an indirect
+    /// sell-for-medium order. It is still one slot, distinct from the spend lane.
+    fn is_medium_receive_leader_lane(offer: &BarterOffer, leader: GoodId) -> bool {
         offer.give_good != leader
             && offer.receive_good == leader
-            && matches!(offer.reason, BarterReason::IndirectFor { .. })
+            && matches!(
+                offer.reason,
+                BarterReason::DirectWant | BarterReason::IndirectFor { .. }
+            )
     }
 
     fn cancel_live_barter_spend_offers_for_agent(
@@ -2301,24 +2337,26 @@ impl Society {
         })
     }
 
-    fn cancel_live_barter_sell_offers_for_agent(
+    fn cancel_live_barter_receive_leader_offers_for_agent(
         &mut self,
         agent: AgentId,
         leader: GoodId,
     ) -> Vec<BarterOffer> {
         self.cancel_live_barter_offers_for_agent_matching(agent, |offer| {
-            Self::is_medium_sell_lane(offer, leader)
+            Self::is_medium_receive_leader_lane(offer, leader)
         })
     }
 
     /// Enforce the S20 "exactly two lanes" invariant: cancel every live offer for
-    /// the agent that is neither the spend lane nor the sell lane. These are
-    /// pre-leader direct barters that were posted before the medium emerged; left
-    /// live they would be a third order and could even clear as a direct cycle-good
-    /// swap, bypassing the medium. Dropped outright (not restored) — they are stale.
+    /// the agent that is neither the spend lane nor the receive-leader lane. These
+    /// are pre-leader direct barters that were posted before the medium emerged;
+    /// left live they would be a third order and could even clear as a direct
+    /// cycle-good swap, bypassing the medium. Dropped outright (not restored) —
+    /// they are stale.
     fn cancel_non_lane_barter_offers_for_agent(&mut self, agent: AgentId, leader: GoodId) {
         self.cancel_live_barter_offers_for_agent_matching(agent, |offer| {
-            !Self::is_medium_spend_lane(offer, leader) && !Self::is_medium_sell_lane(offer, leader)
+            !Self::is_medium_spend_lane(offer, leader)
+                && !Self::is_medium_receive_leader_lane(offer, leader)
         });
     }
 
@@ -8458,6 +8496,78 @@ mod tests {
                 && (matches!(trade.a_reason, BarterReason::IndirectFor { .. })
                     || matches!(trade.b_reason, BarterReason::IndirectFor { .. }))
         }));
+    }
+
+    #[test]
+    fn two_lane_preserves_direct_leader_bids() {
+        let direct_salt_user = Agent {
+            id: AgentId(1),
+            scale: scale_entries(&[(WantKind::Good(SALT), Horizon::Next, 1)]),
+            stock: {
+                let mut stock = Stock::new(CLOTH.0);
+                stock.add(FOOD, 1);
+                stock
+            },
+            gold: Gold::ZERO,
+            labor_capacity: 0,
+            hunger_deficit: 0,
+            roles: vec![Role::Trader],
+            expect: Vec::new(),
+        };
+        let salt_spender = Agent {
+            id: AgentId(2),
+            scale: scale_entries(&[(WantKind::Good(FOOD), Horizon::Next, 1)]),
+            stock: {
+                let mut stock = Stock::new(CLOTH.0);
+                stock.add(SALT, 1);
+                stock
+            },
+            gold: Gold::ZERO,
+            labor_capacity: 0,
+            hunger_deficit: 0,
+            roles: vec![Role::Trader],
+            expect: Vec::new(),
+        };
+        let mut society = Society::from_scenario(MarketScenario {
+            name: "two-lane-direct-leader",
+            scenario: ScenarioName::MengerSaltMoney,
+            seed: 1,
+            periods: 1,
+            agents: vec![direct_salt_user, salt_spender],
+            recipes: Vec::new(),
+            events: Vec::new(),
+            money: MarketMoneyConfig::Emergent(MengerianConfig {
+                candidate_goods: vec![FOOD, SALT],
+                multi_offer_medium: true,
+                ..MengerianConfig::default()
+            }),
+        });
+
+        society.generate_direct_barter_offers(Some(SALT));
+        society.generate_indirect_barter_offers(Some(SALT));
+
+        assert!(society.live_barter_offers().iter().any(|offer| {
+            offer.agent == AgentId(1)
+                && offer.give_good == FOOD
+                && offer.receive_good == SALT
+                && matches!(offer.reason, BarterReason::DirectWant)
+        }));
+        assert!(society
+            .live_barter_offers()
+            .iter()
+            .filter(|offer| offer.agent == AgentId(1))
+            .all(|offer| !matches!(offer.reason, BarterReason::IndirectFor { .. })));
+
+        let trades = society.barter_book.clear_matches_with_provisional_leader(
+            society.agents.as_mut_slice(),
+            society.tick.0,
+            Some(SALT),
+        );
+        assert_eq!(trades.len(), 1);
+        assert!(matches!(trades[0].a_reason, BarterReason::DirectWant));
+        assert!(matches!(trades[0].b_reason, BarterReason::DirectWant));
+        assert_eq!(society.agents[0].stock.get(SALT), 1);
+        assert_eq!(society.agents[1].stock.get(FOOD), 1);
     }
 
     #[test]
