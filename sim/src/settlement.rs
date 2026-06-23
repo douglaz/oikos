@@ -3430,12 +3430,12 @@ impl SettlementConfig {
     /// MEANS to the OTHER good (`IndirectFor{target}`), SALT round-trips as the intermediary,
     /// and the two-sided indirect breadth `{bread, WOOD}` can cross the strong-bar gate.
     ///
-    /// Derived from [`Self::frontier_money_from_cultivation`] (never mutated structurally),
-    /// it composes the THREE roles: the SALT-anchor consumers (the inherited non-lineage
-    /// `consumer_medium_endowment` holders, buy BOTH bread and WOOD), the bread CULTIVATORS
-    /// (the inherited lineages, `cultivation_sells_surplus` + `own_use_cultivation`, want
-    /// WOOD/warmth), and the WOODCUTTERS (non-lineage `Gatherer`s producing + selling WOOD,
-    /// wanting bread/food). The composed changes: (1) **re-add the WOOD node** S16 dropped —
+    /// Derived from [`Self::frontier_money_from_cultivation`], it composes the THREE roles:
+    /// the SALT-anchor consumers (the inherited non-lineage `consumer_medium_endowment`
+    /// holders, buy BOTH bread and WOOD), the bread CULTIVATORS (the inherited lineages,
+    /// `cultivation_sells_surplus` + `own_use_cultivation`, want WOOD/warmth), and the
+    /// WOODCUTTERS (non-lineage `Gatherer`s producing + selling WOOD, wanting bread/food).
+    /// The composed changes: (1) **re-add the WOOD node** S16 dropped —
     /// with role separation WOOD no longer preempts bread, so a real WOOD market forms;
     /// (2) **the woodcutter group** (`gatherers`), pinned to the WOOD node by the
     /// `multigood_money` seam (NOT the round-robin, so grain never draws them off into a
@@ -3444,8 +3444,9 @@ impl SettlementConfig {
     /// `consumer_wood_buffer`, the plain endowments), so traded WOOD can ONLY come from
     /// node-gathering (`endowment[WOOD] == 0`). Both food (own-labor) AND WOOD mints are now
     /// off. Mortality stays OFF (proven S17; a robustness test later). Each role's only
-    /// SURPLUS is its produced good (no `post_first_direct_barter_offer` preemption). With
-    /// `multigood_money` reverted it is byte-identical to `frontier_money_from_cultivation`.
+    /// SURPLUS is its produced good (no `post_first_direct_barter_offer` preemption). Existing
+    /// scenarios remain byte-identical because they do not opt into this structural scenario
+    /// or the `multigood_money` routing flag.
     pub fn frontier_multigood() -> Self {
         let mut cfg = Self::frontier_money_from_cultivation();
         // Re-add the WOOD node S16 dropped. Generous flow (the inherited 8000/64) so the WOOD
@@ -4559,6 +4560,11 @@ impl Settlement {
             "a resource node cannot harvest the money good (GOLD); money is not a \
              physical good and never crosses the world→econ transfer seam"
         );
+        assert!(
+            !config_multigood_money_active(config)
+                || config.nodes.iter().any(|spec| spec.good == WOOD),
+            "active multigood_money requires a WOOD resource node"
+        );
         let dynamics = config.dynamics;
         // The need→good mapping. A plain settlement uses the lab default
         // (hunger ↔ FOOD). The G3a chain and the G3b emergent config make **bread
@@ -4882,11 +4888,12 @@ impl Settlement {
         // so the gatherer node assignment stays the round-robin and every existing config is
         // byte-identical.
         let woodcutter_node = if config_multigood_money_active(config) {
-            config
+            let wood_index = config
                 .nodes
                 .iter()
                 .position(|spec| spec.good == WOOD)
-                .map(|i| node_ids[i])
+                .expect("active multigood_money requires a WOOD resource node");
+            Some(node_ids[wood_index])
         } else {
             None
         };
@@ -15403,6 +15410,14 @@ mod tests {
     fn generate_rejects_gatherers_without_nodes() {
         let mut config = SettlementConfig::viable();
         config.nodes.clear();
+        let _ = Settlement::generate(1, &config);
+    }
+
+    #[test]
+    #[should_panic(expected = "active multigood_money requires a WOOD resource node")]
+    fn generate_rejects_active_multigood_without_wood_node() {
+        let mut config = SettlementConfig::frontier_multigood();
+        config.nodes.retain(|spec| spec.good != WOOD);
         let _ = Settlement::generate(1, &config);
     }
 
