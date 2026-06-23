@@ -2180,7 +2180,66 @@ g5a/g5b/coemergence emergence + the demographic `lineages` + the `g4a_death` gol
 the new cycle goods/recipes/vocations/scenario are gated, the derived accessor is read-only, the
 round-trip ledger is runtime-only.
 
-- [x] viewer: the `cycle` scenario (`cargo run -p viewer -- run cycle --ticks 3000`)
+- [x] viewer: the S19 deadlock control, kept viewable as `cycle-deadlock`
+      (`cargo run -p viewer -- run cycle-deadlock --ticks 3000`) — SALT leads but never promotes. The
+      `cycle` scenario itself now runs the S20 cleared cycle (below).
+
+## Status: S20 (the two-lane bilateral medium order book — the deadlock resolved) — complete
+
+S19 isolated the exact barrier: SALT **wins** the saleability-leader race (the cycle goods are bad direct
+media) but **never promotes**, because the **one-live-offer-per-agent** book plus the indirect generator
+*replacing* an agent's direct SALT-spend offer with an indirect SALT-receive offer left the book full of
+"give output → SALT" and missing the complementary "give SALT → input" side — the medium could not
+round-trip, so indirect exchange never cleared. S20 replaces only that crippled barter institution with a
+**minimally realistic bilateral order book: two lanes per agent**, behind the default-off
+`multi_offer_medium` flag — per `docs/impl-two-lane-clearing.md`:
+
+- [x] **S20.1 — the two-lane capability (explicit lanes) + a Society-level microtest.** A gated
+      `multi_offer_medium` flag, threaded like `v2_enabled` (scenario → `try_from_scenario` → Society
+      field). In the gated path each agent posts two distinct explicit lanes: a **spend** lane
+      (`give SALT → a non-leader want`, `DirectWant`) and a **sell-for-medium** lane
+      (`give a surplus → SALT`, `IndirectFor{target}`). The sell lane is posted ADDITIVELY (it never
+      cancels the spend lane — that cancel was the S19 deadlock); cancel/replace touches only same-lane
+      offers; at most one of each lane per agent. `barter.rs`, the reservations, and `clear_matches` are
+      byte-for-byte unchanged (the book already holds N offers/agent, reserves per give-good, clears
+      pairwise). The microtest lives at the **Society** level (the cap is a Society offer-generation
+      policy, not a `BarterBook` property): 3 agents / 3 goods / SALT the provisional leader — with the
+      flag off no indirect SALT trade clears (the S19 deadlock at the unit level), with it on both lanes
+      post, pairwise SALT trades clear, and `IndirectFor` acceptances record.
+- [x] **S20.2 — wired into the cycle + the bilateral round-trip.** `frontier_cycle` (S19) +
+      `multi_offer_medium`: the seeded SALT round-trips the ring bilaterally via the medium. With the flag
+      on the round-trip ledger is material (`accepted > 0` AND `spent > 0`), `indirect_target_goods(SALT)`
+      reaches `{X, Y, Z}`, and every pre-promotion cycle-input acquisition has SALT on one side (no direct
+      X/Y/Z barter); flag off → the S19 deadlock (the load-bearing control).
+- [x] **S20.3 — the emergence scenario + DoD.** `frontier_cycle_cleared` (the `cycle` scenario, flag on);
+      the `sim/tests/two_lane_clearing.rs` suite (9 tests: determinism, the canonical-byte regression,
+      promotion, the bilateral round-trip, the pairwise-only authenticity tripwire, conservation, the
+      four load-bearing controls, and the goldens).
+
+**Does SALT now emerge as money? YES — it PROMOTES.** Under the **unchanged strong-bar gate**, SALT leads
+first (as in S19) then promotes: `current_money_good() == Some(SALT)`, `medium_want_qty == 0`. The
+medium genuinely intermediates — the round-trip ledger shows `accepted > 0` AND `spent > 0` (SALT
+accepted as `IndirectFor{input}` is later spent on that input), `indirect_target_goods(SALT) ⊇ {X, Y, Z}`,
+and production continues post-promotion on market-acquired inputs. Authenticity holds: `clear_matches`
+stays strictly **pairwise** (two-party swaps only — no ring/clearing-house matcher), and every
+pre-promotion cycle-input acquisition has SALT on one side, so money — not a multilateral clearer — does
+the work. The four controls confirm the medium is load-bearing: flag off → the S19 deadlock; no SALT seed
+→ no clearing; `allow_indirect_acceptance = false` → no promotion; SALT removed from candidates → no
+bridge. This is **endogenous token money in a produced exchange cycle** — emergence needs both a
+saleability lead AND a clearing institution that lets the medium round-trip.
+
+**Honest scope (unchanged from S19).** Survival is still isolated off-market via the hearth scaffold and
+the input loop is still closed — S20 is one-variable surgery on the barter institution, NOT a
+scaffold-free full colony. What it earns is the clean attribution: with everything else held from S19, a
+promotion attributes solely to the richer bilateral exchange institution.
+
+All additive/gated: with `multi_offer_medium` off the S5–S19 scenarios + the six econ +
+g5a/g5b/coemergence emergence + the demographic `lineages` + the `g4a_death` goldens are byte-identical;
+the flag is carried in `canonical_bytes` with a regression so off → byte-identical; `barter.rs` and
+`clear_matches` are byte-for-byte unchanged.
+
+- [x] viewer: the cleared `cycle` scenario (`cargo run -p viewer -- run cycle --ticks 3000`) — SALT
+      promotes; the S19 control remains as `cycle-deadlock`.
 
 ## Build and test
 
