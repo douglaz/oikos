@@ -896,6 +896,17 @@ pub struct ChainConfig {
     /// special medium want — Base Fact 7). Off keeps the S15 path exactly, so every
     /// existing config and its goldens are byte-identical.
     pub cultivation_sells_surplus: bool,
+    /// S18 — **money from a produced MULTI-GOOD economy** (default `false`, byte-identical
+    /// when off). When `true` *and* the money-from-produced-bread path is active, the
+    /// non-lineage `Gatherer`s (the woodcutter role) are routed to the **WOOD node** at
+    /// generation instead of round-robin over `config.nodes` — so with both a grain node
+    /// (the cultivators' input) and a WOOD node present, grain never draws the woodcutters
+    /// off into a third surplus and WOOD becomes a clean, market-supplied second produced
+    /// good. The flag also turns on the runtime-only multi-good instrumentation (the WOOD
+    /// source bound + the pending-indirect-SALT round-trip ledger), which is diagnostic and
+    /// NOT digested. Off keeps the S16 path exactly, so every existing config and its
+    /// goldens are byte-identical. Composes strictly on `cultivation_sells_surplus`.
+    pub multigood_money: bool,
     /// EXPERIMENTAL (capital-advance probe): when `true` *and* money has emerged,
     /// each econ tick a conserved working-capital advance moves real money from
     /// the richest saver to any cashless active chain producer (Miller/Baker), so
@@ -1184,6 +1195,9 @@ impl ChainConfig {
             cultivate_patience: 4,
             // S16 off by default: no buy/sell split, no provenance ledger — byte-identical.
             cultivation_sells_surplus: false,
+            // S18 off by default: no woodcutter routing, no multi-good instrumentation —
+            // byte-identical.
+            multigood_money: false,
             capital_advance: false,
             perishable_decay_bps: 0,
             subsistence_advance: false,
@@ -1274,6 +1288,9 @@ impl ChainConfig {
             cultivate_patience: 4,
             // S16 off by default: no buy/sell split, no provenance ledger — byte-identical.
             cultivation_sells_surplus: false,
+            // S18 off by default: no woodcutter routing, no multi-good instrumentation —
+            // byte-identical.
+            multigood_money: false,
             capital_advance: false,
             perishable_decay_bps: 0,
             subsistence_advance: false,
@@ -3403,6 +3420,73 @@ impl SettlementConfig {
         cfg
     }
 
+    /// S18 — **money from a produced MULTI-GOOD economy** (the deepest milestone; closes the
+    /// S16 reframing finding). S16 proved produced bread can supply a market but SALT never
+    /// monetized: with ONE produced good every bread↔SALT trade was DIRECT, so SALT accrued
+    /// ZERO indirect-exchange breadth. S18 supplies a real **division of labor** with TWO
+    /// produced/gathered goods and **role-separated cross-demand** — bread CULTIVATORS (sell
+    /// bread, want WOOD) ⇄ WOODCUTTERS (sell WOOD, want bread) — so each accepts SALT as a
+    /// MEANS to the OTHER good (`IndirectFor{target}`), SALT round-trips as the intermediary,
+    /// and the two-sided indirect breadth `{bread, WOOD}` can cross the strong-bar gate.
+    ///
+    /// Derived from [`Self::frontier_money_from_cultivation`] (never mutated structurally),
+    /// it composes the THREE roles: the SALT-anchor consumers (the inherited non-lineage
+    /// `consumer_medium_endowment` holders, buy BOTH bread and WOOD), the bread CULTIVATORS
+    /// (the inherited lineages, `cultivation_sells_surplus` + `own_use_cultivation`, want
+    /// WOOD/warmth), and the WOODCUTTERS (non-lineage `Gatherer`s producing + selling WOOD,
+    /// wanting bread/food). The composed changes: (1) **re-add the WOOD node** S16 dropped —
+    /// with role separation WOOD no longer preempts bread, so a real WOOD market forms;
+    /// (2) **the woodcutter group** (`gatherers`), pinned to the WOOD node by the
+    /// `multigood_money` seam (NOT the round-robin, so grain never draws them off into a
+    /// third surplus); (3) **WOOD market-supplied AND provenance-clean** — `wood_provision =
+    /// 0` (no mint) AND every initial WOOD buffer zeroed (`starting_wood`, `wood_buffer`,
+    /// `consumer_wood_buffer`, the plain endowments), so traded WOOD can ONLY come from
+    /// node-gathering (`endowment[WOOD] == 0`). Both food (own-labor) AND WOOD mints are now
+    /// off. Mortality stays OFF (proven S17; a robustness test later). Each role's only
+    /// SURPLUS is its produced good (no `post_first_direct_barter_offer` preemption). With
+    /// `multigood_money` reverted it is byte-identical to `frontier_money_from_cultivation`.
+    pub fn frontier_multigood() -> Self {
+        let mut cfg = Self::frontier_money_from_cultivation();
+        // Re-add the WOOD node S16 dropped. Generous flow (the inherited 8000/64) so the WOOD
+        // supply is never the bottleneck — the woodcutters always have WOOD to sell, and the
+        // economic question is the monetization, not a WOOD scarcity race.
+        cfg.nodes.push(NodeSpec {
+            good: WOOD,
+            pos: Pos::new(3, 0),
+            stock: 8_000,
+            regen: 64,
+            cap: 8_000,
+        });
+        // The woodcutter group: non-lineage `Gatherer`s. The `multigood_money` flag routes
+        // them to the WOOD node (Codex P1b) instead of the round-robin over `config.nodes`,
+        // so grain (the cultivators' input) never draws them off into a third surplus. With
+        // the buy/sell split on (inherited from S16) they do NOT forage/cultivate — their
+        // only surplus is the WOOD they gather, and their only unsatisfied want is bread.
+        cfg.gatherers = 6;
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.multigood_money = true;
+            // WOOD must be provenance-clean (Codex P1a): zero every seeded WOOD buffer so the
+            // only WOOD that can ever be traded was gathered at the node. The chain buffers
+            // seed the non-lineage chain colonists (the 6 consumers + the woodcutters).
+            chain.wood_buffer = 0;
+            chain.consumer_wood_buffer = 0;
+        }
+        // The plain (non-chain) WOOD endowments — unused on the chain path, zeroed for a
+        // consistent provenance-clean read.
+        cfg.gatherer_wood_buffer = 0;
+        cfg.consumer_wood_endowment = 0;
+        // `wood_provision = 0` (no per-tick WOOD mint, was 1 in S16) and `starting_wood = 0`
+        // (no founder WOOD seed): the cultivators are genuinely WOOD-short and must BUY WOOD,
+        // and no minted/buffered WOOD can ever reach the market. The WOOD mint is now off too.
+        if let Some(demo) = cfg.demography.as_mut() {
+            for household in &mut demo.households {
+                household.wood_provision = 0;
+                household.starting_wood = 0;
+            }
+        }
+        cfg
+    }
+
     /// S17 — **mortality** (the Malthusian positive check): the S15
     /// [`Self::frontier_cultivation`] colony with starvation death turned back on at the
     /// **principled** lab-default threshold `hunger_critical = need_max` (the others keep
@@ -3904,6 +3988,10 @@ pub struct Settlement {
     /// while [`Self::cultivation_sells_surplus_active`] holds; an empty default ledger
     /// otherwise, so every pre-S16 config keeps its identity and is byte-identical.
     bread_provenance: BreadProvenance,
+    /// S18: the runtime-only multi-good money instrumentation (see [`MultigoodMoney`]).
+    /// Maintained only while [`Self::multigood_money_active`] holds; an empty default
+    /// otherwise. NOT in `canonical_bytes`, so it shifts no digest (byte-identical goldens).
+    multigood: MultigoodMoney,
     econ_tick: u64,
     last_report: EconTickReport,
     /// The settlement **commons** (G4a real death): the conserved sink that holds a
@@ -4159,6 +4247,10 @@ struct ChainRuntime {
     /// `false` for every existing config, so the buy/sell split and the provenance ledger
     /// are inert and the run is byte-identical.
     cultivation_sells_surplus: bool,
+    /// S18: the money-from-a-multi-good-economy gate (see [`ChainConfig::multigood_money`]).
+    /// `false` for every existing config, so the woodcutter routing and the runtime-only
+    /// instrumentation are inert and the run is byte-identical.
+    multigood_money: bool,
     /// S6: the productive-re-entry phase gate + hysteresis thresholds (see
     /// [`ChainConfig::productive_reentry`]). `false`/unused for every existing config.
     productive_reentry: bool,
@@ -4334,6 +4426,23 @@ impl BreadProvenance {
     fn total_held(&self) -> u64 {
         self.produced.values().copied().sum()
     }
+}
+
+/// S18: runtime-only multi-good money instrumentation — NOT serialized into
+/// `canonical_bytes` (diagnostic/proof state, like S17's `starvation_deaths_total`), so it
+/// shifts no digest and every existing golden is byte-identical. Maintained only while
+/// [`Settlement::multigood_money_active`] holds; the empty default otherwise.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct MultigoodMoney {
+    /// Cumulative WOOD relocated node→econ (the gather bound for traded WOOD). With every
+    /// WOOD buffer + the WOOD mint zeroed, all WOOD enters the economy through this haul,
+    /// so the traded WOOD volume can never exceed it — the WOOD provenance bound (Codex
+    /// P1a), the WOOD analogue of the produced-bread provenance ledger.
+    wood_gathered: u64,
+    /// Cumulative WOOD↔medium (SALT) trade volume, and the pre-promotion share (frozen at
+    /// the promotion tick, inclusive) — the WOOD leg of the indirect exchange.
+    wood_for_salt: u64,
+    pre_promotion_wood_for_salt: u64,
 }
 
 impl Settlement {
@@ -4680,6 +4789,20 @@ impl Settlement {
         // in G2b and every existing config and golden is byte-identical. World
         // `AgentId`s match econ `AgentId`s by construction (assigned in this order).
         let colonist_id_base = num_traders as u64;
+        // S18: the woodcutter→WOOD-node seam. With the multi-good money path on, every
+        // non-lineage gatherer is pinned to the WOOD node (the lowest-id WOOD-yielding node
+        // in `config.nodes`, matched into `node_ids` by build order); `None` off the flag,
+        // so the gatherer node assignment stays the round-robin and every existing config is
+        // byte-identical.
+        let woodcutter_node = if config_multigood_money_active(config) {
+            config
+                .nodes
+                .iter()
+                .position(|spec| spec.good == WOOD)
+                .map(|i| node_ids[i])
+        } else {
+            None
+        };
         for index in 0..population {
             let id = AgentId(colonist_id_base + index as u64);
             // World agent for every colonist (consumers idle at the exchange,
@@ -4707,7 +4830,15 @@ impl Settlement {
                     None,
                 )
             } else if index < consumers + gatherers {
-                let node = node_ids[(index - consumers) % node_ids.len()];
+                // S18: with the multi-good money path on, the non-lineage gatherers are the
+                // WOODCUTTER role — pinned to the WOOD node (Codex P1b) instead of the
+                // round-robin over `config.nodes`. With both a grain node (the cultivators'
+                // input) and a WOOD node present, the round-robin would split the
+                // woodcutters across grain and WOOD, drawing some off into a third surplus;
+                // routing them all to WOOD keeps each role's only surplus its produced good.
+                // Off the flag the assignment is exactly the round-robin, byte-identical.
+                let node = woodcutter_node
+                    .unwrap_or_else(|| node_ids[(index - consumers) % node_ids.len()]);
                 (
                     Vocation::Gatherer,
                     Some(node),
@@ -5244,6 +5375,7 @@ impl Settlement {
                 cultivate_consume: chain.cultivate_consume,
                 cultivate_patience: chain.cultivate_patience,
                 cultivation_sells_surplus: chain.cultivation_sells_surplus,
+                multigood_money: chain.multigood_money,
                 productive_reentry: chain.productive_reentry,
                 reentry_hunger_in: chain.reentry_hunger_in,
                 reentry_hunger_out: chain.reentry_hunger_out,
@@ -5290,6 +5422,7 @@ impl Settlement {
             peak_pre_promotion_hunger: 0,
             critical_ticks_pre_promotion: 0,
             bread_provenance: BreadProvenance::default(),
+            multigood: MultigoodMoney::default(),
             econ_tick: 0,
             last_report: EconTickReport::default(),
             commons_gold: Gold::ZERO,
@@ -5468,6 +5601,7 @@ impl Settlement {
             peak_pre_promotion_hunger: 0,
             critical_ticks_pre_promotion: 0,
             bread_provenance: BreadProvenance::default(),
+            multigood: MultigoodMoney::default(),
             econ_tick: 0,
             last_report: EconTickReport::default(),
             commons_gold: Gold::ZERO,
@@ -5553,6 +5687,13 @@ impl Settlement {
         // of a freed id is a defensive backstop, not a live path.
         self.record_pending_deposits(fast.deposited);
         report.transferred = self.transfer_pending_deposits();
+        // S18: accumulate the WOOD relocated node→econ this tick — the provenance bound for
+        // traded WOOD (with every WOOD buffer + the mint zeroed, all WOOD enters here). A
+        // no-op off the multi-good path; the counter is runtime-only (not digested).
+        if self.multigood_money_active() {
+            let gathered = report.transferred.get(&WOOD).copied().unwrap_or(0);
+            self.multigood.wood_gathered = self.multigood.wood_gathered.saturating_add(gathered);
+        }
 
         // ---- 3. NEEDS + real death (G4a): settle each starvation death's estate to
         // the household heir (G4b) or the commons (G4a fallback), free its arena
@@ -5746,6 +5887,11 @@ impl Settlement {
             provenance_spot_trades_start,
             was_pre_promotion,
         );
+
+        // ---- 5b-ter. MULTI-GOOD MONEY INSTRUMENTATION (S18): trace this tick's barter
+        // trades for the WOOD↔medium leg (the WOOD provenance bound). Runtime-only (not
+        // digested), a no-op off the multi-good path.
+        self.run_multigood_instrumentation(provenance_barter_trades_start, was_pre_promotion);
 
         // ---- 5c. IN-KIND INPUT ADVANCE (EXPERIMENT): a capitalist buys each
         // active producer's recipe input in kind from the richest holder and
@@ -9217,6 +9363,18 @@ impl Settlement {
             .is_some_and(chain_runtime_cultivation_sells_surplus_active)
     }
 
+    /// S18: whether the **money-from-a-multi-good-economy** path is active this tick — the
+    /// `multigood_money` flag is on AND the S16 money-from-produced-bread path is active.
+    /// When this holds, the woodcutter→WOOD-node routing has fired at generation and the
+    /// runtime-only multi-good instrumentation (the WOOD source bound + the
+    /// pending-indirect-SALT round-trip ledger) is maintained. Off (every existing config),
+    /// all of it is inert and the run is byte-identical.
+    fn multigood_money_active(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(chain_runtime_multigood_money_active)
+    }
+
     /// S16: whether the produced-bread provenance ledger is maintained this tick — exactly
     /// the money-from-produced-bread path. Off (every existing config), the ledger stays the
     /// empty default, so no hook fires and the run is byte-identical.
@@ -9344,6 +9502,42 @@ impl Settlement {
             "bread provenance ledger broke at econ tick {}",
             self.econ_tick
         );
+    }
+
+    /// S18: the multi-good money instrumentation pass — runs right after the bread
+    /// provenance market pass, reading THIS tick's barter trades (the suffix past
+    /// `barter_trades_start`). It accumulates the WOOD↔medium (SALT) trade volume (the WOOD
+    /// leg of the indirect exchange, split pre/post promotion) — bounded by `wood_gathered`,
+    /// the WOOD provenance proof. Runtime-only (not digested); a no-op off the multi-good path.
+    fn run_multigood_instrumentation(
+        &mut self,
+        barter_trades_start: usize,
+        was_pre_promotion: bool,
+    ) {
+        if !self.multigood_money_active() {
+            return;
+        }
+        let Some((medium, _)) = self.barter_medium else {
+            return;
+        };
+        for index in barter_trades_start..self.society.barter_trades.len() {
+            let trade = &self.society.barter_trades[index];
+            let qty = u64::from(trade.qty);
+            // The WOOD leg: a WOOD↔medium swap (either side gives WOOD for the medium). With
+            // every WOOD buffer + the mint zeroed, the WOOD here was gathered (bounded by
+            // `wood_gathered`) — the provenance proof for the traded WOOD.
+            if (trade.a_gives == WOOD && trade.b_gives == medium)
+                || (trade.a_gives == medium && trade.b_gives == WOOD)
+            {
+                self.multigood.wood_for_salt = self.multigood.wood_for_salt.saturating_add(qty);
+                if was_pre_promotion {
+                    self.multigood.pre_promotion_wood_for_salt = self
+                        .multigood
+                        .pre_promotion_wood_for_salt
+                        .saturating_add(qty);
+                }
+            }
+        }
     }
 
     /// S16: the provenance conservation receipt. (1) Global: produced bread credited equals
@@ -10396,6 +10590,13 @@ impl Settlement {
         self.node_for_good(grain)
     }
 
+    /// S18: the resource node that yields WOOD (the woodcutters' gathered good), or `None`
+    /// (no WOOD node). The acceptance suite compares [`Self::node_of`] against it to prove
+    /// the woodcutters are pinned to the WOOD node, not split onto grain.
+    pub fn wood_node(&self) -> Option<NodeId> {
+        self.node_for_good(WOOD)
+    }
+
     /// S12: the FORAGE node — the [`Task::GoForage`] target — or `None` when own-labor
     /// subsistence is off. The acceptance suite compares a forager's world task against
     /// `Task::GoForage(forage_node, _)`.
@@ -11014,6 +11215,28 @@ impl Settlement {
         self.bread_provenance.total_held()
     }
 
+    /// S18 (read-only): the cumulative WOOD↔medium (SALT) trade volume — the WOOD leg of the
+    /// indirect exchange (the woodcutters selling WOOD for the medium). `0` off the
+    /// multi-good money path. Reads only.
+    pub fn wood_for_salt_volume(&self) -> u64 {
+        self.multigood.wood_for_salt
+    }
+
+    /// S18 (read-only): the same WOOD↔medium volume accumulated only over PRE-promotion
+    /// ticks (frozen at the promotion tick, inclusive) — the WOOD volume that drove (or
+    /// failed to drive) the promotion. `0` off the path. Reads only.
+    pub fn pre_promotion_wood_for_salt_volume(&self) -> u64 {
+        self.multigood.pre_promotion_wood_for_salt
+    }
+
+    /// S18 (read-only): the cumulative WOOD relocated node→econ over the run — the gather
+    /// bound the traded WOOD can never exceed (with every WOOD buffer + the mint zeroed,
+    /// all WOOD enters here). The WOOD provenance proof: traded WOOD is gathered, not
+    /// minted. `0` off the path. Reads only.
+    pub fn wood_gathered_total(&self) -> u64 {
+        self.multigood.wood_gathered
+    }
+
     /// S16 (read-only): the provenance conservation accumulators `(credited, sunk)` —
     /// produced bread ever booked by a production event, and ever removed by a true sink
     /// (eaten/spoiled/estate→commons). `credited == sunk + produced_bread_held()`.
@@ -11243,6 +11466,15 @@ impl Settlement {
             // to the pre-S16 stream. (The per-agent provenance counters it maintains are
             // serialized with the colonist roster below.)
             if self.cultivation_sells_surplus_active() {
+                out.push(1);
+            }
+            // S18: the multi-good money gate routes the non-lineage gatherers (the
+            // woodcutters) to the WOOD node at generation — a real behavior switch in the
+            // colonist roster — so it is part of the future-behavior identity whenever it can
+            // run. Emitted only when on (the same gated-block discipline as S16 above), so a
+            // flag-off chain stays byte-identical to the pre-S18 stream. (The runtime-only
+            // multi-good instrumentation it also turns on is diagnostic and NOT digested.)
+            if self.multigood_money_active() {
                 out.push(1);
             }
             // The staple mapping steers the next needs/scale phase for *any* chain,
@@ -12096,6 +12328,25 @@ fn chain_runtime_own_use_cultivation_active(chain: &ChainRuntime) -> bool {
 /// byte-identical.
 fn chain_runtime_cultivation_sells_surplus_active(chain: &ChainRuntime) -> bool {
     chain.cultivation_sells_surplus && chain_runtime_own_use_cultivation_active(chain)
+}
+
+/// S18: money-from-a-multi-good-economy is active iff the flag is on AND the
+/// money-from-produced-bread path is active (it composes strictly on the S16 path). Off
+/// (every existing config) it is `false`, so the woodcutter routing and the runtime-only
+/// instrumentation never engage and the run is byte-identical.
+fn chain_runtime_multigood_money_active(chain: &ChainRuntime) -> bool {
+    chain.multigood_money && chain_runtime_cultivation_sells_surplus_active(chain)
+}
+
+/// S18: the generation-time analogue of [`Settlement::multigood_money_active`] (no `self`
+/// yet) — drives the woodcutter→WOOD-node routing in colonist generation. Off (every
+/// existing config), the gatherers keep their round-robin node assignment, byte-identical.
+fn config_multigood_money_active(config: &SettlementConfig) -> bool {
+    config.chain.as_ref().is_some_and(|chain| {
+        chain.multigood_money
+            && chain.cultivation_sells_surplus
+            && chain_config_own_use_cultivation_active(chain)
+    })
 }
 
 fn food_needed_to_reach_hunger(
@@ -16530,6 +16781,58 @@ mod tests {
             base.canonical_bytes(),
             Settlement::generate(7, &base_cfg).canonical_bytes(),
             "off the cultivation path the cultivation_sells_surplus flag must not steer the digest"
+        );
+    }
+
+    #[test]
+    fn canonical_bytes_include_multigood_money() {
+        // S18: the multi-good money gate routes the non-lineage gatherers (the woodcutters) to
+        // the WOOD node instead of round-robin, so a flag-on config must digest apart from the
+        // same config with the flag off.
+        let on = Settlement::generate(7, &SettlementConfig::frontier_multigood());
+        let mut off_cfg = SettlementConfig::frontier_multigood();
+        off_cfg.chain.as_mut().expect("chain").multigood_money = false;
+        let off = Settlement::generate(7, &off_cfg);
+        assert_ne!(
+            on.canonical_bytes(),
+            off.canonical_bytes(),
+            "the multigood_money flag must be part of the identity (the woodcutter routing)"
+        );
+
+        // Off the money-from-produced-bread path the flag is inert: it composes on
+        // `cultivation_sells_surplus`, so toggling it on a forage-only config must NOT split
+        // the digest — preserving the pre-S18 layout for every existing config.
+        let base = Settlement::generate(7, &SettlementConfig::frontier_forage_capacity());
+        let mut base_cfg = SettlementConfig::frontier_forage_capacity();
+        base_cfg.chain.as_mut().expect("chain").multigood_money = true;
+        assert_eq!(
+            base.canonical_bytes(),
+            Settlement::generate(7, &base_cfg).canonical_bytes(),
+            "off the money-from-produced-bread path the multigood_money flag must not steer the digest"
+        );
+    }
+
+    #[test]
+    fn canonical_bytes_exclude_multigood_instrumentation() {
+        // S18 (the digest tripwire): the multi-good money instrumentation (the WOOD source
+        // bound) is a runtime-only diagnostic — it must NEVER enter canonical_bytes, or it
+        // would shift the digest of the multi-good scenario. Mutating it leaves the bytes
+        // byte-identical.
+        let mut s = Settlement::generate(1, &SettlementConfig::frontier_multigood());
+        s.run(80); // exercise the WOOD haul so the counter is non-zero
+        assert!(
+            s.wood_gathered_total() > 0,
+            "the woodcutters must have gathered WOOD so the tripwire is non-vacuous"
+        );
+        let before = s.canonical_bytes();
+        s.multigood.wood_gathered = s.multigood.wood_gathered.wrapping_add(1);
+        s.multigood.wood_for_salt = s.multigood.wood_for_salt.wrapping_add(7);
+        s.multigood.pre_promotion_wood_for_salt =
+            s.multigood.pre_promotion_wood_for_salt.wrapping_add(3);
+        assert_eq!(
+            before,
+            s.canonical_bytes(),
+            "the multi-good instrumentation must NOT enter canonical_bytes (the digest tripwire)"
         );
     }
 
