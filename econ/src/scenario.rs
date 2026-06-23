@@ -1168,6 +1168,7 @@ fn menger_salt_money() -> MarketScenario {
             min_indirect_acceptor_agents: 0,
             min_indirect_target_goods: 0,
             allow_indirect_acceptance: true,
+            multi_offer_medium: false,
         }),
     }
 }
@@ -1277,6 +1278,7 @@ fn menger_gold_money() -> MarketScenario {
             min_indirect_acceptor_agents: 0,
             min_indirect_target_goods: 0,
             allow_indirect_acceptance: true,
+            multi_offer_medium: false,
         }),
     }
 }

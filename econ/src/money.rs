@@ -118,6 +118,11 @@ pub struct MengerianConfig {
     /// it cannot monetize. Does NOT lower the leader floor (that would disable
     /// leadership itself).
     pub allow_indirect_acceptance: bool,
+    /// S20 barter-institution gate: when a provisional leader exists, each agent may
+    /// carry one explicit spend lane (`leader -> target`) and one explicit sell lane
+    /// (`surplus -> leader`) at the same time. `false` preserves the legacy
+    /// one-live-offer Society policy exactly.
+    pub multi_offer_medium: bool,
 }
 
 impl Default for MengerianConfig {
@@ -135,6 +140,7 @@ impl Default for MengerianConfig {
             min_indirect_acceptor_agents: 0,
             min_indirect_target_goods: 0,
             allow_indirect_acceptance: true,
+            multi_offer_medium: false,
         }
     }
 }

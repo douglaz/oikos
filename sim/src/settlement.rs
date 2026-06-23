@@ -14878,6 +14878,9 @@ fn push_mengerian_config_bytes(out: &mut Vec<u8>, menger: &MengerianConfig) {
     out.extend_from_slice(&menger.min_indirect_acceptor_agents.to_le_bytes());
     out.extend_from_slice(&menger.min_indirect_target_goods.to_le_bytes());
     out.push(u8::from(menger.allow_indirect_acceptance));
+    if menger.multi_offer_medium {
+        out.push(1);
+    }
 }
 
 fn push_demography_config_bytes(out: &mut Vec<u8>, demo: &DemographyConfig) {

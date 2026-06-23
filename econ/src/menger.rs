@@ -499,6 +499,7 @@ mod tests {
             min_indirect_acceptor_agents: 0,
             min_indirect_target_goods: 0,
             allow_indirect_acceptance: true,
+            multi_offer_medium: false,
         });
 
         emergence.observe_trade(&trade(1, 2, FOOD, SALT));
@@ -523,6 +524,7 @@ mod tests {
             min_indirect_acceptor_agents: 0,
             min_indirect_target_goods: 0,
             allow_indirect_acceptance: true,
+            multi_offer_medium: false,
         };
         let mut tracker = SaleabilityTracker::new(config.candidate_goods.clone());
 
@@ -550,6 +552,7 @@ mod tests {
             min_indirect_acceptor_agents: 0,
             min_indirect_target_goods: 0,
             allow_indirect_acceptance: true,
+            multi_offer_medium: false,
         });
 
         emergence.observe_trade(&trade(1, 2, ORE, SALT));
@@ -576,6 +579,7 @@ mod tests {
             min_indirect_acceptor_agents: 0,
             min_indirect_target_goods: 0,
             allow_indirect_acceptance: true,
+            multi_offer_medium: false,
         });
 
         emergence.observe_trade(&trade(1, 2, ORE, SALT));
@@ -629,6 +633,7 @@ mod tests {
             min_indirect_acceptor_agents: 0,
             min_indirect_target_goods: 0,
             allow_indirect_acceptance: true,
+            multi_offer_medium: false,
         });
 
         // No barter yet: nothing latched.
@@ -707,6 +712,7 @@ mod tests {
             min_indirect_acceptor_agents: 2,
             min_indirect_target_goods: 2,
             allow_indirect_acceptance: true,
+            multi_offer_medium: false,
         });
 
         // Plenty of DIRECT SALT acceptances — SALT clearly leads, but the indirect
@@ -750,6 +756,7 @@ mod tests {
             min_indirect_acceptor_agents: 2,
             min_indirect_target_goods: 1,
             allow_indirect_acceptance: true,
+            multi_offer_medium: false,
         });
 
         // Agent 1 takes SALT indirectly many times against agent 2 — high volume, one
@@ -818,6 +825,7 @@ mod tests {
             min_indirect_acceptor_agents: 0,
             min_indirect_target_goods: 0,
             allow_indirect_acceptance: true,
+            multi_offer_medium: false,
         }
     }
 

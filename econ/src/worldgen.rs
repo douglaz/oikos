@@ -584,6 +584,7 @@ fn build_scenario(
         min_indirect_acceptor_agents: 0,
         min_indirect_target_goods: 0,
         allow_indirect_acceptance: true,
+        multi_offer_medium: false,
     };
 
     MarketScenario {
