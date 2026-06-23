@@ -2095,15 +2095,27 @@ scenario parameter `min_indirect_target_goods = 2`. Built, gated, conserving —
       `sim/tests/multigood_money.rs` suite pins determinism, role separation, WOOD provenance,
       conservation, controls, unchanged goldens, by-target breadth, and the round-trip guard.
 
-**Does money emerge from the two-produced-good economy? No — the principled failure.** The division of
-labor works too cleanly: cultivators want exactly what woodcutters produce, and woodcutters want
-exactly what cultivators produce, so the economy has a perfect double coincidence of wants and clears
-bread↔WOOD directly. WOOD and bread both out-accept SALT; SALT never becomes the provisional leader;
-`indirect_target_goods(SALT)` stays empty rather than reaching `{bread, WOOD}`; and the traced
-round-trip is `0/0` because SALT is never accepted as a means. This deepens S16: money is not created
-by "two produced goods" alone, but by exchange paths where agents need a more saleable intermediary to
-bridge absent double coincidence. The S9 strong-bar economy remains the contrast: with a broader
-non-coincident exchange field, SALT does promote and the round-trip guard becomes material.
+**Does money emerge from the two-produced-good economy? No — the principled failure (Codex-reviewed:
+PASS, no P0/P1).** The division of labor works too cleanly: cultivators want exactly what woodcutters
+produce, and woodcutters want exactly what cultivators produce, so the economy has a **perfect double
+coincidence of wants** and clears bread↔WOOD directly. WOOD and bread both out-accept SALT (WOOD
+dominates, >10×); SALT never becomes the provisional leader; `indirect_target_goods(SALT)` stays empty
+rather than reaching `{bread, WOOD}`; and the traced round-trip is `0/0` because SALT is never accepted
+as a means. This deepens S16: money is not created by "two produced goods" alone, but by exchange paths
+where agents need a more saleable intermediary to **bridge absent double coincidence** (the Menger/Jevons
+foundation) — a directly-useful necessity like WOOD out-competes a token whenever direct barter suffices.
+
+**Honest scope (narrowed, Codex P2).** This proves SALT does not emerge **in this produced two-good
+subsistence colony** (perfect double coincidence, WOOD the abundant universally-wanted necessity) — it
+does **not** prove durable-token money cannot emerge in *any* produced economy. The fair next test is a
+**different real structure, not "more SALT want"**: three-or-more final goods with **imperfect** double
+coincidence, or perishability / carrying-costs / transport frictions / physical saleability advantages
+that make a durable token genuinely more saleable than the necessities — a new research branch, not a
+tuning of this one. (The discipline held: `salt_direct_use` was NOT cranked to force SALT to win.) The
+S9 strong-bar economy is a *gate-works* control — it promotes SALT under the same machinery — but it
+also has a different (scaffolded, minted, broader) ecology, so it is not a clean one-variable contrast;
+the honest claim is that prior SALT emergence **depended on that scaffolded ecology**, not that
+"minted vs produced" is the lone difference.
 
 All additive/gated: with the `multigood` scenario absent, the S5-S17 scenarios + the six econ +
 g5a/g5b/coemergence emergence + the demographic `lineages` + the `g4a_death` goldens are
