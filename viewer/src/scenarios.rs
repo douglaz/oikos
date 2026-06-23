@@ -238,6 +238,12 @@ const SCENARIOS: &[Scenario] = &[
         build: build_cycle,
     },
     Scenario {
+        name: "cycle-deadlock",
+        description:
+            "S19 CONTROL: the same 3-good produced input loop WITHOUT the two-lane medium book (multi_offer_medium off). SALT wins the saleability-leader race but never promotes — the one-offer-per-agent book leaves it full of `give output → SALT` and missing the `give SALT → input` side, so the seeded medium cannot round-trip and indirect exchange never clears. The load-bearing deadlock that `cycle` (S20) resolves.",
+        build: build_cycle_deadlock,
+    },
+    Scenario {
         name: "millisats-1x",
         description:
             "EXPERIMENT: frontier at coarse (x1) money precision — the unit-starved baseline that freezes (~320 money units)",
@@ -477,6 +483,10 @@ fn build_multigood() -> SettlementConfig {
 
 fn build_cycle() -> SettlementConfig {
     SettlementConfig::frontier_cycle_cleared()
+}
+
+fn build_cycle_deadlock() -> SettlementConfig {
+    SettlementConfig::frontier_cycle()
 }
 
 fn build_millisats_1x() -> SettlementConfig {
