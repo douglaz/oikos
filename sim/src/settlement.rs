@@ -4444,9 +4444,12 @@ impl BreadProvenance {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct MultigoodMoney {
     /// Cumulative WOOD relocated node→econ (the gather bound for traded WOOD). With every
-    /// WOOD buffer + the WOOD mint zeroed, all WOOD enters the economy through this haul,
-    /// so the traded WOOD volume can never exceed it — the WOOD provenance bound (Codex
-    /// P1a), the WOOD analogue of the produced-bread provenance ledger.
+    /// WOOD buffer + the WOOD mint zeroed, all WOOD enters the economy through this haul, so
+    /// the total WOOD stock can never exceed it. The asserted bound is the WOOD↔medium leg:
+    /// `pre_promotion_wood_for_salt <= wood_gathered` — each gathered unit is sold to the
+    /// medium at most once because the buyer consumes it for warmth (no recirculation), so
+    /// the salt-leg volume cannot exceed the gather. The WOOD provenance bound (Codex P1a),
+    /// the WOOD analogue of the produced-bread provenance ledger.
     wood_gathered: u64,
     /// Cumulative WOOD↔medium (SALT) trade volume, and the pre-promotion share (frozen at
     /// the promotion tick, inclusive) — the WOOD leg of the indirect exchange.
@@ -9659,15 +9662,33 @@ impl Settlement {
                 }
             }
         }
-        // Post-promotion the medium IS money (SALT→gold at promotion) and the market clears in
-        // gold on the spot tape: a buyer acquiring its earmarked target with that money is the
-        // means role completing as money. Decrement pending on each spot purchase of a target
-        // (a no-op for a buyer with nothing earmarked), so SALT accepted-in-barter and spent-
-        // as-money still round-trips (otherwise a real monetization would read as hoarding).
+        // Post-promotion the barter medium IS the money good (the promotion promotes SALT
+        // itself) and the market clears on the spot tape. Two reads off each spot trade:
+        // (1) round-trip — a buyer acquiring its earmarked target with that money completes
+        //     the means role as money, so decrement pending on each spot purchase of a target
+        //     (a no-op for a buyer with nothing earmarked), else a real monetization would
+        //     read as hoarding;
+        // (2) the WOOD leg — a WOOD-for-money spot sale (the money good being the barter
+        //     medium) is the post-promotion continuation of the WOOD↔medium leg, so fold it
+        //     into the cumulative total, exactly as the bread ledger folds post-promotion
+        //     spot bread→medium sales. The pre-promotion share is frozen, so this only grows
+        //     the cumulative figure (spot trades clear only post-promotion).
+        let spot_medium = self.society.current_money_good();
         for index in spot_trades_start..self.society.trades.len() {
-            let trade = &self.society.trades[index];
-            self.multigood
-                .spend_on_target(trade.buyer, trade.good, u64::from(trade.qty));
+            let (buyer, good, qty) = {
+                let trade = &self.society.trades[index];
+                (trade.buyer, trade.good, u64::from(trade.qty))
+            };
+            self.multigood.spend_on_target(buyer, good, qty);
+            if multigood && good == WOOD && spot_medium == Some(medium) {
+                self.multigood.wood_for_salt = self.multigood.wood_for_salt.saturating_add(qty);
+                if was_pre_promotion {
+                    self.multigood.pre_promotion_wood_for_salt = self
+                        .multigood
+                        .pre_promotion_wood_for_salt
+                        .saturating_add(qty);
+                }
+            }
         }
     }
 
@@ -11399,9 +11420,10 @@ impl Settlement {
     }
 
     /// S18 (read-only): the cumulative WOOD relocated node→econ over the run — the gather
-    /// bound the traded WOOD can never exceed (with every WOOD buffer + the mint zeroed,
-    /// all WOOD enters here). The WOOD provenance proof: traded WOOD is gathered, not
-    /// minted. `0` off the path. Reads only.
+    /// bound the total WOOD stock can never exceed (with every WOOD buffer + the mint zeroed,
+    /// all WOOD enters here), so the salt-leg volume `pre_promotion_wood_for_salt` cannot
+    /// exceed it (the buyer burns purchased WOOD for warmth — no recirculation). The WOOD
+    /// provenance proof: traded WOOD is gathered, not minted. `0` off the path. Reads only.
     pub fn wood_gathered_total(&self) -> u64 {
         self.multigood.wood_gathered
     }
