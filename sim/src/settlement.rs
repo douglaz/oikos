@@ -3641,6 +3641,10 @@ impl SettlementConfig {
 
         let mut chain = ChainConfig::three_good_cycle();
         chain.project_input_bids = true;
+        // For cycle producers this is an ON/OFF gate, not a quantity: `run_producer_subsistence`
+        // early-returns when it is 0, then overrides the per-good target to
+        // `CYCLE_PRODUCER_SUBSISTENCE_CAP` (=4). So `1` means "subsistence on"; cycle producers
+        // get up to the cap, not 1 unit.
         chain.producer_subsistence = 1;
         let (x, y, z) = chain
             .content
@@ -7955,11 +7959,21 @@ impl Settlement {
                 if good == staple && !mint_staple {
                     continue;
                 }
+                // S19 cycle producers: top subsistence up only to a low cap (well below
+                // `need_max` = 12), so a producer's SINGLE per-tick barter offer is freed to
+                // bid for its recipe input / the medium rather than reserved for survival —
+                // the off-market-survival discipline that keeps the cycle goods (not food/WOOD)
+                // the market goods. The cap is a disclosed parameter, NOT a tuned result: the
+                // anchor-density sweep shows the finding (SALT leads but indirect trades don't
+                // clear → no promotion) holds across densities regardless of this value.
+                const CYCLE_PRODUCER_SUBSISTENCE_CAP: u16 = 4;
                 let target = if is_cycle_producer {
                     let need = self.colonists[slot].need;
                     match good {
-                        g if g == staple => u32::from(need.hunger.min(4)),
-                        WOOD => u32::from(need.warmth.min(4)),
+                        g if g == staple => {
+                            u32::from(need.hunger.min(CYCLE_PRODUCER_SUBSISTENCE_CAP))
+                        }
+                        WOOD => u32::from(need.warmth.min(CYCLE_PRODUCER_SUBSISTENCE_CAP)),
                         _ => target,
                     }
                 } else {
