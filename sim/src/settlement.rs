@@ -14893,6 +14893,10 @@ fn push_mengerian_config_bytes(out: &mut Vec<u8>, menger: &MengerianConfig) {
     out.extend_from_slice(&menger.min_indirect_acceptor_agents.to_le_bytes());
     out.extend_from_slice(&menger.min_indirect_target_goods.to_le_bytes());
     out.push(u8::from(menger.allow_indirect_acceptance));
+    // S20 two-lane medium flag: it steers future ticks (whether agents post the
+    // spend + sell medium lanes), so it is part of the future-behaviour identity
+    // once set. Appended only when ON, so every flag-off Mengerian config (all the
+    // S5–S19 + econ + emergence goldens) keeps its exact prior byte layout.
     if menger.multi_offer_medium {
         out.push(1);
     }
