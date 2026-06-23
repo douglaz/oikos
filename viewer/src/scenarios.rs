@@ -232,6 +232,12 @@ const SCENARIOS: &[Scenario] = &[
         build: build_multigood,
     },
     Scenario {
+        name: "cycle",
+        description:
+            "S19: IMPERFECT-DOUBLE-COINCIDENCE 3-GOOD CYCLE — A consumes Z→X, B consumes X→Y, C consumes Y→Z. X/Y/Z demand is derived only from producer-input wants, survival is hearth-isolated, and SALT is a neutral commodity seed plus heterogeneous direct-use anchor (no medium want, no designated money). FINDING: SALT can become the provisional leader at the disclosed period-4 density, but no IndirectFor trade clears, so indirect breadth stays empty and SALT does not promote.",
+        build: build_cycle,
+    },
+    Scenario {
         name: "millisats-1x",
         description:
             "EXPERIMENT: frontier at coarse (x1) money precision — the unit-starved baseline that freezes (~320 money units)",
@@ -467,6 +473,10 @@ fn build_mortality() -> SettlementConfig {
 
 fn build_multigood() -> SettlementConfig {
     SettlementConfig::frontier_multigood()
+}
+
+fn build_cycle() -> SettlementConfig {
+    SettlementConfig::frontier_cycle()
 }
 
 fn build_millisats_1x() -> SettlementConfig {

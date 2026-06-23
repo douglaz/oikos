@@ -3610,6 +3610,62 @@ impl SettlementConfig {
         cfg
     }
 
+    /// S19 — **imperfect-double-coincidence cycle money**: an artificial produced
+    /// 3-good input loop with no pairwise double coincidence. Role A consumes Z and
+    /// produces X, B consumes X and produces Y, C consumes Y and produces Z. X/Y/Z are
+    /// demanded only as producer inputs (`Horizon::Next`), not as consumption goods.
+    ///
+    /// This is a closed exchange-topology test, not a scaffold-free economy: there is
+    /// no terminal consumer, and survival is isolated by the producer hearth. SALT is a
+    /// neutral commodity stock seeded to the cycle producers, with no medium want and
+    /// no designated money. The heterogeneous direct-use anchor is period 4, the best
+    /// disclosed density from the pinned sweep: SALT becomes the provisional leader but
+    /// the run remains a finding because no indirect `IndirectFor` trade clears, so the
+    /// strong-bar breadth and round-trip stay empty.
+    pub fn frontier_cycle() -> Self {
+        let mut cfg = Self::viable();
+        cfg.width = 4;
+        cfg.height = 1;
+        cfg.exchange = Pos::new(0, 0);
+        cfg.nodes.clear();
+        cfg.gatherers = 0;
+        cfg.consumers = 0;
+        cfg.starting_gold_gatherer = 0;
+        cfg.starting_gold_consumer = 0;
+        cfg.gatherer_food_buffer = 0;
+        cfg.gatherer_wood_buffer = 0;
+        cfg.consumer_food_buffer = 0;
+        cfg.consumer_wood_endowment = 0;
+        cfg.demography = None;
+        cfg.m3 = false;
+
+        let mut chain = ChainConfig::three_good_cycle();
+        chain.project_input_bids = true;
+        chain.producer_subsistence = 1;
+        let (x, y, z) = chain
+            .content
+            .cycle_goods()
+            .expect("the cycle content carries X/Y/Z");
+        cfg.chain = Some(chain);
+        cfg.barter = Some(BarterConfig {
+            menger: MengerianConfig {
+                candidate_goods: vec![x, y, z, SALT],
+                min_indirect_acceptances: 12,
+                min_indirect_acceptor_agents: 3,
+                min_indirect_target_goods: 3,
+                ..MengerianConfig::default()
+            },
+            medium_good: SALT,
+            medium_want_qty: 0,
+            gatherer_medium_endowment: 0,
+            consumer_medium_endowment: 0,
+            cycle_producer_medium_endowment: 12,
+            salt_direct_use_qty: 1,
+            salt_direct_use_period: 4,
+        });
+        cfg
+    }
+
     /// S17 — **mortality** (the Malthusian positive check): the S15
     /// [`Self::frontier_cultivation`] colony with starvation death turned back on at the
     /// **principled** lab-default threshold `hunger_critical = need_max` (the others keep

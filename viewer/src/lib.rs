@@ -489,6 +489,18 @@ fn population_label(settlement: &Settlement) -> String {
     if confectioners > 0 {
         parts.push(format!("{confectioners} confectioners"));
     }
+    let cycle_a = settlement.living_count(Vocation::CycleA);
+    if cycle_a > 0 {
+        parts.push(format!("{cycle_a} cycle-A"));
+    }
+    let cycle_b = settlement.living_count(Vocation::CycleB);
+    if cycle_b > 0 {
+        parts.push(format!("{cycle_b} cycle-B"));
+    }
+    let cycle_c = settlement.living_count(Vocation::CycleC);
+    if cycle_c > 0 {
+        parts.push(format!("{cycle_c} cycle-C"));
+    }
     format!("{} ({})", settlement.living_total(), parts.join(", "))
 }
 

@@ -13,8 +13,10 @@ use econ::barter::BarterReason;
 use econ::good::{GoodId, Horizon, FOOD, SALT, WOOD};
 use econ::money::MengerianConfig;
 use sim::{
-    BarterConfig, ChainConfig, DirectIndirectAcceptances, Settlement, SettlementConfig, Vocation,
+    BarterConfig, ChainConfig, DirectIndirectAcceptances, NodeSpec, Settlement, SettlementConfig,
+    Vocation,
 };
+use world::Pos;
 
 const S19_1_TICKS: u64 = 10;
 const S19_2_TICKS: u64 = 600;
@@ -78,19 +80,9 @@ fn s19_1_cycle_config() -> SettlementConfig {
 }
 
 fn cycle_money_config(period: u16) -> SettlementConfig {
-    let mut cfg = s19_1_cycle_config();
-    let goods = cycle_goods(&cfg);
+    let mut cfg = SettlementConfig::frontier_cycle();
     let barter = cfg.barter.as_mut().expect("barter overlay");
-    barter.cycle_producer_medium_endowment = 12;
-    barter.salt_direct_use_qty = 1;
     barter.salt_direct_use_period = period;
-    barter.menger = MengerianConfig {
-        candidate_goods: vec![goods.x, goods.y, goods.z, SALT],
-        min_indirect_acceptances: 12,
-        min_indirect_acceptor_agents: 3,
-        min_indirect_target_goods: 3,
-        ..MengerianConfig::default()
-    };
     cfg
 }
 
@@ -127,6 +119,21 @@ fn cycle_barter_trade_count(s: &Settlement, goods: CycleGoods) -> usize {
         .iter()
         .filter(|trade| cycle.contains(&trade.a_gives) && cycle.contains(&trade.b_gives))
         .count()
+}
+
+#[test]
+fn cycle_run_is_deterministic() {
+    let cfg = SettlementConfig::frontier_cycle();
+    let mut a = Settlement::generate(0xC0FFEE, &cfg);
+    let mut b = Settlement::generate(0xC0FFEE, &cfg);
+    a.run(S19_2_TICKS);
+    b.run(S19_2_TICKS);
+    assert_eq!(
+        a.canonical_bytes(),
+        b.canonical_bytes(),
+        "the cycle scenario must be byte-identical for the same seed and config"
+    );
+    assert_eq!(a.digest(), b.digest());
 }
 
 fn acceptance_split(s: &Settlement, good: GoodId) -> DirectIndirectAcceptances {
@@ -235,7 +242,7 @@ fn three_roles_produce_and_derive_input_demand() {
 
 #[test]
 fn no_pairwise_double_coincidence() {
-    let cfg = s19_1_cycle_config();
+    let cfg = SettlementConfig::frontier_cycle();
     let goods = cycle_goods(&cfg);
     let s = run_with_conservation(2, &cfg, S19_1_TICKS);
 
@@ -264,8 +271,8 @@ fn no_pairwise_double_coincidence() {
 
 #[test]
 fn survival_stays_off_market() {
-    let cfg = s19_1_cycle_config();
-    let s = run_with_conservation(3, &cfg, S19_1_TICKS);
+    let cfg = SettlementConfig::frontier_cycle();
+    let s = run_with_conservation(3, &cfg, S19_2_TICKS);
 
     assert_eq!(s.trade_volume_of(FOOD), 0);
     assert_eq!(s.trade_volume_of(WOOD), 0);
@@ -287,7 +294,7 @@ fn survival_stays_off_market() {
 
 #[test]
 fn cycle_conserves() {
-    let cfg = s19_1_cycle_config();
+    let cfg = SettlementConfig::frontier_cycle();
     let goods = cycle_goods(&cfg);
     let mut s = Settlement::generate(4, &cfg);
     for tick in 0..40 {
@@ -392,8 +399,8 @@ fn direct_indirect_saleability_split_is_derived() {
 }
 
 #[test]
-fn cycle_money_finding_no_indirect_round_trip_forms() {
-    let cfg = cycle_money_config(4);
+fn cycle_money_finding() {
+    let cfg = SettlementConfig::frontier_cycle();
     let s = run_with_conservation(7, &cfg, S19_2_TICKS);
 
     assert_eq!(s.saleability_leader(), Some(SALT));
@@ -464,4 +471,123 @@ fn anchor_density_sweep_classifies_the_outcome() {
             );
         }
     }
+}
+
+#[test]
+fn controls_close_the_finding() {
+    let run = |cfg: &SettlementConfig| run_with_conservation(1, cfg, S19_2_TICKS);
+
+    let two_good = run(&SettlementConfig::frontier_multigood());
+    assert_eq!(
+        two_good.current_money_good(),
+        None,
+        "the two-good perfect-coincidence control must not promote"
+    );
+
+    let mut no_indirect = SettlementConfig::frontier_cycle();
+    no_indirect
+        .barter
+        .as_mut()
+        .expect("barter overlay")
+        .menger
+        .allow_indirect_acceptance = false;
+    let no_indirect = run(&no_indirect);
+    assert_eq!(
+        no_indirect.current_money_good(),
+        None,
+        "disabling indirect acceptance must keep the cycle from promoting"
+    );
+
+    let mut no_anchor = SettlementConfig::frontier_cycle();
+    let barter = no_anchor.barter.as_mut().expect("barter overlay");
+    barter.salt_direct_use_qty = 0;
+    barter.salt_direct_use_period = 0;
+    let no_anchor = run(&no_anchor);
+    assert_ne!(
+        no_anchor.saleability_leader(),
+        Some(SALT),
+        "without the direct-use anchor SALT must not lead"
+    );
+    assert_eq!(acceptance_split(&no_anchor, SALT).total, 0);
+
+    let mut on_market_survival = SettlementConfig::frontier_cycle();
+    on_market_survival
+        .chain
+        .as_mut()
+        .expect("cycle chain")
+        .producer_subsistence = 0;
+    on_market_survival.nodes = vec![
+        NodeSpec {
+            good: FOOD,
+            pos: Pos::new(1, 0),
+            stock: 8_000,
+            regen: 64,
+            cap: 8_000,
+        },
+        NodeSpec {
+            good: WOOD,
+            pos: Pos::new(2, 0),
+            stock: 8_000,
+            regen: 64,
+            cap: 8_000,
+        },
+    ];
+    on_market_survival.gatherers = 6;
+    let on_market_survival = run_with_conservation(1, &on_market_survival, 120);
+    assert!(
+        on_market_survival.trade_volume_of(FOOD) + on_market_survival.trade_volume_of(WOOD) > 0,
+        "forcing survival on-market must leak FOOD/WOOD into the barter book"
+    );
+
+    let mut no_seed = SettlementConfig::frontier_cycle();
+    no_seed
+        .barter
+        .as_mut()
+        .expect("barter overlay")
+        .cycle_producer_medium_endowment = 0;
+    let no_seed = run(&no_seed);
+    assert_eq!(
+        acceptance_split(&no_seed, SALT).total,
+        0,
+        "without SALT seeded to producers, SALT never trades in the cycle"
+    );
+    assert_eq!(no_seed.current_money_good(), None);
+}
+
+#[test]
+fn goldens_unchanged() {
+    let digest = |cfg: &SettlementConfig, ticks: u64| {
+        let mut s = Settlement::generate(1, cfg);
+        s.run(ticks);
+        s.digest()
+    };
+
+    assert_eq!(
+        digest(&SettlementConfig::lineages(), 300),
+        0x2335e13c809749fc,
+        "the lineages demographic golden must remain byte-identical"
+    );
+    assert_eq!(
+        digest(&SettlementConfig::lineages(), 800),
+        0x3ffd78e50842d934,
+        "the long lineages golden must remain byte-identical"
+    );
+    assert_eq!(
+        digest(&SettlementConfig::frontier(), 300),
+        0xcc83bf2669f0980d,
+        "the S5-S13 frontier golden must remain byte-identical"
+    );
+    assert_eq!(
+        digest(&SettlementConfig::frontier_cultivation(), 300),
+        0xd8cfd0b2e9674373,
+        "the S15 cultivation golden must remain byte-identical"
+    );
+
+    let mut viable = Settlement::generate(0xC0FFEE, &SettlementConfig::viable());
+    viable.run(60);
+    assert_eq!(
+        viable.digest(),
+        0xa174_8567_db1c_4341,
+        "the g4a viable no-death golden must remain byte-identical"
+    );
 }

@@ -998,6 +998,9 @@ pub fn format_colonist(
         // G6b: a scholar (research → Knowledge) / a confectioner (tier-2 producer).
         Some(sim::Vocation::Scholar) => "scholar",
         Some(sim::Vocation::Confectioner) => "confectioner",
+        Some(sim::Vocation::CycleA) => "cycle-A",
+        Some(sim::Vocation::CycleB) => "cycle-B",
+        Some(sim::Vocation::CycleC) => "cycle-C",
         None => "unknown",
     };
     let alive = settlement.is_alive(index);
