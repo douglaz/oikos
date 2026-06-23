@@ -29,6 +29,13 @@ pub enum RecipeId {
     /// content recipe carried only by the gated cultivation content set, so every
     /// other config is byte-identical.
     Cultivate,
+    /// S19 production-cycle role A: consumes Z and produces X. A content recipe,
+    /// applied by the `sim` producer phase only in the gated cycle scenario.
+    CycleA,
+    /// S19 production-cycle role B: consumes X and produces Y.
+    CycleB,
+    /// S19 production-cycle role C: consumes Y and produces Z.
+    CycleC,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

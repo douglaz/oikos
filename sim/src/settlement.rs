@@ -682,6 +682,12 @@ pub enum Vocation {
     /// Before the unlock the recipe is `enabled: false`, so it produces nothing even
     /// while holding its inputs (the tier gate). Seeded.
     Confectioner,
+    /// S19 cycle role A: holds its cycle tool, consumes Z, and produces X.
+    CycleA,
+    /// S19 cycle role B: holds its cycle tool, consumes X, and produces Y.
+    CycleB,
+    /// S19 cycle role C: holds its cycle tool, consumes Y, and produces Z.
+    CycleC,
 }
 
 impl Vocation {
@@ -700,6 +706,10 @@ impl Vocation {
             // digests stay byte-identical.
             Vocation::Scholar => 5,
             Vocation::Confectioner => 6,
+            // S19 extends the space; pre-S19 configs never emit 7/8/9.
+            Vocation::CycleA => 7,
+            Vocation::CycleB => 8,
+            Vocation::CycleC => 9,
         }
     }
 }
@@ -1157,6 +1167,18 @@ pub struct ChainConfig {
     /// from tick 0 so the control's "would-be producer holds its inputs" claim is
     /// real, yet produces nothing while gated). `0` for a non-research chain.
     pub confectioner_flour_buffer: u32,
+    /// S19: seeded cycle role A producers (Z → X). `0` for every non-cycle chain.
+    pub cycle_a_producers: u16,
+    /// S19: seeded cycle role B producers (X → Y). `0` for every non-cycle chain.
+    pub cycle_b_producers: u16,
+    /// S19: seeded cycle role C producers (Y → Z). `0` for every non-cycle chain.
+    pub cycle_c_producers: u16,
+    /// S19: Z units each role A producer starts holding and reserves as recipe input.
+    pub cycle_a_input_buffer: u32,
+    /// S19: X units each role B producer starts holding and reserves as recipe input.
+    pub cycle_b_input_buffer: u32,
+    /// S19: Y units each role C producer starts holding and reserves as recipe input.
+    pub cycle_c_input_buffer: u32,
 }
 
 impl ChainConfig {
@@ -1253,6 +1275,12 @@ impl ChainConfig {
             tier2_threshold: 0,
             scholar_grain_buffer: 0,
             confectioner_flour_buffer: 0,
+            cycle_a_producers: 0,
+            cycle_b_producers: 0,
+            cycle_c_producers: 0,
+            cycle_a_input_buffer: 0,
+            cycle_b_input_buffer: 0,
+            cycle_c_input_buffer: 0,
         }
     }
 
@@ -1338,6 +1366,81 @@ impl ChainConfig {
             // starve the millers (the chain stays collapse-free over the smoke horizon).
             scholar_grain_buffer: 12,
             confectioner_flour_buffer: 24,
+            cycle_a_producers: 0,
+            cycle_b_producers: 0,
+            cycle_c_producers: 0,
+            cycle_a_input_buffer: 0,
+            cycle_b_input_buffer: 0,
+            cycle_c_input_buffer: 0,
+        }
+    }
+
+    /// S19: the canonical imperfect-double-coincidence 3-good production cycle.
+    /// Role A consumes Z and produces X; B consumes X and produces Y; C consumes Y
+    /// and produces Z. The produced goods are wanted only as producer inputs, via
+    /// `Horizon::Next` producer-input wants; there is no consumption taste for X/Y/Z.
+    pub fn three_good_cycle() -> Self {
+        Self {
+            content: ContentSet::three_good_cycle(),
+            millers: 0,
+            bakers: 0,
+            latent_millers: 0,
+            latent_bakers: 0,
+            operating_cost: 1,
+            bread_is_staple: false,
+            subsistence_on_grain: false,
+            own_labor_subsistence: false,
+            forage_yield: 0,
+            forage_commons: None,
+            forage_hunger_in: 8,
+            forage_hunger_out: 4,
+            own_use_cultivation: false,
+            cultivate_hunger_in: 10,
+            cultivate_hunger_out: 6,
+            cultivate_consume: 0,
+            cultivate_patience: 4,
+            cultivation_sells_surplus: false,
+            multigood_money: false,
+            capital_advance: false,
+            perishable_decay_bps: 0,
+            subsistence_advance: false,
+            input_advance: false,
+            recurring_motive: false,
+            project_input_bids: false,
+            // The S19 scenario sets a positive floor. The constructor stays usable
+            // for controls that deliberately force survival back on-market.
+            producer_subsistence: 0,
+            productive_reentry: false,
+            reentry_hunger_in: 8,
+            reentry_hunger_out: 4,
+            tool_acquisition_eligibility: false,
+            producible_capital: false,
+            per_agent_capital: false,
+            entrepreneurial_forecasts: false,
+            capital_payback_cycles: 8,
+            tool_build_wood: 6,
+            tool_build_labor: 4,
+            capital_build_hunger_max: 4,
+            throughput: 1,
+            miller_grain_buffer: 0,
+            baker_flour_buffer: 0,
+            latent_flour_seed: 0,
+            bread_buffer: 0,
+            consumer_staple_buffer: 0,
+            wood_buffer: 0,
+            consumer_wood_buffer: 0,
+            producer_gold: 0,
+            scholars: 0,
+            confectioners: 0,
+            tier2_threshold: 0,
+            scholar_grain_buffer: 0,
+            confectioner_flour_buffer: 0,
+            cycle_a_producers: 3,
+            cycle_b_producers: 3,
+            cycle_c_producers: 3,
+            cycle_a_input_buffer: 6,
+            cycle_b_input_buffer: 6,
+            cycle_c_input_buffer: 6,
         }
     }
 }
@@ -4839,6 +4942,14 @@ impl Settlement {
             ),
             None => (0, 0),
         };
+        let (cycle_a, cycle_b, cycle_c) = match &config.chain {
+            Some(chain) => (
+                usize::from(chain.cycle_a_producers),
+                usize::from(chain.cycle_b_producers),
+                usize::from(chain.cycle_c_producers),
+            ),
+            None => (0, 0, 0),
+        };
         let population = consumers
             + gatherers
             + millers
@@ -4846,7 +4957,10 @@ impl Settlement {
             + latent_millers
             + latent_bakers
             + scholars
-            + confectioners;
+            + confectioners
+            + cycle_a
+            + cycle_b
+            + cycle_c;
 
         // Resident traders (G2c caravans) take the LOWEST ids, *before* the
         // colonists, so they are processed first in the id-ordered market and their
@@ -4916,6 +5030,9 @@ impl Settlement {
             let seeded_end = consumers + gatherers + millers + bakers;
             let latent_end = seeded_end + latent_millers + latent_bakers;
             let scholar_end = latent_end + scholars;
+            let confectioner_end = scholar_end + confectioners;
+            let cycle_a_end = confectioner_end + cycle_a;
+            let cycle_b_end = cycle_a_end + cycle_b;
             let (vocation, node, tp_base, latent) = if index < consumers {
                 (
                     Vocation::Consumer,
@@ -4976,11 +5093,32 @@ impl Settlement {
                     config.consumer_time_preference_base_bps,
                     None,
                 )
-            } else {
+            } else if index < confectioner_end {
                 // G6b: a seeded confectioner — holds an atelier + flour buffer, runs
                 // the tier-2 recipe once unlocked.
                 (
                     Vocation::Confectioner,
+                    None,
+                    config.consumer_time_preference_base_bps,
+                    None,
+                )
+            } else if index < cycle_a_end {
+                (
+                    Vocation::CycleA,
+                    None,
+                    config.consumer_time_preference_base_bps,
+                    None,
+                )
+            } else if index < cycle_b_end {
+                (
+                    Vocation::CycleB,
+                    None,
+                    config.consumer_time_preference_base_bps,
+                    None,
+                )
+            } else {
+                (
+                    Vocation::CycleC,
                     None,
                     config.consumer_time_preference_base_bps,
                     None,
@@ -7395,8 +7533,21 @@ impl Settlement {
                             // override drives input acquisition, suppress this generic
                             // (recipe-blind, low-ranked) input want so the producer posts
                             // no DUPLICATE bid — the override is the sole input bid.
-                            Vocation::Miller | Vocation::Baker if chain.project_input_bids => 0,
-                            Vocation::Miller | Vocation::Baker => chain.throughput.max(1),
+                            Vocation::Miller
+                            | Vocation::Baker
+                            | Vocation::CycleA
+                            | Vocation::CycleB
+                            | Vocation::CycleC
+                                if chain.project_input_bids
+                                    && self.society.current_money_good().is_some() =>
+                            {
+                                0
+                            }
+                            Vocation::Miller
+                            | Vocation::Baker
+                            | Vocation::CycleA
+                            | Vocation::CycleB
+                            | Vocation::CycleC => chain.throughput.max(1),
                             // G6b: a scholar/confectioner reserves (and tops up) its FULL
                             // input buffer, so research / tier-2 production runs from seeded
                             // stock and the buffer is neither dumped nor eaten.
@@ -7474,6 +7625,9 @@ impl Settlement {
         // G6b content recipes (`None` for a plain G3a/G3b/G5b chain).
         let research_recipe = chain.content.research_recipe().map(|recipe| recipe.id);
         let confect_recipe = chain.content.tier2_recipe().map(|recipe| recipe.id);
+        let cycle_a_recipe = chain.content.cycle_a_recipe().map(|recipe| recipe.id);
+        let cycle_b_recipe = chain.content.cycle_b_recipe().map(|recipe| recipe.id);
+        let cycle_c_recipe = chain.content.cycle_c_recipe().map(|recipe| recipe.id);
         // `chain`/`colonists` (immutable) and `society` (mutable) are disjoint
         // fields, so id-ordered iteration here borrows them side by side. The
         // recipe ids are content data; mutation delegates to econ's existing
@@ -7491,6 +7645,18 @@ impl Settlement {
                     None => continue,
                 },
                 Vocation::Confectioner => match confect_recipe {
+                    Some(recipe) => (recipe, false),
+                    None => continue,
+                },
+                Vocation::CycleA => match cycle_a_recipe {
+                    Some(recipe) => (recipe, false),
+                    None => continue,
+                },
+                Vocation::CycleB => match cycle_b_recipe {
+                    Some(recipe) => (recipe, false),
+                    None => continue,
+                },
+                Vocation::CycleC => match cycle_c_recipe {
                     Some(recipe) => (recipe, false),
                     None => continue,
                 },
@@ -7671,8 +7837,14 @@ impl Settlement {
                 let colonist = &self.colonists[slot];
                 (colonist.id, colonist.vocation, colonist.latent)
             };
-            let is_producer = matches!(vocation, Vocation::Miller | Vocation::Baker)
-                || (vocation == Vocation::Unassigned && latent.is_some());
+            let is_producer = matches!(
+                vocation,
+                Vocation::Miller
+                    | Vocation::Baker
+                    | Vocation::CycleA
+                    | Vocation::CycleB
+                    | Vocation::CycleC
+            ) || (vocation == Vocation::Unassigned && latent.is_some());
             if !is_producer {
                 continue;
             }
@@ -8262,9 +8434,15 @@ impl Settlement {
         let (
             mill_recipe,
             bake_recipe,
+            cycle_a_recipe,
+            cycle_b_recipe,
+            cycle_c_recipe,
             grain,
             flour,
             bread,
+            cycle_x,
+            cycle_y,
+            cycle_z,
             operating_cost,
             recurring,
             subsistence,
@@ -8273,9 +8451,15 @@ impl Settlement {
             Some(chain) if chain.project_input_bids => (
                 chain.content.mill_recipe().clone(),
                 chain.content.bake_recipe().clone(),
+                chain.content.cycle_a_recipe().cloned(),
+                chain.content.cycle_b_recipe().cloned(),
+                chain.content.cycle_c_recipe().cloned(),
                 chain.content.grain(),
                 chain.content.flour(),
                 chain.content.bread(),
+                chain.content.cycle_x(),
+                chain.content.cycle_y(),
+                chain.content.cycle_z(),
                 chain.operating_cost,
                 chain.recurring_motive,
                 chain.producer_subsistence,
@@ -8302,6 +8486,30 @@ impl Settlement {
             let (recipe, input, output) = match vocation {
                 Vocation::Miller => (&mill_recipe, grain, flour),
                 Vocation::Baker => (&bake_recipe, flour, bread),
+                Vocation::CycleA => {
+                    let (Some(recipe), Some(input), Some(output)) =
+                        (cycle_a_recipe.as_ref(), cycle_z, cycle_x)
+                    else {
+                        continue;
+                    };
+                    (recipe, input, output)
+                }
+                Vocation::CycleB => {
+                    let (Some(recipe), Some(input), Some(output)) =
+                        (cycle_b_recipe.as_ref(), cycle_x, cycle_y)
+                    else {
+                        continue;
+                    };
+                    (recipe, input, output)
+                }
+                Vocation::CycleC => {
+                    let (Some(recipe), Some(input), Some(output)) =
+                        (cycle_c_recipe.as_ref(), cycle_y, cycle_z)
+                    else {
+                        continue;
+                    };
+                    (recipe, input, output)
+                }
                 _ => continue,
             };
             // The output's last realized price is the imputation basis (S4 seeds it). S11:
@@ -12429,6 +12637,57 @@ fn build_agent(
                     stock.add(chain.content.flour(), chain.confectioner_flour_buffer);
                     chain.producer_gold
                 }
+                Vocation::CycleA => {
+                    stock.add(
+                        chain
+                            .content
+                            .cycle_a_tool()
+                            .expect("cycle role A requires cycle content"),
+                        1,
+                    );
+                    stock.add(
+                        chain
+                            .content
+                            .cycle_z()
+                            .expect("cycle role A requires Z input"),
+                        chain.cycle_a_input_buffer,
+                    );
+                    chain.producer_gold
+                }
+                Vocation::CycleB => {
+                    stock.add(
+                        chain
+                            .content
+                            .cycle_b_tool()
+                            .expect("cycle role B requires cycle content"),
+                        1,
+                    );
+                    stock.add(
+                        chain
+                            .content
+                            .cycle_x()
+                            .expect("cycle role B requires X input"),
+                        chain.cycle_b_input_buffer,
+                    );
+                    chain.producer_gold
+                }
+                Vocation::CycleC => {
+                    stock.add(
+                        chain
+                            .content
+                            .cycle_c_tool()
+                            .expect("cycle role C requires cycle content"),
+                        1,
+                    );
+                    stock.add(
+                        chain
+                            .content
+                            .cycle_y()
+                            .expect("cycle role C requires Y input"),
+                        chain.cycle_c_input_buffer,
+                    );
+                    chain.producer_gold
+                }
             }
         }
         // ---- G2b endowments (unchanged; chain vocations never occur without a chain).
@@ -12448,7 +12707,10 @@ fn build_agent(
                 | Vocation::Baker
                 | Vocation::Unassigned
                 | Vocation::Scholar
-                | Vocation::Confectioner => {
+                | Vocation::Confectioner
+                | Vocation::CycleA
+                | Vocation::CycleB
+                | Vocation::CycleC => {
                     unreachable!("chain vocations require a production chain config")
                 }
             };
@@ -13553,6 +13815,9 @@ fn production_specialty(
         // recipe (flour → pastry). Both reserve their tool + input like a chain producer.
         Vocation::Scholar => Some(RecipeId::Research),
         Vocation::Confectioner => Some(RecipeId::Confect),
+        Vocation::CycleA => Some(RecipeId::CycleA),
+        Vocation::CycleB => Some(RecipeId::CycleB),
+        Vocation::CycleC => Some(RecipeId::CycleC),
         Vocation::Unassigned => latent,
         Vocation::Gatherer | Vocation::Consumer => None,
     }?;
@@ -13561,6 +13826,9 @@ fn production_specialty(
         RecipeId::Bake => Some((content.oven(), content.flour())),
         RecipeId::Research => Some((content.library()?, content.grain())),
         RecipeId::Confect => Some((content.atelier()?, content.flour())),
+        RecipeId::CycleA => Some((content.cycle_a_tool()?, content.cycle_z()?)),
+        RecipeId::CycleB => Some((content.cycle_b_tool()?, content.cycle_x()?)),
+        RecipeId::CycleC => Some((content.cycle_c_tool()?, content.cycle_y()?)),
         _ => None,
     }
 }
@@ -14231,6 +14499,9 @@ fn recipe_id_tag(recipe: RecipeId) -> u8 {
         RecipeId::Research => 5,
         RecipeId::Confect => 6,
         RecipeId::Cultivate => 7,
+        RecipeId::CycleA => 8,
+        RecipeId::CycleB => 9,
+        RecipeId::CycleC => 10,
     }
 }
 
@@ -14521,6 +14792,10 @@ fn push_recipe_id_bytes(out: &mut Vec<u8>, id: RecipeId) {
         // S15 own-use cultivation; carried only by the gated cultivation content set,
         // so every pre-S15 config's recipe stream is byte-identical.
         RecipeId::Cultivate => 7,
+        // S19 cycle recipes; carried only by the gated cycle content.
+        RecipeId::CycleA => 8,
+        RecipeId::CycleB => 9,
+        RecipeId::CycleC => 10,
     });
 }
 
@@ -14596,6 +14871,9 @@ mod tests {
         assert_eq!(recipe_id_tag(RecipeId::Research), 5);
         assert_eq!(recipe_id_tag(RecipeId::Confect), 6);
         assert_eq!(recipe_id_tag(RecipeId::Cultivate), 7);
+        assert_eq!(recipe_id_tag(RecipeId::CycleA), 8);
+        assert_eq!(recipe_id_tag(RecipeId::CycleB), 9);
+        assert_eq!(recipe_id_tag(RecipeId::CycleC), 10);
 
         assert_eq!(cantillon_sector_tag(CantillonSector::Capitalists), 0);
         assert_eq!(cantillon_sector_tag(CantillonSector::Households), 1);

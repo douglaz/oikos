@@ -54,6 +54,18 @@ pub const ATELIER: &str = "atelier";
 /// stay byte-identical.
 pub const FORAGE: &str = "forage";
 
+/// S19 imperfect-double-coincidence cycle goods. These are the traded produced
+/// goods in the closed input loop: A consumes Z and produces X; B consumes X and
+/// produces Y; C consumes Y and produces Z.
+pub const CYCLE_X: &str = "cycle_x";
+pub const CYCLE_Y: &str = "cycle_y";
+pub const CYCLE_Z: &str = "cycle_z";
+/// Durable tools for the three cycle producers. They are held and anchored like
+/// the mill/oven/library tools, never consumed by a recipe.
+pub const CYCLE_A_TOOL: &str = "cycle_a_tool";
+pub const CYCLE_B_TOOL: &str = "cycle_b_tool";
+pub const CYCLE_C_TOOL: &str = "cycle_c_tool";
+
 /// Grain consumed per mill application (the conserved conversion's input ratio).
 pub const GRAIN_PER_MILL: u32 = 1;
 /// Flour produced per mill application — the mill's yield. A recipe is a conserved
@@ -101,6 +113,10 @@ pub const BREAD_PER_CULTIVATE: u32 = 1;
 /// the grain FLOW — not labor — bounds the per-tick output.
 pub const CULTIVATE_LABOR: u32 = 2;
 
+/// S19: each cycle recipe consumes one input unit and produces one output unit.
+pub const CYCLE_INPUT_QTY: u32 = 1;
+pub const CYCLE_OUTPUT_QTY: u32 = 1;
+
 /// A code-level content definition: the interned chain goods plus the recipes
 /// that transform them. Built once at generation and then read-only.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -126,6 +142,12 @@ pub struct ContentSet {
     /// from labor by the settlement's forage phase, not transformed) but IS a
     /// conserved, tracked good (it joins [`Self::goods`] and [`Self::good_entries`]).
     forage: Option<GoodId>,
+    cycle_x: Option<GoodId>,
+    cycle_y: Option<GoodId>,
+    cycle_z: Option<GoodId>,
+    cycle_a_tool: Option<GoodId>,
+    cycle_b_tool: Option<GoodId>,
+    cycle_c_tool: Option<GoodId>,
     /// `[mill, bake]` for the plain chain, or `[mill, bake, research, confect]` for
     /// a research-tiers set, in chain order. The `confect` (tier-2) recipe starts
     /// `enabled: false` and is flipped by the `sim` unlock.
@@ -182,6 +204,12 @@ impl ContentSet {
             library: None,
             atelier: None,
             forage: None,
+            cycle_x: None,
+            cycle_y: None,
+            cycle_z: None,
+            cycle_a_tool: None,
+            cycle_b_tool: None,
+            cycle_c_tool: None,
             recipes,
         }
     }
@@ -263,8 +291,68 @@ impl ContentSet {
             library: Some(library),
             atelier: Some(atelier),
             forage: None,
+            cycle_x: None,
+            cycle_y: None,
+            cycle_z: None,
+            cycle_a_tool: None,
+            cycle_b_tool: None,
+            cycle_c_tool: None,
             recipes,
         }
+    }
+
+    /// S19: the canonical 3-good production cycle with no pairwise double
+    /// coincidence. The ordinary grain/flour/bread content is interned first so the
+    /// existing chain accessors remain valid; the cycle scenario fields no
+    /// millers/bakers, so only the three cycle recipes run.
+    pub fn three_good_cycle() -> Self {
+        let mut set = Self::grain_flour_bread();
+        let x = set.registry.intern(CYCLE_X);
+        let y = set.registry.intern(CYCLE_Y);
+        let z = set.registry.intern(CYCLE_Z);
+        let a_tool = set.registry.intern(CYCLE_A_TOOL);
+        let b_tool = set.registry.intern(CYCLE_B_TOOL);
+        let c_tool = set.registry.intern(CYCLE_C_TOOL);
+
+        set.cycle_x = Some(x);
+        set.cycle_y = Some(y);
+        set.cycle_z = Some(z);
+        set.cycle_a_tool = Some(a_tool);
+        set.cycle_b_tool = Some(b_tool);
+        set.cycle_c_tool = Some(c_tool);
+        set.recipes.extend([
+            Recipe {
+                id: RecipeId::CycleA,
+                name: "CycleA",
+                labor: 1,
+                input_good: Some((z, CYCLE_INPUT_QTY)),
+                required_tool: Some(a_tool),
+                output_good: x,
+                output_qty: CYCLE_OUTPUT_QTY,
+                enabled: true,
+            },
+            Recipe {
+                id: RecipeId::CycleB,
+                name: "CycleB",
+                labor: 1,
+                input_good: Some((x, CYCLE_INPUT_QTY)),
+                required_tool: Some(b_tool),
+                output_good: y,
+                output_qty: CYCLE_OUTPUT_QTY,
+                enabled: true,
+            },
+            Recipe {
+                id: RecipeId::CycleC,
+                name: "CycleC",
+                labor: 1,
+                input_good: Some((y, CYCLE_INPUT_QTY)),
+                required_tool: Some(c_tool),
+                output_good: z,
+                output_qty: CYCLE_OUTPUT_QTY,
+                enabled: true,
+            },
+        ]);
+        set
     }
 
     /// S12: intern the [`FORAGE`] subsistence good onto this content set, returning the
@@ -356,6 +444,30 @@ impl ContentSet {
         self.forage
     }
 
+    pub fn cycle_x(&self) -> Option<GoodId> {
+        self.cycle_x
+    }
+
+    pub fn cycle_y(&self) -> Option<GoodId> {
+        self.cycle_y
+    }
+
+    pub fn cycle_z(&self) -> Option<GoodId> {
+        self.cycle_z
+    }
+
+    pub fn cycle_a_tool(&self) -> Option<GoodId> {
+        self.cycle_a_tool
+    }
+
+    pub fn cycle_b_tool(&self) -> Option<GoodId> {
+        self.cycle_b_tool
+    }
+
+    pub fn cycle_c_tool(&self) -> Option<GoodId> {
+        self.cycle_c_tool
+    }
+
     /// Whether this is a research-tiers content set (the research/tier-2 recipes and
     /// the Knowledge accumulator are present).
     pub fn has_research(&self) -> bool {
@@ -392,6 +504,28 @@ impl ContentSet {
         self.recipes
             .iter()
             .find(|recipe| recipe.id == RecipeId::Cultivate)
+    }
+
+    pub fn cycle_a_recipe(&self) -> Option<&Recipe> {
+        self.recipes
+            .iter()
+            .find(|recipe| recipe.id == RecipeId::CycleA)
+    }
+
+    pub fn cycle_b_recipe(&self) -> Option<&Recipe> {
+        self.recipes
+            .iter()
+            .find(|recipe| recipe.id == RecipeId::CycleB)
+    }
+
+    pub fn cycle_c_recipe(&self) -> Option<&Recipe> {
+        self.recipes
+            .iter()
+            .find(|recipe| recipe.id == RecipeId::CycleC)
+    }
+
+    pub fn cycle_goods(&self) -> Option<(GoodId, GoodId, GoodId)> {
+        Some((self.cycle_x?, self.cycle_y?, self.cycle_z?))
     }
 
     /// Set the `enabled` flag of the recipe with `id` (the tier-2 unlock keeps the
@@ -451,6 +585,12 @@ impl ContentSet {
         // phase that mints it into econ stock is accounted by the digest and the
         // whole-system ledger). `None` (omitted) on every non-forage set.
         goods.extend(self.forage);
+        goods.extend(self.cycle_x);
+        goods.extend(self.cycle_y);
+        goods.extend(self.cycle_z);
+        goods.extend(self.cycle_a_tool);
+        goods.extend(self.cycle_b_tool);
+        goods.extend(self.cycle_c_tool);
         goods
     }
 
@@ -484,6 +624,24 @@ impl ContentSet {
         }
         if let Some(forage) = self.forage {
             entries.push((FORAGE, forage));
+        }
+        if let Some(x) = self.cycle_x {
+            entries.push((CYCLE_X, x));
+        }
+        if let Some(y) = self.cycle_y {
+            entries.push((CYCLE_Y, y));
+        }
+        if let Some(z) = self.cycle_z {
+            entries.push((CYCLE_Z, z));
+        }
+        if let Some(tool) = self.cycle_a_tool {
+            entries.push((CYCLE_A_TOOL, tool));
+        }
+        if let Some(tool) = self.cycle_b_tool {
+            entries.push((CYCLE_B_TOOL, tool));
+        }
+        if let Some(tool) = self.cycle_c_tool {
+            entries.push((CYCLE_C_TOOL, tool));
         }
         entries
     }
@@ -565,6 +723,10 @@ mod tests {
             ContentSet::grain_flour_bread()
         );
         assert_eq!(ContentSet::research_tiers(), ContentSet::research_tiers());
+        assert_eq!(
+            ContentSet::three_good_cycle(),
+            ContentSet::three_good_cycle()
+        );
     }
 
     #[test]
@@ -639,6 +801,36 @@ mod tests {
             !confect.enabled,
             "the tier-2 recipe must start disabled (unlocked by research)"
         );
+    }
+
+    #[test]
+    fn three_good_cycle_interns_cycle_goods_and_recipes() {
+        let content = ContentSet::three_good_cycle();
+        let base = u16::try_from(GoodRegistry::lab_default().len())
+            .expect("the lab catalog fits in GoodId width");
+        assert_eq!(content.grain().0, base);
+        assert_eq!(content.oven().0, base + 4);
+
+        let (x, y, z) = content.cycle_goods().expect("cycle goods");
+        assert_eq!(x.0, base + 5);
+        assert_eq!(y.0, base + 6);
+        assert_eq!(z.0, base + 7);
+        assert_eq!(content.cycle_a_tool(), Some(GoodId(base + 8)));
+        assert_eq!(content.cycle_b_tool(), Some(GoodId(base + 9)));
+        assert_eq!(content.cycle_c_tool(), Some(GoodId(base + 10)));
+
+        let a = content.cycle_a_recipe().expect("A recipe");
+        let b = content.cycle_b_recipe().expect("B recipe");
+        let c = content.cycle_c_recipe().expect("C recipe");
+        assert_eq!(a.input_good, Some((z, CYCLE_INPUT_QTY)));
+        assert_eq!(a.required_tool, content.cycle_a_tool());
+        assert_eq!(a.output_good, x);
+        assert_eq!(b.input_good, Some((x, CYCLE_INPUT_QTY)));
+        assert_eq!(b.required_tool, content.cycle_b_tool());
+        assert_eq!(b.output_good, y);
+        assert_eq!(c.input_good, Some((y, CYCLE_INPUT_QTY)));
+        assert_eq!(c.required_tool, content.cycle_c_tool());
+        assert_eq!(c.output_good, z);
     }
 
     #[test]
