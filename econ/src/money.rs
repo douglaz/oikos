@@ -127,6 +127,16 @@ pub struct MengerianConfig {
     /// S21a physical marketability gate: when enabled, indirect barter acceptance
     /// rejects media that cannot carry through the fixed market holding horizon.
     pub durability_aware_acceptance: bool,
+    /// S21b two-layer Mengerian saleability: direct-use breadth is an eligibility
+    /// floor, while medium leadership/promotion is ranked on indirect acceptance
+    /// share. Pair with `multi_offer_medium` to use the multi-candidate discovery
+    /// bootstrap; without it the legacy single-offer routing stays in force. Off
+    /// by default to preserve the legacy combined-share metric.
+    pub two_layer_saleability: bool,
+    /// S21b direct-use eligibility floor: minimum distinct agents that must accept
+    /// a candidate directly (`DirectWant`) before it may be discovered/promoted as
+    /// a money candidate. `0` (default) is inert.
+    pub min_direct_use_acceptors: u16,
     /// Econ-owned per-good physical marketability table. Empty means every good is
     /// durable and low-carry by default.
     pub marketability: MarketabilityConfig,
@@ -149,6 +159,8 @@ impl Default for MengerianConfig {
             allow_indirect_acceptance: true,
             multi_offer_medium: false,
             durability_aware_acceptance: false,
+            two_layer_saleability: false,
+            min_direct_use_acceptors: 0,
             marketability: MarketabilityConfig::default(),
         }
     }

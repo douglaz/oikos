@@ -11,11 +11,41 @@ pub enum BarterReason {
     DirectWant,
     /// Instrumental receipt for a final target want.
     ///
-    /// The book rechecks the current provisional saleability leader when this
-    /// variant is posted and when matches are cleared.
+    /// The book rechecks the current saleability context when this variant is
+    /// posted and when matches are cleared.
     IndirectFor {
         target: GoodId,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SaleabilityContext {
+    Single(Option<GoodId>),
+    Candidates(Vec<GoodId>),
+}
+
+impl SaleabilityContext {
+    pub fn single(provisional_leader: Option<GoodId>) -> Self {
+        Self::Single(provisional_leader)
+    }
+
+    pub fn candidates(mut candidates: Vec<GoodId>) -> Self {
+        candidates.sort();
+        candidates.dedup();
+        Self::Candidates(candidates)
+    }
+
+    fn allows_indirect_receive(&self, receive_good: GoodId) -> bool {
+        match self {
+            Self::Single(provisional_leader) => *provisional_leader == Some(receive_good),
+            // Order-independent membership: the `Candidates` variant is public, so a
+            // caller may construct it with an unsorted vector. A `binary_search` here
+            // would spuriously reject a present good when the list is not sorted; the
+            // candidate set is tiny (2–4 goods), so a linear `contains` is correct and
+            // costs nothing.
+            Self::Candidates(candidates) => candidates.contains(&receive_good),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -92,7 +122,12 @@ impl BarterBook {
     }
 
     pub fn post_offer(&mut self, agents: &[Agent], offer: BarterOffer, tick: u64) -> bool {
-        self.post_offer_with_provisional_leader(agents, offer, tick, None)
+        self.post_offer_with_saleability_context(
+            agents,
+            offer,
+            tick,
+            &SaleabilityContext::single(None),
+        )
     }
 
     pub fn post_offer_with_provisional_leader(
@@ -102,11 +137,26 @@ impl BarterBook {
         tick: u64,
         provisional_leader: Option<GoodId>,
     ) -> bool {
+        self.post_offer_with_saleability_context(
+            agents,
+            offer,
+            tick,
+            &SaleabilityContext::single(provisional_leader),
+        )
+    }
+
+    pub fn post_offer_with_saleability_context(
+        &mut self,
+        agents: &[Agent],
+        offer: BarterOffer,
+        tick: u64,
+        saleability_context: &SaleabilityContext,
+    ) -> bool {
         if offer.qty == 0
             || offer.expires_tick <= tick
             || offer.give_good == offer.receive_good
             || self.offers.iter().any(|live| live.seq == offer.seq)
-            || !offer_has_valid_saleability_context(&offer, provisional_leader)
+            || !offer_has_valid_saleability_context(&offer, saleability_context)
         {
             return false;
         }
@@ -155,7 +205,18 @@ impl BarterBook {
     }
 
     pub fn cancel_invalid(&mut self, agents: &[Agent], provisional_leader: Option<GoodId>) {
-        self.cancel_invalid_offers(agents, provisional_leader);
+        self.cancel_invalid_with_saleability_context(
+            agents,
+            &SaleabilityContext::single(provisional_leader),
+        );
+    }
+
+    pub fn cancel_invalid_with_saleability_context(
+        &mut self,
+        agents: &[Agent],
+        saleability_context: &SaleabilityContext,
+    ) {
+        self.cancel_invalid_offers(agents, saleability_context);
     }
 
     /// Drop every live offer and reservation for a removed agent (G4a real death).
@@ -168,7 +229,7 @@ impl BarterBook {
     }
 
     pub fn clear_matches(&mut self, agents: &mut [Agent], tick: u64) -> Vec<BarterTrade> {
-        self.clear_matches_with_provisional_leader(agents, tick, None)
+        self.clear_matches_with_saleability_context(agents, tick, &SaleabilityContext::single(None))
     }
 
     pub fn clear_matches_with_provisional_leader(
@@ -177,8 +238,21 @@ impl BarterBook {
         tick: u64,
         provisional_leader: Option<GoodId>,
     ) -> Vec<BarterTrade> {
+        self.clear_matches_with_saleability_context(
+            agents,
+            tick,
+            &SaleabilityContext::single(provisional_leader),
+        )
+    }
+
+    pub fn clear_matches_with_saleability_context(
+        &mut self,
+        agents: &mut [Agent],
+        tick: u64,
+        saleability_context: &SaleabilityContext,
+    ) -> Vec<BarterTrade> {
         self.expire_offers(tick);
-        self.cancel_invalid_offers(agents, provisional_leader);
+        self.cancel_invalid_offers(agents, saleability_context);
         let mut trades = Vec::new();
         let mut skipped_pairs = Vec::new();
         let mut needs_final_revalidation = false;
@@ -193,8 +267,8 @@ impl BarterBook {
                 continue;
             }
 
-            let a_live = offer_still_valid(agents, &a_offer, provisional_leader);
-            let b_live = offer_still_valid(agents, &b_offer, provisional_leader);
+            let a_live = offer_still_valid(agents, &a_offer, saleability_context);
+            let b_live = offer_still_valid(agents, &b_offer, saleability_context);
             if !a_live || !b_live {
                 if !a_live {
                     self.cancel_offer(a_offer.seq);
@@ -206,12 +280,12 @@ impl BarterBook {
                 continue;
             }
 
-            if !can_apply_swap(agents, &a_offer, &b_offer, qty, provisional_leader) {
+            if !can_apply_swap(agents, &a_offer, &b_offer, qty, saleability_context) {
                 skipped_pairs.push(pair_key(a_offer.seq, b_offer.seq));
                 continue;
             }
 
-            let applied = apply_swap(agents, &a_offer, &b_offer, qty, provisional_leader);
+            let applied = apply_swap(agents, &a_offer, &b_offer, qty, saleability_context);
             debug_assert!(applied);
             if !applied {
                 skipped_pairs.push(pair_key(a_offer.seq, b_offer.seq));
@@ -234,7 +308,7 @@ impl BarterBook {
         }
 
         if needs_final_revalidation {
-            self.cancel_invalid_offers(agents, provisional_leader);
+            self.cancel_invalid_offers(agents, saleability_context);
         }
 
         trades
@@ -295,7 +369,11 @@ impl BarterBook {
         }
     }
 
-    fn cancel_invalid_offers(&mut self, agents: &[Agent], provisional_leader: Option<GoodId>) {
+    fn cancel_invalid_offers(
+        &mut self,
+        agents: &[Agent],
+        saleability_context: &SaleabilityContext,
+    ) {
         let agents_by_id = agents
             .iter()
             .map(|agent| (agent.id, agent))
@@ -309,7 +387,7 @@ impl BarterBook {
             };
             let available_stock =
                 stock_with_reservations_removed(agent, kept_reservations.iter().copied());
-            if offer_still_valid_for_stock(agent, &available_stock, offer, provisional_leader) {
+            if offer_still_valid_for_stock(agent, &available_stock, offer, saleability_context) {
                 kept_reservations.push(BarterReservation {
                     agent: offer.agent,
                     good: offer.give_good,
@@ -358,12 +436,13 @@ impl BarterBook {
 
 fn offer_has_valid_saleability_context(
     offer: &BarterOffer,
-    provisional_leader: Option<GoodId>,
+    saleability_context: &SaleabilityContext,
 ) -> bool {
     match offer.reason {
         BarterReason::DirectWant => true,
         BarterReason::IndirectFor { target } => {
-            provisional_leader == Some(offer.receive_good) && target != offer.receive_good
+            saleability_context.allows_indirect_receive(offer.receive_good)
+                && target != offer.receive_good
         }
     }
 }
@@ -396,30 +475,30 @@ where
 fn offer_still_valid(
     agents: &[Agent],
     offer: &BarterOffer,
-    provisional_leader: Option<GoodId>,
+    saleability_context: &SaleabilityContext,
 ) -> bool {
     if offer.qty == 0 || offer.give_good == offer.receive_good {
         return false;
     }
-    if !offer_has_valid_saleability_context(offer, provisional_leader) {
+    if !offer_has_valid_saleability_context(offer, saleability_context) {
         return false;
     }
     let Some(agent) = agents.iter().find(|agent| agent.id == offer.agent) else {
         return false;
     };
-    offer_still_valid_for_stock(agent, &agent.stock, offer, provisional_leader)
+    offer_still_valid_for_stock(agent, &agent.stock, offer, saleability_context)
 }
 
 fn offer_still_valid_for_stock(
     agent: &Agent,
     stock: &Stock,
     offer: &BarterOffer,
-    provisional_leader: Option<GoodId>,
+    saleability_context: &SaleabilityContext,
 ) -> bool {
     if offer.qty == 0 || offer.give_good == offer.receive_good {
         return false;
     }
-    if !offer_has_valid_saleability_context(offer, provisional_leader) {
+    if !offer_has_valid_saleability_context(offer, saleability_context) {
         return false;
     }
     stock.can_remove(offer.give_good, offer.qty)
@@ -435,13 +514,13 @@ fn can_apply_swap(
     a: &BarterOffer,
     b: &BarterOffer,
     qty: u32,
-    provisional_leader: Option<GoodId>,
+    saleability_context: &SaleabilityContext,
 ) -> bool {
     if a.agent == b.agent || qty == 0 {
         return false;
     }
-    if !offer_has_valid_saleability_context(a, provisional_leader)
-        || !offer_has_valid_saleability_context(b, provisional_leader)
+    if !offer_has_valid_saleability_context(a, saleability_context)
+        || !offer_has_valid_saleability_context(b, saleability_context)
     {
         return false;
     }
@@ -475,9 +554,9 @@ fn apply_swap(
     a: &BarterOffer,
     b: &BarterOffer,
     qty: u32,
-    provisional_leader: Option<GoodId>,
+    saleability_context: &SaleabilityContext,
 ) -> bool {
-    if !can_apply_swap(agents, a, b, qty, provisional_leader) {
+    if !can_apply_swap(agents, a, b, qty, saleability_context) {
         return false;
     }
     let Some(a_pos) = agents.iter().position(|agent| agent.id == a.agent) else {
@@ -559,9 +638,9 @@ fn two_agents_mut(agents: &mut [Agent], a: usize, b: usize) -> (&mut Agent, &mut
 
 #[cfg(test)]
 mod tests {
-    use super::{BarterBook, BarterOffer, BarterReason};
+    use super::{BarterBook, BarterOffer, BarterReason, SaleabilityContext};
     use crate::agent::{Agent, AgentId, Role, Want, WantKind};
-    use crate::good::{Gold, GoodId, Horizon, Stock, CLOTH, FOOD, SALT, WOOD};
+    use crate::good::{Gold, GoodId, Horizon, Stock, CLOTH, FOOD, ORE, SALT, WOOD};
 
     #[test]
     fn barter_trade_swaps_only_stock_goods() {
@@ -852,6 +931,49 @@ mod tests {
             indirect_offer(1, FOOD, SALT, CLOTH, 1),
             0,
             Some(SALT),
+        ));
+        assert_eq!(book.reserved_qty(AgentId(1), FOOD), 1);
+    }
+
+    #[test]
+    fn indirect_offer_accepts_any_saleability_candidate() {
+        let agents = vec![agent(1, &[(FOOD, 1)], &[(CLOTH, Horizon::Now, 1)])];
+        let context = SaleabilityContext::candidates(vec![SALT, WOOD]);
+
+        let mut book = BarterBook::new();
+        assert!(book.post_offer_with_saleability_context(
+            &agents,
+            indirect_offer(1, FOOD, SALT, CLOTH, 1),
+            0,
+            &context,
+        ));
+        assert_eq!(book.reserved_qty(AgentId(1), FOOD), 1);
+
+        let mut book = BarterBook::new();
+        assert!(!book.post_offer_with_saleability_context(
+            &agents,
+            indirect_offer(1, FOOD, ORE, CLOTH, 1),
+            0,
+            &context,
+        ));
+        assert_eq!(book.reserved_qty(AgentId(1), FOOD), 0);
+    }
+
+    #[test]
+    fn indirect_offer_accepts_candidate_regardless_of_list_order() {
+        // The `Candidates` variant is public; a caller may hand it an unsorted list.
+        // `vec![SALT, WOOD]` is GoodId-descending (SALT=4, WOOD=2), so a membership
+        // check that assumed sorted order would miss WOOD. Posting an indirect offer
+        // that receives WOOD must still be accepted.
+        let agents = vec![agent(1, &[(FOOD, 1)], &[(CLOTH, Horizon::Now, 1)])];
+        let context = SaleabilityContext::Candidates(vec![SALT, WOOD]);
+
+        let mut book = BarterBook::new();
+        assert!(book.post_offer_with_saleability_context(
+            &agents,
+            indirect_offer(1, FOOD, WOOD, CLOTH, 1),
+            0,
+            &context,
         ));
         assert_eq!(book.reserved_qty(AgentId(1), FOOD), 1);
     }

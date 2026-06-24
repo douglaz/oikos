@@ -373,6 +373,81 @@ fn canonical_bytes_include_durability_aware_marketability() {
 }
 
 #[test]
+fn medium_saleability_bps_surfaces_the_non_conflated_tracker() {
+    // Two-layer leadership ranks on the medium (re-trade) share, so the viewer
+    // surfaces it separately from the conflated total `saleability_bps`. Drive
+    // the cleared cycle far enough for SALT to round-trip as a medium and assert
+    // the sim accessor returns exactly the lab tracker's medium share.
+    let mut cfg = SettlementConfig::frontier_cycle_cleared();
+    let menger = &mut cfg.barter.as_mut().expect("barter overlay").menger;
+    menger.two_layer_saleability = true;
+    menger.min_direct_use_acceptors = 2;
+
+    let mut s = Settlement::generate(7, &cfg);
+    for tick in 0..S20_TICKS {
+        let report = s.econ_tick();
+        assert!(report.conserves(), "conservation broke at tick {tick}");
+    }
+
+    let medium = s.medium_saleability_bps(SALT);
+    assert_eq!(
+        medium,
+        s.society()
+            .emergence()
+            .and_then(|e| e.medium_share_bps(SALT)),
+        "the viewer accessor must surface exactly the lab tracker's medium share"
+    );
+    assert!(
+        medium.is_some_and(|bps| bps > 0),
+        "SALT round-trips as a medium under the two-layer cleared cycle, so its \
+         medium share must be positive: got {medium:?}"
+    );
+}
+
+#[test]
+fn canonical_bytes_include_two_layer_saleability() {
+    let base_cfg = SettlementConfig::frontier_cycle();
+    let base = Settlement::generate(7, &base_cfg);
+
+    let mut explicit_off_cfg = SettlementConfig::frontier_cycle();
+    let explicit_menger = &mut explicit_off_cfg
+        .barter
+        .as_mut()
+        .expect("barter overlay")
+        .menger;
+    explicit_menger.two_layer_saleability = false;
+    explicit_menger.min_direct_use_acceptors = 0;
+    let explicit_off = Settlement::generate(7, &explicit_off_cfg);
+
+    let mut inert_floor_cfg = SettlementConfig::frontier_cycle();
+    inert_floor_cfg
+        .barter
+        .as_mut()
+        .expect("barter overlay")
+        .menger
+        .min_direct_use_acceptors = 4;
+    let inert_floor = Settlement::generate(7, &inert_floor_cfg);
+
+    let mut active_cfg = SettlementConfig::frontier_cycle();
+    let active_menger = &mut active_cfg.barter.as_mut().expect("barter overlay").menger;
+    active_menger.two_layer_saleability = true;
+    active_menger.min_direct_use_acceptors = 2;
+    let active = Settlement::generate(7, &active_cfg);
+
+    assert_eq!(base.canonical_bytes(), explicit_off.canonical_bytes());
+    assert_eq!(
+        base.canonical_bytes(),
+        inert_floor.canonical_bytes(),
+        "a flag-off direct-use floor has no future behaviour, so it must not split the digest"
+    );
+    assert_ne!(
+        base.canonical_bytes(),
+        active.canonical_bytes(),
+        "the two-layer flag-on config must have a distinct canonical identity"
+    );
+}
+
+#[test]
 fn goldens_unchanged() {
     let digest = |cfg: &SettlementConfig, ticks: u64| {
         let mut s = Settlement::generate(1, cfg);

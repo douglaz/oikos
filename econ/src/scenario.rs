@@ -69,6 +69,7 @@ pub enum ScenarioName {
     MengerSaltMoney,
     MengerGoldMoney,
     MengerMarketabilityDurability,
+    MengerTwoLayerSaleability,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -325,6 +326,11 @@ pub const BUILTIN_SCENARIOS: &[ScenarioInfo] = &[
         description:
             "barter society isolating physical durability and carry cost in indirect acceptance",
     },
+    ScenarioInfo {
+        name: "menger-two-layer-saleability",
+        scenario: ScenarioName::MengerTwoLayerSaleability,
+        description: "two-layer saleability: direct-use eligibility with medium-share leadership",
+    },
 ];
 
 #[derive(Clone, Debug)]
@@ -492,7 +498,8 @@ impl ScenarioName {
             | ScenarioName::EmergedGoldNoTaxIdleControl => ScenarioKind::MarketM3,
             ScenarioName::MengerSaltMoney
             | ScenarioName::MengerGoldMoney
-            | ScenarioName::MengerMarketabilityDurability => ScenarioKind::MarketV2,
+            | ScenarioName::MengerMarketabilityDurability
+            | ScenarioName::MengerTwoLayerSaleability => ScenarioKind::MarketV2,
         }
     }
 
@@ -542,7 +549,8 @@ impl ScenarioName {
             | ScenarioName::EmergedGoldTaxSpecieControl
             | ScenarioName::MengerSaltMoney
             | ScenarioName::MengerGoldMoney
-            | ScenarioName::MengerMarketabilityDurability => Regime::SoundGold,
+            | ScenarioName::MengerMarketabilityDurability
+            | ScenarioName::MengerTwoLayerSaleability => Regime::SoundGold,
         }
     }
 
@@ -668,7 +676,8 @@ pub fn builtin_scenario(name: ScenarioName) -> Scenario {
         | ScenarioName::EmergedGoldNoTaxIdleControl
         | ScenarioName::MengerSaltMoney
         | ScenarioName::MengerGoldMoney
-        | ScenarioName::MengerMarketabilityDurability => {
+        | ScenarioName::MengerMarketabilityDurability
+        | ScenarioName::MengerTwoLayerSaleability => {
             panic!("market scenarios use builtin_market_scenario")
         }
     }
@@ -738,6 +747,7 @@ pub fn builtin_market_scenario(name: ScenarioName) -> MarketScenario {
         ScenarioName::MengerSaltMoney => menger_salt_money(),
         ScenarioName::MengerGoldMoney => menger_gold_money(),
         ScenarioName::MengerMarketabilityDurability => menger_marketability_durability(),
+        ScenarioName::MengerTwoLayerSaleability => menger_two_layer_saleability(),
         ScenarioName::CrusoeSurvival
         | ScenarioName::CrusoeCapital
         | ScenarioName::CrusoeAbandon => {
@@ -1189,6 +1199,8 @@ fn menger_salt_money() -> MarketScenario {
             allow_indirect_acceptance: true,
             multi_offer_medium: false,
             durability_aware_acceptance: false,
+            two_layer_saleability: false,
+            min_direct_use_acceptors: 0,
             marketability: Default::default(),
         }),
     }
@@ -1388,6 +1400,39 @@ fn menger_marketability_durability() -> MarketScenario {
     }
 }
 
+fn menger_two_layer_saleability() -> MarketScenario {
+    let mut scenario = menger_marketability_durability();
+    scenario.name = scenario_info(ScenarioName::MengerTwoLayerSaleability).name;
+    scenario.scenario = ScenarioName::MengerTwoLayerSaleability;
+    scenario.periods = 6;
+    scenario.agents.extend([
+        v2_agent(
+            21,
+            v2_stock(1, 0, 0, 0, 0),
+            scale(&[(WantKind::Good(CLOTH), Horizon::Next, 1)]),
+        ),
+        v2_agent(
+            22,
+            v2_stock(0, 0, 1, 0, 0),
+            scale(&[(WantKind::Good(FOOD), Horizon::Next, 1)]),
+        ),
+    ]);
+    let MarketMoneyConfig::Emergent(config) = &mut scenario.money else {
+        panic!("marketability scenario must use emergent money");
+    };
+    config.two_layer_saleability = true;
+    config.min_direct_use_acceptors = 2;
+    config.multi_offer_medium = true;
+    config.stability_ticks = 1;
+    config.promotion_threshold_bps = 5_000;
+    config.lead_margin_bps = 250;
+    config.indirect_min_acceptance_share_bps = 1;
+    config.min_indirect_acceptances = 1;
+    config.min_indirect_acceptor_agents = 1;
+    config.min_indirect_target_goods = 1;
+    scenario
+}
+
 fn menger_gold_money() -> MarketScenario {
     MarketScenario {
         name: scenario_info(ScenarioName::MengerGoldMoney).name,
@@ -1495,6 +1540,8 @@ fn menger_gold_money() -> MarketScenario {
             allow_indirect_acceptance: true,
             multi_offer_medium: false,
             durability_aware_acceptance: false,
+            two_layer_saleability: false,
+            min_direct_use_acceptors: 0,
             marketability: Default::default(),
         }),
     }

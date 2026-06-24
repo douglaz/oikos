@@ -11,6 +11,7 @@ pub struct SaleabilitySnapshot {
     pub good: GoodId,
     pub acceptances: u32,
     pub acceptance_share_bps: u16,
+    pub medium_share_bps: u16,
     pub acceptor_agents: u16,
     pub counterpart_goods: u16,
     pub eligible: bool,
@@ -24,6 +25,7 @@ impl Default for SaleabilitySnapshot {
             good: GoodId(0),
             acceptances: 0,
             acceptance_share_bps: 0,
+            medium_share_bps: 0,
             acceptor_agents: 0,
             counterpart_goods: 0,
             eligible: false,
@@ -36,6 +38,7 @@ impl Default for SaleabilitySnapshot {
 pub struct SaleabilityTracker {
     candidates: Vec<CandidateStats>,
     total_acceptances: u64,
+    total_indirect_acceptances: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,6 +68,8 @@ pub struct CandidateSaleability<'a> {
     pub acceptances: u64,
     pub acceptor_agents: &'a [AgentId],
     pub counterpart_goods: &'a [GoodId],
+    pub direct_acceptances: u64,
+    pub direct_acceptor_agents: &'a [AgentId],
     pub indirect_acceptances: u64,
     pub indirect_acceptor_agents: &'a [AgentId],
     pub indirect_target_goods: &'a [GoodId],
@@ -76,6 +81,11 @@ struct CandidateStats {
     acceptances: u64,
     acceptor_agents: Vec<AgentId>,
     counterpart_goods: Vec<GoodId>,
+    /// Direct-use acceptances (`DirectWant`). This is redundant with
+    /// total-minus-indirect for volume, but the distinct direct acceptor set below
+    /// is not derivable and is the non-circular two-layer eligibility floor.
+    direct_acceptances: u64,
+    direct_acceptor_agents: Vec<AgentId>,
     /// S9: of `acceptances`, the count taken INDIRECTLY (`IndirectFor`) — the
     /// real indirect-exchange volume the strong-bar gate requires.
     indirect_acceptances: u64,
@@ -118,17 +128,24 @@ impl SaleabilityTracker {
                     acceptances: 0,
                     acceptor_agents: Vec::new(),
                     counterpart_goods: Vec::new(),
+                    direct_acceptances: 0,
+                    direct_acceptor_agents: Vec::new(),
                     indirect_acceptances: 0,
                     indirect_acceptor_agents: Vec::new(),
                     indirect_target_goods: Vec::new(),
                 })
                 .collect(),
             total_acceptances: 0,
+            total_indirect_acceptances: 0,
         }
     }
 
     pub fn total_acceptances(&self) -> u64 {
         self.total_acceptances
+    }
+
+    pub fn total_indirect_acceptances(&self) -> u64 {
+        self.total_indirect_acceptances
     }
 
     /// The accumulated per-candidate saleability state, in the tracker's stored
@@ -140,6 +157,8 @@ impl SaleabilityTracker {
             acceptances: stats.acceptances,
             acceptor_agents: &stats.acceptor_agents,
             counterpart_goods: &stats.counterpart_goods,
+            direct_acceptances: stats.direct_acceptances,
+            direct_acceptor_agents: &stats.direct_acceptor_agents,
             indirect_acceptances: stats.indirect_acceptances,
             indirect_acceptor_agents: &stats.indirect_acceptor_agents,
             indirect_target_goods: &stats.indirect_target_goods,
@@ -162,17 +181,24 @@ impl SaleabilityTracker {
             .map(|stats| self.share_bps(stats.acceptances))
     }
 
+    pub fn medium_share_bps(&self, good: GoodId) -> Option<u16> {
+        self.stats(good)
+            .map(|stats| self.medium_share_for_stats(stats))
+    }
+
     pub fn snapshots(&self, tick: u64, config: &MengerianConfig) -> Vec<SaleabilitySnapshot> {
         let winner = self.winner(config);
         self.candidates
             .iter()
             .map(|stats| {
                 let share = self.share_bps(stats.acceptances);
+                let medium_share = self.medium_share_for_stats(stats);
                 SaleabilitySnapshot {
                     tick,
                     good: stats.good,
                     acceptances: acceptances_to_u32(stats.acceptances),
                     acceptance_share_bps: share,
+                    medium_share_bps: medium_share,
                     acceptor_agents: len_to_u16(stats.acceptor_agents.len()),
                     counterpart_goods: len_to_u16(stats.counterpart_goods.len()),
                     eligible: self.base_eligible(stats, share, config),
@@ -183,7 +209,7 @@ impl SaleabilityTracker {
     }
 
     pub fn winner(&self, config: &MengerianConfig) -> Option<GoodId> {
-        let leader = self.leader_shares()?;
+        let leader = self.leader_shares_for_config(config)?;
         if leader.tied_best || leader.share_bps <= leader.runner_up_share_bps {
             return None;
         }
@@ -199,11 +225,19 @@ impl SaleabilityTracker {
     }
 
     pub fn provisional_leader(&self, config: &MengerianConfig) -> Option<GoodId> {
-        let leader = self.leader_shares()?;
+        let leader = self.leader_shares_for_config(config)?;
         if leader.tied_best || leader.share_bps <= leader.runner_up_share_bps {
             return None;
         }
         let stats = self.stats(leader.good)?;
+        if config.two_layer_saleability {
+            if leader.share_bps < config.indirect_min_acceptance_share_bps
+                || len_to_u16(stats.direct_acceptor_agents.len()) < config.min_direct_use_acceptors
+            {
+                return None;
+            }
+            return Some(leader.good);
+        }
         if leader.share_bps < config.indirect_min_acceptance_share_bps
             || len_to_u16(stats.acceptor_agents.len()) < config.min_acceptor_agents
             || len_to_u16(stats.counterpart_goods.len()) < config.min_counterpart_goods
@@ -230,13 +264,20 @@ impl SaleabilityTracker {
         stats.acceptances = stats.acceptances.saturating_add(1);
         insert_unique_sorted(&mut stats.acceptor_agents, acceptor);
         insert_unique_sorted(&mut stats.counterpart_goods, counterpart);
-        // S9: an INDIRECT acceptance — the acceptor took `accepted` not for itself
-        // but as an instrument to reach `target`. Record the volume plus the
-        // DISTINCT acceptor and target breadth the strong-bar gate reads.
-        if let BarterReason::IndirectFor { target } = reason {
-            stats.indirect_acceptances = stats.indirect_acceptances.saturating_add(1);
-            insert_unique_sorted(&mut stats.indirect_acceptor_agents, acceptor);
-            insert_unique_sorted(&mut stats.indirect_target_goods, target);
+        match reason {
+            BarterReason::DirectWant => {
+                stats.direct_acceptances = stats.direct_acceptances.saturating_add(1);
+                insert_unique_sorted(&mut stats.direct_acceptor_agents, acceptor);
+            }
+            // S9: an INDIRECT acceptance — the acceptor took `accepted` not for itself
+            // but as an instrument to reach `target`. Record the volume plus the
+            // DISTINCT acceptor and target breadth the strong-bar gate reads.
+            BarterReason::IndirectFor { target } => {
+                self.total_indirect_acceptances = self.total_indirect_acceptances.saturating_add(1);
+                stats.indirect_acceptances = stats.indirect_acceptances.saturating_add(1);
+                insert_unique_sorted(&mut stats.indirect_acceptor_agents, acceptor);
+                insert_unique_sorted(&mut stats.indirect_target_goods, target);
+            }
         }
     }
 
@@ -253,7 +294,27 @@ impl SaleabilityTracker {
         u16::try_from(share).unwrap_or(u16::MAX)
     }
 
+    fn medium_share_for_stats(&self, stats: &CandidateStats) -> u16 {
+        if self.total_indirect_acceptances == 0 {
+            return 0;
+        }
+        let numerator = u128::from(stats.indirect_acceptances).saturating_mul(10_000);
+        let share = numerator / u128::from(self.total_indirect_acceptances);
+        u16::try_from(share).unwrap_or(u16::MAX)
+    }
+
     fn base_eligible(&self, stats: &CandidateStats, share: u16, config: &MengerianConfig) -> bool {
+        if config.two_layer_saleability {
+            return self.total_acceptances >= u64::from(config.min_total_acceptances)
+                && len_to_u16(stats.direct_acceptor_agents.len())
+                    >= config.min_direct_use_acceptors
+                && self.medium_share_for_stats(stats) >= config.promotion_threshold_bps
+                && stats.indirect_acceptances >= u64::from(config.min_indirect_acceptances)
+                && len_to_u16(stats.indirect_acceptor_agents.len())
+                    >= config.min_indirect_acceptor_agents
+                && len_to_u16(stats.indirect_target_goods.len())
+                    >= config.min_indirect_target_goods;
+        }
         self.total_acceptances >= u64::from(config.min_total_acceptances)
             && share >= config.promotion_threshold_bps
             && len_to_u16(stats.acceptor_agents.len()) >= config.min_acceptor_agents
@@ -269,13 +330,48 @@ impl SaleabilityTracker {
             && len_to_u16(stats.indirect_target_goods.len()) >= config.min_indirect_target_goods
     }
 
+    pub fn provisional_media_candidates(&self, config: &MengerianConfig) -> Vec<GoodId> {
+        if !config.two_layer_saleability {
+            return self.provisional_leader(config).into_iter().collect();
+        }
+        self.candidates
+            .iter()
+            .filter(|stats| {
+                len_to_u16(stats.direct_acceptor_agents.len()) >= config.min_direct_use_acceptors
+            })
+            .map(|stats| stats.good)
+            .collect()
+    }
+
     pub fn leader_shares(&self) -> Option<SaleabilityLeader> {
+        self.leader_shares_by(|tracker, stats| tracker.share_bps(stats.acceptances))
+    }
+
+    pub fn medium_leader_shares(&self) -> Option<SaleabilityLeader> {
+        if self.total_indirect_acceptances == 0 {
+            return None;
+        }
+        self.leader_shares_by(Self::medium_share_for_stats)
+    }
+
+    fn leader_shares_for_config(&self, config: &MengerianConfig) -> Option<SaleabilityLeader> {
+        if config.two_layer_saleability {
+            self.medium_leader_shares()
+        } else {
+            self.leader_shares()
+        }
+    }
+
+    fn leader_shares_by(
+        &self,
+        share_for_stats: impl Fn(&Self, &CandidateStats) -> u16,
+    ) -> Option<SaleabilityLeader> {
         let mut best: Option<(GoodId, u16)> = None;
         let mut runner_up_share = 0u16;
         let mut tied_best = false;
 
         for stats in &self.candidates {
-            let share = self.share_bps(stats.acceptances);
+            let share = share_for_stats(self, stats);
             match best {
                 None => {
                     best = Some((stats.good, share));
@@ -339,7 +435,15 @@ impl MengerianEmergence {
     }
 
     pub fn leader_shares(&self) -> Option<SaleabilityLeader> {
-        self.tracker.leader_shares()
+        if self.config.two_layer_saleability {
+            self.tracker.medium_leader_shares()
+        } else {
+            self.tracker.leader_shares()
+        }
+    }
+
+    pub fn medium_leader_shares(&self) -> Option<SaleabilityLeader> {
+        self.tracker.medium_leader_shares()
     }
 
     pub fn current_money_good(&self) -> Option<GoodId> {
@@ -354,8 +458,21 @@ impl MengerianEmergence {
         self.tracker.acceptance_share_bps(good)
     }
 
+    /// The medium (re-trade) saleability share of `good` in basis points —
+    /// `indirect_acceptances / total_indirect_acceptances`. This is the
+    /// non-conflated metric two-layer leadership ranks on, distinct from the
+    /// combined-acceptance [`Self::saleability_bps`]. `Some(0)` when no indirect
+    /// acceptances have been observed yet.
+    pub fn medium_share_bps(&self, good: GoodId) -> Option<u16> {
+        self.tracker.medium_share_bps(good)
+    }
+
     pub fn provisional_leader(&self) -> Option<GoodId> {
         self.tracker.provisional_leader(&self.config)
+    }
+
+    pub fn provisional_media_candidates(&self) -> Vec<GoodId> {
+        self.tracker.provisional_media_candidates(&self.config)
     }
 
     /// The good currently latched as the stable saleability winner (the lab's
@@ -501,6 +618,8 @@ mod tests {
             allow_indirect_acceptance: true,
             multi_offer_medium: false,
             durability_aware_acceptance: false,
+            two_layer_saleability: false,
+            min_direct_use_acceptors: 0,
             marketability: Default::default(),
         });
 
@@ -528,6 +647,8 @@ mod tests {
             allow_indirect_acceptance: true,
             multi_offer_medium: false,
             durability_aware_acceptance: false,
+            two_layer_saleability: false,
+            min_direct_use_acceptors: 0,
             marketability: Default::default(),
         };
         let mut tracker = SaleabilityTracker::new(config.candidate_goods.clone());
@@ -558,6 +679,8 @@ mod tests {
             allow_indirect_acceptance: true,
             multi_offer_medium: false,
             durability_aware_acceptance: false,
+            two_layer_saleability: false,
+            min_direct_use_acceptors: 0,
             marketability: Default::default(),
         });
 
@@ -587,6 +710,8 @@ mod tests {
             allow_indirect_acceptance: true,
             multi_offer_medium: false,
             durability_aware_acceptance: false,
+            two_layer_saleability: false,
+            min_direct_use_acceptors: 0,
             marketability: Default::default(),
         });
 
@@ -643,6 +768,8 @@ mod tests {
             allow_indirect_acceptance: true,
             multi_offer_medium: false,
             durability_aware_acceptance: false,
+            two_layer_saleability: false,
+            min_direct_use_acceptors: 0,
             marketability: Default::default(),
         });
 
@@ -692,6 +819,20 @@ mod tests {
             "only the two IndirectFor acceptances are indirect"
         );
         assert_eq!(
+            salt.direct_acceptances, 1,
+            "the direct SALT trade is tracked separately"
+        );
+        assert_eq!(
+            salt.direct_acceptances + salt.indirect_acceptances,
+            salt.acceptances,
+            "the reason-specific counters partition total acceptances"
+        );
+        assert_eq!(
+            salt.direct_acceptor_agents,
+            &[AgentId(5)],
+            "the distinct DirectWant acceptor set is recorded sorted"
+        );
+        assert_eq!(
             salt.indirect_acceptor_agents,
             &[AgentId(1), AgentId(3)],
             "the distinct indirect acceptors are recorded sorted"
@@ -701,6 +842,72 @@ mod tests {
             &[CLOTH, ORE],
             "the distinct indirect target ends are recorded sorted by id"
         );
+    }
+
+    #[test]
+    fn medium_share_uses_indirect_denominator() {
+        let config = config(&[SALT, FOOD]);
+        let mut tracker = SaleabilityTracker::new(config.candidate_goods.clone());
+
+        assert_eq!(tracker.medium_share_bps(SALT), Some(0));
+        assert_eq!(tracker.medium_leader_shares(), None);
+
+        tracker.observe_trade(&indirect_trade(1, 2, WOOD, SALT, CLOTH));
+        tracker.observe_trade(&indirect_trade(3, 4, WOOD, FOOD, CLOTH));
+        tracker.observe_trade(&indirect_trade(5, 6, ORE, SALT, WOOD));
+        tracker.observe_trade(&trade(7, 8, ORE, FOOD));
+
+        assert_eq!(tracker.total_indirect_acceptances(), 3);
+        assert_eq!(tracker.medium_share_bps(SALT), Some(6_666));
+        assert_eq!(tracker.medium_share_bps(FOOD), Some(3_333));
+
+        let leader = tracker.medium_leader_shares().expect("medium leader");
+        assert_eq!(leader.good, SALT);
+        assert_eq!(leader.share_bps, 6_666);
+        assert_eq!(leader.runner_up_share_bps, 3_333);
+        assert!(!leader.tied_best);
+        assert_eq!(
+            snapshot(&tracker.snapshots(1, &config), SALT).medium_share_bps,
+            6_666
+        );
+    }
+
+    #[test]
+    fn two_layer_direct_floor_blocks_pure_medium() {
+        let config = MengerianConfig {
+            candidate_goods: vec![SALT, FOOD],
+            min_total_acceptances: 1,
+            promotion_threshold_bps: 1,
+            lead_margin_bps: 1,
+            min_acceptor_agents: 0,
+            min_counterpart_goods: 0,
+            stability_ticks: 1,
+            indirect_min_acceptance_share_bps: 1,
+            min_indirect_acceptances: 1,
+            min_indirect_acceptor_agents: 1,
+            min_indirect_target_goods: 1,
+            allow_indirect_acceptance: true,
+            multi_offer_medium: false,
+            durability_aware_acceptance: false,
+            two_layer_saleability: true,
+            min_direct_use_acceptors: 1,
+            marketability: Default::default(),
+        };
+        let mut tracker = SaleabilityTracker::new(config.candidate_goods.clone());
+
+        tracker.observe_trade(&indirect_trade(1, 2, WOOD, SALT, CLOTH));
+
+        assert_eq!(tracker.medium_leader_shares().expect("leader").good, SALT);
+        assert_eq!(tracker.winner(&config), None);
+        assert!(
+            tracker.provisional_media_candidates(&config).is_empty(),
+            "indirect volume alone must not create a two-layer candidate"
+        );
+
+        tracker.observe_trade(&trade(3, 4, WOOD, SALT));
+
+        assert_eq!(tracker.provisional_media_candidates(&config), vec![SALT]);
+        assert_eq!(tracker.winner(&config), Some(SALT));
     }
 
     #[test]
@@ -724,6 +931,8 @@ mod tests {
             allow_indirect_acceptance: true,
             multi_offer_medium: false,
             durability_aware_acceptance: false,
+            two_layer_saleability: false,
+            min_direct_use_acceptors: 0,
             marketability: Default::default(),
         });
 
@@ -770,6 +979,8 @@ mod tests {
             allow_indirect_acceptance: true,
             multi_offer_medium: false,
             durability_aware_acceptance: false,
+            two_layer_saleability: false,
+            min_direct_use_acceptors: 0,
             marketability: Default::default(),
         });
 
@@ -841,6 +1052,8 @@ mod tests {
             allow_indirect_acceptance: true,
             multi_offer_medium: false,
             durability_aware_acceptance: false,
+            two_layer_saleability: false,
+            min_direct_use_acceptors: 0,
             marketability: Default::default(),
         }
     }

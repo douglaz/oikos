@@ -136,14 +136,15 @@ pub fn render_saleability_tape(snapshots: &[SaleabilitySnapshot]) -> String {
     sorted.sort_by_key(|snapshot| (snapshot.tick, snapshot.good));
 
     let mut out = String::new();
-    out.push_str("tick,good,acceptances,acceptance_share_bps,acceptor_agents,counterpart_goods,eligible,winner\n");
+    out.push_str("tick,good,acceptances,acceptance_share_bps,medium_share_bps,acceptor_agents,counterpart_goods,eligible,winner\n");
     for snapshot in sorted {
         out.push_str(&format!(
-            "{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{}\n",
             snapshot.tick,
             good_name(snapshot.good),
             snapshot.acceptances,
             snapshot.acceptance_share_bps,
+            snapshot.medium_share_bps,
             snapshot.acceptor_agents,
             snapshot.counterpart_goods,
             snapshot.eligible,

@@ -6,7 +6,7 @@ use crate::agent::{Agent, AgentId, Role, TickProvisions, WantKind};
 use crate::agio::AgioSchedule;
 use crate::arena::AgentArena;
 use crate::bank::{Bank, BankPolicy};
-use crate::barter::{BarterBook, BarterOffer, BarterReason, BarterTrade};
+use crate::barter::{BarterBook, BarterOffer, BarterReason, BarterTrade, SaleabilityContext};
 use crate::bundle::{
     appraise_project_bundle_for_money, ProjectBundleCandidate, ProjectBundleEndowment,
 };
@@ -798,15 +798,17 @@ impl Society {
             tick_phase = V2Phase::Barter;
             expired_orders = self.barter_book.expire_offers(self.tick.0);
             self.run_direct_pass_without_money();
-            let provisional_leader = self.v2_provisional_leader();
-            self.barter_book
-                .cancel_invalid(self.agents.as_slice(), provisional_leader);
-            self.generate_direct_barter_offers(provisional_leader);
-            self.generate_indirect_barter_offers(provisional_leader);
-            tick_barter_trades = self.barter_book.clear_matches_with_provisional_leader(
+            let saleability_context = self.v2_saleability_context();
+            self.barter_book.cancel_invalid_with_saleability_context(
+                self.agents.as_slice(),
+                &saleability_context,
+            );
+            self.generate_direct_barter_offers(&saleability_context);
+            self.generate_indirect_barter_offers(&saleability_context);
+            tick_barter_trades = self.barter_book.clear_matches_with_saleability_context(
                 self.agents.as_mut_slice(),
                 self.tick.0,
-                provisional_leader,
+                &saleability_context,
             );
             self.v2_observe_barter_trades(&tick_barter_trades);
             let snapshots = self.v2_saleability_snapshots();
@@ -2048,7 +2050,11 @@ impl Society {
         }
     }
 
-    fn generate_direct_barter_offers(&mut self, provisional_leader: Option<GoodId>) {
+    fn generate_direct_barter_offers(&mut self, saleability_context: &SaleabilityContext) {
+        let SaleabilityContext::Single(provisional_leader) = saleability_context else {
+            self.generate_candidate_direct_barter_offers(saleability_context);
+            return;
+        };
         for order_pos in 0..self.agent_order.len() {
             let agent_index = self.agent_order[order_pos];
             let agent_id = self.agents[agent_index].id;
@@ -2059,14 +2065,20 @@ impl Society {
                 .collect::<Vec<_>>();
             if let Some(leader) = provisional_leader {
                 if self.multi_offer_medium {
-                    self.cancel_non_lane_barter_offers_for_agent(agent_id, leader);
+                    self.cancel_non_lane_barter_offers_for_agent(agent_id, *leader);
                     self.post_first_direct_leader_offer(
                         agent_id,
                         &receive_goods,
                         &give_goods,
-                        leader,
+                        *leader,
+                        saleability_context,
                     );
-                    self.post_first_medium_spend_offer(agent_id, &receive_goods, leader);
+                    self.post_first_medium_spend_offer(
+                        agent_id,
+                        &receive_goods,
+                        *leader,
+                        saleability_context,
+                    );
                     continue;
                 }
                 if self.agent_has_live_barter_offer(agent_id) {
@@ -2076,8 +2088,8 @@ impl Society {
                     agent_id,
                     &receive_goods,
                     &give_goods,
-                    provisional_leader,
-                    Some(leader),
+                    saleability_context,
+                    Some(*leader),
                 ) {
                     continue;
                 }
@@ -2098,9 +2110,48 @@ impl Society {
                 agent_id,
                 &receive_goods,
                 &give_goods,
-                provisional_leader,
+                saleability_context,
                 None,
             );
+        }
+    }
+
+    fn generate_candidate_direct_barter_offers(
+        &mut self,
+        saleability_context: &SaleabilityContext,
+    ) {
+        let SaleabilityContext::Candidates(candidates) = saleability_context else {
+            return;
+        };
+        if candidates.is_empty() {
+            self.generate_direct_barter_offers(&SaleabilityContext::single(None));
+            return;
+        }
+        for order_pos in 0..self.agent_order.len() {
+            let agent_index = self.agent_order[order_pos];
+            let agent_id = self.agents[agent_index].id;
+            let receive_goods = self.near_unsatisfied_goods(agent_index);
+            let give_goods = self.agents[agent_index]
+                .stock
+                .positive_goods()
+                .collect::<Vec<_>>();
+
+            self.cancel_non_candidate_lane_barter_offers_for_agent(agent_id, candidates);
+            for candidate in candidates {
+                self.post_first_direct_leader_offer(
+                    agent_id,
+                    &receive_goods,
+                    &give_goods,
+                    *candidate,
+                    saleability_context,
+                );
+                self.post_first_medium_spend_offer(
+                    agent_id,
+                    &receive_goods,
+                    *candidate,
+                    saleability_context,
+                );
+            }
         }
     }
 
@@ -2109,7 +2160,7 @@ impl Society {
         agent: AgentId,
         receive_goods: &[GoodId],
         give_goods: &[GoodId],
-        provisional_leader: Option<GoodId>,
+        saleability_context: &SaleabilityContext,
         required_leader: Option<GoodId>,
     ) -> bool {
         for receive_good in receive_goods {
@@ -2124,7 +2175,7 @@ impl Society {
                     *give_good,
                     *receive_good,
                     BarterReason::DirectWant,
-                    provisional_leader,
+                    saleability_context,
                 ) {
                     return true;
                 }
@@ -2139,6 +2190,7 @@ impl Society {
         receive_goods: &[GoodId],
         give_goods: &[GoodId],
         leader: GoodId,
+        saleability_context: &SaleabilityContext,
     ) {
         if !receive_goods.contains(&leader) {
             return;
@@ -2153,7 +2205,7 @@ impl Society {
                 *give_good,
                 leader,
                 BarterReason::DirectWant,
-                Some(leader),
+                saleability_context,
             ) {
                 return;
             }
@@ -2167,7 +2219,7 @@ impl Society {
             .into_iter()
             .filter(|offer| matches!(offer.reason, BarterReason::DirectWant))
             .collect();
-        self.restore_barter_offers(previous_direct, Some(leader));
+        self.restore_barter_offers(previous_direct, saleability_context);
     }
 
     fn post_first_medium_spend_offer(
@@ -2175,6 +2227,7 @@ impl Society {
         agent: AgentId,
         receive_goods: &[GoodId],
         leader: GoodId,
+        saleability_context: &SaleabilityContext,
     ) {
         let previous = self.cancel_live_barter_spend_offers_for_agent(agent, leader);
         for receive_good in receive_goods {
@@ -2186,18 +2239,15 @@ impl Society {
                 leader,
                 *receive_good,
                 BarterReason::DirectWant,
-                Some(leader),
+                saleability_context,
             ) {
                 return;
             }
         }
-        self.restore_barter_offers(previous, Some(leader));
+        self.restore_barter_offers(previous, saleability_context);
     }
 
-    fn generate_indirect_barter_offers(&mut self, provisional_leader: Option<GoodId>) {
-        let Some(leader) = provisional_leader else {
-            return;
-        };
+    fn generate_indirect_barter_offers(&mut self, saleability_context: &SaleabilityContext) {
         // S9 control: with indirect acceptance gated off, no agent posts an
         // `IndirectFor` offer — the leader still leads and still trades DIRECTLY, but
         // no indirect volume can accrue. Under a positive indirect-breadth gate this
@@ -2206,12 +2256,34 @@ impl Society {
         if !self.allow_indirect_acceptance() {
             return;
         }
+        match saleability_context {
+            SaleabilityContext::Single(Some(leader)) => {
+                self.generate_single_indirect_barter_offers(*leader, saleability_context);
+            }
+            SaleabilityContext::Single(None) => {}
+            SaleabilityContext::Candidates(candidates) => {
+                self.generate_candidate_indirect_barter_offers(candidates, saleability_context);
+            }
+        }
+    }
+
+    fn generate_single_indirect_barter_offers(
+        &mut self,
+        leader: GoodId,
+        saleability_context: &SaleabilityContext,
+    ) {
         for order_pos in 0..self.agent_order.len() {
             let agent_index = self.agent_order[order_pos];
             let agent_id = self.agents[agent_index].id;
             let target_goods = self.near_unsatisfied_goods(agent_index);
             if self.multi_offer_medium {
-                self.post_first_medium_sell_offer(agent_index, agent_id, &target_goods, leader);
+                self.post_first_medium_sell_offer(
+                    agent_index,
+                    agent_id,
+                    &target_goods,
+                    leader,
+                    saleability_context,
+                );
                 continue;
             }
             if self.agent_has_live_barter_offer(agent_id)
@@ -2253,7 +2325,7 @@ impl Society {
                         *give_good,
                         leader,
                         BarterReason::IndirectFor { target },
-                        provisional_leader,
+                        saleability_context,
                     ) {
                         posted = true;
                         break;
@@ -2266,12 +2338,37 @@ impl Society {
         }
     }
 
+    fn generate_candidate_indirect_barter_offers(
+        &mut self,
+        candidates: &[GoodId],
+        saleability_context: &SaleabilityContext,
+    ) {
+        if candidates.is_empty() {
+            return;
+        }
+        for order_pos in 0..self.agent_order.len() {
+            let agent_index = self.agent_order[order_pos];
+            let agent_id = self.agents[agent_index].id;
+            let target_goods = self.near_unsatisfied_goods(agent_index);
+            for candidate in candidates {
+                self.post_first_medium_sell_offer(
+                    agent_index,
+                    agent_id,
+                    &target_goods,
+                    *candidate,
+                    saleability_context,
+                );
+            }
+        }
+    }
+
     fn post_first_medium_sell_offer(
         &mut self,
         agent_index: usize,
         agent_id: AgentId,
         target_goods: &[GoodId],
         leader: GoodId,
+        saleability_context: &SaleabilityContext,
     ) {
         if target_goods.contains(&leader) {
             // Edge case (b): the agent's relevant want is for the leader DIRECTLY,
@@ -2302,18 +2399,34 @@ impl Society {
                 ) {
                     continue;
                 }
+                let held = self.agents[agent_index].stock.get(*give_good);
+                let reserved = self.barter_book.reserved_qty(agent_id, *give_good);
+                let displaced_direct = if held <= reserved {
+                    self.cancel_live_barter_offers_for_agent_matching(agent_id, |offer| {
+                        offer.give_good == *give_good
+                            && !matches!(offer.reason, BarterReason::IndirectFor { .. })
+                    })
+                } else {
+                    Vec::new()
+                };
+                let reserved = self.barter_book.reserved_qty(agent_id, *give_good);
+                if held <= reserved {
+                    self.restore_barter_offers(displaced_direct, saleability_context);
+                    continue;
+                }
                 if self.post_barter_offer(
                     agent_id,
                     *give_good,
                     leader,
                     BarterReason::IndirectFor { target: *target },
-                    Some(leader),
+                    saleability_context,
                 ) {
                     return;
                 }
+                self.restore_barter_offers(displaced_direct, saleability_context);
             }
         }
-        self.restore_barter_offers(previous, Some(leader));
+        self.restore_barter_offers(previous, saleability_context);
     }
 
     fn replace_live_barter_offers_for_agent_with(
@@ -2322,7 +2435,7 @@ impl Society {
         give_good: GoodId,
         receive_good: GoodId,
         reason: BarterReason,
-        provisional_leader: Option<GoodId>,
+        saleability_context: &SaleabilityContext,
     ) -> bool {
         let previous = self
             .barter_book
@@ -2335,11 +2448,11 @@ impl Society {
             self.barter_book.cancel_offer(offer.seq);
         }
 
-        if self.post_barter_offer(agent, give_good, receive_good, reason, provisional_leader) {
+        if self.post_barter_offer(agent, give_good, receive_good, reason, saleability_context) {
             return true;
         }
 
-        self.restore_barter_offers(previous, provisional_leader);
+        self.restore_barter_offers(previous, saleability_context);
         false
     }
 
@@ -2355,6 +2468,21 @@ impl Society {
     fn is_medium_receive_leader_lane(offer: &BarterOffer, leader: GoodId) -> bool {
         offer.give_good != leader
             && offer.receive_good == leader
+            && matches!(
+                offer.reason,
+                BarterReason::DirectWant | BarterReason::IndirectFor { .. }
+            )
+    }
+
+    fn is_medium_spend_lane_for_candidates(offer: &BarterOffer, candidates: &[GoodId]) -> bool {
+        candidates.contains(&offer.give_good)
+            && offer.receive_good != offer.give_good
+            && matches!(offer.reason, BarterReason::DirectWant)
+    }
+
+    fn is_medium_receive_candidate_lane(offer: &BarterOffer, candidates: &[GoodId]) -> bool {
+        offer.give_good != offer.receive_good
+            && candidates.contains(&offer.receive_good)
             && matches!(
                 offer.reason,
                 BarterReason::DirectWant | BarterReason::IndirectFor { .. }
@@ -2391,6 +2519,17 @@ impl Society {
         self.cancel_live_barter_offers_for_agent_matching(agent, |offer| {
             !Self::is_medium_spend_lane(offer, leader)
                 && !Self::is_medium_receive_leader_lane(offer, leader)
+        });
+    }
+
+    fn cancel_non_candidate_lane_barter_offers_for_agent(
+        &mut self,
+        agent: AgentId,
+        candidates: &[GoodId],
+    ) {
+        self.cancel_live_barter_offers_for_agent_matching(agent, |offer| {
+            !Self::is_medium_spend_lane_for_candidates(offer, candidates)
+                && !Self::is_medium_receive_candidate_lane(offer, candidates)
         });
     }
 
@@ -2436,14 +2575,14 @@ impl Society {
     fn restore_barter_offers(
         &mut self,
         offers: Vec<BarterOffer>,
-        provisional_leader: Option<GoodId>,
+        saleability_context: &SaleabilityContext,
     ) {
         for offer in offers {
-            self.barter_book.post_offer_with_provisional_leader(
+            self.barter_book.post_offer_with_saleability_context(
                 self.agents.as_slice(),
                 offer,
                 self.tick.0,
-                provisional_leader,
+                saleability_context,
             );
         }
     }
@@ -2454,7 +2593,7 @@ impl Society {
         give_good: GoodId,
         receive_good: GoodId,
         reason: BarterReason,
-        provisional_leader: Option<GoodId>,
+        saleability_context: &SaleabilityContext,
     ) -> bool {
         if give_good == receive_good {
             return false;
@@ -2469,11 +2608,11 @@ impl Society {
             seq: self.seq,
             expires_tick: self.tick.0.saturating_add(ORDER_TTL),
         };
-        self.barter_book.post_offer_with_provisional_leader(
+        self.barter_book.post_offer_with_saleability_context(
             self.agents.as_slice(),
             offer,
             self.tick.0,
-            provisional_leader,
+            saleability_context,
         )
     }
 
@@ -2488,10 +2627,17 @@ impl Society {
         self.agents[agent_index].near_unsatisfied_goods_without_money()
     }
 
-    fn v2_provisional_leader(&self) -> Option<GoodId> {
+    fn v2_saleability_context(&self) -> SaleabilityContext {
         match &self.money {
-            MarketMoneyState::Emergent(emergence) => emergence.provisional_leader(),
-            MarketMoneyState::Designated(_) => None,
+            MarketMoneyState::Emergent(emergence)
+                if emergence.config().two_layer_saleability && self.multi_offer_medium =>
+            {
+                SaleabilityContext::candidates(emergence.provisional_media_candidates())
+            }
+            MarketMoneyState::Emergent(emergence) => {
+                SaleabilityContext::single(emergence.provisional_leader())
+            }
+            MarketMoneyState::Designated(_) => SaleabilityContext::single(None),
         }
     }
 
@@ -8335,6 +8481,8 @@ mod tests {
                 allow_indirect_acceptance: true,
                 multi_offer_medium: false,
                 durability_aware_acceptance: false,
+                two_layer_saleability: false,
+                min_direct_use_acceptors: 0,
                 marketability: Default::default(),
             }),
         });
@@ -8408,6 +8556,8 @@ mod tests {
                 allow_indirect_acceptance: true,
                 multi_offer_medium: false,
                 durability_aware_acceptance: false,
+                two_layer_saleability: false,
+                min_direct_use_acceptors: 0,
                 marketability: Default::default(),
             }),
         });
@@ -8469,6 +8619,101 @@ mod tests {
         })
     }
 
+    #[test]
+    fn two_layer_without_multi_offer_preserves_single_offer_context() {
+        let mut society = Society::from_scenario(MarketScenario {
+            name: "two-layer-one-offer-policy",
+            scenario: ScenarioName::MengerSaltMoney,
+            seed: 1,
+            periods: 1,
+            agents: vec![
+                two_lane_micro_agent(1, FOOD, WOOD),
+                two_lane_micro_agent(2, WOOD, CLOTH),
+                two_lane_micro_agent(3, CLOTH, FOOD),
+            ],
+            recipes: Vec::new(),
+            events: Vec::new(),
+            money: MarketMoneyConfig::Emergent(MengerianConfig {
+                candidate_goods: vec![FOOD, WOOD, CLOTH, SALT],
+                two_layer_saleability: true,
+                min_direct_use_acceptors: 0,
+                multi_offer_medium: false,
+                ..MengerianConfig::default()
+            }),
+        });
+
+        let context = society.v2_saleability_context();
+        assert_eq!(context, SaleabilityContext::single(None));
+
+        society.generate_direct_barter_offers(&context);
+        society.generate_indirect_barter_offers(&context);
+
+        for agent in [AgentId(1), AgentId(2), AgentId(3)] {
+            assert!(
+                society
+                    .live_barter_offers()
+                    .iter()
+                    .filter(|offer| offer.agent == agent)
+                    .count()
+                    <= 1,
+                "multi_offer_medium=false must retain the one-live-offer policy"
+            );
+        }
+    }
+
+    #[test]
+    fn candidate_sell_lane_skips_extra_candidate_when_surplus_stock_is_reserved() {
+        let mut stock = Stock::new(CLOTH.0);
+        stock.add(FOOD, 2);
+        let agent = Agent {
+            id: AgentId(1),
+            scale: scale_entries(&[(WantKind::Good(WOOD), Horizon::Next, 1)]),
+            stock,
+            gold: Gold::ZERO,
+            labor_capacity: 0,
+            hunger_deficit: 0,
+            roles: vec![Role::Trader],
+            expect: Vec::new(),
+        };
+        let mut society = Society::from_scenario(MarketScenario {
+            name: "candidate-sell-lane-reservation",
+            scenario: ScenarioName::MengerSaltMoney,
+            seed: 1,
+            periods: 1,
+            agents: vec![agent],
+            recipes: Vec::new(),
+            events: Vec::new(),
+            money: MarketMoneyConfig::Emergent(MengerianConfig {
+                candidate_goods: vec![GOLD, FOOD, WOOD, SALT, CLOTH],
+                two_layer_saleability: true,
+                min_direct_use_acceptors: 0,
+                multi_offer_medium: true,
+                ..MengerianConfig::default()
+            }),
+        });
+        let context = SaleabilityContext::candidates(vec![SALT, CLOTH, GOLD]);
+        let target_goods = vec![WOOD];
+
+        society.post_first_medium_sell_offer(0, AgentId(1), &target_goods, SALT, &context);
+        society.post_first_medium_sell_offer(0, AgentId(1), &target_goods, CLOTH, &context);
+        assert_eq!(society.barter_book.reserved_qty(AgentId(1), FOOD), 2);
+
+        society.post_first_medium_sell_offer(0, AgentId(1), &target_goods, GOLD, &context);
+
+        let receive_goods = society
+            .live_barter_offers()
+            .iter()
+            .filter(|offer| {
+                offer.agent == AgentId(1)
+                    && offer.give_good == FOOD
+                    && matches!(offer.reason, BarterReason::IndirectFor { target } if target == WOOD)
+            })
+            .map(|offer| offer.receive_good)
+            .collect::<Vec<_>>();
+        assert_eq!(receive_goods, vec![SALT, CLOTH]);
+        assert_eq!(society.barter_book.reserved_qty(AgentId(1), FOOD), 2);
+    }
+
     fn live_offer_lane_counts(society: &Society, agent: AgentId) -> (usize, usize) {
         let mut spend = 0;
         let mut sell = 0;
@@ -8507,8 +8752,9 @@ mod tests {
     #[test]
     fn two_lane_microtest_off_deadlocks_on_clears() {
         let mut off = two_lane_micro_society(false);
-        off.generate_direct_barter_offers(Some(SALT));
-        off.generate_indirect_barter_offers(Some(SALT));
+        let salt_context = SaleabilityContext::single(Some(SALT));
+        off.generate_direct_barter_offers(&salt_context);
+        off.generate_indirect_barter_offers(&salt_context);
         assert_eq!(off.live_barter_offer_count(), 3);
         assert!(
             off.live_barter_offers().iter().all(|offer| matches!(
@@ -8517,18 +8763,18 @@ mod tests {
             ) && offer.receive_good == SALT),
             "legacy replacement leaves only sell-for-SALT offers live"
         );
-        let off_trades = off.barter_book.clear_matches_with_provisional_leader(
+        let off_trades = off.barter_book.clear_matches_with_saleability_context(
             off.agents.as_mut_slice(),
             off.tick.0,
-            Some(SALT),
+            &salt_context,
         );
         off.v2_observe_barter_trades(&off_trades);
         assert_eq!(off_trades.len(), 0);
         assert_eq!(salt_indirect_acceptances(&off), 0);
 
         let mut on = two_lane_micro_society(true);
-        on.generate_direct_barter_offers(Some(SALT));
-        on.generate_indirect_barter_offers(Some(SALT));
+        on.generate_direct_barter_offers(&salt_context);
+        on.generate_indirect_barter_offers(&salt_context);
         assert_eq!(on.live_barter_offer_count(), 6);
         for id in [AgentId(1), AgentId(2), AgentId(3)] {
             assert_eq!(
@@ -8537,10 +8783,10 @@ mod tests {
                 "the spend and sell lanes must coexist for agent {id:?}"
             );
         }
-        let on_trades = on.barter_book.clear_matches_with_provisional_leader(
+        let on_trades = on.barter_book.clear_matches_with_saleability_context(
             on.agents.as_mut_slice(),
             on.tick.0,
-            Some(SALT),
+            &salt_context,
         );
         on.v2_observe_barter_trades(&on_trades);
         assert_eq!(on_trades.len(), 3);
@@ -8605,8 +8851,9 @@ mod tests {
             }),
         });
 
-        society.generate_direct_barter_offers(Some(SALT));
-        society.generate_indirect_barter_offers(Some(SALT));
+        let salt_context = SaleabilityContext::single(Some(SALT));
+        society.generate_direct_barter_offers(&salt_context);
+        society.generate_indirect_barter_offers(&salt_context);
 
         assert!(society.live_barter_offers().iter().any(|offer| {
             offer.agent == AgentId(1)
@@ -8620,10 +8867,10 @@ mod tests {
             .filter(|offer| offer.agent == AgentId(1))
             .all(|offer| !matches!(offer.reason, BarterReason::IndirectFor { .. })));
 
-        let trades = society.barter_book.clear_matches_with_provisional_leader(
+        let trades = society.barter_book.clear_matches_with_saleability_context(
             society.agents.as_mut_slice(),
             society.tick.0,
-            Some(SALT),
+            &salt_context,
         );
         assert_eq!(trades.len(), 1);
         assert!(matches!(trades[0].a_reason, BarterReason::DirectWant));
@@ -8717,7 +8964,7 @@ mod tests {
             "cancel_invalid(.., None) leaves both direct lanes live"
         );
 
-        society.generate_direct_barter_offers(None);
+        society.generate_direct_barter_offers(&SaleabilityContext::single(None));
 
         assert_eq!(
             society

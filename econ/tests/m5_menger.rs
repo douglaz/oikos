@@ -150,7 +150,7 @@ fn saleability_tape_has_stable_header() {
 
     assert_eq!(
         output.lines().next(),
-        Some("tick,good,acceptances,acceptance_share_bps,acceptor_agents,counterpart_goods,eligible,winner")
+        Some("tick,good,acceptances,acceptance_share_bps,medium_share_bps,acceptor_agents,counterpart_goods,eligible,winner")
     );
 }
 

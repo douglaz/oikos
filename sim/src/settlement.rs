@@ -10378,20 +10378,37 @@ impl Settlement {
         self.society.money_promoted_at_tick()
     }
 
-    /// The current provisional saleability leader — the good the barter book is
-    /// routing indirect offers through as it converges on a money good. `None`
-    /// before any good leads, or for a non-emergent settlement.
+    /// The current single provisional saleability leader as it converges on a
+    /// money good. `None` before any good leads, or for a non-emergent settlement.
+    ///
+    /// Note: under `two_layer_saleability` the barter book routes indirect offers
+    /// through the full `provisional_media_candidates` set, which is gated only by
+    /// the direct-use floor; this leader is the more strictly gated single winner
+    /// (it also requires the medium-share / lead-margin discipline), so the two can
+    /// diverge during bootstrap.
     pub fn saleability_leader(&self) -> Option<GoodId> {
         self.society.saleability_provisional_leader()
     }
 
-    /// The realized acceptance share (basis points) of `good` in the running
-    /// saleability tally, or `None` for a non-emergent settlement. Read-only
-    /// surfacing of the lab's tracker for the viewer.
+    /// The realized **total** acceptance share (basis points) of `good` in the
+    /// running saleability tally — direct and medium acceptances conflated. `None`
+    /// for a non-emergent settlement. Read-only surfacing of the lab's tracker for
+    /// the viewer. Under `two_layer_saleability`, prefer [`Self::medium_saleability_bps`]
+    /// for the non-conflated medium share the leadership race actually reads.
     pub fn saleability_bps(&self, good: GoodId) -> Option<u16> {
         self.society
             .emergence()
             .and_then(|e| e.saleability_bps(good))
+    }
+
+    /// The realized **medium** (re-trade) saleability share (basis points) of
+    /// `good` — `indirect_acceptances / total_indirect_acceptances`, the
+    /// non-conflated metric two-layer leadership ranks on. `None` for a
+    /// non-emergent settlement. Read-only surfacing of the lab's tracker.
+    pub fn medium_saleability_bps(&self, good: GoodId) -> Option<u16> {
+        self.society
+            .emergence()
+            .and_then(|e| e.medium_share_bps(good))
     }
 
     /// Total realized barter trades over the run so far (the emergent camp's
@@ -14692,6 +14709,7 @@ fn scenario_name_tag(name: ScenarioName) -> u8 {
         ScenarioName::MengerSaltMoney => 42,
         ScenarioName::MengerGoldMoney => 43,
         ScenarioName::MengerMarketabilityDurability => 44,
+        ScenarioName::MengerTwoLayerSaleability => 45,
     }
 }
 
@@ -14843,6 +14861,7 @@ fn push_option_good_bytes(out: &mut Vec<u8>, good: Option<GoodId>) {
 fn push_emergence_runtime_bytes(out: &mut Vec<u8>, emergence: &MengerianEmergence) {
     push_option_good_bytes(out, emergence.stable_winner());
     out.extend_from_slice(&emergence.stable_winner_ticks().to_le_bytes());
+    let two_layer_saleability = emergence.config().two_layer_saleability;
     let tracker = emergence.tracker();
     out.extend_from_slice(&tracker.total_acceptances().to_le_bytes());
     let candidates = tracker.candidate_saleability();
@@ -14870,6 +14889,13 @@ fn push_emergence_runtime_bytes(out: &mut Vec<u8>, emergence: &MengerianEmergenc
         out.extend_from_slice(&(candidate.indirect_target_goods.len() as u32).to_le_bytes());
         for good in candidate.indirect_target_goods {
             out.extend_from_slice(&good.0.to_le_bytes());
+        }
+        if two_layer_saleability {
+            out.extend_from_slice(&candidate.direct_acceptances.to_le_bytes());
+            out.extend_from_slice(&(candidate.direct_acceptor_agents.len() as u32).to_le_bytes());
+            for agent in candidate.direct_acceptor_agents {
+                out.extend_from_slice(&agent.0.to_le_bytes());
+            }
         }
     }
 }
@@ -14917,6 +14943,10 @@ fn push_mengerian_config_bytes(out: &mut Vec<u8>, menger: &MengerianConfig) {
             out.extend_from_slice(&marketability.decay_bps.to_le_bytes());
             out.extend_from_slice(&marketability.carry_cost.to_le_bytes());
         }
+    }
+    if menger.two_layer_saleability {
+        out.push(1);
+        out.extend_from_slice(&menger.min_direct_use_acceptors.to_le_bytes());
     }
 }
 
@@ -15089,6 +15119,7 @@ mod tests {
             ScenarioName::MengerSaltMoney,
             ScenarioName::MengerGoldMoney,
             ScenarioName::MengerMarketabilityDurability,
+            ScenarioName::MengerTwoLayerSaleability,
         ];
         for (expected, scenario) in scenarios.into_iter().enumerate() {
             assert_eq!(scenario_name_tag(scenario), expected as u8);

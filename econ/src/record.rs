@@ -25,6 +25,13 @@ pub struct V2Record {
     pub barter_trades: u32,
     pub spot_trades: u32,
     pub candidate_good: Option<GoodId>,
+    /// Saleability share of the leading candidate and its runner-up, in basis
+    /// points. These track the leadership metric, which is flag-dependent:
+    /// under `two_layer_saleability` they carry the MEDIUM (re-trade) share
+    /// (`indirect_acceptances / total_indirect_acceptances`), since the
+    /// leadership race is the medium race; otherwise they carry the combined
+    /// total-acceptance share. Read alongside `money_good`/`candidate_good`,
+    /// not as a fixed metric across configs.
     pub candidate_share_bps: Option<u16>,
     pub runner_up_share_bps: Option<u16>,
     pub total_money_units: Gold,

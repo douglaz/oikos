@@ -586,6 +586,8 @@ fn build_scenario(
         allow_indirect_acceptance: true,
         multi_offer_medium: false,
         durability_aware_acceptance: false,
+        two_layer_saleability: false,
+        min_direct_use_acceptors: 0,
         marketability: Default::default(),
     };
 
