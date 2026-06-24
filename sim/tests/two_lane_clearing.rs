@@ -344,8 +344,12 @@ fn canonical_bytes_include_durability_aware_marketability() {
     );
     let active = Settlement::generate(7, &active_cfg);
 
-    let mut table_only_cfg = SettlementConfig::frontier_cycle();
-    table_only_cfg
+    // A marketability table populated while the lever is OFF is behaviour-inert:
+    // the agent gate never reads it, so future behaviour is identical to the
+    // empty default and the digest must match (mirroring the `multi_offer_medium`
+    // "appended only when ON" identity invariant).
+    let mut inert_table_cfg = SettlementConfig::frontier_cycle();
+    inert_table_cfg
         .barter
         .as_mut()
         .expect("barter overlay")
@@ -357,11 +361,15 @@ fn canonical_bytes_include_durability_aware_marketability() {
             carry_cost: 1,
         },
     );
-    let table_only = Settlement::generate(7, &table_only_cfg);
+    let inert_table = Settlement::generate(7, &inert_table_cfg);
 
     assert_eq!(base.canonical_bytes(), explicit_empty.canonical_bytes());
     assert_ne!(base.canonical_bytes(), active.canonical_bytes());
-    assert_ne!(base.canonical_bytes(), table_only.canonical_bytes());
+    assert_eq!(
+        base.canonical_bytes(),
+        inert_table.canonical_bytes(),
+        "a flag-off marketability table has no future behaviour, so it must not split the digest"
+    );
 }
 
 #[test]
