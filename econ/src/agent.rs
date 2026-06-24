@@ -494,8 +494,9 @@ impl Agent {
         {
             return false;
         }
-        if durability_aware_acceptance {
-            let _ = marketability.good(receive_good);
+        if durability_aware_acceptance && !marketability.can_cover_holding_period(receive_good, qty)
+        {
+            return false;
         }
 
         let before = barter_provisioning(&self.scale, stock);
