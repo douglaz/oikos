@@ -294,14 +294,28 @@ slice has already produced a deep finding that re-planned the rest:
   consumption* acceptance still dominates the share, so it keeps the lead. Money emerges because a good
   is more marketable *in exchange*, not because it is eaten often — and total-acceptance-share, a useful
   early proxy, is too crude to express that.
-- **The corrected next step — two-layer Mengerian saleability (S21b).** Separate (i) *direct-use
-  saleability* as the **non-circular eligibility floor** (a good must have real non-monetary demand to
-  be a candidate) from (ii) *medium-saleability* — actual `IndirectFor`/re-trade acceptances across
-  targets and agents — driving *leadership/promotion*. The circularity trap ("accepted as money because
-  accepted as money") is avoided by keeping direct-use as the eligibility floor and letting observed
-  *pre-money indirect* trades determine monetary leadership. Only then does open-colony integration
-  (on-market survival + terminal consumption) become a fair test.
-- **Then:** open survival under two-lane → full open-colony money; later, endogenizing the clearing
+- **S21b — Two-layer Mengerian saleability (the resolution of the S21a finding).** Saleability is
+  split into two layers: (i) *direct-use saleability* — the count of **distinct agents who accept a
+  good for itself** (`DirectWant`) — is the **non-circular eligibility floor** (the regression-theorem
+  anchor: a good needs real non-monetary demand to be a candidate); (ii) *medium-saleability* —
+  `indirect_acceptances / total_indirect_acceptances`, the observed `IndirectFor`/re-trade volume —
+  drives *leadership and promotion*. The circularity trap ("money because money") is avoided because
+  eligibility rests on pre-monetary direct demand while leadership rests on **observed pre-promotion
+  indirect trades that are open to every eligible candidate** (a `SaleabilityContext::Candidates` set,
+  not a single preselected leader; agents' own S21a holding-rule declines suppress bad media). **Result
+  (controlled scenario):** with a perishable universal necessity present, the necessity keeps the
+  *total*-acceptance lead but the durable commodity becomes the *medium* leader and **promotes to
+  money** — the exact failure mode of S18/S21a, now inverted. A hand-built test proves the floor is a
+  real gate (a medium leader is withheld from promotion until it clears the direct-use floor), so the
+  separation is genuinely non-circular. *Honest scope (Codex review-of-results, PASS-with-caveats):*
+  this is a controlled econ-level proof of the **metric**, on a deliberately permissive promotion
+  scenario; it is **not** yet fully-open discovery in a rich colony — candidate-mode direct discovery
+  is **path-dependent** (once the eligible candidate set is non-empty, a good that crosses the
+  direct-use floor *late* can be starved of further direct offers). That path-dependence is a
+  documented limitation to fix where it actually bites: open-colony integration.
+- **Then (the capstone, still ahead):** open survival under two-lane + two-layer saleability — embed
+  this into a rich *open* colony with on-market survival and terminal consumption, fixing the
+  open-discovery path-dependence in the scenario that exercises it; later, endogenizing the clearing
   institution and richer marketability. (Robustness for the in-cycle result is done — §6.)
 
 ---
@@ -325,3 +339,4 @@ slice has already produced a deep finding that re-planned the rest:
 | S19 | Imperfect-double-coincidence cycle | finding: token *leads* but clearing deadlocks |
 | S20 | Two-lane bilateral order book | **resolution: endogenous token money emerges** |
 | S21a | Marketability / carrying cost (open-colony slice) | finding: lever cuts *as-a-means* acceptance, but total-saleability conflates consumption with medium use → two-layer metric needed |
+| S21b | Two-layer Mengerian saleability | **resolution: direct-use eligibility floor + medium-saleability leadership → the durable medium promotes; non-circular (controlled scenario)** |

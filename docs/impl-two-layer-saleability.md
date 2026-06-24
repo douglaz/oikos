@@ -1,6 +1,8 @@
 # impl-25 — S21b: Two-Layer Mengerian Saleability (direct-use eligibility floor + medium-saleability leadership)
 
-Status: SPEC-READY (Codex spec-review round 2: SPEC-READY, no P0/P1; P2/P3 guardrails folded in)
+Status: LANDED @ `4e48bb4` (Codex review-of-results: PASS-with-caveats — controlled metric result
+genuine and non-circular; open-discovery path-dependence is a documented follow-on for open-colony).
+Spec-review history: round 1 NEEDS-REVISION → round 2 SPEC-READY (P2/P3 guardrails folded in).
 Branch: `feat/two-layer-saleability`
 Base: master @ `58b8779` (S21a landed)
 
