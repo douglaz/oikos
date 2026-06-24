@@ -1,10 +1,12 @@
-use econ::agent::AgentId;
+use econ::agent::{AgentId, WantKind};
 use econ::barter::{BarterReason, BarterTrade};
-use econ::good::{GoodId, CLOTH, FOOD, ORE, SALT, WOOD};
+use econ::good::{GoodId, Horizon, CLOTH, FOOD, ORE, SALT, WOOD};
 use econ::menger::{MengerianEmergence, SaleabilitySnapshot};
 use econ::money::{MarketMoneyConfig, MengerianConfig};
 use econ::record::V2Record;
-use econ::scenario::{builtin_market_scenario, MarketScenario, ScenarioName};
+use econ::scenario::{
+    builtin_market_scenario, scale, v2_agent, v2_stock, MarketScenario, ScenarioName,
+};
 use econ::society::Society;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -201,6 +203,91 @@ fn two_layer_run_is_deterministic() {
     let second = run_trace(two_layer_scenario(true));
 
     assert_eq!(first, second);
+}
+
+/// A controlled candidate-mode scenario built to exercise the S21c path-dependence:
+/// FOOD and WOOD cross the direct-use floor at tick 1 (so candidate mode is active from
+/// tick 2), while a below-floor good (ORE) needs a SECOND distinct direct acceptor that
+/// can only act in candidate mode. ORE seller O1 holds 2 ORE and trades one per tick;
+/// A1 acquires ORE at tick 1 (pre-candidate), A2 must acquire it later — and A2 holds and
+/// wants only below-floor goods (CLOTH/ORE), so without the legacy direct-discovery lane
+/// it posts no offer once candidates exist and ORE stalls at one acceptor.
+fn late_crosser_scenario() -> MarketScenario {
+    let mut scenario = builtin_market_scenario(ScenarioName::MengerTwoLayerSaleability);
+    scenario.periods = 6;
+    scenario.agents = vec![
+        // FOOD/WOOD makers — both cross the floor at tick 1 (2 distinct acceptors each).
+        v2_agent(
+            1,
+            v2_stock(0, 1, 0, 0, 0),
+            scale(&[(WantKind::Good(FOOD), Horizon::Now, 1)]),
+        ),
+        v2_agent(
+            2,
+            v2_stock(0, 1, 0, 0, 0),
+            scale(&[(WantKind::Good(FOOD), Horizon::Now, 1)]),
+        ),
+        v2_agent(
+            3,
+            v2_stock(1, 0, 0, 0, 0),
+            scale(&[(WantKind::Good(WOOD), Horizon::Now, 1)]),
+        ),
+        v2_agent(
+            4,
+            v2_stock(1, 0, 0, 0, 0),
+            scale(&[(WantKind::Good(WOOD), Horizon::Now, 1)]),
+        ),
+        // Below-floor ORE/CLOTH agents: O1 sells ORE one-per-tick; A1, A2 each want ORE.
+        v2_agent(
+            5,
+            v2_stock(0, 0, 0, 0, 2),
+            scale(&[(WantKind::Good(CLOTH), Horizon::Now, 1)]),
+        ),
+        v2_agent(
+            6,
+            v2_stock(0, 0, 0, 1, 0),
+            scale(&[(WantKind::Good(ORE), Horizon::Now, 1)]),
+        ),
+        v2_agent(
+            7,
+            v2_stock(0, 0, 0, 1, 0),
+            scale(&[(WantKind::Good(ORE), Horizon::Now, 1)]),
+        ),
+    ];
+    let MarketMoneyConfig::Emergent(config) = &mut scenario.money else {
+        panic!("two-layer scenario must use emergent money");
+    };
+    config.candidate_goods = vec![FOOD, WOOD, SALT, CLOTH, ORE];
+    scenario
+}
+
+#[test]
+fn late_floor_crosser_is_not_starved() {
+    let society = run(late_crosser_scenario());
+    let ore = candidate_counts(&society, ORE);
+    let config = society.emergence().expect("emergent state").config();
+
+    // FOOD crossed first and became a candidate, activating candidate mode.
+    assert!(
+        candidate_counts(&society, FOOD).direct_acceptors
+            >= usize::from(config.min_direct_use_acceptors),
+        "FOOD should cross the direct-use floor first"
+    );
+    // The below-floor good still reaches the floor LATE via the legacy direct-discovery
+    // lane. Without S21c, candidate mode stops posting direct offers for below-floor goods
+    // once a candidate exists, so ORE would stall at its single pre-candidate acceptor.
+    assert!(
+        ore.direct_acceptors >= usize::from(config.min_direct_use_acceptors),
+        "the late floor-crosser must not be starved of direct discovery: ORE={ore:?}"
+    );
+    assert!(
+        society
+            .emergence()
+            .expect("emergent state")
+            .provisional_media_candidates()
+            .contains(&ORE),
+        "ORE should join the candidate set after crossing the direct-use floor late"
+    );
 }
 
 fn direct_trade(a: u32, b: u32, a_gives: GoodId, b_gives: GoodId) -> BarterTrade {

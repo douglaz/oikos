@@ -2152,6 +2152,29 @@ impl Society {
                     saleability_context,
                 );
             }
+            // S21c: keep one legacy direct-discovery lane for BELOW-FLOOR goods (neither
+            // side a candidate), so a good with real direct demand can still accrue direct
+            // acceptances and cross the direct-use floor late. Medium routing above stays
+            // candidate-only. Skip if the cancel pass already preserved such a lane.
+            if !self.agent_has_legacy_direct_discovery_lane(agent_id, candidates) {
+                let below_floor_receive = receive_goods
+                    .iter()
+                    .copied()
+                    .filter(|good| !candidates.contains(good))
+                    .collect::<Vec<_>>();
+                let below_floor_give = give_goods
+                    .iter()
+                    .copied()
+                    .filter(|good| !candidates.contains(good))
+                    .collect::<Vec<_>>();
+                self.post_first_direct_barter_offer(
+                    agent_id,
+                    &below_floor_receive,
+                    &below_floor_give,
+                    saleability_context,
+                    None,
+                );
+            }
         }
     }
 
@@ -2489,6 +2512,28 @@ impl Society {
             )
     }
 
+    /// S21c: the legacy direct-discovery lane — an ordinary `DirectWant` barter whose
+    /// BOTH sides are below the direct-use floor (neither good is a candidate medium).
+    /// It lets a not-yet-eligible good keep accruing direct acceptances so it can cross
+    /// the direct-use floor LATE; without it, candidate-mode routing freezes discovery
+    /// on whatever good crossed first (the S21b open-discovery path-dependence). It can
+    /// neither spend nor acquire a candidate, so it never bypasses the medium.
+    fn is_legacy_direct_discovery_lane(offer: &BarterOffer, candidates: &[GoodId]) -> bool {
+        !candidates.contains(&offer.give_good)
+            && !candidates.contains(&offer.receive_good)
+            && matches!(offer.reason, BarterReason::DirectWant)
+    }
+
+    fn agent_has_legacy_direct_discovery_lane(
+        &self,
+        agent: AgentId,
+        candidates: &[GoodId],
+    ) -> bool {
+        self.barter_book.live_offers().iter().any(|offer| {
+            offer.agent == agent && Self::is_legacy_direct_discovery_lane(offer, candidates)
+        })
+    }
+
     fn cancel_live_barter_spend_offers_for_agent(
         &mut self,
         agent: AgentId,
@@ -2530,6 +2575,7 @@ impl Society {
         self.cancel_live_barter_offers_for_agent_matching(agent, |offer| {
             !Self::is_medium_spend_lane_for_candidates(offer, candidates)
                 && !Self::is_medium_receive_candidate_lane(offer, candidates)
+                && !Self::is_legacy_direct_discovery_lane(offer, candidates)
         });
     }
 

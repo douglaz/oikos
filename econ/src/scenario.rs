@@ -771,7 +771,7 @@ fn stock(food: u32, wood: u32, nets: u32) -> Stock {
     stock
 }
 
-fn v2_stock(food: u32, wood: u32, salt: u32, cloth: u32, ore: u32) -> Stock {
+pub fn v2_stock(food: u32, wood: u32, salt: u32, cloth: u32, ore: u32) -> Stock {
     v2_stock_with_gold(0, food, wood, salt, cloth, ore)
 }
 
@@ -3037,7 +3037,7 @@ fn project_worker(id: u32) -> Agent {
     )
 }
 
-fn scale(entries: &[(WantKind, Horizon, usize)]) -> Vec<Want> {
+pub fn scale(entries: &[(WantKind, Horizon, usize)]) -> Vec<Want> {
     let mut scale = Vec::new();
     for (kind, horizon, n) in entries {
         repeat(&mut scale, *kind, *horizon, *n);
@@ -3076,7 +3076,7 @@ fn market_agent(
     }
 }
 
-fn v2_agent(id: u32, stock: Stock, scale: Vec<Want>) -> Agent {
+pub fn v2_agent(id: u32, stock: Stock, scale: Vec<Want>) -> Agent {
     let belief_slots = [GOLD, FOOD, WOOD, NET, SALT, CLOTH, ORE]
         .into_iter()
         .map(|good| good.0)
