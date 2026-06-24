@@ -19,6 +19,12 @@ pub struct MarketabilityConfig {
     pub goods: BTreeMap<GoodId, GoodMarketability>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct MarketabilityAcceptance<'a> {
+    pub durability_aware_acceptance: bool,
+    pub config: &'a MarketabilityConfig,
+}
+
 impl MarketabilityConfig {
     pub fn good(&self, good: GoodId) -> GoodMarketability {
         self.goods.get(&good).copied().unwrap_or_default()

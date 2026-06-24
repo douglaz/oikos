@@ -4,7 +4,7 @@ use std::fmt;
 
 use crate::expect::PriceBelief;
 use crate::good::{Gold, GoodId, Horizon, Stock, FOOD, GOLD};
-use crate::marketability::MarketabilityConfig;
+use crate::marketability::MarketabilityAcceptance;
 
 /// Stable colonist identity.
 ///
@@ -482,8 +482,7 @@ impl Agent {
         receive_good: GoodId,
         target_good: GoodId,
         qty: u32,
-        durability_aware_acceptance: bool,
-        marketability: &MarketabilityConfig,
+        marketability: MarketabilityAcceptance<'_>,
     ) -> bool {
         if give_good == receive_good
             || give_good == target_good
@@ -494,7 +493,10 @@ impl Agent {
         {
             return false;
         }
-        if durability_aware_acceptance && !marketability.can_cover_holding_period(receive_good, qty)
+        if marketability.durability_aware_acceptance
+            && !marketability
+                .config
+                .can_cover_holding_period(receive_good, qty)
         {
             return false;
         }

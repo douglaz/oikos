@@ -2,7 +2,7 @@ use econ::agent::{Agent, AgentId, Role, Want, WantKind};
 use econ::barter::BarterTrade;
 use econ::expect::PriceBelief;
 use econ::good::{Gold, GoodId, Horizon, Stock, CLOTH, FOOD, ORE, SALT, WOOD};
-use econ::marketability::{GoodMarketability, MarketabilityConfig};
+use econ::marketability::{GoodMarketability, MarketabilityAcceptance, MarketabilityConfig};
 use econ::menger::SaleabilitySnapshot;
 use econ::money::MarketMoneyConfig;
 use econ::record::V2Record;
@@ -35,6 +35,16 @@ fn indirect_test_agent(target: GoodId, stock: Stock) -> Agent {
         hunger_deficit: 0,
         roles: vec![Role::Trader],
         expect: vec![PriceBelief::new(Gold(1), Gold(1)); usize::from(SALT.0) + 1],
+    }
+}
+
+fn acceptance<'a>(
+    durability_aware_acceptance: bool,
+    config: &'a MarketabilityConfig,
+) -> MarketabilityAcceptance<'a> {
+    MarketabilityAcceptance {
+        durability_aware_acceptance,
+        config,
     }
 }
 
@@ -111,10 +121,22 @@ fn marketability_config_defaults_are_inert_and_readable() {
     let agent = indirect_test_agent(FOOD, stock.clone());
     let empty = MarketabilityConfig::default();
 
-    let blind = agent
-        .would_accept_indirect_barter_swap_with_stock(&stock, WOOD, SALT, FOOD, 1, false, &empty);
-    let empty_enabled = agent
-        .would_accept_indirect_barter_swap_with_stock(&stock, WOOD, SALT, FOOD, 1, true, &empty);
+    let blind = agent.would_accept_indirect_barter_swap_with_stock(
+        &stock,
+        WOOD,
+        SALT,
+        FOOD,
+        1,
+        acceptance(false, &empty),
+    );
+    let empty_enabled = agent.would_accept_indirect_barter_swap_with_stock(
+        &stock,
+        WOOD,
+        SALT,
+        FOOD,
+        1,
+        acceptance(true, &empty),
+    );
 
     assert!(blind, "the baseline indirect barter should be acceptable");
     assert_eq!(
@@ -172,19 +194,34 @@ fn bad_medium_declined_good_medium_accepted() {
 
     assert!(
         agent.would_accept_indirect_barter_swap_with_stock(
-            &stock, ORE, SALT, CLOTH, 1, true, &config
+            &stock,
+            ORE,
+            SALT,
+            CLOTH,
+            1,
+            acceptance(true, &config),
         ),
         "durable low-carry SALT should be accepted as a medium"
     );
     assert!(
         !agent.would_accept_indirect_barter_swap_with_stock(
-            &stock, ORE, FOOD, CLOTH, 1, true, &config
+            &stock,
+            ORE,
+            FOOD,
+            CLOTH,
+            1,
+            acceptance(true, &config),
         ),
         "perishable FOOD should be declined as a medium"
     );
     assert!(
         !agent.would_accept_indirect_barter_swap_with_stock(
-            &stock, ORE, WOOD, CLOTH, 1, true, &config
+            &stock,
+            ORE,
+            WOOD,
+            CLOTH,
+            1,
+            acceptance(true, &config),
         ),
         "durable high-carry WOOD should be declined as a medium"
     );
@@ -197,8 +234,7 @@ fn bad_medium_declined_good_medium_accepted() {
                 receive_good,
                 CLOTH,
                 1,
-                false,
-                &config
+                acceptance(false, &config),
             ),
             "with the flag off, {receive_good:?} remains marketability-blind"
         );

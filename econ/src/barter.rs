@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use crate::agent::{Agent, AgentId};
 use crate::good::{GoodId, Stock};
-use crate::marketability::MarketabilityConfig;
+use crate::marketability::{MarketabilityAcceptance, MarketabilityConfig};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BarterReason {
@@ -520,15 +520,20 @@ fn agent_accepts_offer_with_stock(
             offer.receive_good,
             qty,
         ),
-        BarterReason::IndirectFor { target } => agent.would_accept_indirect_barter_swap_with_stock(
-            stock,
-            offer.give_good,
-            offer.receive_good,
-            target,
-            qty,
-            false,
-            &MarketabilityConfig::default(),
-        ),
+        BarterReason::IndirectFor { target } => {
+            let config = MarketabilityConfig::default();
+            agent.would_accept_indirect_barter_swap_with_stock(
+                stock,
+                offer.give_good,
+                offer.receive_good,
+                target,
+                qty,
+                MarketabilityAcceptance {
+                    durability_aware_acceptance: false,
+                    config: &config,
+                },
+            )
+        }
     }
 }
 

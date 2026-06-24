@@ -42,7 +42,7 @@ use crate::good::{Gold, GoodId, Stock, FOOD, GOLD, NET, WOOD};
 use crate::issuer::{Issuer, IssuerPolicy};
 use crate::ledger::{BankId, MoneySystem};
 use crate::market::{ExecutedTrade, Order, OrderBook, OrderSide, Reservations, Trade};
-use crate::marketability::MarketabilityConfig;
+use crate::marketability::{MarketabilityAcceptance, MarketabilityConfig};
 use crate::menger::{MengerianEmergence, SaleabilitySnapshot};
 use crate::metrics::{
     cumulative_project_profit, proxy_trades_from_schedules, structure_length_ticks_x100,
@@ -2241,8 +2241,10 @@ impl Society {
                         leader,
                         target,
                         1,
-                        self.durability_aware_acceptance,
-                        &self.marketability,
+                        MarketabilityAcceptance {
+                            durability_aware_acceptance: self.durability_aware_acceptance,
+                            config: &self.marketability,
+                        },
                     ) {
                         continue;
                     }
@@ -2293,8 +2295,10 @@ impl Society {
                     leader,
                     *target,
                     1,
-                    self.durability_aware_acceptance,
-                    &self.marketability,
+                    MarketabilityAcceptance {
+                        durability_aware_acceptance: self.durability_aware_acceptance,
+                        config: &self.marketability,
+                    },
                 ) {
                     continue;
                 }
