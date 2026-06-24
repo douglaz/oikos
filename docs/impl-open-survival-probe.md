@@ -1,154 +1,180 @@
 # impl-27 — S21d: Open-Survival Money Probe (mortality off)
 
-Status: DRAFT (pre-Codex-spec-review)
+Status: SPEC-READY (revised after Codex spec-review round 1)
 Branch: `feat/open-survival-probe`
 Base: master @ `7c208d9` (S21c landed)
 
-## 0. What this milestone is — a PROBE, classify the outcome
+## 0. What this milestone is — a PROBE, classify the outcome (likely a FINDING)
 
 The open-colony capstone's first money-bearing slice. Compose the landed money machinery
-(S20 two-lane clearing + S21a marketability + S21b two-layer saleability + S21c
-open-discovery lane) into a colony where **agents survive by buying food on the market** —
-no off-market hearth mint, no own-labor forage floor — with **mortality OFF** to isolate the
-money question from the demographic one.
+(S20 two-lane + S21a marketability + S21b two-layer + S21c open-discovery) into a colony where
+**agents survive by buying food on the market** — no off-market hearth mint, no own-labor
+forage floor — with **mortality OFF** to isolate the money question from the demographic one.
 
-This is a **probe**: the deliverable is an honest open colony plus instrumentation, *run*,
-and the outcome **classified** — either (a) SALT monetizes under market-financed survival
-(the capstone result), or (b) it deadlocks, with the gate identified (a first-class finding,
-per the direction review: "if it fails cleanly, that shows exactly where the in-cycle result
-stops surviving contact with terminal consumption"). **Do not tune the result into
-existence** — disclose seeds/thresholds, use the control matrix, classify the failure.
+This is a **probe**, and per the Codex direction + spec reviews it is **likely to land as a
+finding, not a success**: two-layer saleability fixes the *metric* problem but not the
+*production/bootstrap* problem. The deliverable is an honest open colony + instrumentation,
+*run*, and the outcome **classified** with traces — either (a) SALT promotes AND the chain
+bootstraps under market-financed survival (the capstone result), or (b) a clean deadlock with
+the gate localized (a first-class finding: "exactly where the in-cycle result stops surviving
+terminal consumption"). **Do not tune the result into existence** — disclose seeds/thresholds,
+run the control matrix, classify the failure.
 
-## 1. The core tension this probe tests (from research)
+## 1. The two phases and their risks (the phase order is load-bearing)
 
-1. **The S12 collision (partly dissolved, not gone).** Retiring the demographic bread mint
-   killed SALT emergence under the *single-layer* metric because that mint was the
-   load-bearing pre-promotion bread supply (`own_labor_subsistence.rs` ablation). S21b's
-   two-layer metric removes the *metric* half (food can dominate consumption while SALT
-   leads on medium use), but **produced bread alone is direct exchange** — so SALT's
-   medium-saleability must come from **non-food** indirect demand (recipe inputs + WOOD),
-   not bread-for-SALT.
-2. **The hungry-producer bootstrap gate (THE #1 risk).** Proven (Exp-9,
-   `experiment-money-circulation.md:380-387`): a hungry producer reserves its money for its
-   own food want and posts **no input bid** — `reservation_bid_for_money`
-   (`econ/src/agent.rs:357`) returns `None` because `allocated_money_before_rank`
-   (`agent.rs:889`) protects cash earmarked for the higher-ranked hunger want. The faithful
-   fix has always been *feed the producer* (both `frontier_endogenous` and
-   `frontier_coemergent_strong` keep `producer_subsistence > 0`). Market-financed survival
-   must satisfy hunger **by purchase** so the producer frees money for inputs — which
-   re-opens the circular-flow bootstrap of the long-horizon-death arc. **Within-tick
-   sequencing matters:** if the input-bid reservation is computed while hunger is still
-   unmet, the producer posts no bid even if it could buy food that tick. This is the gate to
-   design against / measure.
-3. **Roles wait on money** (`run_role_choice` early-returns while `current_money_good()` is
-   `None`, `settlement.rs:8886`): no production before promotion. The pre-promotion barter
-   warm-up must generate SALT's indirect breadth from the seeded stocks alone.
+`econ_tick` order matters and was mis-stated in the first draft (Codex P1). Within a tick:
+project input-bid overrides are set **before** `society.step()` (`settlement.rs:6138`); the
+market **consume** pass runs **inside** `society.step()` before spot-order generation
+(`society.rs:778`). Consequences:
 
-## 2. Engine pieces required (small, isolated, gated)
+- **The producer bootstrap is necessarily CROSS-TICK.** Food bought in tick `t` cannot free
+  money for the input-bid reservation in tick `t`; it is eaten at the start of `t+1`, and only
+  then can the input bid post (if money remains). The spec pins this explicitly: *buy food `t`
+  → eat `t+1` → input bid `t+1`*. The Exp-9 gate (`reservation_bid_for_money` →
+  `allocated_money_before_rank`, `agent.rs:357/889`) bites whenever hunger is still unmet at
+  the reservation point — so the question is whether market-financed survival keeps each
+  producer fed *across* ticks well enough to ever free input money.
+- **Recipe-input demand is POST-promotion only.** `run_role_choice` (`settlement.rs:8878`) and
+  `set_project_input_bid_overrides` (`settlement.rs:8614`) both early-return while
+  `current_money_good()` is `None`. So miller/baker input purchases — the obvious non-food
+  indirect SALT use — **do not exist pre-promotion** and cannot be the source of the
+  pre-promotion indirect breadth SALT needs to promote.
 
-### S21d.0 — Decouple forage *steering* from mint retirement (config-correctness)
+**Phase A — pre-promotion (does SALT promote at all?).** With the bread mint retired and no
+roles yet, SALT's indirect breadth can come ONLY from **consumer cross-demand over seeded
+stocks**: agents wanting ≥2 *non-food* goods (WOOD + a craft good) with imperfect coincidence,
+so SALT bridges as a means (`IndirectFor{target}`) across those targets. Two-layer (S21b)
+ensures SALT leads on *medium* share even though bread dominates consumption. Risk: the seeded
+barter window (bounded by `perishable_decay_bps`) may not generate enough breadth before the
+seed depletes → no promotion (a finding).
 
-`own_labor_subsistence_can_run()` (`settlement.rs:9770`) = `own_labor_subsistence &&
-forage_present` gates BOTH (a) mint retirement (`settlement.rs:7326`, `:7950`) and (b) forage
-behavior (`detect_forage` `:6596`, steering `:6659`/`:6870`, credit `run_own_labor_subsistence`
-`:8034`). Setting `forage_yield = 0` retires the mints but **still steers eligible agents to
-`Task::GoForage`** (walk + harvest zero) — wasted labor that confounds a market-survival
-probe. Minimal decouple (`own_labor_subsistence_fields_active`, `settlement.rs:12937`): keep
-the two mint sites on `_can_run()`, but gate the three forage-*behavior* sites additionally on
-`forage_yield > 0` (or a new explicit `forage_enabled`/`forage_floor_can_run()` predicate). At
-`forage_yield = 0`: mints retired, **no forage steering**, survival is market-only. Default
-behavior (yield > 0) unchanged → all goldens byte-identical (gate off-path identical).
+**Phase B — post-promotion (does the chain bootstrap under market survival?).** After SALT
+promotes, roles adopt and producers must (i) buy food to eat and (ii) buy recipe inputs — both
+with earned SALT — while the hearth is gone. This re-opens the circular-flow bootstrap of the
+long-horizon-death arc, now cross-tick and hearthless. Risk (the likely gate): a producer that
+cannot reliably buy food stays hungry, reserves its SALT for food, never bids inputs, the chain
+never forms, and post-promotion indirect breadth/production collapses → the colony reverts to
+the seeded barter remnant (a finding localized at the Exp-9 gate).
 
-### S21d.1 — Acquisition-channel provenance (the market-sourced-food instrument)
+## 2. Engine pieces (small, isolated, gated; goldens byte-identical)
 
-The existing `BreadProvenance` (`settlement.rs:4509`) tracks *produced-vs-minted* origin of a
-good **sold** for the medium; it does **not** prove that food an agent **consumed** was
-**market-acquired** vs minted/foraged/self-produced (a transfer preserves the seller's
-origin). The falsifiable bar needs an **acquisition-channel** tag at the consume event:
-classify each unit of food eaten as `bought` (entered stock via a `Society::trade`),
-`self-produced`, `minted` (hearth/seed), or `foraged`. Minimal: a per-agent acquisition ledger
-updated on market execution (`market.rs:574`) and read at the consume event
-(`agent.rs:738`); runtime-only (excluded from `canonical_bytes`, like `starvation_deaths_total`)
-so it shifts no golden digest. The bar: **after warm-up, the food consumed by survivors is
-overwhelmingly `bought`**, with `minted`/`foraged` ≈ 0.
+### S21d.0 — Explicit `retire_food_mints` flag (not the forage hack)
+
+Do NOT reuse `own_labor_subsistence=true + with_forage() + forage_yield=0`: even with steering
+off, interning FORAGE injects a subsistence good into scales/spoilage/market traces (Codex P1).
+Add an explicit gated `ChainConfig::retire_food_mints: bool` (default `false`). When set, the
+two staple-mint sites — demographic `food_provision` (`settlement.rs:7326`/`:7339`) and
+producer staple (`settlement.rs:7950`/`:7974`) — are skipped, **independent of forage**
+(`food_provision`/`producer_subsistence` quantities ignored for the staple). WOOD/warmth
+provision is unaffected (warmth is out of scope for this probe; disclose it). No FORAGE good is
+interned, so no forage steering/credit/scale pollution. Default `false` ⇒ all goldens
+byte-identical. The suite asserts: with the flag on, the food-mint endowment term is zero and
+no FORAGE good exists in the run.
+
+### S21d.1 — Acquisition-channel provenance (sim-side, runtime-only)
+
+Mirror `BreadProvenance` (the post-`society.step()` readback at `settlement.rs:9846`), NOT
+econ-internal hooks. A sim-side, runtime-only per-agent ledger classifying each food unit by
+**acquisition channel**: `bought` (entered stock via a `Society::trades`/`barter_trades`
+record), `seeded/minted` (cold-start buffer or hearth), `self-produced` (chain/cultivation), or
+`foraged` (n/a here). Updated each tick from the sim's own trade + production + endowment logs;
+debited **FIFO** against the consumption-log readback so resale/mixed stock can't misattribute.
+Excluded from `canonical_bytes` (like `starvation_deaths_total`, `settlement.rs:4242`) ⇒ no
+golden digest shift. The bar reads: **after warm-up, food consumed by survivors is
+overwhelmingly `bought`**, `seeded/minted`+`foraged` ≈ 0, and buyers paid from prior-sale
+proceeds.
 
 ## 3. The scenario — `frontier_open_survival` (a `SettlementConfig`)
 
-Base on the chain coemergent economy (it has terminal **bread** consumption for survival, the
-sustain stack, an **input-demand** structure giving SALT non-food uses, and WOOD as a second
-consumed good — richer than a two-good bread↔WOOD economy, which Codex warned reproduces S18).
+Derive from `frontier_coemergent_strong` (`settlement.rs:3196`) — it has terminal bread for
+survival, the real grain→flour→bread chain, WOOD as a second consumed good, and the
+co-emergent sustain stack (`recurring_motive`, `project_input_bids`, `perishable_decay_bps`,
+capital). Codex confirmed this is the right base (the 3-good cycle has no terminal consumer).
+Changes:
 
-Derive from `frontier_coemergent_strong` (`settlement.rs:3196`) and change:
-- **Retire the hearths (market survival):** `own_labor_subsistence = true` + `with_forage()`
-  interned + `forage_yield = 0` (S21d.0 ⇒ mints off, no forage floor, no forage steering).
-  This sets both the demographic `food_provision` mint and the `producer_subsistence` staple
-  to off.
-- **Compose the money machinery:** `multi_offer_medium = true` (S20), `durability_aware_acceptance
-  = true` + a marketability table (SALT durable/costless, FOOD perishable, WOOD high-carry)
-  (S21a), `two_layer_saleability = true` + `min_direct_use_acceptors` (S21b); S21c lane is
-  already in. Keep the S9 strong-bar gates (disclose the exact values).
-- **Terminal food consumer + non-food indirect demand:** ensure roles cross-demand so SALT
-  bridges *non-food* coincidence gaps (recipe-input purchases: miller buys grain, baker buys
-  flour; plus WOOD for warmth). The pre-promotion indirect breadth must span ≥2 non-food
-  targets, not just bread.
+- **Retire the hearths (market survival):** `retire_food_mints = true` (S21d.0). Survival of
+  every agent — producers included — is now a market bread purchase.
+- **Compose the money machinery:** `multi_offer_medium = true` (S20); `durability_aware_acceptance
+  = true` + a marketability table (SALT durable/costless; FOOD perishable; WOOD high-carry)
+  (S21a); `two_layer_saleability = true` + `min_direct_use_acceptors` (S21b); the S21c lane is
+  already in. Keep the S9 strong-bar gates (disclose exact values).
+- **Pre-promotion indirect breadth (Phase A) — the deliberate design point:** ensure the seeded
+  barter economy has **≥2 non-food consumed goods with imperfect coincidence** (WOOD + a craft
+  good, role-separated so no good preempts another by id) so SALT bridges ≥2 *non-food* targets
+  pre-promotion. (Recipe inputs cannot serve here — they are post-promotion.)
 - **Mortality OFF:** inherit `hunger_critical = need_max + 1` (do NOT derive from
   `frontier_mortality`).
-- **Disclosed cold-start seeds** (carried forward, bounded by `perishable_decay_bps = 1500`):
-  `bread_buffer`, `consumer_staple_buffer`, `consumer_medium_endowment` (SALT), producer
-  input buffers, `latent_flour_seed`. List exact values in the scenario doc-comment.
+- **Disclosed cold-start seeds** (bounded by `perishable_decay_bps = 1500`): `bread_buffer`,
+  `consumer_staple_buffer`, `consumer_medium_endowment` (SALT), producer input buffers,
+  `latent_flour_seed`. Pin exact values in the scenario doc-comment; the suite reports seed
+  depletion over time separately so a "seed-only" non-result is visible.
 
-## 4. Falsifiable bar + control matrix (Codex direction)
+## 4. Falsifiable bar + controls (Codex direction + anti-fake additions)
 
 Success (capstone result) = ALL hold in one run:
-- No recurring food mint (`food_provision`/producer staple off); no forage floor
-  (`forage_yield = 0`, no steering).
-- `current_money_good() == Some(SALT)` (SALT promotes).
-- FOOD/WOOD may dominate **total** acceptance, but SALT wins **medium** share
+- No recurring food mint (food-mint endowment term zero); no forage good/steering.
+- `current_money_good() == Some(SALT)` (promotes).
+- FOOD/WOOD may win **total** acceptance, but SALT wins **medium** share
   (`medium_leader_shares().good == SALT`).
-- Pre-promotion SALT indirect breadth spans **≥2 target goods, not only bread** (non-food
-  ends).
-- After warm-up, food **consumed** is **market-acquired by the acquisition ledger** (bought ≫
-  minted/foraged ≈ 0); buyers paid with proceeds of prior sales.
+- Pre-promotion SALT indirect breadth spans **≥2 non-food target goods**, not bread.
+- After warm-up, food **consumed** is **market-acquired** (acquisition ledger: bought ≫
+  seeded/minted ≈ 0); buyers paid from prior-sale proceeds.
+- **Production is genuinely post-promotion and self-sustaining** (chain output continues past
+  seed depletion, not riding the seed).
 
-Controls (each must fail the right way — classify, don't tune):
+Anti-fake assertions (Codex P2):
+- **No pre-promotion production** while relying on seeded stock; **seed depletion reported
+  separately** so a seed-only outcome cannot masquerade as success.
+- **Bootstrap microtrace (S21d.2a):** a producer bought food in `t`, ate it in `t+1`, then did
+  or did not post an input bid in `t+1` — directly localizing the Exp-9 gate.
+
+Controls (each must fail the right way — classify, never tune):
 - two-layer off → necessity dominates / no SALT promotion.
-- marketability off → FOOD/WOOD dominates as the medium.
+- marketability off → FOOD/WOOD dominates as medium.
 - multi-offer off → round-trip clearing deadlock.
-- no second-good/input loop → direct food trade but no indirect breadth.
+- no second non-food good / cross-demand → direct trade, no indirect breadth.
 - no SALT direct-use anchor/seed → no promotion (regression-theorem grounding).
-- mints ON → the old scaffolded control (NOT a capstone success).
+- mints ON (`retire_food_mints=false`) → the old scaffolded control, NOT a capstone success.
 
-If the bar is NOT met, classify the gate (most likely the §1.2 bootstrap: producers reserve
-money for unbought food → no input bids → chain never forms → no indirect SALT breadth) and
-land it as a **finding** with the live trace, exactly as the long-horizon-death experiments did.
+If the bar is not met, classify the gate (Phase A no-promotion vs Phase B bootstrap deadlock)
+with the live traces and land it as a finding, as the long-horizon-death experiments did.
 
-## 5. Slices
+## 5. Slices (per Codex)
 
-- **S21d.0** — forage-steering decouple (engine, gated; goldens byte-identical).
-- **S21d.1** — acquisition-channel provenance instrument (runtime-only; goldens byte-identical).
-- **S21d.2** — the `frontier_open_survival` scenario (compose the flags + retire hearths +
-  cross-demand structure + disclosed seeds).
-- **S21d.3** — acceptance suite + the run: assert the bar OR classify the gate; the full
-  control matrix; determinism; a live `viewer run` trace for the headline numbers.
+- **S21d.0** — `retire_food_mints` flag (engine, gated; goldens byte-identical; assert no
+  food-mint endowment + no FORAGE good when on).
+- **S21d.1** — acquisition-channel ledger (sim-side, runtime-only, FIFO at consume readback;
+  excluded from `canonical_bytes`).
+- **S21d.2a** — phase-order **bootstrap microtrace** harness + test (the cross-tick buy→eat→bid
+  sequence; localizes the Exp-9 gate).
+- **S21d.2b** — the `frontier_open_survival` scenario (compose flags + retire mints +
+  ≥2-non-food cross-demand + disclosed seeds).
+- **S21d.3** — acceptance suite + the run: assert the bar OR classify the gate; full control
+  matrix; pre-promotion seed/indirect-breadth traces; determinism; a live `viewer run`.
 
 ## 6. Determinism / golden contract
 
 - All new flags/instruments default OFF / runtime-only; **all 18 golden suites byte-identical**
-  (the forage decouple is identity at `forage_yield > 0`; the acquisition ledger is excluded
-  from `canonical_bytes`; the scenario is new).
+  (`retire_food_mints` default-off is identity; the acquisition ledger is excluded from
+  `canonical_bytes`; the scenario is new). If `retire_food_mints` enters future-behaviour, gate
+  it ON-only in `push_*_config_bytes` exactly like the S20/S21a/b flags.
 - `cargo fmt --check` + `clippy --workspace --all-targets -- -D warnings` clean; conservation
   asserted every tick; deterministic (no live RNG).
 
 ## 7. Honest scope
 
-This probe tests whether endogenous medium money survives **market-financed survival** in an
-open colony with mortality OFF. It does NOT add the positive check (S21e) or claim demographic
-realism. A clean deadlock is a valid, publishable result identifying where the in-cycle money
-result stops surviving terminal consumption. Seeds, thresholds, and the direct-use anchor
-remain configured and disclosed.
+Tests whether endogenous medium money survives **market-financed survival** in an open colony
+with mortality OFF. It does NOT add the positive check (S21e) or claim demographic realism.
+**A clean deadlock is the expected, publishable result** identifying where the in-cycle money
+result stops surviving terminal consumption (most likely the Phase B cross-tick producer
+bootstrap). Seeds, thresholds, and the direct-use anchor remain configured and disclosed. The
+faithful response to a Phase B deadlock is NOT value-scale surgery (fake entrepreneurship) — it
+is to report the gate and let a later slice address the institution (e.g. a wage/firm or a
+genuine market food-supply path), exactly as the long-horizon-death arc proceeded.
 
 ## 8. Pipeline
 
-Codex spec-review → revise to SPEC-READY → rb-lite `codex,claude` (slices S21d.0→.3) →
-independent verification (workspace + all 18 goldens byte-identical + the new suite + a live
-run) → Codex review-of-results → merge + report/memory + pin.
+rb-lite `codex,claude` (slices S21d.0→.3) → independent verification (workspace + all 18
+goldens byte-identical + the new suite + a live run) → Codex review-of-results → merge +
+report/memory + pin. Given the likely-finding framing, the review-of-results judges *honesty +
+correct classification*, not "did money emerge."
