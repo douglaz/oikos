@@ -521,6 +521,16 @@ fn agent_accepts_offer_with_stock(
             qty,
         ),
         BarterReason::IndirectFor { target } => {
+            // The durability holding rule is enforced once, at offer-posting time
+            // (`society.rs`), and that is sufficient here: the gate is a pure
+            // function of the offer's fixed fields (`receive_good`, which an
+            // `IndirectFor` offer pins to the durable saleability leader, and the
+            // fixed `qty`), so re-applying it at match / re-validation cannot
+            // change the verdict. A posted indirect offer already passed it, and a
+            // stale offer whose `receive_good` no longer equals the leader is
+            // dropped earlier by the saleability-context check. So matching is
+            // marketability-blind by design — the config is left at its inert
+            // default rather than threaded through every book method.
             let config = MarketabilityConfig::default();
             agent.would_accept_indirect_barter_swap_with_stock(
                 stock,
