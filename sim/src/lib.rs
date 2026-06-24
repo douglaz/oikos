@@ -96,12 +96,12 @@ pub use era::{
 pub use region::{Region, RegionConfig, RegionTickReport, RoadPlan, Route};
 pub use settlement::{
     capital_build_outcome_for_culture, capital_build_outcome_with_forecast, recipe_adoption_pays,
-    recipe_adoption_pays_for_money, BankConfig, BarterConfig, BenchSurface, CandidateAcceptances,
-    CapitalBuildOutcome, CapitalDecision, CapitalDeclineReason, ChainConfig, CycleConfig,
-    CycleKind, DirectIndirectAcceptances, EconTickReport, EstateDestination, ForageCommons,
-    LineageStats, NodeSpec, OrderStat, ProducerCash, ProducerRole, Settlement, SettlementConfig,
-    TaxLevy, TaxPolicy, TenderBench, TenderPolicy, TraderEndowment, Vocation, ECON_TICKS_PER_YEAR,
-    FAST_TICKS_PER_ECON_TICK,
+    recipe_adoption_pays_for_money, AcquisitionChannels, BankConfig, BarterConfig, BenchSurface,
+    BootstrapTraceSummary, CandidateAcceptances, CapitalBuildOutcome, CapitalDecision,
+    CapitalDeclineReason, ChainConfig, CycleConfig, CycleKind, DirectIndirectAcceptances,
+    EconTickReport, EstateDestination, ForageCommons, LineageStats, NodeSpec, OrderStat,
+    ProducerCash, ProducerRole, Settlement, SettlementConfig, TaxLevy, TaxPolicy, TenderBench,
+    TenderPolicy, TraderEndowment, Vocation, ECON_TICKS_PER_YEAR, FAST_TICKS_PER_ECON_TICK,
 };
 
 /// Read-only re-exports of the `econ`/`life` types that make up the settlement's

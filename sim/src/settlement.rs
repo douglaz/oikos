@@ -58,7 +58,7 @@
 //! checkpoints are the proof).
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use econ::agent::{Agent, AgentId, Role, Want, WantKind};
 use econ::agio::{provisioning_bitmap_for_money, TemporalEndowment};
@@ -74,6 +74,7 @@ use econ::capital::{
 use econ::expect::PriceBelief;
 use econ::good::{Gold, GoodId, Horizon, Stock, FOOD, GOLD, NET, SALT, WOOD};
 use econ::ledger::BankId;
+use econ::marketability::{GoodMarketability, MarketabilityConfig};
 use econ::menger::MengerianEmergence;
 use econ::money::{
     BankRepaymentTender, DesignatedMoney, IssuerRepaymentTender, LaborWageTender,
@@ -918,6 +919,28 @@ pub struct ChainConfig {
     /// NOT digested. Off keeps the S16 path exactly, so every existing config and its
     /// goldens are byte-identical. Composes strictly on `cultivation_sells_surplus`.
     pub multigood_money: bool,
+    /// S21d.0 — **retire the food mints** (the open-survival probe; default `false`,
+    /// byte-identical when off). When `true`, the two staple-food mint sites are skipped
+    /// **independent of `own_labor_subsistence`/forage**: the demographic `food_provision`
+    /// hearth ([`Settlement::deliver_demography_provisions`]) and the producer staple floor
+    /// ([`Settlement::run_producer_subsistence`]) no longer mint the hunger staple, so the
+    /// food-mint endowment term is zero and every agent — producers included — must acquire
+    /// its food on the MARKET (or by its own production). Unlike the S12 forage hack
+    /// (`own_labor_subsistence=true + with_forage() + forage_yield=0`), this interns NO
+    /// FORAGE good, so it pollutes no scale/spoilage/market trace with a phantom subsistence
+    /// good. WOOD/warmth provision is unaffected (warmth is out of scope for this probe).
+    /// Canonicalized **ON-only** (it changes the recurring staple-mint behaviour), mirroring
+    /// the S20/S21 menger gates: a flag-off config keeps its exact prior byte layout.
+    pub retire_food_mints: bool,
+    /// S21d.1 — **acquisition-channel ledger** gate (runtime-only diagnostic; default
+    /// `false`). When `true` *and* a chain carries a bread good, the sim maintains a
+    /// per-agent FIFO ledger classifying each tracked-food (bread) unit by acquisition
+    /// channel ([`AcquisitionLedger`]) — `bought`/`seeded-minted`/`self-produced`/`foraged`
+    /// — so the probe can prove survivors eat MARKET-acquired food after warm-up. Pure
+    /// read-only accounting: it mutates only its own ledger, steers no future tick, and is
+    /// deliberately EXCLUDED from `canonical_bytes` (like `starvation_deaths_total`), so it
+    /// shifts no digest and every existing golden is byte-identical whether on or off.
+    pub acquisition_ledger: bool,
     /// EXPERIMENTAL (capital-advance probe): when `true` *and* money has emerged,
     /// each econ tick a conserved working-capital advance moves real money from
     /// the richest saver to any cashless active chain producer (Miller/Baker), so
@@ -1221,6 +1244,12 @@ impl ChainConfig {
             // S18 off by default: no woodcutter routing, no multi-good instrumentation —
             // byte-identical.
             multigood_money: false,
+            // S21d.0 off by default: the food mints stay, so every existing config and its
+            // goldens are byte-identical (canonicalized ON-only).
+            retire_food_mints: false,
+            // S21d.1 off by default: no acquisition-channel ledger (runtime-only diagnostic,
+            // never digested), so every existing config is byte-identical whether on or off.
+            acquisition_ledger: false,
             capital_advance: false,
             perishable_decay_bps: 0,
             subsistence_advance: false,
@@ -1320,6 +1349,12 @@ impl ChainConfig {
             // S18 off by default: no woodcutter routing, no multi-good instrumentation —
             // byte-identical.
             multigood_money: false,
+            // S21d.0 off by default: the food mints stay, so every existing config and its
+            // goldens are byte-identical (canonicalized ON-only).
+            retire_food_mints: false,
+            // S21d.1 off by default: no acquisition-channel ledger (runtime-only diagnostic,
+            // never digested), so every existing config is byte-identical whether on or off.
+            acquisition_ledger: false,
             capital_advance: false,
             perishable_decay_bps: 0,
             subsistence_advance: false,
@@ -1401,6 +1436,12 @@ impl ChainConfig {
             cultivate_patience: 4,
             cultivation_sells_surplus: false,
             multigood_money: false,
+            // S21d.0 off by default: the food mints stay, so every existing config and its
+            // goldens are byte-identical (canonicalized ON-only).
+            retire_food_mints: false,
+            // S21d.1 off by default: no acquisition-channel ledger (runtime-only diagnostic,
+            // never digested), so every existing config is byte-identical whether on or off.
+            acquisition_ledger: false,
             capital_advance: false,
             perishable_decay_bps: 0,
             subsistence_advance: false,
@@ -3709,6 +3750,109 @@ impl SettlementConfig {
         cfg
     }
 
+    /// S21d — the **OPEN-SURVIVAL money probe** (impl-27): the strong co-emergent colony
+    /// ([`Self::frontier_coemergent_strong`], never mutated) with the food hearths RETIRED and
+    /// the full money machinery composed, so survival is a MARKET bread purchase. The deliverable
+    /// is an honest probe + instrumentation, *run and classified* — likely a FINDING, not a
+    /// success (two-layer saleability fixes the metric, not the production/bootstrap problem).
+    ///
+    /// Changes from the strong base (each disclosed, none tuned into a result):
+    /// - **Retire the hearths** ([`ChainConfig::retire_food_mints`] = true): the demographic
+    ///   `food_provision` and the producer staple floor no longer mint bread, so every agent —
+    ///   producers and lineages included — must BUY (or produce) its food. WOOD/warmth provision
+    ///   is unaffected (out of scope; disclosed). Unlike the S12 forage hack, NO FORAGE good is
+    ///   interned.
+    /// - **Compose the money machinery on the barter overlay:** `multi_offer_medium` (S20, the
+    ///   two-lane book), `durability_aware_acceptance` + a marketability table (S21a: SALT
+    ///   durable/costless, bread perishable, WOOD high-carry — so a perishable staple cannot
+    ///   masquerade as the medium), `two_layer_saleability` + `min_direct_use_acceptors` (S21b:
+    ///   direct-use is an eligibility floor, leadership ranks on medium share). The S21c
+    ///   open-discovery lane rides on `two_layer_saleability && multi_offer_medium`. The S9
+    ///   strong-bar gates (`min_indirect_acceptances = 12`, `min_indirect_acceptor_agents = 6`)
+    ///   are inherited unchanged.
+    /// - **Pre-promotion indirect breadth (Phase A) — bread ⇄ WOOD topology:** WOOD is the only
+    ///   non-food terminal consumed good in the model (`life::scale` emits present-goods wants
+    ///   only for hunger=bread and warmth=WOOD), so a *genuine* second non-food need is OUT OF
+    ///   SCOPE (future work). SALT's pre-promotion indirect-target set is `{bread, WOOD}`; the bar
+    ///   requires the non-food WOOD target present, so the gate is set to the available topology:
+    ///   `min_indirect_target_goods = 2` (disclosed). A bread seller accepting SALT to later get
+    ///   WOOD (target WOOD) and a WOOD seller accepting SALT to later get bread (target bread)
+    ///   are the two legs.
+    /// - **Mortality OFF:** `hunger_critical = need_max + 1` is INHERITED from the strong base
+    ///   (NOT derived from `frontier_mortality`), isolating the money question from the
+    ///   demographic one.
+    /// - **Acquisition-channel ledger ON** ([`ChainConfig::acquisition_ledger`] = true): the
+    ///   runtime-only per-agent FIFO ledger that proves survivors eat MARKET-acquired food after
+    ///   warm-up (`bought` ≫ `seeded/minted`). Diagnostic, never digested.
+    ///
+    /// **Disclosed cold-start seeds** (bounded by `perishable_decay_bps = 1500`, inherited from
+    /// the strong base): `bread_buffer = 64` (the barter-window bread the non-consumers sell),
+    /// `consumer_staple_buffer = 2` (consumers start nearly bread-empty, so they buy),
+    /// `consumer_medium_endowment = 80` SALT (the SALT-rich consumer hub), `latent_flour_seed = 12`
+    /// (the first baker's flour finds a seller), and the inherited producer input buffers
+    /// (`miller_grain_buffer = 0`, `baker_flour_buffer = 0`). The acceptance suite reports seed
+    /// depletion separately so a "seed-only" non-result cannot masquerade as success.
+    pub fn frontier_open_survival() -> Self {
+        let mut cfg = Self::frontier_coemergent_strong();
+        let bread = cfg
+            .chain
+            .as_ref()
+            .expect("the strong co-emergent base carries a chain")
+            .content
+            .bread();
+        if let Some(chain) = cfg.chain.as_mut() {
+            // S21d.0: survival of EVERY agent is now a market bread purchase (no off-market
+            // hearth mint, no own-labor forage floor — own-labor subsistence stays off here).
+            chain.retire_food_mints = true;
+            // S21d.1: the acquisition-channel ledger proves the food survivors eat is bought.
+            chain.acquisition_ledger = true;
+        }
+        if let Some(barter) = cfg.barter.as_mut() {
+            // S20: the two-lane medium book (a spend lane + a sell lane per agent).
+            barter.menger.multi_offer_medium = true;
+            // S21a: physical marketability — a prospective medium must carry through the holding
+            // horizon. SALT is durable/costless (a money good); bread is perishable (it cannot
+            // be the medium even though it dominates consumption); WOOD carries at a cost.
+            barter.menger.durability_aware_acceptance = true;
+            barter.menger.marketability = MarketabilityConfig {
+                hold_horizon: 1,
+                ..MarketabilityConfig::default()
+            }
+            .with_good(
+                bread,
+                GoodMarketability {
+                    decay_bps: 10_000,
+                    carry_cost: 0,
+                },
+            )
+            .with_good(
+                WOOD,
+                GoodMarketability {
+                    decay_bps: 0,
+                    carry_cost: 1,
+                },
+            )
+            .with_good(
+                SALT,
+                GoodMarketability {
+                    decay_bps: 0,
+                    carry_cost: 0,
+                },
+            );
+            // S21b: two-layer saleability — direct-use breadth is an eligibility floor, medium
+            // leadership/promotion ranks on indirect (re-trade) share. The direct-use floor is a
+            // modest `2` distinct direct acceptors (the heterogeneous SALT direct-use anchor,
+            // period 8, supplies them) — disclosed, not tuned.
+            barter.menger.two_layer_saleability = true;
+            barter.menger.min_direct_use_acceptors = 2;
+            // The {bread, WOOD} two-target breadth bar: SALT cannot promote until it is taken as
+            // a means toward BOTH the food (bread) and the non-food (WOOD) end — proving it is a
+            // general medium, not merely a bread-buying token. Set to the available topology.
+            barter.menger.min_indirect_target_goods = 2;
+        }
+        cfg
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).
@@ -3958,6 +4102,52 @@ pub struct DirectIndirectAcceptances {
     pub indirect: u64,
 }
 
+/// S21d.1: a read-only snapshot of the acquisition-channel ledger split across the four
+/// channels — the units of tracked food (bread) consumed/held/credited by how they reached
+/// the agent. The open-survival bar reads `consumed`: after warm-up, `bought` ≫
+/// `seeded_minted` + `foraged`. `held`/`credited` surface seed depletion (the seeded channel
+/// falling toward zero while bought rises).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AcquisitionChannels {
+    pub bought: u64,
+    pub seeded_minted: u64,
+    pub self_produced: u64,
+    pub foraged: u64,
+}
+
+impl AcquisitionChannels {
+    fn from_array(channels: [u64; FoodChannel::COUNT]) -> Self {
+        Self {
+            bought: channels[FoodChannel::Bought.index()],
+            seeded_minted: channels[FoodChannel::SeededMinted.index()],
+            self_produced: channels[FoodChannel::SelfProduced.index()],
+            foraged: channels[FoodChannel::Foraged.index()],
+        }
+    }
+
+    /// Total units across all four channels.
+    pub fn total(&self) -> u64 {
+        self.bought + self.seeded_minted + self.self_produced + self.foraged
+    }
+}
+
+/// S21d.2a: a read-only snapshot of the cross-tick bootstrap microtrace — the buy → eat → bid
+/// sequence over the run, and WHY a fed producer with a positive project-input ceiling does not
+/// get a real order-book bid. The classification reads it to localize the Exp-9 gate: a Phase B
+/// deadlock shows `bids_posted_after_recent_buy = 0` with the blocks split into `cashless` (no
+/// money earned) vs `reserved` (money present but unavailable to this bid).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BootstrapTraceSummary {
+    pub food_buys: u64,
+    pub food_eats: u64,
+    pub bid_attempts: u64,
+    pub bids_posted: u64,
+    pub bids_posted_after_recent_buy: u64,
+    pub bids_blocked_cashless: u64,
+    pub bids_blocked_reserved: u64,
+    pub first_bootstrap_bid_tick: Option<u64>,
+}
+
 /// S8.0 emergence probe: a chain producer's role for the working-capital trace —
 /// an ACTIVE producer already running its recipe, or a LATENT one (an
 /// `Unassigned` colonist holding the tool, waiting on money to adopt). Tension B
@@ -4201,6 +4391,14 @@ pub struct Settlement {
     /// Maintained only while [`Self::multigood_money_active`] holds; an empty default
     /// otherwise. NOT in `canonical_bytes`, so it shifts no digest (byte-identical goldens).
     multigood: MultigoodMoney,
+    /// S21d.1: the runtime-only acquisition-channel ledger (see [`AcquisitionLedger`]).
+    /// Maintained only while [`Self::acquisition_ledger_active`] holds; an empty default
+    /// otherwise. NOT in `canonical_bytes`, so it shifts no digest (byte-identical goldens).
+    acquisition: AcquisitionLedger,
+    /// S21d.2a: the runtime-only cross-tick bootstrap microtrace (see [`BootstrapTrace`]).
+    /// Maintained only while [`Self::acquisition_ledger_active`] holds; an empty default
+    /// otherwise. NOT in `canonical_bytes`, so it shifts no digest (byte-identical goldens).
+    bootstrap_trace: BootstrapTrace,
     econ_tick: u64,
     last_report: EconTickReport,
     /// The settlement **commons** (G4a real death): the conserved sink that holds a
@@ -4460,6 +4658,13 @@ struct ChainRuntime {
     /// `false` for every existing config, so the woodcutter routing and the runtime-only
     /// instrumentation are inert and the run is byte-identical.
     multigood_money: bool,
+    /// S21d.0: retire the food mints (see [`ChainConfig::retire_food_mints`]). `false` for every
+    /// existing config, so the demographic + producer staple mints fire and the run is
+    /// byte-identical (the flag is canonicalized ON-only).
+    retire_food_mints: bool,
+    /// S21d.1: the acquisition-channel ledger gate (see [`ChainConfig::acquisition_ledger`]).
+    /// `false` for every existing config; runtime-only diagnostic, never digested.
+    acquisition_ledger: bool,
     /// S6: the productive-re-entry phase gate + hysteresis thresholds (see
     /// [`ChainConfig::productive_reentry`]). `false`/unused for every existing config.
     productive_reentry: bool,
@@ -4729,6 +4934,334 @@ fn observe_round_trip_side(
         }
     } else if gives == medium {
         ledger.spend_on_target(agent, receives, qty);
+    }
+}
+
+/// S21d.1: the **acquisition channel** a tracked-food (bread) unit entered an agent's stock
+/// by — the four mutually-exclusive ways food can reach a colonist. A FIFO lot is tagged with
+/// its channel so that when food leaves (eaten, sold, spoiled, inherited) it is debited against
+/// the channel it actually ARRIVED through, not whatever stock happens to be on hand — which is
+/// what lets the probe claim "after warm-up, survivors eat food they BOUGHT" without a resold or
+/// mixed-stock unit being mis-attributed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum FoodChannel {
+    /// Entered stock via a market trade record (`Society::trades` spot or `barter_trades`) —
+    /// the agent BOUGHT it. The open-survival claim rests on this channel dominating consumption.
+    Bought = 0,
+    /// A cold-start seed buffer (the generated bread holdings) or a hearth MINT (the demographic
+    /// `food_provision` / producer staple endowment). Retired in the probe, so this channel only
+    /// depletes — never refills — after generation, making seed depletion directly visible.
+    SeededMinted = 1,
+    /// The agent's OWN production — a chain bake or own-use cultivation, booked `produced`.
+    SelfProduced = 2,
+    /// Own-labor forage. N/A for this probe: bread is never foraged (FORAGE is a distinct,
+    /// untracked good), so this channel stays zero — present for completeness/conservation.
+    Foraged = 3,
+}
+
+impl FoodChannel {
+    const COUNT: usize = 4;
+    const ALL: [FoodChannel; Self::COUNT] = [
+        FoodChannel::Bought,
+        FoodChannel::SeededMinted,
+        FoodChannel::SelfProduced,
+        FoodChannel::Foraged,
+    ];
+    fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// S21d.1: one FIFO lot of tracked-food held by an agent — `qty` units that all entered via the
+/// same `channel`. Lots are stored oldest-at-front so a debit draws the earliest acquisition first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FoodLot {
+    channel: FoodChannel,
+    qty: u64,
+}
+
+/// S21d.1: the **acquisition-channel ledger** — a sim-side, runtime-only per-agent FIFO balance
+/// of the tracked food good (bread), classifying each held unit by the channel it entered through
+/// ([`FoodChannel`]). It mirrors the [`BreadProvenance`] readback discipline (post-`society.step()`,
+/// never econ-internal hooks) but tracks the FULL stock across all four channels, not just produced
+/// origin, so it can answer "what channel did the food survivors eat come from?".
+///
+/// **Conservation invariant (Codex P2):** EVERY outflow of tracked-food debits the ledger FIFO —
+/// consumption, sale/barter transfer, spoilage, estate settlement, and any birth/endowment
+/// transfer — and every inflow credits a channel, so `total_held()` stays equal to the tracked
+/// food actually held across all living agents (asserted each tick). That equality is what stops
+/// "bought food consumed" being overstated by an untracked outflow.
+///
+/// NOT serialized into `canonical_bytes` (diagnostic/proof state, like `starvation_deaths_total`),
+/// so it shifts no digest and every existing golden is byte-identical whether on or off. Maintained
+/// only while [`Settlement::acquisition_ledger_active`] holds; the empty default otherwise.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct AcquisitionLedger {
+    /// Per-agent FIFO lots, oldest at the front. A credit pushes to the back; a debit pops from
+    /// the front (splitting the front lot if it is larger than the debit).
+    lots: BTreeMap<AgentId, VecDeque<FoodLot>>,
+    /// One-time bootstrap latch: the generated seed stock is swept into `SeededMinted` lots on the
+    /// first active tick (before any inflow/outflow), so the ledger starts in lockstep with stock.
+    initialized: bool,
+    /// Cumulative tracked-food CONSUMED (eaten), split by the channel it arrived through — the bar
+    /// reads this: after warm-up, `Bought` ≫ `SeededMinted` + `Foraged`.
+    consumed_by_channel: [u64; FoodChannel::COUNT],
+    /// Cumulative tracked-food CREDITED (entered stock) per channel — the inflow side, used for the
+    /// seed-depletion trace (how much seeded/minted food ever entered vs how much is left).
+    credited_by_channel: [u64; FoodChannel::COUNT],
+    /// Cumulative tracked-food removed by every NON-consume outflow (sale-out, spoilage, estate,
+    /// endowment-out), split by channel — completes the conservation picture beside consumption.
+    other_outflow_by_channel: [u64; FoodChannel::COUNT],
+}
+
+impl AcquisitionLedger {
+    /// Credit `qty` of `agent`'s tracked-food as a fresh `channel` lot (an inflow).
+    fn credit(&mut self, agent: AgentId, channel: FoodChannel, qty: u64) {
+        if qty == 0 {
+            return;
+        }
+        self.lots
+            .entry(agent)
+            .or_default()
+            .push_back(FoodLot { channel, qty });
+        self.credited_by_channel[channel.index()] += qty;
+    }
+
+    /// Draw up to `qty` of `agent`'s tracked-food FIFO (oldest first), returning the ordered lots
+    /// actually drawn. Re-credits NOTHING — the caller decides whether the drawn units are a sink,
+    /// a consume, or a transfer.
+    fn draw_lots(&mut self, agent: AgentId, mut qty: u64) -> Vec<FoodLot> {
+        let mut drawn = Vec::new();
+        let Some(queue) = self.lots.get_mut(&agent) else {
+            return drawn;
+        };
+        while qty > 0 {
+            let Some(front) = queue.front_mut() else {
+                break;
+            };
+            let take = front.qty.min(qty);
+            drawn.push(FoodLot {
+                channel: front.channel,
+                qty: take,
+            });
+            front.qty -= take;
+            qty -= take;
+            if front.qty == 0 {
+                queue.pop_front();
+            }
+        }
+        if queue.is_empty() {
+            self.lots.remove(&agent);
+        }
+        drawn
+    }
+
+    /// Draw up to `qty` of `agent`'s tracked-food FIFO (oldest first), returning the per-channel
+    /// breakdown of what was actually drawn. The breakdown sums to `min(qty, held)`.
+    fn draw(&mut self, agent: AgentId, qty: u64) -> [u64; FoodChannel::COUNT] {
+        let mut drawn = [0u64; FoodChannel::COUNT];
+        for lot in self.draw_lots(agent, qty) {
+            drawn[lot.channel.index()] += lot.qty;
+        }
+        drawn
+    }
+
+    /// A CONSUME debit (eaten through the consumption-log readback): draw FIFO and book the drawn
+    /// units to `consumed_by_channel` — the headline trace.
+    fn consume(&mut self, agent: AgentId, qty: u64) {
+        let drawn = self.draw(agent, qty);
+        for channel in FoodChannel::ALL {
+            self.consumed_by_channel[channel.index()] += drawn[channel.index()];
+        }
+    }
+
+    /// A SINK debit (spoiled / estate→commons): draw FIFO and book the drawn units to the
+    /// non-consume outflow tally. The units leave the living population for good.
+    fn sink(&mut self, agent: AgentId, qty: u64) {
+        let drawn = self.draw(agent, qty);
+        for channel in FoodChannel::ALL {
+            self.other_outflow_by_channel[channel.index()] += drawn[channel.index()];
+        }
+    }
+
+    /// A MARKET-SALE transfer: the seller's units leave FIFO (booked as non-consume outflow), and
+    /// the SAME quantity enters the buyer as a fresh `Bought` lot — the buyer's acquisition channel
+    /// is, by definition, "bought" regardless of the seller's origin. Conserved (held total
+    /// unchanged); the channel mix shifts toward `Bought`, which is exactly the probe's signal.
+    fn transfer_as_bought(&mut self, from: AgentId, to: AgentId, qty: u64) {
+        let drawn = self.draw(from, qty);
+        let total: u64 = drawn.iter().sum();
+        for channel in FoodChannel::ALL {
+            self.other_outflow_by_channel[channel.index()] += drawn[channel.index()];
+        }
+        // Credit the buyer as Bought for what the seller actually had to give (`total`, which may
+        // be < qty only if the ledger and stock drifted — guarded by the conservation assert).
+        self.credit(to, FoodChannel::Bought, total);
+    }
+
+    /// An ORIGIN-PRESERVING transfer (birth endowment / estate→heir): draw FIFO from `from` and
+    /// re-credit the SAME channels to `to`, so an inherited seeded loaf stays seeded and a produced
+    /// one stays produced. A pure internal move — it touches neither the consume nor the outflow
+    /// tally, and (unlike `credit`) does not double-count the inflow counters.
+    fn transfer_preserve(&mut self, from: AgentId, to: AgentId, qty: u64) {
+        let drawn = self.draw_lots(from, qty);
+        if !drawn.is_empty() {
+            self.lots.entry(to).or_default().extend(drawn);
+        }
+    }
+
+    /// Drop every lot a removed agent still holds to the sink (the estate→commons exit when its
+    /// bread could not be routed to a living heir). Books the drained units as outflow. Returns
+    /// the residual units dropped, so the caller can assert the estate routing accounted for
+    /// every tracked-food unit (mirroring [`BreadProvenance::drop_to_sink`]).
+    fn drop_to_sink(&mut self, agent: AgentId) -> u64 {
+        let mut dropped = 0;
+        if let Some(queue) = self.lots.remove(&agent) {
+            for lot in queue {
+                self.other_outflow_by_channel[lot.channel.index()] += lot.qty;
+                dropped += lot.qty;
+            }
+        }
+        dropped
+    }
+
+    /// Total tracked-food held across all living agents (the conservation left-hand side).
+    fn total_held(&self) -> u64 {
+        self.lots
+            .values()
+            .flat_map(|q| q.iter())
+            .map(|lot| lot.qty)
+            .sum()
+    }
+
+    /// Tracked-food currently held per channel — the seed-depletion read (`SeededMinted` falling
+    /// toward zero) and the live channel mix.
+    fn held_by_channel(&self) -> [u64; FoodChannel::COUNT] {
+        let mut held = [0u64; FoodChannel::COUNT];
+        for lot in self.lots.values().flat_map(|q| q.iter()) {
+            held[lot.channel.index()] += lot.qty;
+        }
+        held
+    }
+}
+
+/// One prepared project-input bid whose real order-book fate is classified after
+/// `society.step()`, once the spot tender/reservation gate has actually run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BootstrapBidAttempt {
+    producer: AgentId,
+    input: GoodId,
+    gross_money: u64,
+}
+
+/// S21d.2a: the **cross-tick bootstrap microtrace** — runtime-only instrumentation that localizes
+/// the Exp-9 gate (`reservation_bid_for_money` → `allocated_money_before_rank`, `agent.rs:357/889`).
+/// The phase order is load-bearing: input-bid overrides are prepared BEFORE `society.step()`
+/// (`set_project_input_bid_overrides`), while the market consume eats INSIDE the step — so food a
+/// producer buys in tick `t` cannot free its money to bid the same tick; it is eaten and the
+/// hunger readback lands the NEXT tick, and only then can the bid post (if money remains). This
+/// trace records, per active chain producer, the **buy → eat → bid** sequence and, crucially, WHY
+/// a fed producer with a positive project-input ceiling does not get a real order-book bid: it is
+/// `cashless` (no money at all) or its money is `reserved` (present but allocated to higher-ranked
+/// wants/orders — the Exp-9 gate biting).
+///
+/// NOT serialized into `canonical_bytes` (diagnostic, like the acquisition ledger). Maintained only
+/// while [`Settlement::acquisition_ledger_active`] holds (the probe enables both together).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct BootstrapTrace {
+    /// Per active producer: the last econ tick it BOUGHT tracked food (the buy leg).
+    last_food_buy_tick: BTreeMap<AgentId, u64>,
+    /// Per active producer: the last econ tick it ATE tracked food (the eat leg, hunger relief).
+    last_food_eat_tick: BTreeMap<AgentId, u64>,
+    /// Cumulative producer-ticks a producer BOUGHT tracked food.
+    food_buys: u64,
+    /// Cumulative producer-ticks a producer ATE tracked food.
+    food_eats: u64,
+    /// Cumulative input-bid attempts reaching the reservation decision (an eligible producer with
+    /// an imputable output price and unsold-output headroom — the point the Exp-9 gate adjudicates).
+    bid_attempts: u64,
+    /// Of those, input bids actually POSTED (the gate passed — money was free to reserve).
+    bids_posted: u64,
+    /// Of the posts, those by a producer that bought tracked food on the previous tick and ate
+    /// tracked food on this tick before the bid gate — the **buy → eat → bid** bootstrap leg
+    /// completing end to end.
+    bids_posted_after_recent_buy: u64,
+    /// Of the blocks, the producer held NO free money at all (cashless — never earned/kept money).
+    bids_blocked_cashless: u64,
+    /// Of the blocks, the producer held free money but the gate RESERVED it for a higher-ranked
+    /// want (its own hunger) — the canonical Exp-9 deadlock the long-horizon-death arc localized.
+    bids_blocked_reserved: u64,
+    /// The first econ tick a recently-fed producer posted an input bid (the bootstrap firing), or
+    /// `None` if it never did across the run (a Phase B deadlock).
+    first_bootstrap_bid_tick: Option<u64>,
+    /// Prepared attempts awaiting post-market classification. Drained every econ tick.
+    pending_bid_attempts: Vec<BootstrapBidAttempt>,
+}
+
+impl BootstrapTrace {
+    /// Record a producer buying tracked food at `tick`.
+    fn observe_food_buy(&mut self, producer: AgentId, tick: u64) {
+        self.last_food_buy_tick.insert(producer, tick);
+        self.food_buys += 1;
+    }
+
+    /// Record a producer eating tracked food at `tick`.
+    fn observe_food_eat(&mut self, producer: AgentId, tick: u64) {
+        self.last_food_eat_tick.insert(producer, tick);
+        self.food_eats += 1;
+    }
+
+    /// True only for the advertised cross-tick bootstrap leg: buy tracked food on tick `t`, eat
+    /// tracked food at the start of `t + 1`, then let the input bid gate run later in `t + 1`.
+    fn bought_then_ate_on_tick(
+        &self,
+        producer: AgentId,
+        tick: u64,
+        ate_food_this_tick: bool,
+    ) -> bool {
+        ate_food_this_tick
+            && self
+                .last_food_buy_tick
+                .get(&producer)
+                .is_some_and(|&buy_tick| buy_tick + 1 == tick)
+    }
+
+    /// Record an economically valid input-bid attempt before `society.step()`. The prepared
+    /// override is classified after the step so `posted` means it reached the real spot order book
+    /// or filled there, after tender/reservation checks.
+    fn prepare_bid_attempt(&mut self, producer: AgentId, input: GoodId, gross_money: u64) {
+        self.pending_bid_attempts.push(BootstrapBidAttempt {
+            producer,
+            input,
+            gross_money,
+        });
+    }
+
+    /// Record a post-market input-bid decision at `tick`: `posted` = the real order-book gate
+    /// passed (the bid is live or filled); otherwise `gross_money` distinguishes a cashless block
+    /// (no money at all) from a reserved block (money present but unavailable to this bid).
+    /// `bought_then_ate` flags the buy → eat → bid leg.
+    fn observe_bid_decision(
+        &mut self,
+        tick: u64,
+        posted: bool,
+        gross_money: u64,
+        bought_then_ate: bool,
+    ) {
+        self.bid_attempts += 1;
+        if posted {
+            self.bids_posted += 1;
+            if bought_then_ate {
+                self.bids_posted_after_recent_buy += 1;
+                if self.first_bootstrap_bid_tick.is_none() {
+                    self.first_bootstrap_bid_tick = Some(tick);
+                }
+            }
+        } else if gross_money == 0 {
+            self.bids_blocked_cashless += 1;
+        } else {
+            self.bids_blocked_reserved += 1;
+        }
     }
 }
 
@@ -5704,6 +6237,8 @@ impl Settlement {
                 cultivate_patience: chain.cultivate_patience,
                 cultivation_sells_surplus: chain.cultivation_sells_surplus,
                 multigood_money: chain.multigood_money,
+                retire_food_mints: chain.retire_food_mints,
+                acquisition_ledger: chain.acquisition_ledger,
                 productive_reentry: chain.productive_reentry,
                 reentry_hunger_in: chain.reentry_hunger_in,
                 reentry_hunger_out: chain.reentry_hunger_out,
@@ -5751,6 +6286,8 @@ impl Settlement {
             critical_ticks_pre_promotion: 0,
             bread_provenance: BreadProvenance::default(),
             multigood: MultigoodMoney::default(),
+            acquisition: AcquisitionLedger::default(),
+            bootstrap_trace: BootstrapTrace::default(),
             econ_tick: 0,
             last_report: EconTickReport::default(),
             commons_gold: Gold::ZERO,
@@ -5931,6 +6468,8 @@ impl Settlement {
             critical_ticks_pre_promotion: 0,
             bread_provenance: BreadProvenance::default(),
             multigood: MultigoodMoney::default(),
+            acquisition: AcquisitionLedger::default(),
+            bootstrap_trace: BootstrapTrace::default(),
             econ_tick: 0,
             last_report: EconTickReport::default(),
             commons_gold: Gold::ZERO,
@@ -5971,6 +6510,11 @@ impl Settlement {
         // step below). The pre-promotion hunger pressure is accumulated end-of-tick
         // while this holds, so it freezes on the promotion tick (inclusive).
         let was_pre_promotion = self.promoted_at_tick().is_none();
+        // ---- 0. ACQUISITION LEDGER (S21d.1): one-time bootstrap sweep of the generated seed
+        // bread into the SeededMinted channel, before any death/provision/market moves it, so
+        // the runtime-only ledger starts in lockstep with held stock. A no-op off the gated
+        // path (and after the first active tick).
+        self.maybe_init_acquisition_ledger();
         let mut report = EconTickReport {
             econ_tick: self.econ_tick,
             fast_ticks: FAST_TICKS_PER_ECON_TICK,
@@ -6172,6 +6716,7 @@ impl Settlement {
         } else {
             self.society.step();
         }
+        self.finalize_bootstrap_bid_attempts(provenance_spot_trades_start);
         for (agent, labor) in capital_labor_used {
             self.society.record_external_labor_used(agent, labor);
         }
@@ -6217,6 +6762,14 @@ impl Settlement {
             was_pre_promotion,
         );
 
+        // ---- 5b-bis'. ACQUISITION LEDGER: MARKET (S21d.1): debit this tick's market-consume
+        // bread FIFO (by the channel it arrived through) and transfer the bread trades
+        // seller→buyer as `Bought`, in the same within-step order as the provenance pass. The
+        // cursor marks the consumed-log prefix already debited so the own-use consume below is
+        // not re-counted. No-op off the path.
+        let acquisition_consume_cursor = self
+            .run_acquisition_market(provenance_barter_trades_start, provenance_spot_trades_start);
+
         // ---- 5b-ter. MULTI-GOOD MONEY INSTRUMENTATION (S18): trace this tick's barter
         // trades for the WOOD↔medium leg (the WOOD provenance bound) and the
         // pending-indirect-SALT round-trip ledger. The round-trip ledger also reads this
@@ -6258,6 +6811,11 @@ impl Settlement {
         // consume (the consumed-log tail past the market pass), produced-first. No-op off path.
         self.run_bread_provenance_own_use(provenance_consume_cursor);
 
+        // ---- 6a-quater. ACQUISITION LEDGER: OWN-USE CONSUME (S21d.1): debit the cultivators'
+        // own-use bread consume (the consumed-log tail past the market pass) FIFO. No-op off path
+        // (and inert in the probe — cultivation is off).
+        self.run_acquisition_own_use(acquisition_consume_cursor);
+
         // ---- 6b. BIRTHS (G4b): each food-secure household under its size cap and
         // past its birth interval bears one child — a new colonist with an inherited,
         // mutated culture and a conserved endowment transferred from a parent, added
@@ -6285,6 +6843,10 @@ impl Settlement {
         // ---- 7b. PROVENANCE FINALIZE (S16): record the first produced-surplus tick and
         // assert the provenance ledger conserves. A no-op off the path.
         self.finalize_bread_provenance();
+        // ---- 7b'. ACQUISITION LEDGER FINALIZE (S21d.1): assert the channel ledger still equals
+        // the tracked food actually held (every inflow credited, every outflow debited). No-op
+        // off the path.
+        self.finalize_acquisition_ledger();
         for &good in &self.goods {
             report
                 .whole_system_after
@@ -7111,6 +7673,11 @@ impl Settlement {
         if self.bread_provenance_active() {
             self.bread_provenance.drop_to_sink(id);
         }
+        // S21d.1: the dead colonist's tracked food leaves the living population for the
+        // commons — a conserved sink for the acquisition ledger too.
+        if self.acquisition_ledger_active() {
+            self.acquisition.drop_to_sink(id);
+        }
         self.record_estate_destination(id, EstateDestination::Commons);
         true
     }
@@ -7137,7 +7704,10 @@ impl Settlement {
             household: self.colonist_household(id).unwrap_or_default(),
             heir,
         });
-        let provenance_bread = if self.bread_provenance_active() {
+        // The tracked bread good for BOTH stock-origin ledgers (S16 provenance + S21d.1
+        // acquisition) — they classify the same good, so the heir/commons split is computed
+        // once whenever either ledger is active.
+        let tracked_bread = if self.bread_provenance_active() || self.acquisition_ledger_active() {
             self.provenance_bread_good()
         } else {
             None
@@ -7177,7 +7747,7 @@ impl Settlement {
                     if qty > placed {
                         *self.commons_stock.entry(good).or_insert(0) += qty - placed;
                     }
-                    if Some(good) == provenance_bread {
+                    if Some(good) == tracked_bread {
                         bread_placed_with_heir += placed;
                         bread_placed_with_commons += qty - placed;
                     }
@@ -7189,7 +7759,7 @@ impl Settlement {
                     if qty > 0 {
                         *self.commons_stock.entry(good).or_insert(0) += qty;
                     }
-                    if Some(good) == provenance_bread {
+                    if Some(good) == tracked_bread {
                         bread_placed_with_commons += qty;
                     }
                 }
@@ -7212,6 +7782,28 @@ impl Settlement {
                 }
                 _ => {
                     self.bread_provenance.drop_to_sink(id);
+                }
+            }
+        }
+        // S21d.1: route the dead colonist's tracked food the same way — an heir TRANSFER
+        // (origin preserved), a commons SINK, and any residual dropped to the sink — so the
+        // acquisition ledger conserves across the estate. The heir/commons split drains the
+        // agent's whole tracked-food balance, so the residual drop must be zero (the same
+        // localizing invariant `BreadProvenance` asserts on its parallel routing above).
+        if self.acquisition_ledger_active() {
+            match destination {
+                Some(EstateDestination::Household { heir, .. }) => {
+                    self.acquisition
+                        .transfer_preserve(id, heir, bread_placed_with_heir);
+                    self.acquisition.sink(id, bread_placed_with_commons);
+                    let residual = self.acquisition.drop_to_sink(id);
+                    debug_assert_eq!(
+                        residual, 0,
+                        "estate acquisition routing must account for every tracked-food unit"
+                    );
+                }
+                _ => {
+                    self.acquisition.drop_to_sink(id);
                 }
             }
         }
@@ -7322,8 +7914,9 @@ impl Settlement {
         // scaffold) — only the WOOD/warmth provision stays an endowment (hunger-only
         // scope). The lineage then earns its food from the market (selling its WOOD
         // provision for the staple), exactly the retirement test 2 pins
-        // (`endowment[staple] == 0`).
-        let mint_food = !self.own_labor_subsistence_can_run();
+        // (`endowment[staple] == 0`). S21d.0 retires the SAME demographic food mint
+        // independent of forage (no FORAGE good interned) — the open-survival probe.
+        let mint_food = !self.own_labor_subsistence_can_run() && !self.retire_food_mints();
         // Collect (id, household) first so the colonists borrow is released before the
         // society is mutated.
         let members: Vec<(AgentId, usize)> = self
@@ -7364,6 +7957,14 @@ impl Settlement {
         let credited = provision.min(u32::MAX - held);
         if credited > 0 && self.society.credit_stock(id, good, credited) {
             *report.endowment.entry(good).or_insert(0) += u64::from(credited);
+            // S21d.1: a hearth MINT of the tracked food (the demographic `food_provision`
+            // or the producer staple floor) enters as the `SeededMinted` channel — the very
+            // term the open-survival probe retires, so its only effect here is on the
+            // mints-ON control. WOOD/other provisions are not tracked food, so no-op.
+            if self.acquisition_ledger_active() && Some(good) == self.acquisition_food_good() {
+                self.acquisition
+                    .credit(id, FoodChannel::SeededMinted, u64::from(credited));
+            }
         }
     }
 
@@ -7500,6 +8101,16 @@ impl Settlement {
             // Off the bread endowment (forage path) or off the ledger this is a no-op.
             if self.bread_provenance_active() && Some(staple) == self.provenance_bread_good() {
                 self.bread_provenance.transfer(
+                    parent_id,
+                    child_id,
+                    u64::from(demo.child_food_endowment),
+                );
+            }
+            // S21d.1: the same conserved bread endowment transfer for the acquisition ledger —
+            // origin preserved (an inherited bought loaf stays bought). A no-op off the bread
+            // endowment / off the ledger.
+            if self.acquisition_ledger_active() && Some(staple) == self.acquisition_food_good() {
+                self.acquisition.transfer_preserve(
                     parent_id,
                     child_id,
                     u64::from(demo.child_food_endowment),
@@ -7740,6 +8351,13 @@ impl Settlement {
         } else {
             None
         };
+        // S21d.1: a baker's bread is SELF-PRODUCED — credit the acquisition ledger so the
+        // post-promotion chain output is attributed self-produced (distinct from bought/seeded).
+        let acquisition_bread = if self.acquisition_ledger_active() {
+            self.acquisition_food_good()
+        } else {
+            None
+        };
         // G6b content recipes (`None` for a plain G3a/G3b/G5b chain).
         let research_recipe = chain.content.research_recipe().map(|recipe| recipe.id);
         let confect_recipe = chain.content.tier2_recipe().map(|recipe| recipe.id);
@@ -7812,6 +8430,10 @@ impl Settlement {
                     if Some(out_good) == provenance_bread {
                         self.bread_provenance
                             .credit_produced(id, u64::from(out_qty));
+                    }
+                    if Some(out_good) == acquisition_bread {
+                        self.acquisition
+                            .credit(id, FoodChannel::SelfProduced, u64::from(out_qty));
                     }
                 }
                 // Conserved good INPUTS to any recipe — research included — are accounted
@@ -7946,8 +8568,10 @@ impl Settlement {
         // S12: own-labor subsistence retires the producer's STAPLE mint (the food
         // scaffold) — only the WOOD/warmth provision stays an endowment (hunger-only
         // scope). A producer then earns its food by buying bread or, when idle/too
-        // hungry to produce, foraging, exactly like the rest of the tail.
-        let mint_staple = !self.own_labor_subsistence_can_run();
+        // hungry to produce, foraging, exactly like the rest of the tail. S21d.0 retires
+        // the SAME producer staple mint independent of forage — the open-survival probe,
+        // so a producer's survival is a market bread purchase (the Phase B bootstrap test).
+        let mint_staple = !self.own_labor_subsistence_can_run() && !self.retire_food_mints();
         let live_len = self.live_colonist_slots.len();
         for live_index in 0..live_len {
             let slot = self.live_colonist_slots[live_index];
@@ -8222,6 +8846,9 @@ impl Settlement {
         // S16: cultivated bread is PRODUCED-origin — credit the provenance ledger as each
         // loaf is booked (the own-use consume below is sinked by the provenance own-use pass).
         let provenance = self.bread_provenance_active();
+        // S21d.1: cultivated bread is SELF-PRODUCED for the acquisition ledger too (the own-use
+        // consume below is debited by the acquisition own-use pass).
+        let acquisition = self.acquisition_ledger_active();
         let hunger_target = 0;
         let hunger_deplete = self.dynamics.hunger_deplete;
         let hunger_per_food = self.dynamics.hunger_per_food;
@@ -8281,6 +8908,10 @@ impl Settlement {
                 if provenance && out_good == bread {
                     self.bread_provenance
                         .credit_produced(id, u64::from(out_qty));
+                }
+                if acquisition && out_good == bread {
+                    self.acquisition
+                        .credit(id, FoodChannel::SelfProduced, u64::from(out_qty));
                 }
                 if let Some((in_good, in_qty)) = applied.input {
                     *report.consumed_as_input.entry(in_good).or_insert(0) += u64::from(in_qty);
@@ -8442,6 +9073,20 @@ impl Settlement {
                         {
                             self.bread_provenance
                                 .transfer(donor_id, producer_id, u64::from(give));
+                        }
+                        // S21d.1: the acquisition-channel ledger tracks the same conserved
+                        // in-kind staple move. Preserve the original channel (a bought loaf
+                        // advanced to a producer is still market-acquired; a minted/seeded loaf
+                        // is still seeded/minted) so the FIFO ledger stays conserved when the
+                        // producer later eats or sells the advanced food.
+                        if self.acquisition_ledger_active()
+                            && Some(staple) == self.acquisition_food_good()
+                        {
+                            self.acquisition.transfer_preserve(
+                                donor_id,
+                                producer_id,
+                                u64::from(give),
+                            );
                         }
                     } else {
                         self.society.credit_stock(donor_id, staple, give);
@@ -8616,6 +9261,11 @@ impl Settlement {
         };
         let staple = self.known.hunger;
         let tick = self.society.tick.0;
+        // S21d.2a: the bootstrap microtrace records prepared input-bid attempts here, keyed to
+        // the econ tick so it lines up with the buy/eat legs the acquisition market pass records.
+        // The attempts are classified after `society.step()`, when the real spot-order
+        // tender/reservation gate has either posted/filled the bid or blocked it.
+        let trace_active = self.acquisition_ledger_active();
         let live_len = self.live_colonist_slots.len();
         for live_index in 0..live_len {
             let slot = self.live_colonist_slots[live_index];
@@ -8701,8 +9351,57 @@ impl Settlement {
                 self.society.realized_price(input),
                 entrepreneurial,
             );
+            if trace_active {
+                self.bootstrap_trace
+                    .prepare_bid_attempt(producer_id, input, agent.gold.0);
+            }
             self.society
                 .set_bid_override(producer_id, input, reservation, limit);
+        }
+    }
+
+    /// S21d.2a: classify the project-input bid attempts prepared before the market after the
+    /// market has run. A bid counts as posted if it either remains live in the spot book or filled
+    /// as an input purchase on this tick's trade suffix; otherwise it was blocked by the real
+    /// tender/reservation gate (`cashless` vs `reserved` split by the pre-step gross-money read).
+    fn finalize_bootstrap_bid_attempts(&mut self, spot_trades_start: usize) {
+        if !self.acquisition_ledger_active() {
+            self.bootstrap_trace.pending_bid_attempts.clear();
+            return;
+        }
+        let attempts = std::mem::take(&mut self.bootstrap_trace.pending_bid_attempts);
+        let tick = self.econ_tick;
+        let food = self.acquisition_food_good();
+        for attempt in attempts {
+            let filled = self.society.trades[spot_trades_start..]
+                .iter()
+                .any(|trade| {
+                    trade.buyer == attempt.producer && trade.good == attempt.input && trade.qty > 0
+                });
+            // The project-input override is the producer's only input-bid source in this path; a
+            // live bid for `(producer, input)` therefore means this prepared attempt posted.
+            let posted = filled
+                || self
+                    .society
+                    .has_live_spot_bid(attempt.producer, attempt.input);
+            let bought_then_ate = food.is_some_and(|food| {
+                let ate_food_this_tick = self.society.consumption_log_last_tick().iter().any(
+                    |&(agent, eaten_good, qty)| {
+                        agent == attempt.producer && eaten_good == food && qty > 0
+                    },
+                );
+                self.bootstrap_trace.bought_then_ate_on_tick(
+                    attempt.producer,
+                    tick,
+                    ate_food_this_tick,
+                )
+            });
+            self.bootstrap_trace.observe_bid_decision(
+                tick,
+                posted,
+                attempt.gross_money,
+                bought_then_ate,
+            );
         }
     }
 
@@ -8768,6 +9467,12 @@ impl Settlement {
         } else {
             None
         };
+        // S21d.1: spoiled bread is a true sink for the acquisition ledger too — debit it FIFO.
+        let acquisition_bread = if self.acquisition_ledger_active() {
+            self.acquisition_food_good()
+        } else {
+            None
+        };
         // Spoil the **staple** food a satiated agent hoards (and the subsistence
         // food, if any) — NOT the chain's intermediates (grain/flour), whose
         // small working stocks and large bootstrap seed buffers must survive for
@@ -8803,6 +9508,9 @@ impl Settlement {
                     *report.spoiled.entry(good).or_insert(0) += u64::from(spoil);
                     if Some(good) == provenance_bread {
                         self.bread_provenance.sink(id, u64::from(spoil));
+                    }
+                    if Some(good) == acquisition_bread {
+                        self.acquisition.sink(id, u64::from(spoil));
                     }
                 }
             }
@@ -9831,6 +10539,29 @@ impl Settlement {
         self.cultivation_sells_surplus_active()
     }
 
+    /// S21d.0: whether the food mints are retired this tick — the open-survival probe gate.
+    /// When this holds, the demographic `food_provision` hearth and the producer staple
+    /// floor skip minting the hunger staple (WOOD/warmth provision is unaffected), so the
+    /// food-mint endowment term is zero and every agent must buy or produce its food.
+    /// Gated purely on the chain flag (independent of `own_labor_subsistence`/forage). Off
+    /// (every existing config), the mints fire as before and the run is byte-identical.
+    fn retire_food_mints(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(|chain| chain.retire_food_mints)
+    }
+
+    /// S21d.1: whether the acquisition-channel ledger is maintained this tick — the chain
+    /// flag is on AND the chain carries a bread good to track. Off (every existing config),
+    /// the ledger stays the empty default, no hook fires, and the run is byte-identical
+    /// (the ledger is never digested regardless).
+    fn acquisition_ledger_active(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(|chain| chain.acquisition_ledger)
+            && self.provenance_bread_good().is_some()
+    }
+
     /// S16: the bread good, when a chain carries one (the good the ledger tracks).
     fn provenance_bread_good(&self) -> Option<GoodId> {
         self.content().map(ContentSet::bread)
@@ -9949,6 +10680,186 @@ impl Settlement {
         debug_assert!(
             self.bread_provenance_conserves(),
             "bread provenance ledger broke at econ tick {}",
+            self.econ_tick
+        );
+    }
+
+    /// S21d.1: the tracked food good for the acquisition-channel ledger — the chain's bread
+    /// (the hunger staple in the open-survival probe). `None` for a settlement with no chain.
+    fn acquisition_food_good(&self) -> Option<GoodId> {
+        self.provenance_bread_good()
+    }
+
+    /// S21d.2a: the active chain producers (Miller/Baker and the 3-good cycle roles) — the agents
+    /// `set_project_input_bid_overrides` adjudicates and whose buy → eat → bid sequence the
+    /// bootstrap microtrace follows.
+    fn active_producer_ids(&self) -> BTreeSet<AgentId> {
+        self.live_colonist_slots
+            .iter()
+            .filter_map(|&slot| {
+                let colonist = &self.colonists[slot];
+                matches!(
+                    colonist.vocation,
+                    Vocation::Miller
+                        | Vocation::Baker
+                        | Vocation::CycleA
+                        | Vocation::CycleB
+                        | Vocation::CycleC
+                )
+                .then_some(colonist.id)
+            })
+            .collect()
+    }
+
+    /// S21d.1: total tracked-food held across all society agents — the conservation right-hand
+    /// side the ledger's `total_held()` must match each active tick.
+    fn acquisition_food_held(&self, food: GoodId) -> u64 {
+        self.society
+            .agents
+            .iter()
+            .map(|agent| u64::from(agent.stock.get(food)))
+            .sum()
+    }
+
+    /// S21d.1: one-time bootstrap — sweep the generated SEED bread into the `SeededMinted`
+    /// channel before any death/provision/market moves it, so the ledger starts in lockstep
+    /// with held stock. Idempotent (latched) and a no-op off the gated path.
+    fn maybe_init_acquisition_ledger(&mut self) {
+        if !self.acquisition_ledger_active() || self.acquisition.initialized {
+            return;
+        }
+        let Some(food) = self.acquisition_food_good() else {
+            return;
+        };
+        let seed: Vec<(AgentId, u64)> = self
+            .society
+            .agents
+            .iter()
+            .map(|agent| (agent.id, u64::from(agent.stock.get(food))))
+            .filter(|&(_, qty)| qty > 0)
+            .collect();
+        for (id, qty) in seed {
+            self.acquisition.credit(id, FoodChannel::SeededMinted, qty);
+        }
+        self.acquisition.initialized = true;
+    }
+
+    /// S21d.1: the acquisition-ledger MARKET pass — runs right after `society.step()`, in the
+    /// same within-step order as [`Self::run_bread_provenance_market`] (the consume pass eats
+    /// BEFORE the market clears). First debit this tick's market-consume bread FIFO (booked by
+    /// the channel it arrived through), then for each bread trade transfer the seller's units to
+    /// the buyer as `Bought`. Pre-promotion bread moves on the barter tape; post-promotion on
+    /// the spot tape. Returns the consumption-log cursor so the later own-use consume is not
+    /// re-counted. A no-op (returns 0) off the path.
+    fn run_acquisition_market(
+        &mut self,
+        barter_trades_start: usize,
+        spot_trades_start: usize,
+    ) -> usize {
+        if !self.acquisition_ledger_active() {
+            return 0;
+        }
+        let Some(food) = self.acquisition_food_good() else {
+            return 0;
+        };
+        // The whole consumption log so far is this tick's MARKET consume (cleared at the step's
+        // start; the own-use consume has not run yet). Debit it FIFO, oldest channel first.
+        let market_consume: Vec<(AgentId, u64)> = self
+            .society
+            .consumption_log_last_tick()
+            .iter()
+            .filter(|&&(_, good, _)| good == food)
+            .map(|&(agent, _, qty)| (agent, u64::from(qty)))
+            .collect();
+        let cursor = self.society.consumption_log_last_tick().len();
+        // S21d.2a: the producers whose buy → eat → bid bootstrap the microtrace follows.
+        let producers = self.active_producer_ids();
+        let tick = self.econ_tick;
+        let mut producer_eaters: BTreeSet<AgentId> = BTreeSet::new();
+        for (agent, qty) in market_consume {
+            self.acquisition.consume(agent, qty);
+            if producers.contains(&agent) {
+                producer_eaters.insert(agent);
+            }
+        }
+        for agent in producer_eaters {
+            self.bootstrap_trace.observe_food_eat(agent, tick);
+        }
+        // This tick's bread trades (seller = the bread giver) — the buyer acquires `Bought`.
+        let mut bread_trades: Vec<(AgentId, AgentId, u64)> = self.society.barter_trades
+            [barter_trades_start..]
+            .iter()
+            .filter_map(|trade| {
+                if trade.a_gives == food {
+                    Some((trade.a, trade.b, u64::from(trade.qty)))
+                } else if trade.b_gives == food {
+                    Some((trade.b, trade.a, u64::from(trade.qty)))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        bread_trades.extend(
+            self.society.trades[spot_trades_start..]
+                .iter()
+                .filter_map(|trade| {
+                    (trade.good == food).then_some((
+                        trade.seller,
+                        trade.buyer,
+                        u64::from(trade.qty),
+                    ))
+                }),
+        );
+        let mut producer_buyers: BTreeSet<AgentId> = BTreeSet::new();
+        for (seller, buyer, qty) in bread_trades {
+            self.acquisition.transfer_as_bought(seller, buyer, qty);
+            if producers.contains(&buyer) {
+                producer_buyers.insert(buyer);
+            }
+        }
+        for buyer in producer_buyers {
+            self.bootstrap_trace.observe_food_buy(buyer, tick);
+        }
+        cursor
+    }
+
+    /// S21d.1: debit the cultivators' OWN-USE bread consume (the consumed-log tail past the
+    /// market pass's `cursor`) FIFO — the own-use eating sink. Runs right after the own-use
+    /// cultivation phase. A no-op off the path (and inert here — cultivation is off in the probe).
+    fn run_acquisition_own_use(&mut self, cursor: usize) {
+        if !self.acquisition_ledger_active() {
+            return;
+        }
+        let Some(food) = self.acquisition_food_good() else {
+            return;
+        };
+        let own_use: Vec<(AgentId, u64)> = self
+            .society
+            .consumption_log_last_tick()
+            .iter()
+            .skip(cursor)
+            .filter(|&&(_, good, _)| good == food)
+            .map(|&(agent, _, qty)| (agent, u64::from(qty)))
+            .collect();
+        for (agent, qty) in own_use {
+            self.acquisition.consume(agent, qty);
+        }
+    }
+
+    /// S21d.1: end-of-tick conservation assert — `total_held()` must equal the tracked food
+    /// actually held across all society agents, proving every inflow credited and every outflow
+    /// debited the channel ledger. A no-op off the path.
+    fn finalize_acquisition_ledger(&mut self) {
+        if !self.acquisition_ledger_active() {
+            return;
+        }
+        let Some(food) = self.acquisition_food_good() else {
+            return;
+        };
+        debug_assert_eq!(
+            self.acquisition.total_held(),
+            self.acquisition_food_held(food),
+            "acquisition-channel ledger broke conservation at econ tick {}",
             self.econ_tick
         );
     }
@@ -10283,6 +11194,14 @@ impl Settlement {
     /// chain's good ids and recipes through it.
     pub fn content(&self) -> Option<&ContentSet> {
         self.chain.as_ref().map(|chain| &chain.content)
+    }
+
+    /// The directly-edible **subsistence** good (`known.subsistence`) — the FORAGE/raw-grain
+    /// staple fallback, or `None` when none is wired. The S21d open-survival probe asserts this
+    /// is `None` (the explicit `retire_food_mints` flag interns NO forage good, unlike the S12
+    /// forage hack). Read-only.
+    pub fn subsistence_good(&self) -> Option<GoodId> {
+        self.known.subsistence
     }
 
     // ---- G6b research / tech-tier surface --------------------------------
@@ -11511,6 +12430,41 @@ impl Settlement {
             .sum()
     }
 
+    /// S21d.1 (read-only): tracked food (bread) CONSUMED so far, split by acquisition
+    /// channel — the open-survival bar. After warm-up, `bought` must dominate while
+    /// `seeded_minted` + `foraged` flatten near zero. Empty default off the gated path.
+    pub fn acquisition_consumed_by_channel(&self) -> AcquisitionChannels {
+        AcquisitionChannels::from_array(self.acquisition.consumed_by_channel)
+    }
+
+    /// S21d.1 (read-only): tracked food (bread) currently HELD across living agents, split by
+    /// channel — the live channel mix and the seed-depletion read (`seeded_minted → 0`).
+    pub fn acquisition_held_by_channel(&self) -> AcquisitionChannels {
+        AcquisitionChannels::from_array(self.acquisition.held_by_channel())
+    }
+
+    /// S21d.1 (read-only): tracked food (bread) ever CREDITED (entered stock) per channel — the
+    /// inflow totals (e.g. how much seeded/minted food ever entered vs how much bought).
+    pub fn acquisition_credited_by_channel(&self) -> AcquisitionChannels {
+        AcquisitionChannels::from_array(self.acquisition.credited_by_channel)
+    }
+
+    /// S21d.2a (read-only): the cross-tick bootstrap microtrace summary — the buy → eat → bid
+    /// sequence and the post-market block breakdown that localizes the Exp-9 gate. Empty default
+    /// off the path.
+    pub fn bootstrap_trace_summary(&self) -> BootstrapTraceSummary {
+        BootstrapTraceSummary {
+            food_buys: self.bootstrap_trace.food_buys,
+            food_eats: self.bootstrap_trace.food_eats,
+            bid_attempts: self.bootstrap_trace.bid_attempts,
+            bids_posted: self.bootstrap_trace.bids_posted,
+            bids_posted_after_recent_buy: self.bootstrap_trace.bids_posted_after_recent_buy,
+            bids_blocked_cashless: self.bootstrap_trace.bids_blocked_cashless,
+            bids_blocked_reserved: self.bootstrap_trace.bids_blocked_reserved,
+            first_bootstrap_bid_tick: self.bootstrap_trace.first_bootstrap_bid_tick,
+        }
+    }
+
     /// Diagnostic (game-only, read-only): total `gold` held by living colonists
     /// grouped by [`Vocation`] — the probe for the producer-working-capital
     /// hypothesis (do the chain producers cash-starve while the saving
@@ -12085,6 +13039,29 @@ impl Settlement {
             // multi-good instrumentation it also turns on is diagnostic and NOT digested.)
             if self.multigood_money_active() {
                 out.push(1);
+            }
+            // S21d.0: the retire-food-mints gate skips the recurring demographic + producer
+            // staple mints every tick — a future-behaviour change for any chain (its agents
+            // must buy/produce food instead of being fed), so it joins the identity. Two
+            // refinements keep the marker injective AND behaviour-faithful:
+            //   * It is emitted ONLY when it actually retires a *live* mint — i.e. the flag is
+            //     on AND own-labor subsistence is NOT already retiring the same two mint sites
+            //     (both guarded by `!own_labor_subsistence_can_run() && !retire_food_mints()`,
+            //     settlement.rs:7919/8574). When own-labor already runs, the flag is
+            //     behaviour-inert, so emitting nothing keeps an own-labor config's digest
+            //     unchanged (no false split for behaviour-identical configs).
+            //   * The marker is a DISTINCT tag (`2`), not the bare `1` the adjacent
+            //     `multigood_money_active()` block emits, so the two gated markers can never
+            //     collide in the byte stream. (They are already mutually exclusive — multigood
+            //     requires `own_labor_subsistence_can_run()` true while this marker requires it
+            //     false — but the distinct tag makes the injectivity self-evident rather than
+            //     resting on that cross-flag invariant.)
+            // Off (every existing config) emits nothing, so a flag-off chain stays
+            // byte-identical to the pre-S21d stream. (The S21d.1 acquisition ledger it pairs
+            // with is a runtime-only diagnostic and is deliberately NOT digested — like
+            // `starvation_deaths_total`.)
+            if self.retire_food_mints() && !self.own_labor_subsistence_can_run() {
+                out.push(2);
             }
             // The staple mapping steers the next needs/scale phase for *any* chain,
             // role-choice or not, so it is included whenever a chain is active. The
@@ -17697,6 +18674,62 @@ mod tests {
         assert_eq!(bp.sink(c, 2), 2);
         assert_eq!(bp.produced_sunk, 2);
         assert_eq!(bp.produced_credited, bp.produced_sunk + bp.total_held());
+    }
+
+    #[test]
+    fn acquisition_transfer_preserve_keeps_fifo_lot_order() {
+        // Origin-preserving moves (birth, inheritance, in-kind advance) must keep the donor's
+        // actual FIFO order. If the recipient consumes only part of a mixed transfer, older seeded
+        // food must be debited before newer bought food.
+        let mut ledger = AcquisitionLedger::default();
+        let (donor, recipient) = (AgentId(1), AgentId(2));
+
+        ledger.credit(donor, FoodChannel::SeededMinted, 2);
+        ledger.credit(donor, FoodChannel::Bought, 3);
+        ledger.transfer_preserve(donor, recipient, 4);
+        ledger.consume(recipient, 2);
+
+        assert_eq!(
+            ledger.consumed_by_channel[FoodChannel::SeededMinted.index()],
+            2,
+            "the recipient must eat the older seeded lot first"
+        );
+        assert_eq!(
+            ledger.consumed_by_channel[FoodChannel::Bought.index()],
+            0,
+            "bought food must not jump ahead of older seeded food"
+        );
+
+        ledger.consume(recipient, 1);
+        assert_eq!(
+            ledger.consumed_by_channel[FoodChannel::Bought.index()],
+            1,
+            "after the seeded lot is exhausted, the transferred bought lot is next"
+        );
+    }
+
+    #[test]
+    fn bootstrap_buy_eat_bid_predicate_requires_current_eat_after_prior_buy() {
+        let producer = AgentId(1);
+        let mut trace = BootstrapTrace::default();
+
+        trace.observe_food_eat(producer, 10);
+        trace.observe_food_buy(producer, 10);
+        assert!(
+            !trace.bought_then_ate_on_tick(producer, 11, false),
+            "a buy followed by no current-tick eat is not buy -> eat -> bid"
+        );
+
+        trace.observe_food_buy(producer, 11);
+        assert!(
+            !trace.bought_then_ate_on_tick(producer, 11, true),
+            "an eat before a same-tick buy must not count as buy -> eat -> bid"
+        );
+
+        assert!(
+            trace.bought_then_ate_on_tick(producer, 12, true),
+            "a prior-tick buy plus current-tick eat is the bootstrap leg"
+        );
     }
 
     #[test]

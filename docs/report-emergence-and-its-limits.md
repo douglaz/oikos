@@ -3,7 +3,7 @@
 *An experimental report on emergent money, capital, and survival in a praxeologic simulation.*
 
 > Status: working research report (raw material for a future article). Covers the milestone arc
-> through S21c (the money sub-arc and the first slice of the open-colony capstone). Every result below
+> through S21d (the money sub-arc and the first two slices of the open-colony capstone). Every result below
 > was built additively behind a default-off flag, kept the prior conformance goldens byte-identical,
 > conserved every tick, ran deterministically, and was reviewed by an independent second model (Codex)
 > at both the spec and the result stage. Honest negative findings are reported as first-class results,
@@ -346,12 +346,29 @@ slice has already produced a deep finding that re-planned the rest:
   open colony needs a *second produced/consumed good or input-demand loop* so the medium is accepted
   for ends other than food. The slices: **S21c — fix the open-discovery path-dependence** *(landed:
   a legacy direct-discovery lane lets a below-floor good still cross the floor late; a regression test
-  confirmed non-vacuous — it fails without the fix; all 18 goldens byte-identical)*; then S21d (open
-  survival, **mortality off** — does two-layer money survive produced-food necessity demand?); S21e
+  confirmed non-vacuous — it fails without the fix; all 18 goldens byte-identical)*; then **S21d —
+  open survival, mortality off** *(landed as a **Phase A finding**: see below)*; S21e
   (**mortality on** — no extinction, a market-fed band, deaths tracking failure to earn/buy, not
   hidden provisioning gaps); S21f (robustness). Mortality goes last so a monetary failure is not
   masked by a demographic wipeout. The bar: market-sourced food *provenance* + medium promotion +
   real pre-promotion indirect breadth *across non-food targets*, under a full control matrix.
+- **S21d — Open survival (mortality off): the supply-scaffold finding.** Compose the full money
+  machinery (S20 + S21a/b/c) onto the strong co-emergent colony with the food hearths **retired**
+  (an explicit `retire_food_mints` engine flag, not the forage hack) so survival is a *market* bread
+  purchase. Add a runtime-only **acquisition-channel ledger** (per-agent FIFO over bread:
+  bought/seeded-minted/self-produced/foraged, conserved across every outflow) and a **cross-tick
+  bootstrap microtrace** (buy → eat → bid, localizing the Exp-9 gate). **Result: a clean Phase A
+  deadlock — SALT never promotes because the pre-promotion barter market clears _zero trades_.**
+  Pre-promotion bread supply came entirely from the mint-fed surplus; with production post-promotion
+  only and the mint gone, every agent holds its seed bread to *eat* (its only food, mortality off),
+  the universal bread want has no market supply, and the book cannot clear — so SALT accrues no
+  saleability. A mints-ON control (all else identical) restores the bread market (431 trades),
+  localizing the gate at the retired scaffold, not the money machinery. This **confirms the
+  direction-review's own hypothesis**: the retired bread mint was a real *supply/counterparty*
+  scaffold, and two-layer saleability fixes the *metric* but not the *supply*. The faithful next
+  step is an institution that supplies a pre-promotion terminal good (a wage/firm or seeded
+  producers selling into the barter window), not value-scale surgery. All engine pieces default-off;
+  all 18 goldens byte-identical.
 - **Later:** endogenizing the clearing institution and richer marketability. (Robustness for the
   in-cycle result is done — §6.)
 
@@ -378,3 +395,4 @@ slice has already produced a deep finding that re-planned the rest:
 | S21a | Marketability / carrying cost (open-colony slice) | finding: lever cuts *as-a-means* acceptance, but total-saleability conflates consumption with medium use → two-layer metric needed |
 | S21b | Two-layer Mengerian saleability | **resolution: direct-use eligibility floor + medium-saleability leadership → the durable medium promotes; non-circular (controlled scenario)** |
 | S21c | Open-discovery lane (capstone slice 1) | fix: a legacy direct-discovery lane lets a below-floor good cross the direct-use floor late (the open-colony prerequisite); all goldens byte-identical |
+| S21d | Open survival, mortality off (capstone slice 2) | finding (Phase A): retiring the food scaffold collapses the pre-promotion barter market to zero trades — production is post-promotion only, so there is no pre-promotion food supply for the medium to circulate against; two-layer fixes the metric, not the supply; all goldens byte-identical |

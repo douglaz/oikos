@@ -1,10 +1,14 @@
 # impl-27 — S21d: Open-Survival Money Probe (mortality off)
 
-Status: SPEC-READY (Codex round 1 NEEDS-REVISION → round 2 NEEDS-REVISION [Phase A topology +
-canonicalization] → addressed: bread⇄WOOD topology with WOOD the sole non-food target, a real
-second non-food need scoped out as future work; retire_food_mints canonicalized ON-only; the
-acquisition-ledger outflow invariant pinned)
-Branch: `feat/open-survival-probe`
+Status: IMPLEMENTED — classified as a **Phase A FINDING** (no promotion; the pre-promotion barter
+market collapses to zero trades once the food scaffold is retired). All engine pieces landed
+default-off (18 goldens byte-identical), the probe was run and classified honestly, NOT tuned into
+a money-emergence. See §9 (Result) below.
+(Codex round 1 NEEDS-REVISION → round 2 NEEDS-REVISION [Phase A topology + canonicalization] →
+addressed: bread⇄WOOD topology with WOOD the sole non-food target, a real second non-food need
+scoped out as future work; retire_food_mints canonicalized ON-only; the acquisition-ledger outflow
+invariant pinned)
+Branch: `feat/open-survival-probe-impl`
 Base: master @ `7c208d9` (S21c landed)
 
 ## 0. What this milestone is — a PROBE, classify the outcome (likely a FINDING)
@@ -209,3 +213,74 @@ rb-lite `codex,claude` (slices S21d.0→.3) → independent verification (worksp
 goldens byte-identical + the new suite + a live run) → Codex review-of-results → merge +
 report/memory + pin. Given the likely-finding framing, the review-of-results judges *honesty +
 correct classification*, not "did money emerge."
+
+## 9. Result — PHASE A FINDING (no promotion; the seeded barter market collapses)
+
+Outcome: **a clean Phase A deadlock, localized UPSTREAM of promotion.** Run at seed 7, 1600
+econ ticks (`sim/tests/open_survival.rs::open_survival_classified`):
+
+| metric | `frontier_open_survival` (mint OFF) | mints-ON control |
+| --- | --- | --- |
+| `current_money_good()` | `None` (no promotion) | `None` |
+| barter trades cleared | **0** | 431 |
+| bread traded over run | **0** | 311 |
+| acquisition consumed — `bought` | **0** | 310 |
+| acquisition consumed — `seeded/minted` | 558 | 23 821 |
+| `indirect_target_goods(SALT)` | `{}` (empty) | `{bread}` |
+| bootstrap microtrace `bid_attempts` | 0 (moot) | 0 (no promotion) |
+
+The finding is **sharper than the spec's anticipated "seed depletes before breadth forms."** The
+seeded barter market does not merely fall short of the breadth gate — it **never clears a single
+trade.** Mechanism:
+
+- Pre-promotion bread supply in the strong co-emergent economy came **entirely from the mint-fed
+  surplus** (the demographic `food_provision` hearth + the producer staple floor). The colony's
+  own production is **post-promotion only** (latent bakers adopt after a money good exists), so
+  there is no endogenous pre-promotion bread supply.
+- Retire that scaffold and **every agent holds its cold-start seed bread to EAT** — it is their
+  only food, and with mortality off they simply stay hungry rather than die. Nobody has a bread
+  surplus to sell. The universal unmet want (bread/hunger) has **no market supply.**
+- With the central good unavailable, the barter book cannot clear at all — not even WOOD↔SALT,
+  because a WOOD seller will not accept SALT as a *means* when there is no bread to later buy with
+  it. So SALT accrues **zero** saleability and never promotes.
+
+The `mints_on_control_restores_the_market` control restores the scaffold (`retire_food_mints =
+false`, all else identical) and the bread market reappears (431 trades, `bought = 310`),
+**localizing the deadlock at the retired scaffold, not at the money machinery or the
+instrumentation.** `money_machinery_controls_do_not_rescue_the_phase_a_collapse` confirms the gate
+is upstream: toggling two-layer / marketability / multi-offer off leaves the zero-trade outcome
+unchanged. The acquisition ledger conserves every tick and its `bought` channel is proven
+non-vacuous on the working economy; the bootstrap microtrace is proven non-vacuous on the working
+economy (producer food buys plus real posted/filled project-input bids after the order-book
+tender/reservation gate) and correctly reports **moot** (no producer phase) in the open colony.
+
+**Interpretation (the publishable claim).** The endogenous-medium money result does NOT survive
+market-financed survival in this colony, and the gate is **Phase A, not Phase B**: the in-cycle
+result was parasitic on a food scaffold that supplied the very surplus the agents bartered to
+circulate SALT. Two-layer saleability fixes the *metric* (SALT can lead on medium share without
+winning total acceptance) but not the *supply* problem — with production post-promotion only,
+removing the scaffold removes the pre-promotion food supply outright, and the barter economy that
+monetizes SALT has nothing to trade.
+
+**The faithful next step is NOT value-scale surgery** (fake entrepreneurship) to force a bread
+supply into existence pre-promotion. It is to report this gate and let a later slice add the
+missing institution — a genuine pre-promotion market food supply (e.g. a wage/firm that pays
+producers to bake before money exists, or seeded producers that sell into the barter window) — so
+that the open colony has *some* terminal-good supply for the medium to circulate against. That is
+exactly how the long-horizon-death arc proceeded: localize the gate, then address the institution.
+
+### What landed (all default-off; 18 goldens byte-identical)
+
+- **S21d.0** `ChainConfig::retire_food_mints` (gated, canonicalized ON-only with the
+  `canonical_bytes_include_retire_food_mints` regression; flag-on asserts food-mint endowment = 0
+  and no FORAGE good interned).
+- **S21d.1** the runtime-only `AcquisitionLedger` (per-agent FIFO over the tracked food good, four
+  channels, conservation asserted every tick across consume/sale/spoilage/estate/birth outflows;
+  excluded from `canonical_bytes`).
+- **S21d.2a** the runtime-only `BootstrapTrace` (the buy → eat → bid cross-tick microtrace +
+  post-market posted/filled vs cashless/reserved block split that localizes the Exp-9 gate;
+  excluded from `canonical_bytes`).
+- **S21d.2b** the `frontier_open_survival` scenario (compose flags + retire mints + bread⇄WOOD
+  topology + disclosed seeds) and its controls.
+- **S21d.3** `sim/tests/open_survival.rs` — the acceptance suite that asserts the engine
+  invariants AND classifies the run, plus the localizing control matrix and determinism.

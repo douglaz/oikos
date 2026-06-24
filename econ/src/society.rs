@@ -1203,6 +1203,16 @@ impl Society {
             .count()
     }
 
+    /// Read-only probe: whether `agent` currently has a live spot BID for `good`.
+    /// Diagnostic callers use this to verify that a driver-set bid override reached
+    /// the actual order book after tender/reservation checks. It exposes only
+    /// presence, not the private quote contents.
+    pub fn has_live_spot_bid(&self, agent: AgentId, good: GoodId) -> bool {
+        self.live_quotes
+            .iter()
+            .any(|quote| quote.agent == agent && quote.side == OrderSide::Bid && quote.good == good)
+    }
+
     pub fn money_ledgers_reconcile(&self) -> bool {
         match &self.money_system {
             Some(money_system) => {
