@@ -3,10 +3,18 @@
 *An experimental report on emergent money, capital, and survival in a praxeologic simulation.*
 
 > Status: working research report (raw material for a future article). Covers the milestone arc
-> through S20. Every result below was built additively behind a default-off flag, kept the prior
-> conformance goldens byte-identical, conserved every tick, ran deterministically, and was reviewed
-> by an independent second model (Codex) at both the spec and the result stage. Honest negative
-> findings are reported as first-class results, not failures.
+> through S21c (the money sub-arc and the first slice of the open-colony capstone). Every result below
+> was built additively behind a default-off flag, kept the prior conformance goldens byte-identical,
+> conserved every tick, ran deterministically, and was reviewed by an independent second model (Codex)
+> at both the spec and the result stage. Honest negative findings are reported as first-class results,
+> not failures.
+>
+> **Central claim (sharpened through S21).** Mengerian commodity money in OIKOS did not emerge from
+> direct demand, produced supply, or multi-good trade alone. It emerged only when three conditions held
+> together: (1) a good with **real direct-use demand** as a *non-circular eligibility floor*; (2)
+> **medium-saleability leadership** — the good most accepted in *indirect/re-trade* exchange, not the
+> good most consumed; and (3) an **exchange institution** that lets the medium be both *sold-for* and
+> *spent*. This is a model finding, not a theorem.
 
 ---
 
@@ -39,8 +47,9 @@ Each milestone (Sxx) went through a fixed, deliberately adversarial pipeline:
    acceptance tests, and the named principled-failure modes.
 3. **Spec review (Codex)** — an independent second model reviews the spec for soundness and
    circularity, returning P0–P3 findings; iterated to SPEC-READY (often several rounds).
-4. **Build (rb-lite)** — a two-implementer / multi-reviewer loop builds against the spec on a feature
-   branch until the review panel is clean.
+4. **Build** — for most implementation milestones a two-implementer / multi-reviewer loop (rb-lite)
+   builds against the spec on a feature branch until the review panel is clean; a small, well-isolated
+   fix (e.g. S21c) is sometimes implemented directly and gated by the same verification + Codex review.
 5. **Independent verification** — the orchestrator re-runs the suite, the goldens, fmt/clippy, and
    reads the load-bearing test assertions directly.
 6. **Result review (Codex)** — the second model adversarially reviews the *landed* result: is the
@@ -138,18 +147,23 @@ fully **produced** subsistence economy.* This reframed the whole question and mo
 S13–S15 built a genuinely produced economy (spatial population, forage carrying capacity, own-labor
 cultivation). S16 let the *produced* bread be traded for SALT. The market formed and scaled — the
 bread that traded was 100% produced (a stock-origin provenance ledger proved minted contribution was
-zero) — **yet SALT never promoted**: it accrued *zero* indirect-exchange breadth. The reason: with the
-mint retired the colony is hunger-stressed, so *food itself* becomes the dominant saleable good, and
-the durable token never becomes the saleability hub. **Produced supply was not the missing
-ingredient.**
+zero) — **yet SALT never promoted**: it accrued *zero* indirect-exchange breadth. The reason: the
+bread-for-SALT trades that formed were **direct final-good trades** (agents acquiring bread to eat),
+which give the durable token no *indirect* (re-trade) breadth — and with the mint retired the
+hunger-stressed colony directs its trading at food, not at building up a medium. (This is *not* a
+claim that "food is the money"; it is that produced supply alone yields direct food trade, not a
+monetized medium.) **Produced supply was not the missing ingredient.**
 
 ### 4.4 S18 — A produced multi-good economy, perfect coincidence: the necessity beats the token
 
 We added a second produced/gathered good (WOOD) and a real division of labor: bread cultivators ⇄
 woodcutters. But this two-good economy has a *perfect* double coincidence of wants (each side wants
 exactly what the other makes), so bread↔WOOD clears by **direct barter**. The abundant,
-universally-wanted necessity (WOOD) dominated the saleability race (>10× SALT), so SALT never even led.
-The finding: *money is not created by "two produced goods" alone* — a medium is only needed to bridge
+universally-wanted necessity (WOOD) dominated the saleability race (>10× SALT) **under the legacy
+total-acceptance metric** — so SALT never even led. (S21b later reframes *why* that metric was too
+crude: total acceptance conflates consumption with medium use; but at S18 the deeper point stands —
+with perfect coincidence no medium is needed at all.) The finding: *money is not created by "two
+produced goods" alone* — a medium is only needed to bridge
 **absent** double coincidence (Menger/Jevons).
 
 ### 4.5 S19 — Imperfect double coincidence: the token finally *leads*, but exchange deadlocks
@@ -186,12 +200,17 @@ off, the **S19 deadlock returns**; remove the SALT seed, and nothing clears.
 
 ## 5. What we discovered
 
-1. **In this model, money emergence had two separable necessary conditions.** A token became money
-   only when (a) it won the **saleability** race — more saleable than the ordinary goods, which
-   happens when those goods are bad direct media (imperfect double coincidence), *and* (b) the
-   **clearing institution** let the medium be both *sold-for* and *spent* (an agent can hold both
-   sides of the monetary strategy). The arc separated these: S19 achieved (a) and failed (b); S20
-   added (b) and money emerged. Neither alone sufficed. **Honest caveat:** this is a *model* finding,
+1. **In this model, money emergence had separable necessary conditions — and the "saleability" one
+   split in two.** A token became money only when (a) it had **real direct-use demand** (a
+   non-circular eligibility floor — the regression-theorem anchor), (b) it won the **medium-saleability**
+   race — most accepted in *indirect/re-trade* exchange, *not* most consumed (S21a/S21b: the original
+   single "saleability = total acceptance share" metric conflated consumption with medium use, and a
+   universal necessity dominates consumption; splitting the metric is what let the durable token lead),
+   *and* (c) the **clearing institution** let the medium be both *sold-for* and *spent* (an agent can
+   hold both sides of the monetary strategy). The arc separated these: S18/S21a showed (b) fails under
+   a conflated metric; S19 achieved the saleability lead but failed (c); S20 added (c) and money
+   emerged; S21b/c sharpened (a)+(b) and confirmed the durable medium promotes over the necessity in a
+   controlled scenario. No one condition sufficed. **Honest caveat:** this is a *model* finding,
    not a universal theorem — and condition (b) is partly a genuine economic insight (a market needs an
    institution expressive enough for monetary round-tripping; real economies have many) and partly the
    repair of a *self-imposed* modeling constraint (our one-offer-per-agent barter book artificially
@@ -251,8 +270,12 @@ off, the **S19 deadlock returns**; remove the SALT seed, and nothing clears.
   other's inputs; there is no final consumption sink.
 - **Survival off-market via a hearth scaffold** (S19/S20) — survival is deliberately isolated so the
   necessities don't dominate saleability; that hearth is itself a (disclosed) scaffold.
-- **Acceptance-share saleability** — "saleability" here is acceptance-share + breadth, not the full
-  Mengerian notion (durability, divisibility, transportability, perishability, holding cost).
+- **Saleability metric (refined, not yet open-colony-proven)** — the original "saleability =
+  total acceptance share" was too crude (it conflated consumption with medium use); S21a added a
+  durability/carrying-cost dimension and S21b split direct-use eligibility from medium-saleability
+  leadership, which fixes the conflation **in a controlled econ scenario**. The standing threat is now
+  narrower: the two-layer metric is *not yet* proven in a full open colony with market-financed
+  survival (the S21d–f capstone), and the direct-use anchor + promotion thresholds remain configured.
 - **S20 fixes a self-imposed artifact** — the one-offer book was our constraint; part of the S19→S20
   result is institutional insight, part is repairing a modeling limitation. Stated honestly, still a
   result; stated as a universal law, an overclaim.
