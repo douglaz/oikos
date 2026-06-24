@@ -1,6 +1,9 @@
 # impl-27 — S21d: Open-Survival Money Probe (mortality off)
 
-Status: SPEC-READY (revised after Codex spec-review round 1)
+Status: SPEC-READY (Codex round 1 NEEDS-REVISION → round 2 NEEDS-REVISION [Phase A topology +
+canonicalization] → addressed: bread⇄WOOD topology with WOOD the sole non-food target, a real
+second non-food need scoped out as future work; retire_food_mints canonicalized ON-only; the
+acquisition-ledger outflow invariant pinned)
 Branch: `feat/open-survival-probe`
 Base: master @ `7c208d9` (S21c landed)
 
@@ -42,11 +45,26 @@ market **consume** pass runs **inside** `society.step()` before spot-order gener
 
 **Phase A — pre-promotion (does SALT promote at all?).** With the bread mint retired and no
 roles yet, SALT's indirect breadth can come ONLY from **consumer cross-demand over seeded
-stocks**: agents wanting ≥2 *non-food* goods (WOOD + a craft good) with imperfect coincidence,
-so SALT bridges as a means (`IndirectFor{target}`) across those targets. Two-layer (S21b)
-ensures SALT leads on *medium* share even though bread dominates consumption. Risk: the seeded
-barter window (bounded by `perishable_decay_bps`) may not generate enough breadth before the
-seed depletes → no promotion (a finding).
+stocks**. **Topology constraint (Codex round 2):** the value scale (`life/src/scale.rs:194`)
+emits present-goods wants only for `known.hunger` (bread), `known.warmth` (WOOD), optional
+`known.subsistence` (a food fallback — off here), plus the future savings want and the
+heterogeneous SALT direct-use anchor. So **the only non-food terminal consumed good in the
+current model is WOOD** — a seeded "craft good" would be *held but never wanted* (no want path).
+Phase A therefore uses the existing **bread ⇄ WOOD** topology: cultivators sell bread / want
+WOOD, woodcutters sell WOOD / want bread, SALT-anchor consumers buy both. SALT accrues indirect
+acceptances when an agent takes SALT as a *means* (`IndirectFor{target}`) — a cultivator selling
+bread→SALT to later get WOOD (target WOOD), a woodcutter selling WOOD→SALT to later get bread
+(target bread) — so the pre-promotion indirect-target set is `{bread, WOOD}`: **one non-food
+target (WOOD)** plus the food target. Two-layer (S21b) ensures SALT leads on *medium* share even
+though bread dominates consumption. The bar requires SALT's pre-promotion breadth to **include
+the non-food WOOD target** (proving SALT is not merely a bread-buying token); set
+`min_indirect_target_goods` to the available topology (disclose the exact value). **Honest bound:
+a richer multi-need topology (a genuine second non-food need — clothing/tools) is future work,
+not this slice.** Risk: the seeded barter window (bounded by `perishable_decay_bps`) may not
+generate enough breadth before the seed depletes → no promotion (a finding); and bread↔WOOD has
+*near-perfect* coincidence between the two producer roles (the S18 hazard), so SALT's indirect
+use must come from the timing/quantity/consumer-mediated gaps, not the producer pair — itself a
+real test.
 
 **Phase B — post-promotion (does the chain bootstrap under market survival?).** After SALT
 promotes, roles adopt and producers must (i) buy food to eat and (ii) buy recipe inputs — both
@@ -71,6 +89,13 @@ interned, so no forage steering/credit/scale pollution. Default `false` ⇒ all 
 byte-identical. The suite asserts: with the flag on, the food-mint endowment term is zero and
 no FORAGE good exists in the run.
 
+**Canonicalization (Codex P2 — MANDATORY, not conditional):** `retire_food_mints` changes a
+recurring future-behaviour source (the staple mint), so it **must** enter `canonical_bytes`
+ON-only — append it (and only when `true`) in the relevant `push_*_config_bytes`, mirroring the
+S20 `multi_offer_medium` / S21a / S21b gating, so every flag-off golden keeps its exact prior
+byte layout. Add a `canonical_bytes_include_retire_food_mints` regression (off == explicit-off,
+off != on).
+
 ### S21d.1 — Acquisition-channel provenance (sim-side, runtime-only)
 
 Mirror `BreadProvenance` (the post-`society.step()` readback at `settlement.rs:9846`), NOT
@@ -79,8 +104,11 @@ econ-internal hooks. A sim-side, runtime-only per-agent ledger classifying each 
 record), `seeded/minted` (cold-start buffer or hearth), `self-produced` (chain/cultivation), or
 `foraged` (n/a here). Updated each tick from the sim's own trade + production + endowment logs;
 debited **FIFO** against the consumption-log readback so resale/mixed stock can't misattribute.
-Excluded from `canonical_bytes` (like `starvation_deaths_total`, `settlement.rs:4242`) ⇒ no
-golden digest shift. The bar reads: **after warm-up, food consumed by survivors is
+**Conservation invariant (Codex P2):** *every* outflow of the tracked food good debits the
+channel ledger — consumption, sale/barter transfer, spoilage, estate settlement, and any
+birth/endowment transfer — so the per-channel sum stays equal to held tracked-food and "bought
+food consumed" cannot be overstated by an untracked outflow. Excluded from `canonical_bytes`
+(like `starvation_deaths_total`, `settlement.rs:4242`) ⇒ no golden digest shift. The bar reads: **after warm-up, food consumed by survivors is
 overwhelmingly `bought`**, `seeded/minted`+`foraged` ≈ 0, and buyers paid from prior-sale
 proceeds.
 
@@ -98,10 +126,12 @@ Changes:
   = true` + a marketability table (SALT durable/costless; FOOD perishable; WOOD high-carry)
   (S21a); `two_layer_saleability = true` + `min_direct_use_acceptors` (S21b); the S21c lane is
   already in. Keep the S9 strong-bar gates (disclose exact values).
-- **Pre-promotion indirect breadth (Phase A) — the deliberate design point:** ensure the seeded
-  barter economy has **≥2 non-food consumed goods with imperfect coincidence** (WOOD + a craft
-  good, role-separated so no good preempts another by id) so SALT bridges ≥2 *non-food* targets
-  pre-promotion. (Recipe inputs cannot serve here — they are post-promotion.)
+- **Pre-promotion indirect breadth (Phase A) — the deliberate design point:** the seeded barter
+  economy uses the **bread ⇄ WOOD** topology (the only non-food terminal good is WOOD; see §1).
+  Role-separated so no good preempts another by id (the S16/S18 ordering fix). SALT's
+  pre-promotion indirect-target set is `{bread, WOOD}`; the bar requires the non-food WOOD target
+  present. (Recipe inputs cannot serve here — they are post-promotion.) A genuine second non-food
+  need is explicitly out of scope (future work).
 - **Mortality OFF:** inherit `hunger_critical = need_max + 1` (do NOT derive from
   `frontier_mortality`).
 - **Disclosed cold-start seeds** (bounded by `perishable_decay_bps = 1500`): `bread_buffer`,
@@ -116,7 +146,8 @@ Success (capstone result) = ALL hold in one run:
 - `current_money_good() == Some(SALT)` (promotes).
 - FOOD/WOOD may win **total** acceptance, but SALT wins **medium** share
   (`medium_leader_shares().good == SALT`).
-- Pre-promotion SALT indirect breadth spans **≥2 non-food target goods**, not bread.
+- Pre-promotion SALT indirect breadth includes the **non-food WOOD target** (target set
+  `{bread, WOOD}`), proving SALT is not merely a bread-buying token.
 - After warm-up, food **consumed** is **market-acquired** (acquisition ledger: bought ≫
   seeded/minted ≈ 0); buyers paid from prior-sale proceeds.
 - **Production is genuinely post-promotion and self-sustaining** (chain output continues past
@@ -132,7 +163,7 @@ Controls (each must fail the right way — classify, never tune):
 - two-layer off → necessity dominates / no SALT promotion.
 - marketability off → FOOD/WOOD dominates as medium.
 - multi-offer off → round-trip clearing deadlock.
-- no second non-food good / cross-demand → direct trade, no indirect breadth.
+- no WOOD cross-demand (bread-only) → direct trade, no indirect breadth (the S16 control).
 - no SALT direct-use anchor/seed → no promotion (regression-theorem grounding).
 - mints ON (`retire_food_mints=false`) → the old scaffolded control, NOT a capstone success.
 
@@ -156,8 +187,8 @@ with the live traces and land it as a finding, as the long-horizon-death experim
 
 - All new flags/instruments default OFF / runtime-only; **all 18 golden suites byte-identical**
   (`retire_food_mints` default-off is identity; the acquisition ledger is excluded from
-  `canonical_bytes`; the scenario is new). If `retire_food_mints` enters future-behaviour, gate
-  it ON-only in `push_*_config_bytes` exactly like the S20/S21a/b flags.
+  `canonical_bytes`; the scenario is new). `retire_food_mints` is canonicalized **ON-only**
+  (mandatory, §2 S21d.0) exactly like the S20/S21a/b flags, with a dedicated digest regression.
 - `cargo fmt --check` + `clippy --workspace --all-targets -- -D warnings` clean; conservation
   asserted every tick; deterministic (no live RNG).
 
