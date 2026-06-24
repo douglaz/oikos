@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use crate::agent::{Agent, AgentId};
 use crate::good::{GoodId, Stock};
+use crate::marketability::MarketabilityConfig;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BarterReason {
@@ -525,6 +526,8 @@ fn agent_accepts_offer_with_stock(
             offer.receive_good,
             target,
             qty,
+            false,
+            &MarketabilityConfig::default(),
         ),
     }
 }

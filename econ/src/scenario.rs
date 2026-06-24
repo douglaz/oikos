@@ -1169,6 +1169,8 @@ fn menger_salt_money() -> MarketScenario {
             min_indirect_target_goods: 0,
             allow_indirect_acceptance: true,
             multi_offer_medium: false,
+            durability_aware_acceptance: false,
+            marketability: Default::default(),
         }),
     }
 }
@@ -1279,6 +1281,8 @@ fn menger_gold_money() -> MarketScenario {
             min_indirect_target_goods: 0,
             allow_indirect_acceptance: true,
             multi_offer_medium: false,
+            durability_aware_acceptance: false,
+            marketability: Default::default(),
         }),
     }
 }

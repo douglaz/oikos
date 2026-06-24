@@ -4,6 +4,7 @@ use std::fmt;
 
 use crate::expect::PriceBelief;
 use crate::good::{Gold, GoodId, Horizon, Stock, FOOD, GOLD};
+use crate::marketability::MarketabilityConfig;
 
 /// Stable colonist identity.
 ///
@@ -474,13 +475,15 @@ impl Agent {
         barter_swap_acceptable(&self.scale, stock, give_good, receive_good, qty)
     }
 
-    pub(crate) fn would_accept_indirect_barter_swap_with_stock(
+    pub fn would_accept_indirect_barter_swap_with_stock(
         &self,
         stock: &Stock,
         give_good: GoodId,
         receive_good: GoodId,
         target_good: GoodId,
         qty: u32,
+        durability_aware_acceptance: bool,
+        marketability: &MarketabilityConfig,
     ) -> bool {
         if give_good == receive_good
             || give_good == target_good
@@ -490,6 +493,9 @@ impl Agent {
             || stock.get(receive_good).checked_add(qty).is_none()
         {
             return false;
+        }
+        if durability_aware_acceptance {
+            let _ = marketability.good(receive_good);
         }
 
         let before = barter_provisioning(&self.scale, stock);

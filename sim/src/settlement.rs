@@ -14900,6 +14900,16 @@ fn push_mengerian_config_bytes(out: &mut Vec<u8>, menger: &MengerianConfig) {
     if menger.multi_offer_medium {
         out.push(1);
     }
+    if menger.durability_aware_acceptance || !menger.marketability.is_empty_durable_default() {
+        out.push(u8::from(menger.durability_aware_acceptance));
+        out.extend_from_slice(&menger.marketability.hold_horizon.to_le_bytes());
+        out.extend_from_slice(&(menger.marketability.goods.len() as u32).to_le_bytes());
+        for (good, marketability) in &menger.marketability.goods {
+            out.extend_from_slice(&good.0.to_le_bytes());
+            out.extend_from_slice(&marketability.decay_bps.to_le_bytes());
+            out.extend_from_slice(&marketability.carry_cost.to_le_bytes());
+        }
+    }
 }
 
 fn push_demography_config_bytes(out: &mut Vec<u8>, demo: &DemographyConfig) {

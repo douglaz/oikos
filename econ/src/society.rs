@@ -42,6 +42,7 @@ use crate::good::{Gold, GoodId, Stock, FOOD, GOLD, NET, WOOD};
 use crate::issuer::{Issuer, IssuerPolicy};
 use crate::ledger::{BankId, MoneySystem};
 use crate::market::{ExecutedTrade, Order, OrderBook, OrderSide, Reservations, Trade};
+use crate::marketability::MarketabilityConfig;
 use crate::menger::{MengerianEmergence, SaleabilitySnapshot};
 use crate::metrics::{
     cumulative_project_profit, proxy_trades_from_schedules, structure_length_ticks_x100,
@@ -305,6 +306,8 @@ pub struct Society {
     money: MarketMoneyState,
     v2_enabled: bool,
     multi_offer_medium: bool,
+    durability_aware_acceptance: bool,
+    marketability: MarketabilityConfig,
     barter_book: BarterBook,
     legacy_runner_enabled: bool,
     market_goods: Vec<GoodId>,
@@ -368,6 +371,13 @@ impl Society {
         let multi_offer_medium = match &scenario.money {
             MarketMoneyConfig::Emergent(config) => config.multi_offer_medium,
             MarketMoneyConfig::Designated(_) => false,
+        };
+        let (durability_aware_acceptance, marketability) = match &scenario.money {
+            MarketMoneyConfig::Emergent(config) => (
+                config.durability_aware_acceptance,
+                config.marketability.clone(),
+            ),
+            MarketMoneyConfig::Designated(_) => (false, MarketabilityConfig::default()),
         };
         let money = MarketMoneyState::from_config(scenario.money);
         let books = market_goods.iter().copied().map(OrderBook::new).collect();
@@ -465,6 +475,8 @@ impl Society {
             money,
             v2_enabled,
             multi_offer_medium,
+            durability_aware_acceptance,
+            marketability,
             barter_book: BarterBook::new(),
             legacy_runner_enabled,
             market_goods,
@@ -2229,6 +2241,8 @@ impl Society {
                         leader,
                         target,
                         1,
+                        self.durability_aware_acceptance,
+                        &self.marketability,
                     ) {
                         continue;
                     }
@@ -2279,6 +2293,8 @@ impl Society {
                     leader,
                     *target,
                     1,
+                    self.durability_aware_acceptance,
+                    &self.marketability,
                 ) {
                     continue;
                 }
@@ -6876,6 +6892,9 @@ fn max_good_id(market_goods: &[GoodId], money: &MarketMoneyConfig) -> u16 {
         for good in &config.candidate_goods {
             max = max.max(good.0);
         }
+        for good in config.marketability.goods.keys() {
+            max = max.max(good.0);
+        }
     }
     max
 }
@@ -8311,6 +8330,8 @@ mod tests {
                 min_indirect_target_goods: 0,
                 allow_indirect_acceptance: true,
                 multi_offer_medium: false,
+                durability_aware_acceptance: false,
+                marketability: Default::default(),
             }),
         });
         assert!(society.barter_book.post_offer(
@@ -8382,6 +8403,8 @@ mod tests {
                 min_indirect_target_goods: 0,
                 allow_indirect_acceptance: true,
                 multi_offer_medium: false,
+                durability_aware_acceptance: false,
+                marketability: Default::default(),
             }),
         });
         assert!(society.barter_book.post_offer(

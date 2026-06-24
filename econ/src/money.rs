@@ -1,6 +1,7 @@
 //! Designated commodity money and monetary-regime markers.
 
 use crate::good::GoodId;
+use crate::marketability::MarketabilityConfig;
 use crate::menger::MengerianEmergence;
 
 pub trait MoneyRegime {
@@ -123,6 +124,12 @@ pub struct MengerianConfig {
     /// (`surplus -> leader`) at the same time. `false` preserves the legacy
     /// one-live-offer Society policy exactly.
     pub multi_offer_medium: bool,
+    /// S21a physical marketability gate: when enabled, indirect barter acceptance
+    /// rejects media that cannot carry through the fixed market holding horizon.
+    pub durability_aware_acceptance: bool,
+    /// Econ-owned per-good physical marketability table. Empty means every good is
+    /// durable and low-carry by default.
+    pub marketability: MarketabilityConfig,
 }
 
 impl Default for MengerianConfig {
@@ -141,6 +148,8 @@ impl Default for MengerianConfig {
             min_indirect_target_goods: 0,
             allow_indirect_acceptance: true,
             multi_offer_medium: false,
+            durability_aware_acceptance: false,
+            marketability: MarketabilityConfig::default(),
         }
     }
 }

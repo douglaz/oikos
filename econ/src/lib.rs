@@ -20,6 +20,7 @@ pub mod good;
 pub mod issuer;
 pub mod ledger;
 pub mod market;
+pub mod marketability;
 pub mod menger;
 pub mod metrics;
 pub mod money;
