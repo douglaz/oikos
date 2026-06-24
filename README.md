@@ -2228,10 +2228,14 @@ the work. The four controls confirm the medium is load-bearing: flag off → the
 bridge. This is **endogenous token money in a produced exchange cycle** — emergence needs both a
 saleability lead AND a clearing institution that lets the medium round-trip.
 
-**Honest scope (unchanged from S19).** Survival is still isolated off-market via the hearth scaffold and
-the input loop is still closed — S20 is one-variable surgery on the barter institution, NOT a
-scaffold-free full colony. What it earns is the clean attribution: with everything else held from S19, a
-promotion attributes solely to the richer bilateral exchange institution.
+**Honest scope (Codex-reviewed: PASS, no P0/P1 — unchanged from S19).** Survival is still isolated
+off-market via the hearth scaffold and the input loop is still closed — S20 is one-variable surgery on
+the barter institution, NOT a scaffold-free full colony. What it earns is the clean attribution: with
+everything else held from S19, a promotion attributes solely to the richer bilateral exchange
+institution. (The strong-bar gate is *unchanged* — `min_indirect_acceptances=12` / `acceptor_agents=3` /
+`target_goods=3` all still apply; `frontier_cycle_cleared` only flips the one flag on `frontier_cycle`.
+The no-SALT-candidate control proves SALT is **load-bearing here**, not that *only* SALT could ever be
+the money — another neutral commodity could monetize under the same institution.)
 
 All additive/gated: with `multi_offer_medium` off the S5–S19 scenarios + the six econ +
 g5a/g5b/coemergence emergence + the demographic `lineages` + the `g4a_death` goldens are byte-identical;
