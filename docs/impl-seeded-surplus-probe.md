@@ -1,6 +1,8 @@
 # impl-28 — S21e: Finite Seeded-Surplus Probe (does a pre-promotion tradeable supply monetize SALT?)
 
-Status: SPEC-READY (revised after Codex spec-review round 1)
+Status: SPEC-READY (Codex round 1 NEEDS-REVISION → round 2 SPEC-READY; P2 refinements folded in:
+offerable-surplus computed via the real barter-preservation rule; a direct-bread↔WOOD-vs-SALT-mediated
+volume guard so success rests on SALT-mediated volume)
 Branch: `feat/seeded-surplus-probe`
 Base: master @ `c2f42e4` (S21d landed)
 
@@ -83,6 +85,12 @@ explicitly and assert it:
 - `seeded_offerable_surplus_exhausted_tick` = first tick at which **no holder has seeded-origin
   bread above its protected hunger allocation** (i.e. no seeded *offerable* surplus remains; the
   residual ≤ floor that can only be eaten is not a market scaffold).
+- **Pin the computation precisely (Codex round 2 P2).** "Offerable" must mean *removable under the
+  real barter preservation rule*, not a loose approximation: a seeded-origin bread unit is offerable
+  iff giving it still passes `barter_swap_acceptable` / `preserved_near_allocations_above_target`
+  (`econ/src/agent.rs:542`/`:876`). Since the sim ledger tracks seeded *lots* separately while the
+  value scale protects *undifferentiated* bread, compute this via a small econ helper (or read it
+  off the actual offer/lane trace) — do NOT re-derive provisioning logic loosely in the sim.
 - A seed sized so large it never reaches that state within the run is a **hidden permanent mint** —
   the sweep (below) must include sizes that DO exhaust, and the headline result must promote at a
   size that exhausts.
@@ -111,6 +119,11 @@ Classify (seed 7, 1600 ticks):
 - **Pre-promotion barter volume > 0** (collapse lifted).
 - **SALT promotes** (`current_money_good() == Some(SALT)`), is the **medium** leader, with indirect
   breadth including the **non-food WOOD** target.
+- **Success rests on SALT-mediated volume, not direct barter (Codex round 2 P2).** Making sellers
+  WOOD-poor can make a *direct* bread↔WOOD swap attractive via the S21c legacy direct-discovery lane
+  (when bread/WOOD are below the candidate floor). Report **direct bread↔WOOD volume vs
+  SALT-mediated bread/WOOD volume**, and require the SALT-mediated share to be material — a "success"
+  must not be mostly direct barter with a token amount of SALT.
 - **Promotes before seed exhaustion** (`promotion_tick < seeded_offerable_surplus_exhausted_tick`).
 - **Production replaces the seed (the tail bar, Codex P2.3):** after
   `seeded_offerable_surplus_exhausted_tick` — `bread_produced > 0`, real input trades occur, tail
