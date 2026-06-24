@@ -1,9 +1,13 @@
 # impl-27 — S21d: Open-Survival Money Probe (mortality off)
 
-Status: IMPLEMENTED — classified as a **Phase A FINDING** (no promotion; the pre-promotion barter
-market collapses to zero trades once the food scaffold is retired). All engine pieces landed
-default-off (18 goldens byte-identical), the probe was run and classified honestly, NOT tuned into
-a money-emergence. See §9 (Result) below.
+Status: LANDED — a **Phase A FINDING** (no promotion; the pre-promotion barter market collapses to
+zero trades once the food scaffold is retired), Codex review-of-results **PASS-with-caveats** (no
+P0/P1; the finding is genuine, not a broken scenario — the mints-on control + cross-seed sweep prove
+it). P2/P3 caveats addressed: mechanism wording tightened to "the tradeable bread market *depended
+on* the scaffold" (the ledger tracks buyer channel, not seller origin); the scope scoped to the
+strong/open-survival frontier path; the BootstrapTrace non-vacuity claim narrowed to its components;
+a cross-seed robustness test added. All engine pieces default-off (18 goldens byte-identical); the
+probe was run and classified honestly, NOT tuned into a money-emergence. See §9 (Result) below.
 (Codex round 1 NEEDS-REVISION → round 2 NEEDS-REVISION [Phase A topology + canonicalization] →
 addressed: bread⇄WOOD topology with WOOD the sole non-food target, a real second non-food need
 scoped out as future work; retire_food_mints canonicalized ON-only; the acquisition-ledger outflow
@@ -233,10 +237,14 @@ The finding is **sharper than the spec's anticipated "seed depletes before bread
 seeded barter market does not merely fall short of the breadth gate — it **never clears a single
 trade.** Mechanism:
 
-- Pre-promotion bread supply in the strong co-emergent economy came **entirely from the mint-fed
-  surplus** (the demographic `food_provision` hearth + the producer staple floor). The colony's
-  own production is **post-promotion only** (latent bakers adopt after a money good exists), so
-  there is no endogenous pre-promotion bread supply.
+- The pre-promotion *tradeable* bread supply in the strong co-emergent economy **depended on the
+  food scaffold** (the demographic `food_provision` hearth + the producer staple floor): the mint
+  fed the colony enough that some bread reached the market. (Precise claim, per Codex result-review
+  P2: the controls show the bread *market* was mint-dependent — the acquisition ledger tracks the
+  buyer's channel, not seller-origin provenance, so this is "the scaffold made bread saleable," not
+  "every traded loaf was physically minted.") The colony's own production is **post-promotion only**
+  (latent bakers adopt after a money good exists), so there is no endogenous pre-promotion bread
+  supply to replace the scaffold.
 - Retire that scaffold and **every agent holds its cold-start seed bread to EAT** — it is their
   only food, and with mortality off they simply stay hungry rather than die. Nobody has a bread
   surplus to sell. The universal unmet want (bread/hunger) has **no market supply.**
@@ -250,15 +258,20 @@ false`, all else identical) and the bread market reappears (431 trades, `bought 
 instrumentation.** `money_machinery_controls_do_not_rescue_the_phase_a_collapse` confirms the gate
 is upstream: toggling two-layer / marketability / multi-offer off leaves the zero-trade outcome
 unchanged. The acquisition ledger conserves every tick and its `bought` channel is proven
-non-vacuous on the working economy; the bootstrap microtrace is proven non-vacuous on the working
-economy (producer food buys plus real posted/filled project-input bids after the order-book
-tender/reservation gate) and correctly reports **moot** (no producer phase) in the open colony.
+non-vacuous on the working economy; the bootstrap microtrace's *components* are proven non-vacuous
+on the working economy (producer food buys, food eats, input-bid attempts, and some posted/filled
+project-input bids — the buy/eat/bid legs each fire; the test does not assert the *full causal*
+buy→eat→bid chain, which is moot here anyway) and the trace correctly reports **moot** (no producer
+phase) in the open colony. The Phase A collapse is robust across seeds (`phase_a_collapse_holds_across_seeds`:
+0 trades + no promotion at seeds {1, 7, 42, 0xC0FFEE}; the mint-on restoration clears trades at each).
 
 **Interpretation (the publishable claim).** The endogenous-medium money result does NOT survive
-market-financed survival in this colony, and the gate is **Phase A, not Phase B**: the in-cycle
-result was parasitic on a food scaffold that supplied the very surplus the agents bartered to
-circulate SALT. Two-layer saleability fixes the *metric* (SALT can lead on medium share without
-winning total acceptance) but not the *supply* problem — with production post-promotion only,
+market-financed survival in this colony, and the gate is **Phase A, not Phase B**: the **strong /
+open-survival frontier monetization path depended on a food-supply scaffold** that supplied the
+surplus the agents bartered to circulate SALT (scoped to this path, per Codex P2 — S20's cleared
+cycle had different abstractions; this is not a claim about every money result in the arc).
+Two-layer saleability fixes the *metric* (SALT can lead on medium share without winning total
+acceptance) but not the *supply* problem — with production post-promotion only,
 removing the scaffold removes the pre-promotion food supply outright, and the barter economy that
 monetizes SALT has nothing to trade.
 

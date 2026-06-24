@@ -39,7 +39,11 @@ struct RunSums {
 }
 
 fn run(cfg: &SettlementConfig) -> (Settlement, RunSums) {
-    let mut s = Settlement::generate(7, cfg);
+    run_seed(7, cfg)
+}
+
+fn run_seed(seed: u64, cfg: &SettlementConfig) -> (Settlement, RunSums) {
+    let mut s = Settlement::generate(seed, cfg);
     let bread = s.content().expect("the probe carries a chain").bread();
     let mut sums = RunSums::default();
     for tick in 0..PROBE_TICKS {
@@ -226,6 +230,37 @@ fn mints_on_control_restores_the_market() {
         consumed.seeded_minted, 23_821,
         "mint-ON control: seeded/minted food consumed (docs §9 table)"
     );
+}
+
+#[test]
+fn phase_a_collapse_holds_across_seeds() {
+    // Robustness (Codex result-review P3: "one seed is one seed"). The Phase A collapse and its
+    // mint-on restoration are not a seed-7 artifact: across several seeds, the open-survival probe
+    // (mint OFF) clears ZERO barter trades and never promotes, while the identical scenario with the
+    // mint restored clears a positive number of trades. (Exact magnitudes are seed-dependent and
+    // pinned only at seed 7 in `mints_on_control_restores_the_market`; here the claim is the
+    // qualitative 0-vs-positive contrast.)
+    for seed in [1_u64, 7, 42, 0xC0FFEE] {
+        let (off, _) = run_seed(seed, &SettlementConfig::frontier_open_survival());
+        assert_eq!(
+            off.barter_trade_count(),
+            0,
+            "seed {seed}: mint-OFF open survival must collapse the barter market to zero trades"
+        );
+        assert_eq!(
+            off.current_money_good(),
+            None,
+            "seed {seed}: mint-OFF open survival must not promote any money good"
+        );
+
+        let mut on_cfg = SettlementConfig::frontier_open_survival();
+        on_cfg.chain.as_mut().expect("chain").retire_food_mints = false;
+        let (on, _) = run_seed(seed, &on_cfg);
+        assert!(
+            on.barter_trade_count() > 0,
+            "seed {seed}: restoring the mint must restore a clearing barter market"
+        );
+    }
 }
 
 #[test]

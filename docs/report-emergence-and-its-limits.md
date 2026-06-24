@@ -359,16 +359,18 @@ slice has already produced a deep finding that re-planned the rest:
   bought/seeded-minted/self-produced/foraged, conserved across every outflow) and a **cross-tick
   bootstrap microtrace** (buy → eat → bid, localizing the Exp-9 gate). **Result: a clean Phase A
   deadlock — SALT never promotes because the pre-promotion barter market clears _zero trades_.**
-  Pre-promotion bread supply came entirely from the mint-fed surplus; with production post-promotion
-  only and the mint gone, every agent holds its seed bread to *eat* (its only food, mortality off),
-  the universal bread want has no market supply, and the book cannot clear — so SALT accrues no
-  saleability. A mints-ON control (all else identical) restores the bread market (431 trades),
-  localizing the gate at the retired scaffold, not the money machinery. This **confirms the
-  direction-review's own hypothesis**: the retired bread mint was a real *supply/counterparty*
-  scaffold, and two-layer saleability fixes the *metric* but not the *supply*. The faithful next
-  step is an institution that supplies a pre-promotion terminal good (a wage/firm or seeded
-  producers selling into the barter window), not value-scale surgery. All engine pieces default-off;
-  all 18 goldens byte-identical.
+  The pre-promotion *tradeable* bread supply **depended on the food scaffold**; with production
+  post-promotion only and the mint gone, every agent holds its seed bread to *eat* (its only food,
+  mortality off), the universal bread want has no market supply, and the book cannot clear — so SALT
+  accrues no saleability. A mints-ON control (all else identical) restores the bread market (431
+  trades), localizing the gate at the retired scaffold, not the money machinery; the collapse holds
+  across seeds. This **confirms the direction-review's own hypothesis**: the retired bread mint was a
+  real *supply/counterparty* scaffold for this monetization path, and two-layer saleability fixes the
+  *metric* but not the *supply*. (Scoped claim: the strong/open-survival frontier path depended on the
+  scaffold — not every money result in the arc; the controls show the bread *market* was
+  mint-dependent.) The faithful next step is an institution that supplies a pre-promotion terminal
+  good (a wage/firm or seeded producers selling into the barter window), not value-scale surgery. All
+  engine pieces default-off; all 18 goldens byte-identical.
 - **Later:** endogenizing the clearing institution and richer marketability. (Robustness for the
   in-cycle result is done — §6.)
 
