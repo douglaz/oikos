@@ -1,6 +1,6 @@
 # impl-25 — S21b: Two-Layer Mengerian Saleability (direct-use eligibility floor + medium-saleability leadership)
 
-Status: SPEC-READY (revised after Codex spec-review round 1)
+Status: SPEC-READY (Codex spec-review round 2: SPEC-READY, no P0/P1; P2/P3 guardrails folded in)
 Branch: `feat/two-layer-saleability`
 Base: master @ `58b8779` (S21a landed)
 
@@ -190,20 +190,38 @@ min_direct_use_acceptors`), in the tracker's sorted candidate order (determinist
 indirect data, so it is populated as soon as direct trades give breadth — which breaks the
 bootstrap.
 
-When the flag is ON, generalize offer routing from a single `leader` to the candidate set:
-- `generate_indirect_barter_offers` / `post_first_medium_sell_offer`: iterate the candidate set;
-  for each candidate, run the existing per-agent logic (including the S21a marketability gate at
-  `society.rs:2238-2248`/`2292-2302`, unchanged) to post a sell lane (`give surplus → candidate`)
-  and respect the spend lane (`give candidate → want`). Perishable candidates are declined
-  per-agent and accrue nothing; durable ones accrue indirect acceptances.
-- `offer_has_valid_saleability_context` (`barter.rs:363-368`): under two-layer, an `IndirectFor`
-  offer is valid if `offer.receive_good` is in the candidate set (any eligible medium), not only
-  the single provisional leader. Thread the candidate set to the validity site.
-- Lane classifiers (`society.rs:2346-2362`): generalize "the leader" to "a candidate medium"
-  under two-layer (a per-candidate spend/sell lane). The S20 book already supports N offers/agent;
-  the candidate set is small (2–4), so the offer count stays bounded.
+When the flag is ON, generalize offer routing from a single `leader` to the candidate set.
 
-**Off-path (flag OFF) is the exact current single-leader machinery — byte-identical.** This is the
+**API shape (Codex round 2, P2): introduce a `SaleabilityContext` enum, do NOT thread a fake
+leader.** Every path that currently receives `Option<GoodId>` (the single provisional leader) must
+take the context instead:
+```
+enum SaleabilityContext { Single(Option<GoodId>), Candidates(Vec<GoodId>) }
+```
+Off-path constructs `Single(provisional_leader)` (byte-identical behavior); two-layer constructs
+`Candidates(provisional_media_candidates(...))`. The full set of single-leader call sites to
+generalize (verified — all currently pass `Option<GoodId>`):
+- offer generation: `generate_indirect_barter_offers` (`society.rs:2209-2266`),
+  `post_first_medium_sell_offer` (`society.rs:2269-2317`), **and
+  `generate_direct_barter_offers` — the SPEND lane** (Codex round 2, P2: the sell-for-medium lane
+  is the indirect side, but the spend lane `give candidate → want` lives in the direct generator;
+  if only the indirect side is generalized, agents can sell *for* candidate media but never *spend*
+  them — find and generalize this site too).
+- validity / matching / application: `offer_has_valid_saleability_context` (`barter.rs:363-368`),
+  `post_offer_with_provisional_leader`, `cancel_invalid`, `clear_matches_with_provisional_leader`,
+  `offer_still_valid`, `can_apply_swap`, `apply_swap`. Under two-layer an `IndirectFor` offer is
+  valid iff `offer.receive_good` is in the candidate set (any eligible medium).
+- lane classifiers `is_medium_spend_lane` / `is_medium_receive_leader_lane`
+  (`society.rs:2346-2362`): generalize "the leader" to "a candidate medium" (a per-candidate
+  spend/sell lane).
+
+For each candidate, the existing per-agent logic runs unchanged — including the S21a marketability
+gate (`society.rs:2238-2248`/`2292-2302`) — so perishable candidates are declined per-agent and
+accrue nothing; durable ones accrue indirect acceptances. The S20 book already supports N
+offers/agent; the candidate set is small (2–4), so the offer count stays bounded.
+
+**Off-path (flag OFF) is the exact current single-leader machinery — byte-identical** (the
+`Single` variant must reproduce today's `Option<GoodId>` codepath exactly). This is the
 biggest/highest-risk slice; the disabled-flag golden regression is the tripwire.
 
 ### S21b.3 — Controlled scenario + falsifiable acceptance suite
@@ -221,8 +239,10 @@ neutral commodity durable with a heterogeneous direct-use anchor so it clears th
   If the 2-good controlled scenario lacks the indirect breadth to satisfy the S9 medium-breadth
   floors and promote, compose with the S20 cycle for THIS assertion **and keep the leadership flip
   proven in the controlled scenario** — reported honestly, not forced.
-- `multiple_candidates_received_indirect_offers`: assert >1 good accrued indirect acceptances (or
-  received indirect offers) — proves discovery was open, not preselected (Codex P1).
+- `discovery_was_open_not_preselected` (Codex round 2, P2 — stronger than "N got offers"): assert
+  that multiple direct-use-eligible candidates were *considered*, the bad-media candidate(s) were
+  *rejected by the holding/carry rule*, and the durable candidate accrued *accepted* `IndirectFor`
+  trades — proving discovery was open and marketability did the filtering, not preselection.
 - `eligibility_floor_is_non_circular`: a good with indirect acceptances but `direct_acceptor_agents
   < min_direct_use_acceptors` is NOT eligible/winner (proves direct-use is a real gate; guards
   against pure-medium circularity).
@@ -246,6 +266,10 @@ neutral commodity durable with a heterogeneous direct-use anchor so it clears th
   `goldens_unchanged` digest blocks (`two_lane_clearing.rs:376`, `cycle_money.rs:560`).
 - All new ordering total + deterministically tie-broken (mirror `tied_best`/`lead_margin_bps`);
   no float; sorted-`Vec` accumulators only (no map-iteration leaks).
+- **Reporting (Codex round 2, P3):** any V2 report / diagnostic field currently populated from
+  `leader_shares()` / `acceptance_share_bps` (total share) must NOT silently display combined share
+  under two-layer mode — surface `medium_share_bps` where the medium leader is shown, so traces are
+  not misleading.
 - `cargo fmt --check` + `cargo clippy --workspace --all-targets -- -D warnings` clean.
 
 ## 6. Honest scope (what S21b does and does NOT claim)
