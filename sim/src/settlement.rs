@@ -14691,6 +14691,7 @@ fn scenario_name_tag(name: ScenarioName) -> u8 {
         ScenarioName::EmergedGoldNoTaxIdleControl => 41,
         ScenarioName::MengerSaltMoney => 42,
         ScenarioName::MengerGoldMoney => 43,
+        ScenarioName::MengerMarketabilityDurability => 44,
     }
 }
 
@@ -15080,6 +15081,7 @@ mod tests {
             ScenarioName::EmergedGoldNoTaxIdleControl,
             ScenarioName::MengerSaltMoney,
             ScenarioName::MengerGoldMoney,
+            ScenarioName::MengerMarketabilityDurability,
         ];
         for (expected, scenario) in scenarios.into_iter().enumerate() {
             assert_eq!(scenario_name_tag(scenario), expected as u8);

@@ -3,7 +3,8 @@
 use std::collections::BTreeSet;
 
 use econ::barter::BarterReason;
-use econ::good::{GoodId, SALT};
+use econ::good::{GoodId, FOOD, SALT};
+use econ::marketability::{GoodMarketability, MarketabilityConfig};
 use sim::{DirectIndirectAcceptances, Settlement, SettlementConfig};
 
 const S20_TICKS: u64 = 600;
@@ -311,6 +312,56 @@ fn canonical_bytes_include_multi_offer_medium() {
         on.canonical_bytes(),
         "the flag-on scenario must have a distinct canonical identity"
     );
+}
+
+#[test]
+fn canonical_bytes_include_durability_aware_marketability() {
+    let base = Settlement::generate(7, &SettlementConfig::frontier_cycle());
+
+    let mut explicit_empty_cfg = SettlementConfig::frontier_cycle();
+    let empty_menger = &mut explicit_empty_cfg
+        .barter
+        .as_mut()
+        .expect("barter overlay")
+        .menger;
+    empty_menger.durability_aware_acceptance = false;
+    empty_menger.marketability = MarketabilityConfig::default();
+    let explicit_empty = Settlement::generate(7, &explicit_empty_cfg);
+
+    let mut active_cfg = SettlementConfig::frontier_cycle();
+    let active_menger = &mut active_cfg.barter.as_mut().expect("barter overlay").menger;
+    active_menger.durability_aware_acceptance = true;
+    active_menger.marketability = MarketabilityConfig {
+        hold_horizon: 1,
+        ..MarketabilityConfig::default()
+    }
+    .with_good(
+        FOOD,
+        GoodMarketability {
+            decay_bps: 10_000,
+            carry_cost: 0,
+        },
+    );
+    let active = Settlement::generate(7, &active_cfg);
+
+    let mut table_only_cfg = SettlementConfig::frontier_cycle();
+    table_only_cfg
+        .barter
+        .as_mut()
+        .expect("barter overlay")
+        .menger
+        .marketability = MarketabilityConfig::default().with_good(
+        SALT,
+        GoodMarketability {
+            decay_bps: 0,
+            carry_cost: 1,
+        },
+    );
+    let table_only = Settlement::generate(7, &table_only_cfg);
+
+    assert_eq!(base.canonical_bytes(), explicit_empty.canonical_bytes());
+    assert_ne!(base.canonical_bytes(), active.canonical_bytes());
+    assert_ne!(base.canonical_bytes(), table_only.canonical_bytes());
 }
 
 #[test]

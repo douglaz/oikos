@@ -7,6 +7,7 @@ use crate::expect::PriceBelief;
 use crate::good::{Gold, GoodId, Horizon, Stock, CLOTH, FOOD, GOLD, NET, ORE, SALT, WOOD};
 use crate::issuer::IssuerPolicy;
 use crate::ledger::{BankId, IssuerId};
+use crate::marketability::{GoodMarketability, MarketabilityConfig};
 use crate::money::{
     BankRepaymentTender, DesignatedMoney, IssuerRepaymentTender, LaborWageTender,
     MarketMoneyConfig, MengerianConfig, PublicDebtTender, PublicSpotTender, Regime,
@@ -67,6 +68,7 @@ pub enum ScenarioName {
     EmergedGoldNoTaxIdleControl,
     MengerSaltMoney,
     MengerGoldMoney,
+    MengerMarketabilityDurability,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -317,6 +319,12 @@ pub const BUILTIN_SCENARIOS: &[ScenarioInfo] = &[
         scenario: ScenarioName::MengerGoldMoney,
         description: "barter society where physical gold emerges as commodity money",
     },
+    ScenarioInfo {
+        name: "menger-marketability-durability",
+        scenario: ScenarioName::MengerMarketabilityDurability,
+        description:
+            "barter society isolating physical durability and carry cost in indirect acceptance",
+    },
 ];
 
 #[derive(Clone, Debug)]
@@ -482,7 +490,9 @@ impl ScenarioName {
             | ScenarioName::EmergedGoldTaxFiatUnpayableDefaults
             | ScenarioName::EmergedGoldTaxDrivesFiatLabor
             | ScenarioName::EmergedGoldNoTaxIdleControl => ScenarioKind::MarketM3,
-            ScenarioName::MengerSaltMoney | ScenarioName::MengerGoldMoney => ScenarioKind::MarketV2,
+            ScenarioName::MengerSaltMoney
+            | ScenarioName::MengerGoldMoney
+            | ScenarioName::MengerMarketabilityDurability => ScenarioKind::MarketV2,
         }
     }
 
@@ -531,7 +541,8 @@ impl ScenarioName {
             | ScenarioName::EmergedGoldSuspendedRedemption
             | ScenarioName::EmergedGoldTaxSpecieControl
             | ScenarioName::MengerSaltMoney
-            | ScenarioName::MengerGoldMoney => Regime::SoundGold,
+            | ScenarioName::MengerGoldMoney
+            | ScenarioName::MengerMarketabilityDurability => Regime::SoundGold,
         }
     }
 
@@ -656,7 +667,8 @@ pub fn builtin_scenario(name: ScenarioName) -> Scenario {
         | ScenarioName::EmergedGoldTaxDrivesFiatLabor
         | ScenarioName::EmergedGoldNoTaxIdleControl
         | ScenarioName::MengerSaltMoney
-        | ScenarioName::MengerGoldMoney => {
+        | ScenarioName::MengerGoldMoney
+        | ScenarioName::MengerMarketabilityDurability => {
             panic!("market scenarios use builtin_market_scenario")
         }
     }
@@ -725,6 +737,7 @@ pub fn builtin_market_scenario(name: ScenarioName) -> MarketScenario {
         ScenarioName::FractionalReserve => fractional_reserve(),
         ScenarioName::MengerSaltMoney => menger_salt_money(),
         ScenarioName::MengerGoldMoney => menger_gold_money(),
+        ScenarioName::MengerMarketabilityDurability => menger_marketability_durability(),
         ScenarioName::CrusoeSurvival
         | ScenarioName::CrusoeCapital
         | ScenarioName::CrusoeAbandon => {
@@ -750,6 +763,12 @@ fn stock(food: u32, wood: u32, nets: u32) -> Stock {
 
 fn v2_stock(food: u32, wood: u32, salt: u32, cloth: u32, ore: u32) -> Stock {
     v2_stock_with_gold(0, food, wood, salt, cloth, ore)
+}
+
+fn v2_stock_with_net(food: u32, wood: u32, net: u32, salt: u32, cloth: u32, ore: u32) -> Stock {
+    let mut stock = v2_stock(food, wood, salt, cloth, ore);
+    stock.add(NET, net);
+    stock
 }
 
 fn v2_stock_with_gold(gold: u32, food: u32, wood: u32, salt: u32, cloth: u32, ore: u32) -> Stock {
@@ -1171,6 +1190,200 @@ fn menger_salt_money() -> MarketScenario {
             multi_offer_medium: false,
             durability_aware_acceptance: false,
             marketability: Default::default(),
+        }),
+    }
+}
+
+fn menger_marketability_durability() -> MarketScenario {
+    let marketability = MarketabilityConfig {
+        hold_horizon: 1,
+        ..MarketabilityConfig::default()
+    }
+    .with_good(
+        FOOD,
+        GoodMarketability {
+            decay_bps: 10_000,
+            carry_cost: 0,
+        },
+    )
+    .with_good(
+        WOOD,
+        GoodMarketability {
+            decay_bps: 0,
+            carry_cost: 1,
+        },
+    )
+    .with_good(
+        SALT,
+        GoodMarketability {
+            decay_bps: 0,
+            carry_cost: 0,
+        },
+    );
+
+    MarketScenario {
+        name: scenario_info(ScenarioName::MengerMarketabilityDurability).name,
+        scenario: ScenarioName::MengerMarketabilityDurability,
+        seed: 52,
+        periods: 4,
+        agents: vec![
+            v2_agent(
+                1,
+                v2_stock(1, 0, 0, 0, 0),
+                scale(&[
+                    (WantKind::Good(CLOTH), Horizon::Next, 1),
+                    (WantKind::Good(FOOD), Horizon::Next, 1),
+                ]),
+            ),
+            v2_agent(
+                2,
+                v2_stock(0, 0, 0, 1, 0),
+                scale(&[(WantKind::Good(FOOD), Horizon::Next, 1)]),
+            ),
+            v2_agent(
+                3,
+                v2_stock(1, 0, 0, 0, 0),
+                scale(&[
+                    (WantKind::Good(ORE), Horizon::Next, 1),
+                    (WantKind::Good(FOOD), Horizon::Next, 1),
+                ]),
+            ),
+            v2_agent(
+                4,
+                v2_stock(0, 0, 0, 0, 1),
+                scale(&[(WantKind::Good(FOOD), Horizon::Next, 1)]),
+            ),
+            v2_agent(
+                5,
+                v2_stock(1, 0, 0, 0, 0),
+                scale(&[
+                    (WantKind::Good(CLOTH), Horizon::Next, 1),
+                    (WantKind::Good(FOOD), Horizon::Next, 1),
+                ]),
+            ),
+            v2_agent(
+                6,
+                v2_stock(0, 0, 0, 1, 0),
+                scale(&[(WantKind::Good(FOOD), Horizon::Next, 1)]),
+            ),
+            v2_agent(
+                7,
+                v2_stock(1, 0, 0, 0, 0),
+                scale(&[
+                    (WantKind::Good(ORE), Horizon::Next, 1),
+                    (WantKind::Good(FOOD), Horizon::Next, 1),
+                ]),
+            ),
+            v2_agent(
+                8,
+                v2_stock(0, 0, 0, 0, 1),
+                scale(&[(WantKind::Good(FOOD), Horizon::Next, 1)]),
+            ),
+            v2_agent(
+                9,
+                v2_stock(0, 0, 1, 0, 0),
+                scale(&[
+                    (WantKind::Good(CLOTH), Horizon::Next, 1),
+                    (WantKind::Good(FOOD), Horizon::Next, 1),
+                ]),
+            ),
+            v2_agent(
+                10,
+                v2_stock(0, 0, 0, 1, 0),
+                scale(&[
+                    (WantKind::Good(SALT), Horizon::Next, 1),
+                    (WantKind::Good(FOOD), Horizon::Next, 1),
+                ]),
+            ),
+            v2_agent(
+                11,
+                v2_stock(0, 0, 1, 0, 0),
+                scale(&[
+                    (WantKind::Good(ORE), Horizon::Next, 1),
+                    (WantKind::Good(FOOD), Horizon::Next, 1),
+                ]),
+            ),
+            v2_agent(
+                12,
+                v2_stock(0, 0, 0, 0, 1),
+                scale(&[
+                    (WantKind::Good(SALT), Horizon::Next, 1),
+                    (WantKind::Good(FOOD), Horizon::Next, 1),
+                ]),
+            ),
+            v2_agent(
+                13,
+                v2_stock(0, 0, 1, 0, 0),
+                scale(&[
+                    (WantKind::Good(CLOTH), Horizon::Next, 1),
+                    (WantKind::Good(FOOD), Horizon::Next, 1),
+                ]),
+            ),
+            v2_agent(
+                14,
+                v2_stock(0, 0, 0, 1, 0),
+                scale(&[
+                    (WantKind::Good(SALT), Horizon::Next, 1),
+                    (WantKind::Good(FOOD), Horizon::Next, 1),
+                ]),
+            ),
+            v2_agent(
+                15,
+                v2_stock_with_net(1, 0, 0, 0, 0, 0),
+                scale(&[
+                    (WantKind::Good(NET), Horizon::Next, 1),
+                    (WantKind::Good(FOOD), Horizon::Next, 1),
+                ]),
+            ),
+            v2_agent(
+                16,
+                v2_stock_with_net(0, 0, 1, 0, 0, 0),
+                scale(&[(WantKind::Good(CLOTH), Horizon::Next, 1)]),
+            ),
+            v2_agent(
+                17,
+                v2_stock_with_net(1, 0, 0, 0, 0, 0),
+                scale(&[
+                    (WantKind::Good(NET), Horizon::Next, 1),
+                    (WantKind::Good(FOOD), Horizon::Next, 1),
+                ]),
+            ),
+            v2_agent(
+                18,
+                v2_stock_with_net(0, 0, 1, 0, 0, 0),
+                scale(&[(WantKind::Good(ORE), Horizon::Next, 1)]),
+            ),
+            v2_agent(
+                19,
+                v2_stock(0, 1, 0, 0, 0),
+                scale(&[
+                    (WantKind::Good(CLOTH), Horizon::Next, 1),
+                    (WantKind::Good(FOOD), Horizon::Next, 1),
+                ]),
+            ),
+            v2_agent(
+                20,
+                v2_stock(0, 0, 0, 1, 0),
+                scale(&[
+                    (WantKind::Good(WOOD), Horizon::Next, 1),
+                    (WantKind::Good(FOOD), Horizon::Next, 1),
+                ]),
+            ),
+        ],
+        recipes: Vec::new(),
+        events: Vec::new(),
+        money: MarketMoneyConfig::Emergent(MengerianConfig {
+            candidate_goods: vec![FOOD, WOOD, SALT],
+            min_total_acceptances: 8,
+            promotion_threshold_bps: 9_900,
+            lead_margin_bps: 250,
+            min_acceptor_agents: 2,
+            min_counterpart_goods: 2,
+            stability_ticks: 50,
+            indirect_min_acceptance_share_bps: 2_000,
+            durability_aware_acceptance: true,
+            marketability,
+            ..MengerianConfig::default()
         }),
     }
 }
