@@ -275,16 +275,34 @@ two-lane order book," or "scaffold-free colony money") overstates what the runs 
 
 ---
 
-## 7. Open directions (to be refined with review)
+## 7. The open-colony arc (in progress) and open directions
 
-- **Open-colony integration (the natural capstone).** Embed the working two-lane money into a richer
-  *open* colony with on-market survival and terminal consumption, removing the S19 abstractions — does
-  money survive contact with the universal-necessity pressure that dominated S18?
-- **Endogenizing the clearing institution.** The two-lane book is configured. Can the *richness* of the
-  exchange institution itself emerge, or be selected for, rather than switched on?
-- **Perishability / carrying-cost as a second saleability lever** (durability advantage for the token),
-  the axis deliberately deferred from S19.
-- **Robustness:** a long-horizon (10k-tick) mortality smoke test; mortality-on money runs.
+The capstone — embedding the working two-lane money into an *open* colony (on-market survival +
+terminal consumption, removing the S19 abstractions) — was scoped into a slice arc, and the first
+slice has already produced a deep finding that re-planned the rest:
+
+- **S21a — Marketability / carrying cost (a finding).** Two-lane clearing (S20) fixed the *round-trip*
+  but not the *saleability race*; with on-market survival, S18's universal-necessity dominance would
+  return. So S21a added a *physical* marketability lever (route b): per-good durability + carrying cost
+  made visible to the indirect-acceptance decision, so an agent **declines a perishable or high-carry
+  good *as a means*** (it can't carry to re-trade) — no taste, no change to the saleability metric. The
+  lever *works* at the individual level (perishable food and high-carry WOOD are declined as media,
+  durable SALT accepted; the SALT-also-bad-medium control flips it back). **But it is not enough for the
+  token to lead**, and the reason is the deepest money insight of the arc: **the saleability metric —
+  total acceptance share — conflates *consumption* acceptance with *medium* (re-trade) acceptance.** The
+  lever correctly cuts the necessity's *indirect* (as-a-means) acceptance, but its sheer *direct
+  consumption* acceptance still dominates the share, so it keeps the lead. Money emerges because a good
+  is more marketable *in exchange*, not because it is eaten often — and total-acceptance-share, a useful
+  early proxy, is too crude to express that.
+- **The corrected next step — two-layer Mengerian saleability (S21b).** Separate (i) *direct-use
+  saleability* as the **non-circular eligibility floor** (a good must have real non-monetary demand to
+  be a candidate) from (ii) *medium-saleability* — actual `IndirectFor`/re-trade acceptances across
+  targets and agents — driving *leadership/promotion*. The circularity trap ("accepted as money because
+  accepted as money") is avoided by keeping direct-use as the eligibility floor and letting observed
+  *pre-money indirect* trades determine monetary leadership. Only then does open-colony integration
+  (on-market survival + terminal consumption) become a fair test.
+- **Then:** open survival under two-lane → full open-colony money; later, endogenizing the clearing
+  institution and richer marketability. (Robustness for the in-cycle result is done — §6.)
 
 ---
 
@@ -306,3 +324,4 @@ two-lane order book," or "scaffold-free colony money") overstates what the runs 
 | S18 | Produced multi-good money | finding: perfect coincidence → necessity beats the token |
 | S19 | Imperfect-double-coincidence cycle | finding: token *leads* but clearing deadlocks |
 | S20 | Two-lane bilateral order book | **resolution: endogenous token money emerges** |
+| S21a | Marketability / carrying cost (open-colony slice) | finding: lever cuts *as-a-means* acceptance, but total-saleability conflates consumption with medium use → two-layer metric needed |
