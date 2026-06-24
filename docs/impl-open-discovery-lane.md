@@ -1,6 +1,10 @@
 # impl-26 — S21c: Fix the two-layer open-discovery path-dependence
 
-Status: DRAFT
+Status: LANDED @ `85fb4eb` (Codex review-of-results: PASS, no P0/P1; the regression test was
+verified non-vacuous — it fails without the fix). Note (Codex P2): the lane "cannot bypass the
+medium" is precise *at posting time* (both sides filtered to non-candidates); if one side *later*
+crosses the floor and becomes a candidate, an existing offer is preserved as a legitimate candidate
+direct lane — that is correct, not a bypass.
 Branch: `feat/open-discovery-lane`
 Base: master @ `e1bc22b` (S21b landed)
 
