@@ -313,10 +313,24 @@ slice has already produced a deep finding that re-planned the rest:
   is **path-dependent** (once the eligible candidate set is non-empty, a good that crosses the
   direct-use floor *late* can be starved of further direct offers). That path-dependence is a
   documented limitation to fix where it actually bites: open-colony integration.
-- **Then (the capstone, still ahead):** open survival under two-lane + two-layer saleability — embed
-  this into a rich *open* colony with on-market survival and terminal consumption, fixing the
-  open-discovery path-dependence in the scenario that exercises it; later, endogenizing the clearing
-  institution and richer marketability. (Robustness for the in-cycle result is done — §6.)
+- **The open-colony capstone (a 4-slice sub-arc, in progress).** Embedding the money machinery into a
+  rich *open* colony — where agents survive by **buying food on the market** (terminal consumption
+  financed by production/sales, no off-market hearth mint, no own-labor forage) under mortality — is
+  scoped as a sub-arc, because a direction review established that **two-layer saleability only
+  *partly* dissolves the S12 collision**: it removes the *metric* collision (food can dominate
+  consumption while the durable medium leads on medium use), but the retired bread mint was also a
+  real *supply/counterparty* scaffold, and **produced bread alone is still direct exchange** — the
+  open colony needs a *second produced/consumed good or input-demand loop* so the medium is accepted
+  for ends other than food. The slices: **S21c — fix the open-discovery path-dependence** *(landed:
+  a legacy direct-discovery lane lets a below-floor good still cross the floor late; a regression test
+  confirmed non-vacuous — it fails without the fix; all 18 goldens byte-identical)*; then S21d (open
+  survival, **mortality off** — does two-layer money survive produced-food necessity demand?); S21e
+  (**mortality on** — no extinction, a market-fed band, deaths tracking failure to earn/buy, not
+  hidden provisioning gaps); S21f (robustness). Mortality goes last so a monetary failure is not
+  masked by a demographic wipeout. The bar: market-sourced food *provenance* + medium promotion +
+  real pre-promotion indirect breadth *across non-food targets*, under a full control matrix.
+- **Later:** endogenizing the clearing institution and richer marketability. (Robustness for the
+  in-cycle result is done — §6.)
 
 ---
 
@@ -340,3 +354,4 @@ slice has already produced a deep finding that re-planned the rest:
 | S20 | Two-lane bilateral order book | **resolution: endogenous token money emerges** |
 | S21a | Marketability / carrying cost (open-colony slice) | finding: lever cuts *as-a-means* acceptance, but total-saleability conflates consumption with medium use → two-layer metric needed |
 | S21b | Two-layer Mengerian saleability | **resolution: direct-use eligibility floor + medium-saleability leadership → the durable medium promotes; non-circular (controlled scenario)** |
+| S21c | Open-discovery lane (capstone slice 1) | fix: a legacy direct-discovery lane lets a below-floor good cross the direct-use floor late (the open-colony prerequisite); all goldens byte-identical |
