@@ -14901,8 +14901,15 @@ fn push_mengerian_config_bytes(out: &mut Vec<u8>, menger: &MengerianConfig) {
     if menger.multi_offer_medium {
         out.push(1);
     }
-    if menger.durability_aware_acceptance || !menger.marketability.is_empty_durable_default() {
-        out.push(u8::from(menger.durability_aware_acceptance));
+    // S21a durability-aware marketability: the per-good decay/carry table only
+    // steers acceptance when the lever is ON (the agent gate fires solely on the
+    // flag), so it is part of the future-behaviour identity only then. Appended
+    // only when ON — mirroring `multi_offer_medium` — so every flag-off Mengerian
+    // config (all the S5–S20 + econ + emergence + demographic goldens) keeps its
+    // exact prior byte layout, and a behaviour-inert table edit (flag off) does
+    // not split the digest.
+    if menger.durability_aware_acceptance {
+        out.push(1);
         out.extend_from_slice(&menger.marketability.hold_horizon.to_le_bytes());
         out.extend_from_slice(&(menger.marketability.goods.len() as u32).to_le_bytes());
         for (good, marketability) in &menger.marketability.goods {
