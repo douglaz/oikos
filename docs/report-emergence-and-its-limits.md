@@ -255,8 +255,16 @@ off, the **S19 deadlock returns**; remove the SALT seed, and nothing clears.
 - **S20 fixes a self-imposed artifact** — the one-offer book was our constraint; part of the S19→S20
   result is institutional insight, part is repairing a modeling limitation. Stated honestly, still a
   result; stated as a universal law, an overclaim.
-- **Robustness not yet established** — single-seed promotion; no S20 seed-size sweep, no two-lane
-  anchor-density sweep, no 10k-tick horizon. These are the credibility gaps to close before publishing.
+- **Robustness — established for the in-cycle result (S20-R / S17-R).** The credibility gaps are now
+  closed by a robustness appendix (test-only, goldens byte-identical): S20's promotion holds **across
+  RNG seeds** {1, 7, 19, 23, 42}, **across producer-seed sizes** {12, 18, 24, 36, 48} (not a knife-edge
+  at the shipped 12), and at the shipped **and denser anchor densities** (`salt_direct_use_period`
+  ∈ {2, 3, 4}); the S17 Malthusian band **persists to a 10k-tick horizon** (no drift or collapse —
+  late-window mean within ±40% of the early-window mean — both checks active, no extinction). Caveat:
+  these sweeps confirm robustness *of the in-cycle result* (closed loop, off-market survival); they do
+  not extend it to an open colony — that is the open-colony integration milestone, not a robustness gap.
+  (Sparser anchors, like the off-path S19 sweep, can still fail the acceptor floor; the *clearing* fix
+  is robust, the *saleability-lead* condition still needs a dense-enough anchor — consistent with §5.1.)
 
 ### The bounded headline
 

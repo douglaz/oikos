@@ -635,3 +635,54 @@ fn goldens_unchanged() {
     );
     assert_eq!(a.digest(), b.digest());
 }
+
+// ---------------------------------------------------------------------------
+// Robustness appendix (S17-R): the carrying-capacity band persists over a long
+// (10k-tick) horizon — no slow drift, no late collapse, both checks still active.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn mortality_band_persists_to_10k() {
+    let cfg = SettlementConfig::frontier_mortality();
+    let mut s = Settlement::generate(1, &cfg);
+    s.run(500); // warm up past the growth phase
+    let births0 = s.births_total();
+    let starv0 = s.starvation_deaths_total();
+    let measure = 9_500u64; // ~10k ticks total
+    let mut min_living = usize::MAX;
+    let (mut early_sum, mut early_n) = (0u64, 0u64);
+    let (mut late_sum, mut late_n) = (0u64, 0u64);
+    for i in 0..measure {
+        let report = s.econ_tick();
+        assert!(report.conserves(), "conservation broke at measure tick {i}");
+        let l = living(&s);
+        min_living = min_living.min(l);
+        if i < 3_000 {
+            early_sum += l as u64;
+            early_n += 1;
+        }
+        if i >= measure - 3_000 {
+            late_sum += l as u64;
+            late_n += 1;
+        }
+    }
+    let early = early_sum as f64 / early_n as f64;
+    let late = late_sum as f64 / late_n as f64;
+    let births = s.births_total() - births0;
+    let starv = s.starvation_deaths_total() - starv0;
+    assert!(
+        min_living > 0,
+        "no extinction over 10k ticks (min living {min_living})"
+    );
+    assert!(
+        births > 0 && starv > 0,
+        "both Malthusian checks stay active over 10k: births {births}, starvation {starv}"
+    );
+    // No slow drift or late collapse: the late-window mean stays within a band of the early-window
+    // mean (a slow collapse would show late << early).
+    assert!(
+        late >= 0.6 * early && late <= 1.4 * early,
+        "the carrying-capacity band must persist to 10k without drift/collapse: \
+         early {early:.1} -> late {late:.1}"
+    );
+}
