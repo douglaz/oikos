@@ -244,8 +244,9 @@ off, the **S19 deadlock returns**; remove the SALT seed, and nothing clears.
 - **Configured strong-bar thresholds** — `min_indirect_acceptances`/`acceptor_agents`/`target_goods`
   encode "what counts as monetary breadth"; they are set, not derived.
 - **Configured SALT direct-use anchor and producer SALT seed** — the regression-theorem seed and the
-  bootstrap commodity balance are parameters; the no-seed/no-anchor controls fail, but the *sizes* are
-  configured (not yet swept under the two-lane book).
+  bootstrap commodity balance are parameters set, not derived; the no-seed/no-anchor controls fail.
+  Their *sizes* are swept in the robustness appendix below (promotion holds across the pinned seed-size
+  and anchor-density bands), but the values remain configured, not emergent.
 - **Closed input-loop, no terminal consumer** (S19/S20) — the cycle goods are wanted only as each
   other's inputs; there is no final consumption sink.
 - **Survival off-market via a hearth scaffold** (S19/S20) — survival is deliberately isolated so the
