@@ -52,17 +52,27 @@ digests must not move when a new flag is off) caught accidental coupling immedia
 **no-tuning discipline** (set principled parameters, *report* the outcome, sweep rather than search
 for a passing value) kept the findings trustworthy — especially the negative ones.
 
+The pipeline was not uniformly clean: several rb-lite runs had thin or failed reviewer panels (a
+3-reviewer panel often degraded to 2-of-3 or 1-of-3, and two runs died on transient API
+overload/rate-limit and were relaunched), and a few milestones were effectively gated by the
+orchestrator's independent verification plus the Codex result-review rather than a full clean panel.
+The constant was the **Codex spec-review and result-review on every milestone**, not panel uniformity.
+
 ---
 
 ## 3. The foundational mechanisms (each demonstrated or honestly bounded)
 
-These established that the non-monetary core of the economy self-organizes.
+These established that the production, capital, demography, and survival mechanisms self-organize.
+(Most were demonstrated with designated or already-emergent money present — they are "non-money-rule"
+colony mechanisms, not money-free; the *emergence of money itself* is the separate sub-arc in §4.)
 
 - **S5–S6 — The specialized chain and provisioning at scale.** A grain→flour→bread division of labor
   self-organizes from gatherers, millers, and bakers trading through an exchange; the colony sustains
   a specialized chain at population scale rather than collapsing to autarky.
-- **S7 — Producible capital.** Tools (mill, oven) are themselves produced from wood + labor over time
-  via a project lifecycle, rather than seeded — capital as a roundabout, time-consuming investment.
+- **S7 — Producible capital.** Tools (mill, oven) *can* be produced from wood + labor over time via a
+  project lifecycle — the chain is not capped at the seed tools — so capital is a roundabout,
+  time-consuming investment rather than a fixed endowment. (Scenarios may still seed some starting
+  tools; S7 proves new ones are producible, not that the economy starts tool-free.)
 - **S10 — Originary interest / intertemporal choice.** Per-agent time preference makes the capital
   decision an *ordinal* intertemporal choice (build now for later output), heritable and heterogeneous
   across the population — interest as a feature of valuation, not a configured rate.
@@ -89,8 +99,9 @@ These established that the non-monetary core of the economy self-organizes.
 - **S17 — Mortality (the Malthusian positive check).** Re-enabling starvation death on the fed,
   plateaued cultivation colony, at principled lab-default thresholds, produced a genuine
   *carrying-capacity band*: births and starvation deaths both phase-track hunger
-  (`corr(hunger, deaths) ≈ +0.65`, `corr(hunger, births) ≈ −0.68`), the population oscillates around a
-  bounded band without drift or extinction. The insight (which beat the prior expectation of "the
+  (at seed 1 over a 3000-tick measurement window: `corr(hunger, deaths) ≈ +0.65`,
+  `corr(hunger, births) ≈ −0.68`), the population oscillates around a bounded band without drift or
+  extinction. The insight (which beat the prior expectation of "the
   preventive check absorbs everything"): the preventive check binds on *potential births* while the
   positive check binds on *already-living marginal mouths* — so both operate at once.
 
@@ -108,7 +119,9 @@ real exchange — and the arc became a progressive isolation of *exactly what th
 The strong-bar emergence milestone made SALT promote to money without a circular "medium want": SALT
 had a real, heterogeneous direct *use* (the regression-theorem anchor), and it had to clear a genuine
 *indirect-acceptance breadth* gate (accepted as a means to reach other goods, by enough distinct
-agents). This passed — SALT emerged from real saleability, not a renamed medium want.
+agents). This passed — SALT emerged from real saleability, not a renamed medium want — **within that
+provisioned ecology** (S12 below shows the provisioning was itself load-bearing; do not quote this
+result without that scope).
 
 ### 4.2 S12 — The first deep finding: emergence rested on a *minted* scaffold
 
@@ -173,12 +186,18 @@ off, the **S19 deadlock returns**; remove the SALT seed, and nothing clears.
 
 ## 5. What we discovered
 
-1. **Money emergence has two necessary conditions, separable and individually demonstrable.** A token
-   becomes money only when (a) it wins the **saleability** race — it is more saleable than the ordinary
-   goods, which happens when those goods are bad direct media (imperfect double coincidence), *and*
-   (b) the **clearing institution** lets the medium be both *sold-for* and *spent* (an agent can hold
-   both sides of the monetary strategy). The arc separated these: S19 achieved (a) and failed (b); S20
-   added (b) and money emerged. Neither alone suffices.
+1. **In this model, money emergence had two separable necessary conditions.** A token became money
+   only when (a) it won the **saleability** race — more saleable than the ordinary goods, which
+   happens when those goods are bad direct media (imperfect double coincidence), *and* (b) the
+   **clearing institution** let the medium be both *sold-for* and *spent* (an agent can hold both
+   sides of the monetary strategy). The arc separated these: S19 achieved (a) and failed (b); S20
+   added (b) and money emerged. Neither alone sufficed. **Honest caveat:** this is a *model* finding,
+   not a universal theorem — and condition (b) is partly a genuine economic insight (a market needs an
+   institution expressive enough for monetary round-tripping; real economies have many) and partly the
+   repair of a *self-imposed* modeling constraint (our one-offer-per-agent barter book artificially
+   forbade holding a bid and an ask at once). The defensible statement is institutional, not
+   mechanism-specific: *Mengerian money required both a saleability leader and an exchange institution
+   capable of monetary round-tripping* — not "money needs a two-lane order book."
 
 2. **A medium is only needed to bridge *absent* double coincidence.** Where wants coincide directly
    (S18's two-good perfect-coincidence economy), direct barter clears and the durable token is
@@ -219,6 +238,31 @@ off, the **S19 deadlock returns**; remove the SALT seed, and nothing clears.
   not tuned to force outcomes — but they are not themselves emergent.
 - **The strong-bar gate's thresholds are configured**, not derived; they encode "what counts as
   monetary breadth." S20 left them unchanged precisely so the result attributes to the institution.
+
+### Threats to validity (what a skeptic will attack first)
+
+- **Configured strong-bar thresholds** — `min_indirect_acceptances`/`acceptor_agents`/`target_goods`
+  encode "what counts as monetary breadth"; they are set, not derived.
+- **Configured SALT direct-use anchor and producer SALT seed** — the regression-theorem seed and the
+  bootstrap commodity balance are parameters; the no-seed/no-anchor controls fail, but the *sizes* are
+  configured (not yet swept under the two-lane book).
+- **Closed input-loop, no terminal consumer** (S19/S20) — the cycle goods are wanted only as each
+  other's inputs; there is no final consumption sink.
+- **Survival off-market via a hearth scaffold** (S19/S20) — survival is deliberately isolated so the
+  necessities don't dominate saleability; that hearth is itself a (disclosed) scaffold.
+- **Acceptance-share saleability** — "saleability" here is acceptance-share + breadth, not the full
+  Mengerian notion (durability, divisibility, transportability, perishability, holding cost).
+- **S20 fixes a self-imposed artifact** — the one-offer book was our constraint; part of the S19→S20
+  result is institutional insight, part is repairing a modeling limitation. Stated honestly, still a
+  result; stated as a universal law, an overclaim.
+- **Robustness not yet established** — single-seed promotion; no S20 seed-size sweep, no two-lane
+  anchor-density sweep, no 10k-tick horizon. These are the credibility gaps to close before publishing.
+
+### The bounded headline
+
+The single most defensible claim: **"Endogenous money in OIKOS required both a saleability leader and a
+market institution capable of monetary round-tripping."** Anything broader (e.g. "money needs a
+two-lane order book," or "scaffold-free colony money") overstates what the runs show.
 
 ---
 
