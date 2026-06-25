@@ -4029,6 +4029,61 @@ impl SettlementConfig {
         cfg
     }
 
+    /// S21g — **mortality-ON over the open-market colony** (the Malthusian band on a
+    /// working money market): the endogenous household-barter colony
+    /// ([`Self::frontier_household_barter`], never mutated) with the S17 positive check
+    /// (starvation) turned ON, asking the capstone question — does the working money/food
+    /// market survive real positive-check pressure? i.e. does the colony settle into a
+    /// Malthusian band (births AND starvation deaths both binding, no extinction, no drift)
+    /// *while SALT still emerges and circulates on `SelfProduced` bread*?
+    ///
+    /// A scenario composition, NO new engine code: the mortality wiring (S17) and the
+    /// household-barter cultivation seam (S21f) both already exist. The ONLY two deltas vs
+    /// S21f — both the S17 lab-default values, both disclosed, neither tuned into a result:
+    /// - **Turn on the positive check** (`dynamics.hunger_critical = dynamics.need_max`,
+    ///   inherited 13 → 12) — the exact analogue of [`Self::frontier_mortality`]'s only delta:
+    ///   `hunger` clamps at `need_max`, so `hunger_critical = need_max` is the lowest reachable
+    ///   critical ceiling, the principled threshold. `death_window = 3` is the inherited lab
+    ///   default, untouched.
+    /// - **Restore the S17 Malthusian-band structure (the preventive arm):**
+    ///   `demography.birth_hunger_ceiling = 8`. S21f inherited `12` from the co-emergent base,
+    ///   which *equals* the new critical ceiling — so births would stall and deaths fire at the
+    ///   *same* hunger (a degenerate, positive-check-only band). S17 uses `8 < 12` so the
+    ///   **preventive** check (births slow) binds *below* the **positive** check (starvation) —
+    ///   the genuine Malthusian structure. The invariant `cultivate_hunger_in (6) <
+    ///   birth_hunger_ceiling (8)` still holds (cultivation triggers before births are blocked).
+    ///
+    /// Everything else is identical to S21f: `retire_food_mints`,
+    /// `household_barter_cultivation`, `cultivation_sells_surplus`, `multigood_money`,
+    /// `spatial_households`, `bread_buffer = 0`, `consumer_staple_buffer = 0`, the lineage
+    /// founders' `starting_food = 0`, the grain commons (480/24/960), and the full S20+S21a/b/c
+    /// money machinery. **No cold-start cushion** (`starting_food` stays 0): the zeroed buffers
+    /// and the retired mints are what keep the `SelfProduced` / `seeded_minted == 0` claim clean
+    /// (`child_food_endowment = 4` is a conserved provenance-preserving parent→child transfer,
+    /// never `SeededMinted`), and the cold-start trigger *is* the starting hunger. The
+    /// provenance-clean lever if a cold-start die-off appears is grain-flow / `cultivate_*`
+    /// timing (faster first production), NOT seed bread.
+    ///
+    /// Determinism: `hunger_critical` and `birth_hunger_ceiling` are both digested, but only
+    /// THIS new scenario's digest changes (no existing golden moves, mirroring
+    /// `frontier_mortality`); `starvation_deaths_total` stays runtime-only (NOT in
+    /// `canonical_bytes`). With `hunger_critical` reverted to `need_max + 1` AND
+    /// `birth_hunger_ceiling` back to `12` this is byte-identical to `frontier_household_barter`.
+    pub fn frontier_open_colony_mortality() -> Self {
+        let mut cfg = Self::frontier_household_barter();
+        // Turn ON the positive check (the S17 delta): `hunger` clamps at `need_max`, so
+        // `hunger_critical = need_max` is the lowest reachable critical ceiling — the
+        // principled threshold, config-only, no edit to the death machinery.
+        cfg.dynamics.hunger_critical = cfg.dynamics.need_max;
+        // Restore the preventive arm BELOW the positive one (the S17 Malthusian structure):
+        // births stall at hunger 8, starvation kills at 12, so the two checks bind at distinct
+        // hungers (not the degenerate preventive=positive band S21f's inherited `12` would give).
+        if let Some(demo) = cfg.demography.as_mut() {
+            demo.birth_hunger_ceiling = 8;
+        }
+        cfg
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).

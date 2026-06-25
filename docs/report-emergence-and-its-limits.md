@@ -3,7 +3,7 @@
 *An experimental report on emergent money, capital, and survival in a praxeologic simulation.*
 
 > Status: working research report (raw material for a future article). Covers the milestone arc
-> through S21f (the money sub-arc and the full open-colony-capstone *supply* arc; mortality-on pending). Every result below
+> through S21g (the money sub-arc, the full open-colony-capstone *supply* arc, and the mortality-on capstone — a cold-start finding). Every result below
 > was built additively behind a default-off flag, kept the prior conformance goldens byte-identical,
 > conserved every tick, ran deterministically, and was reviewed by an independent second model (Codex)
 > at both the spec and the result stage. Honest negative findings are reported as first-class results,
@@ -309,13 +309,14 @@ two-lane order book," or "scaffold-free colony money") overstates what the runs 
 
 ---
 
-## 7. The open-colony arc (supply question closed; mortality-on next) and open directions
+## 7. The open-colony arc (supply question closed; mortality-on a cold-start finding) and open directions
 
 The capstone — embedding the working two-lane money into an *open* colony (on-market survival +
 terminal consumption, removing the S19 abstractions) — was built as a slice arc S21c→S21f and **its
 supply question is now closed** (S21f: endogenous pre-money production-for-barter monetizes SALT, no
-seed/no mint, for this configured open-market topology). The arc began with a deep finding that
-re-planned the rest:
+seed/no mint, for this configured open-market topology), then stress-tested under the positive check
+(S21g — a cold-start finding: mortality culls the non-cultivating demand side before the market forms;
+see below). The arc began with a deep finding that re-planned the rest:
 
 - **S21a — Marketability / carrying cost (a finding).** Two-lane clearing (S20) fixed the *round-trip*
   but not the *saleability race*; with on-market survival, S18's universal-necessity dominance would
@@ -349,11 +350,12 @@ re-planned the rest:
   is **path-dependent** (once the eligible candidate set is non-empty, a good that crosses the
   direct-use floor *late* can be starved of further direct offers). That path-dependence is a
   documented limitation to fix where it actually bites: open-colony integration.
-- **The open-colony capstone (a 4-slice sub-arc — supply question closed at S21f).** Embedding the
+- **The open-colony capstone (a 5-slice sub-arc — supply question closed at S21f, mortality-on a
+  cold-start finding at S21g).** Embedding the
   money machinery into a rich *open* colony — where agents survive by **buying food on the market**
   (terminal consumption financed by production/sales, no off-market hearth mint, no own-labor forage)
-  — was built S21c→S21f with **mortality off** to isolate the money/supply question (mortality-on is
-  the next milestone). A direction review established that **two-layer saleability only
+  — was built S21c→S21f with **mortality off** to isolate the money/supply question, then S21g turned
+  the positive check on (the capstone stress test). A direction review established that **two-layer saleability only
   *partly* dissolves the S12 collision**: it removes the *metric* collision (food can dominate
   consumption while the durable medium leads on medium use), but the retired bread mint was also a
   real *supply/counterparty* scaffold, and **produced bread alone is still direct exchange** — the
@@ -366,12 +368,14 @@ re-planned the rest:
   supply IS sufficient — SALT promotes and production replaces the seed; see below)*; and **S21f —
   endogenous pre-money production-for-barter** *(landed as the **authentic-mechanism Success**: lineage
   households cultivate `SelfProduced` bread and barter the surplus pre-money, monetizing SALT with no
-  seed/no mint; see below)*. **Mortality-on** and robustness come later (no extinction, a market-fed
-  band, deaths tracking failure to earn/buy, not hidden provisioning gaps) — mortality goes last so a
-  monetary failure is not masked by a demographic wipeout, and it is now meaningful precisely because
-  the colony finally has a working clearing market to survive in. The bar throughout: market-sourced
-  food *provenance* + medium promotion + real pre-promotion indirect breadth, under a full control
-  matrix.
+  seed/no mint; see below)*; and **S21g — mortality-on over the open-market colony** *(landed as a
+  **cold-start finding**: the positive check culls the non-cultivating demand side before the market
+  forms, so money fails under mortality — a spec pre-named outcome; see below)*. Mortality went last so
+  a monetary failure could not be masked by a demographic wipeout, and it was meaningful precisely
+  because the colony finally had a working clearing market to survive in — which is exactly what the
+  finding isolates: the *demand side* of that market cannot survive the positive check's cold-start. The
+  bar throughout: market-sourced food *provenance* + medium promotion + real pre-promotion indirect
+  breadth, under a full control matrix.
 - **S21d — Open survival (mortality off): the supply-scaffold finding.** Compose the full money
   machinery (S20 + S21a/b/c) onto the strong co-emergent colony with the food hearths **retired**
   (an explicit `retire_food_mints` engine flag, not the forage hack) so survival is a *market* bread
@@ -451,8 +455,51 @@ re-planned the rest:
   configured grain commons, a configured 3-role WOOD-poor cultivator/woodcutter/consumer split, and the
   SALT direct-use anchor + thresholds — so this is "supply solved *in this configured open colony*,"
   not "scaffold-free spontaneous colony money." All gated default-off; all 20 goldens byte-identical.
-- **Later:** mortality-on (the positive check on a *working market* colony), then endogenizing the
-  clearing institution and richer marketability. (Robustness for the in-cycle result is done — §6.)
+- **S21g — Mortality-on over the open-market colony: the cold-start cull finding.** Turn the S17
+  positive check ON over the exact S21f money colony and ask the capstone question: does the working
+  money/food market survive real positive-check pressure (a Malthusian band — births *and* starvation
+  both binding, no extinction, no drift — *while SALT still circulates on `SelfProduced` bread*)? The
+  scenario `frontier_open_colony_mortality` derives `frontier_household_barter` with **only two deltas,
+  both S17 lab defaults (disclosed, neither tuned):** `hunger_critical = need_max` (13→12, the positive
+  check, the exact `frontier_mortality` flip) and `birth_hunger_ceiling = 8` (12→8, restoring the
+  **preventive** arm *below* the positive one so the two checks bind at distinct hungers — the genuine
+  Malthusian structure, not a degenerate positive-only band). No new engine code (the S17 mortality
+  wiring and the S21f cultivation seam both already exist); reverting both deltas is byte-identical to
+  `frontier_household_barter` (the additive proof). **Result: a cold-start FINDING — money fails under
+  mortality pressure (a spec pre-named outcome), NOT the hoped-for band.** At seed 7 the colony starts 4
+  lineage founders + 18 **non-self-provisioning** market roles (the SALT-rich buyers + the specialist
+  woodcutters, who hold no food and do not cultivate). The positive check culls **all 18** of those
+  roles in a **one-off cold-start cull** (~tick 7) — `starvation_deaths_total` plateaus at exactly 18
+  and **never rises again over 10k+ ticks** (a single cull, *not* an ongoing band). The self-feeding
+  cultivation lineage survives exactly as the spec's cold-start budget predicted: the runtime-only
+  **`cold_start_timing_trace`** (Codex spec-review P2 — an explicit ordered timing trace, not just
+  no-extinction) pins the seed-7 chain `(cultivate 3, grain-deposit 4, own-use-consume 4, hunger-drop
+  5, critical 5, first-death 7)`, so `first_hunger_drop (5) < first_starvation_death (7)` with survivors
+  — the founders eat their own first cultivated bread before the cull. **SALT never promotes**
+  (`current_money_good() == None` forever), **no food is ever bought**, `pre_promotion_bread_for_salt`
+  is `(0, 0)`; what remains is a quiescent **subsistence-cultivation commune** that feeds itself
+  (`SelfProduced` only, zero `SeededMinted`) and churns through births + old age, but trades nothing.
+  **Why (the economic content):** the pre-money bootstrap *requires the demand side to survive a
+  prolonged hungry, foodless wait* for the market to form — in S21f (mortality off) the SALT-rich
+  consumers sit pinned at `need_max` for ~40–70 ticks until SALT promotes, *then* buy. The positive
+  check kills exactly that patience, so the market never forms. **Controls localize the cause, never
+  tune:** the **mortality-off positive control** (= S21f) keeps all 18 roles alive and promotes SALT,
+  so the cause is the positive check, not the scenario; the spec's two endorsed provenance-clean rescue
+  levers (grain-flow / `cultivate_*` timing — faster *first production*) **cannot rescue it** — even a
+  10× grain flow leaves money dead and the demand side culled, because the dying roles do not cultivate
+  (faster bread helps only the cultivators, who already survive); seed bread is the spec's *forbidden*
+  last resort (it would break the `seeded_minted == 0` provenance the milestone rests on). A
+  degenerate `birth_hunger_ceiling = 12` control shows the *same* collapse (the cull is cold-start,
+  independent of the preventive arm's position). This **localizes precisely where the working colony
+  stops surviving the positive check:** the **non-cultivating demand side + specialists**, in the
+  pre-money window — essentially, why subsistence redundancy must precede specialization. Robust across
+  seeds {3, 7, 11, 19, 23}; a 10k-persistence smoke confirms no late die-off and money stays dead. All
+  gated default-off; `starvation_deaths_total` stays out of `canonical_bytes`; all 20 goldens
+  byte-identical (mirroring `frontier_mortality`).
+- **Later:** endogenizing the clearing institution and richer marketability (and, for the open colony, a
+  pre-money institution that keeps a non-cultivating demand side alive long enough for the market to
+  form under the positive check — the S21g finding's localized next step). (Robustness for the in-cycle
+  result is done — §6.)
 
 ---
 
@@ -480,3 +527,4 @@ re-planned the rest:
 | S21d | Open survival, mortality off (capstone slice 2) | finding (Phase A): retiring the food scaffold collapses the pre-promotion barter market to zero trades — production is post-promotion only, so there is no pre-promotion food supply for the medium to circulate against; two-layer fixes the metric, not the supply; all goldens byte-identical |
 | S21e | Finite seeded-surplus probe, mortality off (capstone slice 3) | finding (Success): a one-time finite tradeable bread supply is sufficient — SALT promotes (tick 37) as medium leader with {WOOD,bread} breadth before the seed's offerable surplus exhausts (tick 44), then production replaces it (zero seeded_minted in the tail); localizes the S21d block at supply *generation*; bounded diagnostic scaffold (S21f is the authentic mechanism); all goldens byte-identical |
 | S21f | Endogenous pre-money household production-for-barter (capstone slice 4) | **SUCCESS — the supply question closed: lineage households cultivate bread (`SelfProduced`, zero `SeededMinted`) and barter the surplus pre-money; SALT promotes on it — money bootstraps from genuine pre-money production-for-barter, no seed/no mint** (gated cultivation-without-FORAGE seam; grain-bounded; mortality off); all goldens byte-identical |
+| S21g | Mortality-on over the open-market colony (capstone, the positive check) | finding (money fails under mortality, a spec pre-named outcome): turning the S17 positive check ON (`hunger_critical=need_max`, `birth_hunger_ceiling=8`, both lab defaults) over the S21f money colony culls all 18 non-self-provisioning market roles (SALT-rich buyers + woodcutters) in a one-off cold-start cull (~tick 7) before any market forms — SALT never promotes, no food is ever bought; the self-feeding cultivation lineage survives (cold-start timing trace: `first_hunger_drop 5 < first_starvation_death 7`) into a quiescent subsistence commune. Mortality-off control = S21f money works; grain-flow lever can't rescue (the dying roles don't cultivate); robust across seeds; all goldens byte-identical |
