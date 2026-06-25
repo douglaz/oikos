@@ -37,7 +37,12 @@ use sim::{AcquisitionChannels, BootstrapTraceSummary, Settlement, SettlementConf
 
 const PROBE_TICKS: u64 = 1_600;
 const MIN_SEEDED_SELLERS: usize = 1;
-const MATERIAL_SALT_SHARE_BPS: u64 = 2_500;
+/// Minimum SALT-mediated share for ANY success classification (Codex result-review P2:
+/// 25% only blocks dust; require a clear majority). The seed-7 headline run is ~9947 bps.
+const MATERIAL_SALT_SHARE_BPS: u64 = 5_000;
+/// The headline run's SALT-mediated volume must dominate (direct bread↔WOOD is the small
+/// minority): observed 9947 bps at seed 7 / size 512.
+const HEADLINE_MIN_SALT_SHARE_BPS: u64 = 9_000;
 
 #[derive(Clone, Copy, Debug, Default)]
 struct RunSums {
@@ -375,8 +380,9 @@ fn frontier_seeded_surplus_classified_seed7_1600() {
             "SALT must accrue indirect breadth including the non-food WOOD target"
         );
         assert!(
-            salt_share >= MATERIAL_SALT_SHARE_BPS,
-            "a success classification requires material SALT-mediated volume"
+            salt_share >= HEADLINE_MIN_SALT_SHARE_BPS,
+            "the headline success must rest on dominant SALT-mediated volume (>= {HEADLINE_MIN_SALT_SHARE_BPS} bps), \
+             not mostly direct bread<->WOOD barter; got {salt_share}"
         );
         assert!(
             s.promoted_at_tick().unwrap()
@@ -384,6 +390,15 @@ fn frontier_seeded_surplus_classified_seed7_1600() {
                     .seeded_offerable_surplus_exhausted_tick
                     .expect("promoted run must also exhaust seed offerability"),
             "promotion must happen before seeded offerable surplus exhaustion"
+        );
+        // Explicit input-trade evidence (Codex result-review P2): the grain→flour→bread
+        // chain genuinely runs on the market (producers BUY grain/flour), so "production
+        // replaces the seed" is real, not bread conjured from buffers.
+        let content = s.content().expect("the probe carries a chain");
+        assert!(
+            s.trade_volume_of(content.grain()) > 0 && s.trade_volume_of(content.flour()) > 0,
+            "post-promotion production must acquire its inputs by MARKET trade (grain & flour \
+             trade volume > 0), not from seeded buffers alone"
         );
     }
 
@@ -414,6 +429,27 @@ fn seeded_surplus_control_matrix() {
         "no seeded surplus must not promote"
     );
 
+    // Same-shape attribution control (Codex result-review P1): `frontier_seeded_surplus`
+    // with the seed REMOVED but the WOOD-poor seller adjustment KEPT. This isolates the
+    // seed's contribution from the WOOD-poverty: the WOOD-poor sellers make the base
+    // `bread_buffer` partially offerable (a trickle of ~11 trades at seed 7), but WITHOUT
+    // the finite seed there is no monetization. So the honest claim is "a finite surplus
+    // ON A WOOD-POOR SELLER CLASS is sufficient" — and the seed is the load-bearing change
+    // for promotion (WOOD-poverty alone clears a trickle and never promotes).
+    let mut wood_poor_no_seed_cfg = SettlementConfig::frontier_seeded_surplus();
+    wood_poor_no_seed_cfg
+        .chain
+        .as_mut()
+        .expect("chain")
+        .seeded_surplus_bread = 0;
+    let (wood_poor_no_seed, _) = run(&wood_poor_no_seed_cfg);
+    assert_eq!(
+        wood_poor_no_seed.current_money_good(),
+        None,
+        "WOOD-poor sellers WITHOUT the finite seed must not promote — the seed is the \
+         load-bearing change, not the WOOD-poverty"
+    );
+
     let mut mints_on_cfg = SettlementConfig::frontier_open_survival();
     mints_on_cfg
         .chain
@@ -436,7 +472,10 @@ fn seeded_surplus_control_matrix() {
             c.barter.as_mut().unwrap().menger.two_layer_saleability = false;
             c
         }),
-        ("marketability off", {
+        ("SALT-also-bad-medium", {
+            // (Not "marketability off" — durability-aware acceptance stays ON; this makes
+            // SALT itself a bad medium by giving it full decay, the control that proves SALT's
+            // monetization depends on its durability advantage.)
             let mut c = SettlementConfig::frontier_seeded_surplus();
             c.barter.as_mut().unwrap().menger.marketability = MarketabilityConfig {
                 hold_horizon: 1,
@@ -472,6 +511,27 @@ fn seeded_surplus_control_matrix() {
             "{label}: control must not promote SALT"
         );
     }
+
+    // The genuine "durability-aware acceptance off" control (Codex result-review P2) is NOT a
+    // must-not-promote gate: with the per-good HOLDING RULE disabled, SALT STILL promotes.
+    // So in this open-survival/seeded-surplus colony the holding rule is NOT load-bearing —
+    // what is load-bearing is SALT's own durability (the `SALT-also-bad-medium` control above
+    // breaks promotion by making SALT itself perishable) plus two-layer leadership + the
+    // supply. Asserted explicitly so this honest nuance cannot silently flip.
+    let mut marketability_off = SettlementConfig::frontier_seeded_surplus();
+    marketability_off
+        .barter
+        .as_mut()
+        .unwrap()
+        .menger
+        .durability_aware_acceptance = false;
+    let (mkt_off, _) = run(&marketability_off);
+    assert_eq!(
+        mkt_off.current_money_good(),
+        Some(SALT),
+        "durability holding rule OFF still promotes SALT — the holding rule is not \
+         load-bearing here (SALT's intrinsic durability + two-layer + supply are)"
+    );
 }
 
 #[test]
@@ -500,16 +560,29 @@ fn seeded_surplus_seed_size_sweep_reports_exhausting_window() {
     eprintln!("exhausting/no-promotion sizes: {exhausting_no_promotion:?}");
     eprintln!("non-exhausting sizes: {non_exhausting:?}");
 
+    // The window is sharp (Codex result-review P2 — pin it, don't under-assert): a lower
+    // band that exhausts but is too small to promote, a wide band that promotes AND
+    // exhausts, and — critically — NO size that fails to exhaust (so even the largest seed
+    // is a finite scaffold, never a hidden permanent mint).
     assert!(
-        !promoted_exhausting.is_empty() || !exhausting_no_promotion.is_empty(),
-        "the sweep must include exhausting finite seed sizes"
+        non_exhausting.is_empty(),
+        "every swept seed size must EXHAUST its offerable surplus — a non-exhausting size \
+         would be a hidden permanent mint: {non_exhausting:?}"
     );
-    if !promoted_exhausting.is_empty() {
-        assert!(
-            promoted_exhausting.len() >= 2,
-            "promotion should hold across a window of exhausting seed sizes, not one tuned point"
-        );
-    }
+    assert!(
+        !exhausting_no_promotion.is_empty(),
+        "the sweep must include at least one lower exhausting size too small to promote \
+         (the window's lower boundary): {exhausting_no_promotion:?}"
+    );
+    assert!(
+        promoted_exhausting.len() >= 3,
+        "promotion must hold across a WINDOW of exhausting seed sizes, not one tuned point: \
+         {promoted_exhausting:?}"
+    );
+    assert!(
+        promoted_exhausting.contains(&512),
+        "the headline seed size 512 must sit inside the promoted exhausting band"
+    );
 }
 
 #[test]

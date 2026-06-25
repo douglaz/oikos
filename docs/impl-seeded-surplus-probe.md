@@ -1,8 +1,14 @@
 # impl-28 — S21e: Finite Seeded-Surplus Probe (does a pre-promotion tradeable supply monetize SALT?)
 
-Status: SPEC-READY (Codex round 1 NEEDS-REVISION → round 2 SPEC-READY; P2 refinements folded in:
-offerable-surplus computed via the real barter-preservation rule; a direct-bread↔WOOD-vs-SALT-mediated
-volume guard so success rests on SALT-mediated volume)
+Status: LANDED @ `fd8f2aa` (+ follow-up) — a **successful bounded diagnostic** (a finite surplus on a
+WOOD-poor seller class is sufficient: SALT promotes before exhaustion, ~99% SALT-mediated, production
+replaces the seed). Codex review-of-results **PASS-with-caveats** (no P0/P1; the success is genuine,
+not tuned — verified by the sweep window + cross-seed). P1/P2 addressed: a same-shape control
+(WOOD-poor, seed removed → no promotion) isolates the seed as load-bearing; the SALT-share bar raised
+(headline ≥9000 bps, observed 9947); the sweep window pinned (no non-exhausting size); the mislabeled
+"marketability off" control corrected (it actually STILL promotes — the holding rule is *not*
+load-bearing here, asserted as an honest nuance); an explicit post-promotion grain/flour input-trade
+assertion added. Spec-review history: round 1 NEEDS-REVISION → round 2 SPEC-READY.
 Branch: `feat/seeded-surplus-probe`
 Base: master @ `c2f42e4` (S21d landed)
 

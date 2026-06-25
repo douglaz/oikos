@@ -393,9 +393,15 @@ slice has already produced a deep finding that re-planned the rest:
   consumed entirely `bought`/`self_produced`, zero `seeded_minted`). Robust across seeds 3/7/11/19/23.
   This localizes the S21d block squarely at supply **generation**: given a tradeable pre-promotion
   food supply, the S20/S21a/b/c topology monetizes SALT and the open colony survives on a finite
-  (non-recurring) food endowment. The control matrix *classifies, never tunes* (no-seed → the S21d
-  zero-trade collapse; mints-on → the scaffolded positive control; two-layer / marketability /
-  multi-offer / SALT-direct-use-anchor off → no promotion). *Honest scope:* it is a **bounded
+  (non-recurring) food endowment. **Attribution (a same-shape control isolates the seed):** the
+  WOOD-poor adjustment *alone*, with the seed removed, clears only a trickle (~11 trades) and **never
+  promotes** — so the finite seed is the load-bearing change, and the honest claim is "a finite
+  surplus *on a WOOD-poor seller class* is sufficient." The control matrix *classifies, never tunes*:
+  no-seed → the S21d zero-trade collapse; mints-on → the scaffolded positive control; two-layer /
+  multi-offer / SALT-direct-use-anchor off, and *SALT-itself-perishable*, → no promotion. One honest
+  nuance: turning the durability **holding rule** off (`durability_aware_acceptance=false`) still
+  promotes — the per-good holding rule is *not* load-bearing here; what is, is SALT's own durability
+  (SALT-perishable breaks it) plus two-layer leadership + the supply. *Honest scope:* it is a **bounded
   diagnostic scaffold, not the authentic mechanism** — the seed is a one-time scaffold proven *finite*
   by **offerable-surplus exhaustion** (target-independent: removable above the protected hunger floor,
   so the permanent ≤20/holder spoilage floor is never load-bearing); the authentic follow-up is
