@@ -499,10 +499,20 @@ see below). The arc began with a deep finding that re-planned the rest:
   seeds {3, 7, 11, 19, 23}; a 10k-persistence smoke confirms no late die-off and money stays dead. All
   gated default-off; `starvation_deaths_total` stays out of `canonical_bytes`; all 20 goldens
   byte-identical (mirroring `frontier_mortality`).
-- **Later:** endogenizing the clearing institution and richer marketability (and, for the open colony, a
-  pre-money institution that keeps a non-cultivating demand side alive long enough for the market to
-  form under the positive check — the S21g finding's localized next step). (Robustness for the in-cycle
-  result is done — §6.)
+- **Next (S21h — the S21g-localized step): a demand-side survival bridge.** Keep the non-cultivating
+  buyers/woodcutters alive long enough for the market to form under mortality, sliced like the supply
+  arc: *S21h.0* a bounded diagnostic (a finite, **consumed-only** survival cushion for the non-lineage
+  roles — eaten, never sold — does the demand side simply surviving bring S21f money back under
+  mortality?), then *S21h.1* the authentic mechanism (a produced, costly, low-yield, self-consumed
+  emergency self-provisioning fallback triggered near critical hunger, that **preserves bread demand**
+  rather than collapsing the buyers into the cultivation commune). The deep dilemma to test: a bridge
+  *weak* enough to preserve demand may fail to keep buyers alive, while one *strong* enough to keep
+  them alive may crowd out the market and kill money — if so, that knife-edge is itself a finding (the
+  model needs a finer survival/consumption structure before money and mortality coexist).
+- **Then / later:** an S21f/S21g **robustness appendix** (seeds, grain flow, WOOD-poor magnitude, SALT
+  anchor density, strong-bar thresholds — before any article submission); endogenizing the role
+  topology (households *drift* into roles) and the clearing institution (the two-lane book is still
+  configured). (Robustness for the in-cycle result is done — §6.)
 
 ---
 
