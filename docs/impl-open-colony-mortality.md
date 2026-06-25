@@ -1,6 +1,6 @@
 # impl-30 — S21g: Mortality-On over the Open-Market Colony (the Malthusian band on a working money market)
 
-Status: DRAFT (pre-Codex-spec-review)
+Status: SPEC-READY (Codex spec-review: SPEC-READY, no P0/P1; P2 folded in — an explicit cold_start_timing_trace requiring first_hunger_drop < first_starvation_death with survivors, else a cold-start finding)
 Branch: `feat/open-colony-mortality`
 Base: master @ `fa9451e` (S21f landed)
 
@@ -46,7 +46,18 @@ starting hunger. Adding bread `starting_food` would break the `seeded_minted==0`
 a **last resort** only — the provenance-clean lever if a cold-start die-off appears is grain-flow /
 `cultivate_*` timing (faster first production), not seed bread.
 
-## 2. The cold-start survival risk (the #1 risk to verify, not assume)
+## 2. The cold-start survival risk (the #1 risk to verify with a TIMING TRACE, not assume)
+
+**Codex spec-review P2 — require an explicit cold-start timing trace, not just no-extinction.** The
+phase order is tight (needs/deaths run *before* market/production, and own-use cultivation feeds
+through the *next* tick's readback: `update_needs_and_remove_dead` ~`settlement.rs:7737`, own-use
+cultivation after market ~`:7083`), so a one-tick schedule slip flips survival. A runtime-only
+`cold_start_timing_trace` must record the ordered first-occurrence ticks: **first cultivation, first
+grain deposit, first own-use bread consume, first hunger drop, first critical tick, first starvation
+death.** The cold-start succeeds iff **`first_hunger_drop < first_starvation_death` and there are
+survivors**; otherwise classify it as a cold-start finding (mortality too harsh for the
+zero-starting-food cultivation lag) — to be addressed via grain-flow / `cultivate_*` timing, not seed
+bread.
 
 Quantified tick budget (need.rs defaults: `hunger_deplete=2`, `hunger_per_food=3`, `need_max=12`,
 `death_window=3`; S21f cultivation: `cultivate_hunger_in=6`, `cultivate_patience=2`,
@@ -88,8 +99,10 @@ Cross-seed robustness: the band + money result holds across several seeds (one s
 ## 4. Slices
 
 - **S21g.0** — the `frontier_open_colony_mortality` scenario (derive `frontier_household_barter` +
-  `hunger_critical=need_max` + `birth_hunger_ceiling=8`); a non-vacuity assertion that mortality
-  actually fires (starvation_deaths_total > 0) and the colony does not go extinct.
+  `hunger_critical=need_max` + `birth_hunger_ceiling=8`); the runtime-only `cold_start_timing_trace`
+  (the ordered first-occurrence ticks, §2) + its assertion (`first_hunger_drop <
+  first_starvation_death` with survivors, else cold-start finding); a non-vacuity assertion that
+  mortality actually fires (starvation_deaths_total > 0) and the colony does not go extinct.
 - **S21g.1** — the band+money classification suite (mirror `mortality.rs` band template + the S21f
   money assertions kept alive under mortality), the control matrix (mortality-off positive control,
   the ceiling and grain-flow sweeps), cross-seed robustness, the 10k-persistence smoke, and a live run.
