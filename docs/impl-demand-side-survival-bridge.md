@@ -1,6 +1,6 @@
 # impl-31 — S21h: Demand-Side Survival Bridge (does keeping the buyers alive bring money back under mortality?)
 
-Status: SPEC-READY (Codex round 1 NEEDS-REVISION → addressed: S21h.1 fork settled to no-input emergency self-provisioning [+ the missing SelfProduced ledger credit]; the cushion 'consumed-only' overclaim fixed — excess above the hunger reservation is offerable, so seeded-sold-for-SALT==0 is a HARD per-cell invariant [disqualify cells where cushion sells]; the sweep classifier pinned to the 5-tuple alive/demanding/promoted/bought-after/seeded-never-sold; a demand-preservation test added)
+Status: SPEC-READY (Codex round 1 + round 2 NEEDS-REVISION → all addressed: no-input emergency fork settled; the emergency good pinned to the BREAD staple credited SelfProduced, immediately consumed, no offerable remainder [not FORAGE — avoids S12 pollution]; cushion 'consumed-only' overclaim fixed with a hard per-cell seeded-sold==0 invariant; the 5-tuple sweep classifier; demand-preservation test)
 Branch: `feat/demand-side-survival-bridge`
 Base: master @ `b7beb39` (S21g landed)
 
@@ -89,15 +89,19 @@ only near starvation, low-yield, self-consumed, `SelfProduced` (no seed), demand
   surplus via `OWN_USE_CULTIVATION_LABOR_BUDGET`, `settlement.rs:128/9256`). Capping production at ≈
   the survival floor (no leftover after eating) preserves bought-bread demand: the role still prefers
   to buy and only self-provisions to avoid death.
-- **No-input emergency self-provisioning (Codex P1 — fork settled).** Use a fixed small own-labor
-  food credit (the S12 forage pattern, `settlement.rs:9113/9168`), NOT grain-access. Grain access
-  would route the buyers/woodcutters to the grain node and risk collapsing the demand side into
-  cultivators — muddying the very "demand side survives but still buys" claim S21h tests. The no-input
-  path keeps them non-cultivating market roles that merely don't *die*. It conserves via
-  `report.produced`, and **must add the `FoodChannel::SelfProduced` ledger credit the fixed own-labor
-  path currently lacks** (cultivation credits it at `settlement.rs:9277`; the fixed path books
-  `produced` without the ledger credit — close that gap so emergency food is `SelfProduced`, never
-  `SeededMinted`).
+- **No-input emergency self-provisioning — the good is BREAD, not FORAGE (Codex round 2 P1).** Use a
+  no-input (no grain), own-labor emergency that produces a **tiny amount of the tracked hunger staple
+  (bread) directly**, NOT a FORAGE/subsistence good. Crediting FORAGE would reopen S12's
+  `known.subsistence` scale effects *and* wouldn't fit the bread-centric acquisition ledger; crediting
+  the staple keeps the demand-side roles non-cultivating *and* lets the existing acquisition proof
+  work. Pin: the emergency emits bread to `report.produced` (own-labor source, conserved — not an
+  endowment/mint), credits it `FoodChannel::SelfProduced` (the credit the fixed own-labor path at
+  `settlement.rs:9113` currently lacks; cultivation has it at `:9277`), routes it through the
+  **consumption-readback path so it is immediately self-consumed**, and is **capped so NO
+  emergency-produced unit remains offerable after the tick** (no sellable remainder → it can never be
+  sold for SALT, so it cannot fake supply). Grain-access is explicitly rejected (it would route the
+  buyers/woodcutters to the grain node and collapse the demand side into cultivators, muddying the
+  "survives but still buys" claim).
 - **Scenario** `frontier_emergency_provision` = `frontier_open_colony_mortality` + the emergency seam
   on (no seeded cushion — `seeded_minted == 0` fully restored).
 
