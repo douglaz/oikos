@@ -3,18 +3,23 @@
 *An experimental report on emergent money, capital, and survival in a praxeologic simulation.*
 
 > Status: working research report (raw material for a future article). Covers the milestone arc
-> through S21d (the money sub-arc and the first two slices of the open-colony capstone). Every result below
+> through S21f (the money sub-arc and the full open-colony-capstone *supply* arc; mortality-on pending). Every result below
 > was built additively behind a default-off flag, kept the prior conformance goldens byte-identical,
 > conserved every tick, ran deterministically, and was reviewed by an independent second model (Codex)
 > at both the spec and the result stage. Honest negative findings are reported as first-class results,
 > not failures.
 >
-> **Central claim (sharpened through S21).** Mengerian commodity money in OIKOS did not emerge from
-> direct demand, produced supply, or multi-good trade alone. It emerged only when three conditions held
-> together: (1) a good with **real direct-use demand** as a *non-circular eligibility floor*; (2)
-> **medium-saleability leadership** — the good most accepted in *indirect/re-trade* exchange, not the
-> good most consumed; and (3) an **exchange institution** that lets the medium be both *sold-for* and
-> *spent*. This is a model finding, not a theorem.
+> **Central claim (sharpened through S21).** Across conserved, deterministic ABM experiments, Mengerian
+> commodity money in OIKOS did not emerge from direct demand, produced supply, or multi-good trade
+> alone. It emerged only when **four conditions aligned**: (1) a good with **real direct-use demand** as
+> a *non-circular eligibility floor*; (2) **medium-saleability leadership** — the good most accepted in
+> *indirect/re-trade* exchange, not the good most consumed; (3) a **tradeable pre-money surplus** for
+> the medium to circulate against (whether seeded or, authentically, produced by pre-money
+> household labor); and (4) an **exchange institution** that lets the medium be both *sold-for* and
+> *spent*. The failures along the way were diagnostic, not dead ends: necessities dominate
+> *consumption* metrics, produced supply alone yields *direct* trade, imperfect coincidence can make
+> the token *lead* but one-offer clearing *deadlock*, and retiring the food scaffold *collapses* the
+> pre-money market until production refills it. This is a model finding, not a theorem.
 
 ---
 
@@ -152,7 +157,10 @@ bread-for-SALT trades that formed were **direct final-good trades** (agents acqu
 which give the durable token no *indirect* (re-trade) breadth — and with the mint retired the
 hunger-stressed colony directs its trading at food, not at building up a medium. (This is *not* a
 claim that "food is the money"; it is that produced supply alone yields direct food trade, not a
-monetized medium.) **Produced supply was not the missing ingredient.**
+monetized medium.) **Produced bread alone was not sufficient *in this S16 single-good setting*** —
+though note the later reconciliation: S21d/e/f show that *supply generation* (a real pre-promotion
+tradeable surplus) WAS in fact the missing piece for the open-survival path; S16's lesson is the
+narrower one that a single produced good gives only *direct* trade, not a monetized medium.
 
 ### 4.4 S18 — A produced multi-good economy, perfect coincidence: the necessity beats the token
 
@@ -270,12 +278,15 @@ off, the **S19 deadlock returns**; remove the SALT seed, and nothing clears.
   other's inputs; there is no final consumption sink.
 - **Survival off-market via a hearth scaffold** (S19/S20) — survival is deliberately isolated so the
   necessities don't dominate saleability; that hearth is itself a (disclosed) scaffold.
-- **Saleability metric (refined, not yet open-colony-proven)** — the original "saleability =
-  total acceptance share" was too crude (it conflated consumption with medium use); S21a added a
-  durability/carrying-cost dimension and S21b split direct-use eligibility from medium-saleability
-  leadership, which fixes the conflation **in a controlled econ scenario**. The standing threat is now
-  narrower: the two-layer metric is *not yet* proven in a full open colony with market-financed
-  survival (the S21d–f capstone), and the direct-use anchor + promotion thresholds remain configured.
+- **Saleability metric (refined, now open-colony-proven for this topology)** — the original
+  "saleability = total acceptance share" was too crude (it conflated consumption with medium use);
+  S21a added a durability/carrying-cost dimension and S21b split direct-use eligibility from
+  medium-saleability leadership. This fix held first **in a controlled econ scenario** and then
+  **in the full open colony with market-financed survival** (S21e seeded supply, S21f endogenous
+  production) — so the two-layer metric is no longer merely controlled-scenario. The residual scope:
+  it is proven for *this configured open-market topology* (a grain commons, a 3-role WOOD-poor
+  cultivator/woodcutter/consumer split, the direct-use SALT anchor + thresholds), and mortality is
+  still OFF.
 - **S20 fixes a self-imposed artifact** — the one-offer book was our constraint; part of the S19→S20
   result is institutional insight, part is repairing a modeling limitation. Stated honestly, still a
   result; stated as a universal law, an overclaim.
@@ -298,11 +309,13 @@ two-lane order book," or "scaffold-free colony money") overstates what the runs 
 
 ---
 
-## 7. The open-colony arc (in progress) and open directions
+## 7. The open-colony arc (supply question closed; mortality-on next) and open directions
 
 The capstone — embedding the working two-lane money into an *open* colony (on-market survival +
-terminal consumption, removing the S19 abstractions) — was scoped into a slice arc, and the first
-slice has already produced a deep finding that re-planned the rest:
+terminal consumption, removing the S19 abstractions) — was built as a slice arc S21c→S21f and **its
+supply question is now closed** (S21f: endogenous pre-money production-for-barter monetizes SALT, no
+seed/no mint, for this configured open-market topology). The arc began with a deep finding that
+re-planned the rest:
 
 - **S21a — Marketability / carrying cost (a finding).** Two-lane clearing (S20) fixed the *round-trip*
   but not the *saleability race*; with on-market survival, S18's universal-necessity dominance would
@@ -336,10 +349,11 @@ slice has already produced a deep finding that re-planned the rest:
   is **path-dependent** (once the eligible candidate set is non-empty, a good that crosses the
   direct-use floor *late* can be starved of further direct offers). That path-dependence is a
   documented limitation to fix where it actually bites: open-colony integration.
-- **The open-colony capstone (a 4-slice sub-arc, in progress).** Embedding the money machinery into a
-  rich *open* colony — where agents survive by **buying food on the market** (terminal consumption
-  financed by production/sales, no off-market hearth mint, no own-labor forage) under mortality — is
-  scoped as a sub-arc, because a direction review established that **two-layer saleability only
+- **The open-colony capstone (a 4-slice sub-arc — supply question closed at S21f).** Embedding the
+  money machinery into a rich *open* colony — where agents survive by **buying food on the market**
+  (terminal consumption financed by production/sales, no off-market hearth mint, no own-labor forage)
+  — was built S21c→S21f with **mortality off** to isolate the money/supply question (mortality-on is
+  the next milestone). A direction review established that **two-layer saleability only
   *partly* dissolves the S12 collision**: it removes the *metric* collision (food can dominate
   consumption while the durable medium leads on medium use), but the retired bread mint was also a
   real *supply/counterparty* scaffold, and **produced bread alone is still direct exchange** — the
@@ -349,12 +363,15 @@ slice has already produced a deep finding that re-planned the rest:
   confirmed non-vacuous — it fails without the fix; all 18 goldens byte-identical)*; then **S21d —
   open survival, mortality off** *(landed as a **Phase A finding**: see below)*; **S21e — finite
   seeded-surplus probe** *(landed as a **diagnostic Success**: a one-time finite tradeable bread
-  supply IS sufficient — SALT promotes and production replaces the seed; see below)*; S21f (the
-  authentic supply mechanism — endogenous pre-money production-for-barter); mortality-on and
-  robustness later (no extinction, a market-fed band, deaths tracking failure to earn/buy, not
-  hidden provisioning gaps). Mortality goes last so a monetary failure is not
-  masked by a demographic wipeout. The bar: market-sourced food *provenance* + medium promotion +
-  real pre-promotion indirect breadth *across non-food targets*, under a full control matrix.
+  supply IS sufficient — SALT promotes and production replaces the seed; see below)*; and **S21f —
+  endogenous pre-money production-for-barter** *(landed as the **authentic-mechanism Success**: lineage
+  households cultivate `SelfProduced` bread and barter the surplus pre-money, monetizing SALT with no
+  seed/no mint; see below)*. **Mortality-on** and robustness come later (no extinction, a market-fed
+  band, deaths tracking failure to earn/buy, not hidden provisioning gaps) — mortality goes last so a
+  monetary failure is not masked by a demographic wipeout, and it is now meaningful precisely because
+  the colony finally has a working clearing market to survive in. The bar throughout: market-sourced
+  food *provenance* + medium promotion + real pre-promotion indirect breadth, under a full control
+  matrix.
 - **S21d — Open survival (mortality off): the supply-scaffold finding.** Compose the full money
   machinery (S20 + S21a/b/c) onto the strong co-emergent colony with the food hearths **retired**
   (an explicit `retire_food_mints` engine flag, not the forage hack) so survival is a *market* bread
@@ -429,9 +446,11 @@ slice has already produced a deep finding that re-planned the rest:
   cultivation-only regime, never a bread mint). Controls classify, never tune (cultivation off → the
   S21d collapse; buy/sell-split off → consumers self-feed → buy-side collapse; no WOOD target /
   two-layer off / multi-offer off → no promotion; S21e seeded surplus is the positive control). This
-  **closes the supply question**: a real pre-money produced supply is sufficient for endogenous money.
-  Remaining scope: mortality OFF, a configured grain commons + role topology + SALT direct-use anchor.
-  All gated default-off; all 20 goldens byte-identical.
+  **closes the supply question for this open-market topology**: a real pre-money *produced* supply is
+  sufficient for endogenous money emergence. Remaining scope (disclosed every time): mortality OFF, a
+  configured grain commons, a configured 3-role WOOD-poor cultivator/woodcutter/consumer split, and the
+  SALT direct-use anchor + thresholds — so this is "supply solved *in this configured open colony*,"
+  not "scaffold-free spontaneous colony money." All gated default-off; all 20 goldens byte-identical.
 - **Later:** mortality-on (the positive check on a *working market* colony), then endogenizing the
   clearing institution and richer marketability. (Robustness for the in-cycle result is done — §6.)
 
