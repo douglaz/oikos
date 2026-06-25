@@ -1,6 +1,6 @@
 # impl-29 — S21f: Endogenous Pre-Money Household Production-for-Barter
 
-Status: SPEC-READY (revised after Codex spec-review round 1)
+Status: SPEC-READY (Codex round 1 NEEDS-REVISION → round 2 NEEDS-REVISION [spatial_households + steering seam] → addressed: demography.spatial_households=true; the activation seam pinned across run_own_labor_subsistence + the config/runtime/multigood active predicates with FORAGE-code guarded; WOOD via role separation not node deletion; 3-way cold-start classification)
 Branch: `feat/household-production-barter`
 Base: master @ `6856297` (S21e landed)
 
@@ -31,19 +31,28 @@ S21f is **not** scenario-only (the original draft was wrong): `own_use_cultivati
 the `Cultivate` recipe. So composing `with_cultivate + own_use_cultivation + cultivation_sells_surplus`
 onto `frontier_open_survival` alone would **silently not cultivate**.
 
-The fix is a **small gated activation seam, NOT a pre-market production seam, and NOT dummy FORAGE**
-(dummy forage would pollute the value scale with `known.subsistence` and reopen the S12 confusion):
-- Add a gated `ChainConfig::household_barter_cultivation: bool` (default `false`).
-- When set, cultivation **activates without** `own_labor_subsistence`/`with_forage`: the
-  cultivation-active predicate is satisfied by this flag + `with_cultivate()` alone.
-- Cultivation steering / `cultivating` is set from **sustained hunger for eligible lineage members**
-  (the existing `cultivate_hunger_in`/`cultivate_patience` hysteresis, `settlement.rs:8903-8917`),
-  scoped lineage-only via the existing `cultivation_sells_surplus` buy/sell split (so the SALT-rich
-  non-lineage consumers stay pure demand).
+The fix is a **gated activation/steering seam, NOT a pre-market production seam, and NOT dummy FORAGE**
+(dummy forage would pollute the value scale with `known.subsistence` and reopen the S12 confusion).
+Add a gated `ChainConfig::household_barter_cultivation: bool` (default `false`); when set, pin ALL of
+these (Codex round 2 P1 — the seam must cover *steering*, not only the active predicate):
+- **Run the steering phase:** `run_own_labor_subsistence` (`settlement.rs:8786`) currently returns
+  unless `own_labor_subsistence_can_run()`. Change its guard to run when
+  `own_labor_subsistence_can_run() || household_barter_cultivation_active()`.
+- **Guard the FORAGE-specific code:** load/use the `forage` good, `forage_yield`, completed-forage
+  credit, and forage flags **only** on the own-labor/forage path — so the household-barter path runs
+  cultivation steering with **no FORAGE good interned** (no `known.subsistence` pollution).
+- **Set `cultivating` directly from sustained hunger** for eligible lineage members on the
+  household-barter path (reuse the `cultivate_hunger_in`/`cultivate_patience` hysteresis,
+  `settlement.rs:8903-8917`), scoped lineage-only via the existing `cultivation_sells_surplus`
+  buy/sell split (so the SALT-rich non-lineage consumers stay pure demand).
+- **Include the flag in every cultivation/multigood active predicate** so validation, runtime, and
+  generation-time WOOD pinning do not diverge: `chain_config_own_use_cultivation_active`,
+  `chain_runtime_own_use_cultivation_active` (`settlement.rs:10633`/`:14396`), and
+  `config_multigood_money_active`.
 - **`Cultivate` stays POST-market** — the surplus sells **cross-tick** (cultivate tick `t` → surplus
   persists in stock → barter tick `t+1` posts the sell lane). No pre-market production seam.
-- Default off ⇒ all 19 goldens byte-identical; canonicalized ON-only if it enters future behaviour
-  (it changes production), with a digest regression.
+- Default off ⇒ all 19 goldens byte-identical; canonicalized ON-only (it changes production) with a
+  digest regression.
 
 ## 2. The trigger (cold-start) — the open colony supplies its own hunger pressure
 
@@ -64,19 +73,25 @@ Derive from `frontier_open_survival` (`settlement.rs:3802`); the disclosed diffe
 - **No seed, no cold-start bread (Codex P1):** `seeded_surplus_bread = 0`, **`bread_buffer = 0`,
   `consumer_staple_buffer = 0`** — so NO bread enters as `SeededMinted`. (Protected non-bread
   startup goods are fine; the claim is specifically that pre-promotion *bread* supply is endogenous.)
+- **Enable spatial households (Codex round 2 P1):** `demography.spatial_households = true`
+  (`frontier_open_survival` inherits `false` from `frontier`, `settlement.rs:2645`); without it
+  lineage members never become spatial cultivators (eligibility needs `household.is_some() &&
+  spatial_active`, `:8856`) and S21f is inert.
 - **Turn on endogenous cultivation:** `content.with_cultivate()`, `household_barter_cultivation = true`
   (the §1 activation seam), `cultivation_sells_surplus = true` (lineage-only buy/sell split), the S15
   cultivation knobs (`cultivate_consume`, `cultivate_hunger_in/out`, `cultivate_patience`).
-- **Pinned role topology (Codex P2 — pin, don't describe):**
+- **Pinned role topology (Codex P2 — pin, don't describe; mirror S18 `frontier_multigood`, NOT S16):**
   - lineage household members = the **cultivators / bread sellers** (WOOD-poor: `wood_buffer = 12`,
-    household WOOD zeroed → an unsatisfied WOOD target → they post `bread → SALT IndirectFor{WOOD}`);
+    lineage `starting_wood`/`wood_provision` zeroed → an unsatisfied WOOD target → they post
+    `bread → SALT IndirectFor{WOOD}`);
   - non-lineage `Consumer`s = the **SALT-rich buy side** (`consumer_medium_endowment = 80`),
     **not cultivation-eligible** (the buy/sell split keeps them pure demand);
-  - `Gatherer`s = **woodcutters**, present and pinned to the WOOD node (`multigood_money = true` if
-    relying on the existing WOOD-node pinning seam), WOOD buffers zeroed/disclosed so WOOD is
-    genuinely gathered/sold;
-  - neutralize the WOOD<bread lowest-good-id offer-ordering artifact as
-    `frontier_money_from_cultivation` does (`settlement.rs:3568-3576`).
+  - `Gatherer`s = **woodcutters**, present and pinned to the **WOOD node** via `multigood_money = true`
+    so WOOD is genuinely gathered and sold.
+  - **Do NOT delete the WOOD node** (that was S16 `frontier_money_from_cultivation`'s artifact fix and
+    is wrong here — S21f needs the live WOOD market so cultivators can reach WOOD via SALT). Neutralize
+    the WOOD<bread lowest-good-id offer-ordering artifact by **role separation + zeroed lineage WOOD
+    surplus** (so a lineage cultivator's only offerable surplus is bread), not by removing WOOD.
 - **Grain flow (the disclosed recurring-supply axis):** the grain node `regen`/`stock`/`cap` sets the
   cultivated-bread flow. The base inherits a generous grain node (~8000/64/8000); S21f should pin a
   disclosed value (the S15 commons is 120/4/300). This is a *real depleting commons*, recurring by
@@ -85,9 +100,17 @@ Derive from `frontier_open_survival` (`settlement.rs:3802`); the disclosed diffe
 ## 4. Falsifiable bar + controls
 
 Classify (seed 7, 1600 ticks):
-- **Non-vacuity (gate):** cultivation actually runs (lineage cultivators produce `SelfProduced`
-  bread) AND ≥1 cleared pre-promotion `bread → SALT IndirectFor{WOOD}` lane whose bread is
-  `SelfProduced`. Else bad probe (fix), not a finding.
+- **Non-vacuity (gate) + 3-way cold-start classification (Codex round 2 P2):** assert the full chain
+  — at least one lineage member is **spatial**, becomes `cultivating`, **hauls grain**, and produces
+  `SelfProduced` bread — then classify:
+  - cultivation **never starts** (no spatial cultivator / no `cultivating`) → **bad probe /
+    activation failure** (fix the seam or buffers; NOT an economic finding);
+  - cultivation starts but **no offerable surplus** (all bread eaten) → **production-flow finding**
+    (grain flow / `cultivate_consume` too tight);
+  - surplus exists but **no cleared `bread → SALT IndirectFor{WOOD}` lane** → **barter/topology
+    finding** (the WOOD-target / role separation didn't compose).
+  A success requires the chain through to ≥1 cleared pre-promotion `bread → SALT IndirectFor{WOOD}`
+  lane whose bread is `SelfProduced`.
 - **Cross-tick non-vacuity test (Codex P2):** a cultivator produces `SelfProduced` bread at tick `t`;
   at tick `t+1` its above-reserve bread is visible as a live or cleared `bread → SALT
   IndirectFor{WOOD}` offer (proves the post-market→next-tick sale path works).
