@@ -306,6 +306,27 @@ impl Agent {
             .fold(0u32, u32::saturating_add)
     }
 
+    /// Stock of `good` reserved to this agent's Now/Next wants under **barter**
+    /// provisioning (no money) — the protected near allocation the barter
+    /// preservation rule (`barter_swap_acceptable` / `preserved_near_allocations_above_target`)
+    /// guards. Holdings above this are *offerable*: giving a unit keeps every
+    /// equal-or-higher-priority near want at least as provisioned, so the offer
+    /// generator can post it. Unlike the indirect-swap predicate, this is
+    /// **target-independent** — it answers "is this good removable surplus", not
+    /// "does the agent currently want some other good for it".
+    pub fn stock_reserved_for_near_wants_barter(&self, good: GoodId) -> u32 {
+        let provisions = barter_provisioning(&self.scale, &self.stock);
+        self.scale
+            .iter()
+            .enumerate()
+            .filter(|(_, want)| {
+                want.kind == WantKind::Good(good)
+                    && matches!(want.horizon, Horizon::Now | Horizon::Next)
+            })
+            .map(|(index, _)| provisions.allocated.get(index).copied().unwrap_or(0))
+            .fold(0u32, u32::saturating_add)
+    }
+
     pub fn first_unsatisfied_leisure_rank(&self) -> Option<usize> {
         self.first_unsatisfied_rank(WantKind::Leisure)
     }
@@ -1586,6 +1607,28 @@ mod tests {
             ],
         );
 
+        assert!(!agent.would_accept_barter_swap(FOOD, WOOD, 1));
+    }
+
+    #[test]
+    fn barter_reserved_stock_counts_satisfied_now_wants() {
+        let mut stock = Stock::new(3);
+        stock.add(FOOD, 1);
+        let agent = market_agent(
+            Gold::ZERO,
+            stock,
+            vec![
+                Want {
+                    kind: WantKind::Good(FOOD),
+                    horizon: Horizon::Now,
+                    qty: 1,
+                    satisfied: true,
+                },
+                good_want(WOOD, Horizon::Next),
+            ],
+        );
+
+        assert_eq!(agent.stock_reserved_for_near_wants_barter(FOOD), 1);
         assert!(!agent.would_accept_barter_swap(FOOD, WOOD, 1));
     }
 

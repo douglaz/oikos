@@ -347,9 +347,12 @@ slice has already produced a deep finding that re-planned the rest:
   for ends other than food. The slices: **S21c — fix the open-discovery path-dependence** *(landed:
   a legacy direct-discovery lane lets a below-floor good still cross the floor late; a regression test
   confirmed non-vacuous — it fails without the fix; all 18 goldens byte-identical)*; then **S21d —
-  open survival, mortality off** *(landed as a **Phase A finding**: see below)*; S21e
-  (**mortality on** — no extinction, a market-fed band, deaths tracking failure to earn/buy, not
-  hidden provisioning gaps); S21f (robustness). Mortality goes last so a monetary failure is not
+  open survival, mortality off** *(landed as a **Phase A finding**: see below)*; **S21e — finite
+  seeded-surplus probe** *(landed as a **diagnostic Success**: a one-time finite tradeable bread
+  supply IS sufficient — SALT promotes and production replaces the seed; see below)*; S21f (the
+  authentic supply mechanism — endogenous pre-money production-for-barter); mortality-on and
+  robustness later (no extinction, a market-fed band, deaths tracking failure to earn/buy, not
+  hidden provisioning gaps). Mortality goes last so a monetary failure is not
   masked by a demographic wipeout. The bar: market-sourced food *provenance* + medium promotion +
   real pre-promotion indirect breadth *across non-food targets*, under a full control matrix.
 - **S21d — Open survival (mortality off): the supply-scaffold finding.** Compose the full money
@@ -371,8 +374,37 @@ slice has already produced a deep finding that re-planned the rest:
   mint-dependent.) The faithful next step is an institution that supplies a pre-promotion terminal
   good (a wage/firm or seeded producers selling into the barter window), not value-scale surgery. All
   engine pieces default-off; all 18 goldens byte-identical.
-- **Later:** endogenizing the clearing institution and richer marketability. (Robustness for the
-  in-cycle result is done — §6.)
+- **S21e — Finite seeded-surplus probe (mortality off): the supply-sufficiency Success.** The clean
+  causal counterfactual the S21d direction review prescribed: *replace the retired recurring food
+  mint with a one-time, finite, decaying bread **surplus*** — bread held *beyond* a class's own
+  hunger want, so it is **offerable** (passes the barter preservation rule), not reserved food —
+  seeded onto the exact seller classes a **mints-on provenance trace** pins (latent `Unassigned`
+  bread-buffer holders + demographic household consumers), and made WOOD-poor (the disclosed *second*
+  diagnostic axis: `wood_buffer` 48→12, household WOOD zeroed) so they post real
+  `bread → SALT IndirectFor{WOOD}` lanes. All else identical to S21d (mints retired, mortality off,
+  S20 + S21a/b/c, bread⇄WOOD topology). **Result: a finite real supply IS sufficient.** The seed lifts
+  the S21d zero-trade collapse; a mandatory non-vacuity gate confirms ≥1 real seeded seller and a
+  cleared `bread→SALT IndirectFor{WOOD}` lane; **SALT promotes (tick 37) as the medium-share leader
+  with indirect breadth {WOOD, bread}, and ~99% of the bread/WOOD volume is SALT-mediated, not direct
+  barter.** The seed's *offerable surplus* then exhausts (tick 44) — promotion precedes exhaustion,
+  and a seed-size sweep (128–2048 all promote-and-exhaust; 32/64 exhaust without promoting, fixing
+  the lower boundary) confirms no size is a hidden permanent mint — after which **endogenous
+  production replaces it** (4755/4773 loaves produced *after* exhaustion; the post-exhaustion tail is
+  consumed entirely `bought`/`self_produced`, zero `seeded_minted`). Robust across seeds 3/7/11/19/23.
+  This localizes the S21d block squarely at supply **generation**: given a tradeable pre-promotion
+  food supply, the S20/S21a/b/c topology monetizes SALT and the open colony survives on a finite
+  (non-recurring) food endowment. The control matrix *classifies, never tunes* (no-seed → the S21d
+  zero-trade collapse; mints-on → the scaffolded positive control; two-layer / marketability /
+  multi-offer / SALT-direct-use-anchor off → no promotion). *Honest scope:* it is a **bounded
+  diagnostic scaffold, not the authentic mechanism** — the seed is a one-time scaffold proven *finite*
+  by **offerable-surplus exhaustion** (target-independent: removable above the protected hunger floor,
+  so the permanent ≤20/holder spoilage floor is never load-bearing); the authentic follow-up is
+  **S21f (endogenous pre-money production-for-barter)**. The `seeded_surplus_bread` field defaults 0
+  (canonicalized ON-only); the seller-provenance + seeded-surplus traces are runtime-only; all 18
+  goldens byte-identical.
+- **Later:** S21f (endogenous pre-money production-for-barter — the authentic supply mechanism),
+  mortality-on, then endogenizing the clearing institution and richer marketability. (Robustness for
+  the in-cycle result is done — §6.)
 
 ---
 
@@ -398,3 +430,4 @@ slice has already produced a deep finding that re-planned the rest:
 | S21b | Two-layer Mengerian saleability | **resolution: direct-use eligibility floor + medium-saleability leadership → the durable medium promotes; non-circular (controlled scenario)** |
 | S21c | Open-discovery lane (capstone slice 1) | fix: a legacy direct-discovery lane lets a below-floor good cross the direct-use floor late (the open-colony prerequisite); all goldens byte-identical |
 | S21d | Open survival, mortality off (capstone slice 2) | finding (Phase A): retiring the food scaffold collapses the pre-promotion barter market to zero trades — production is post-promotion only, so there is no pre-promotion food supply for the medium to circulate against; two-layer fixes the metric, not the supply; all goldens byte-identical |
+| S21e | Finite seeded-surplus probe, mortality off (capstone slice 3) | finding (Success): a one-time finite tradeable bread supply is sufficient — SALT promotes (tick 37) as medium leader with {WOOD,bread} breadth before the seed's offerable surplus exhausts (tick 44), then production replaces it (zero seeded_minted in the tail); localizes the S21d block at supply *generation*; bounded diagnostic scaffold (S21f is the authentic mechanism); all goldens byte-identical |

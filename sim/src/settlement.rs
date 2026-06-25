@@ -63,7 +63,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use econ::agent::{Agent, AgentId, Role, Want, WantKind};
 use econ::agio::{provisioning_bitmap_for_money, TemporalEndowment};
 use econ::bank::{Bank, BankPolicy};
-use econ::barter::BarterReason;
+use econ::barter::{BarterReason, BarterTrade};
 use econ::bundle::{
     appraise_project_bundle_for_money, ProjectBundleCandidate, ProjectBundleEndowment,
 };
@@ -74,7 +74,7 @@ use econ::capital::{
 use econ::expect::PriceBelief;
 use econ::good::{Gold, GoodId, Horizon, Stock, FOOD, GOLD, NET, SALT, WOOD};
 use econ::ledger::BankId;
-use econ::marketability::{GoodMarketability, MarketabilityConfig};
+use econ::marketability::{GoodMarketability, MarketabilityAcceptance, MarketabilityConfig};
 use econ::menger::MengerianEmergence;
 use econ::money::{
     BankRepaymentTender, DesignatedMoney, IssuerRepaymentTender, LaborWageTender,
@@ -1148,6 +1148,10 @@ pub struct ChainConfig {
     /// emergent config this is the *surplus* a non-consumer carries (so it offers
     /// bread, bootstrapping the bread price the chain forms from).
     pub bread_buffer: u32,
+    /// S21e: one-time finite surplus bread added only to the diagnosed seller class.
+    /// `0` for every existing config, so default/golden runs remain byte-identical;
+    /// a nonzero value is canonicalized because it changes future holdings.
+    pub seeded_surplus_bread: u32,
     /// Staple (bread) a **consumer** is seeded holding — kept small in the G3b
     /// emergent config so consumers run short and *buy* bread early, which is what
     /// gives bread a realized price (the demand that pulls the chain into being). In
@@ -1286,6 +1290,7 @@ impl ChainConfig {
             // drains (so bread realizes a price too), and the chain's surplus
             // keeps hunger bounded over the smoke horizon.
             bread_buffer: 24,
+            seeded_surplus_bread: 0,
             // G3a consumers carry the same staple buffer as everyone else (the
             // seeded roster does not bootstrap demand from the consumers), so the
             // G3a config and its goldens are unchanged.
@@ -1383,6 +1388,7 @@ impl ChainConfig {
             // they are gold/bread sinks. Large buffers bridge the smoke horizon so the
             // chain stays collapse-free while the tech progression is demonstrated.
             bread_buffer: 80,
+            seeded_surplus_bread: 0,
             consumer_staple_buffer: 80,
             wood_buffer: 80,
             consumer_wood_buffer: 80,
@@ -1467,6 +1473,7 @@ impl ChainConfig {
             baker_flour_buffer: 0,
             latent_flour_seed: 0,
             bread_buffer: 0,
+            seeded_surplus_bread: 0,
             consumer_staple_buffer: 0,
             wood_buffer: 0,
             consumer_wood_buffer: 0,
@@ -3853,6 +3860,34 @@ impl SettlementConfig {
         cfg
     }
 
+    /// S21e — finite seeded-surplus diagnostic: derive from
+    /// [`Self::frontier_open_survival`] and replace the recurring food mint's
+    /// pre-promotion tradeable supply with a one-time finite bread surplus on the
+    /// pinned mints-on seller classes. Disclosed differences only:
+    ///
+    /// - `seeded_surplus_bread = 512` on latent `Unassigned` bread-buffer holders
+    ///   and demographic household consumers;
+    /// - those same seller classes are made WOOD-poor enough to have an unsatisfied
+    ///   WOOD target (`wood_buffer` reduced from 48 to 12, household WOOD zeroed),
+    ///   so they can post `bread -> SALT IndirectFor{WOOD}` lanes.
+    ///
+    /// The food mints remain retired, mortality remains off, and the S20/S21a/b/c
+    /// money machinery plus the bread/WOOD topology are inherited unchanged.
+    pub fn frontier_seeded_surplus() -> Self {
+        let mut cfg = Self::frontier_open_survival();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.seeded_surplus_bread = 512;
+            chain.wood_buffer = 12;
+        }
+        if let Some(demo) = cfg.demography.as_mut() {
+            for household in &mut demo.households {
+                household.starting_wood = 0;
+                household.wood_provision = 0;
+            }
+        }
+        cfg
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).
@@ -4148,6 +4183,36 @@ pub struct BootstrapTraceSummary {
     pub first_bootstrap_bid_tick: Option<u64>,
 }
 
+/// S21e.0: runtime-only provenance row for a bread seller observed in the mints-on
+/// control or seeded-surplus diagnostic. This is a read-only trace of realized
+/// settlement-level barter, not canonical state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BreadSellerProvenance {
+    pub tick: u64,
+    pub seller: AgentId,
+    pub buyer: AgentId,
+    pub seller_vocation: Option<Vocation>,
+    pub buyer_vocation: Option<Vocation>,
+    pub seller_household: Option<usize>,
+    pub buyer_household: Option<usize>,
+    pub bread_good: GoodId,
+    pub received_good: GoodId,
+    pub qty: u32,
+    pub reason: BarterReason,
+}
+
+/// S21e.1: runtime-only summary for the finite seeded-surplus non-vacuity and
+/// exhaustion gates. The fields are derived from the actual barter-preservation
+/// helper and settlement-level offer/trade traces.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SeededSurplusTraceSummary {
+    pub max_pre_promotion_seeded_sellers: usize,
+    pub first_non_vacuous_tick: Option<u64>,
+    pub cleared_bread_salt_indirect_for_wood: u64,
+    pub live_bread_salt_indirect_for_wood_ticks: u64,
+    pub seeded_offerable_surplus_exhausted_tick: Option<u64>,
+}
+
 /// S8.0 emergence probe: a chain producer's role for the working-capital trace —
 /// an ACTIVE producer already running its recipe, or a LATENT one (an
 /// `Unassigned` colonist holding the tool, waiting on money to adopt). Tension B
@@ -4399,6 +4464,12 @@ pub struct Settlement {
     /// Maintained only while [`Self::acquisition_ledger_active`] holds; an empty default
     /// otherwise. NOT in `canonical_bytes`, so it shifts no digest (byte-identical goldens).
     bootstrap_trace: BootstrapTrace,
+    /// S21e.0: runtime-only bread seller provenance rows, used to pin the actual
+    /// seller class in the mints-on positive control. Diagnostic, not canonical.
+    bread_seller_trace: Vec<BreadSellerProvenance>,
+    /// S21e.1: runtime-only finite seeded-surplus non-vacuity/exhaustion trace.
+    /// Diagnostic, not canonical.
+    seeded_surplus_trace: SeededSurplusTrace,
     econ_tick: u64,
     last_report: EconTickReport,
     /// The settlement **commons** (G4a real death): the conserved sink that holds a
@@ -4593,6 +4664,10 @@ struct HouseholdRuntime {
 struct ChainRuntime {
     content: ContentSet,
     throughput: u32,
+    /// S21e: finite one-time surplus size configured for the seeded-surplus probe.
+    /// Runtime-only helpers use this as the on/off gate; it is serialized ON-only
+    /// separately from diagnostics.
+    seeded_surplus_bread: u32,
     /// The per-operation cost (labor + tool) the G3b role-choice appraisal charges
     /// against a recipe's realized output spread (see [`ChainConfig::operating_cost`]).
     operating_cost: u64,
@@ -5088,7 +5163,12 @@ impl AcquisitionLedger {
     /// the SAME quantity enters the buyer as a fresh `Bought` lot — the buyer's acquisition channel
     /// is, by definition, "bought" regardless of the seller's origin. Conserved (held total
     /// unchanged); the channel mix shifts toward `Bought`, which is exactly the probe's signal.
-    fn transfer_as_bought(&mut self, from: AgentId, to: AgentId, qty: u64) {
+    fn transfer_as_bought(
+        &mut self,
+        from: AgentId,
+        to: AgentId,
+        qty: u64,
+    ) -> [u64; FoodChannel::COUNT] {
         let drawn = self.draw(from, qty);
         let total: u64 = drawn.iter().sum();
         for channel in FoodChannel::ALL {
@@ -5097,6 +5177,7 @@ impl AcquisitionLedger {
         // Credit the buyer as Bought for what the seller actually had to give (`total`, which may
         // be < qty only if the ledger and stock drifted — guarded by the conservation assert).
         self.credit(to, FoodChannel::Bought, total);
+        drawn
     }
 
     /// An ORIGIN-PRESERVING transfer (birth endowment / estate→heir): draw FIFO from `from` and
@@ -5142,6 +5223,20 @@ impl AcquisitionLedger {
             held[lot.channel.index()] += lot.qty;
         }
         held
+    }
+
+    /// Tracked-food currently held by one agent in one channel.
+    fn held_by_agent_channel(&self, agent: AgentId, channel: FoodChannel) -> u64 {
+        self.lots
+            .get(&agent)
+            .map(|queue| {
+                queue
+                    .iter()
+                    .filter(|lot| lot.channel == channel)
+                    .map(|lot| lot.qty)
+                    .sum()
+            })
+            .unwrap_or(0)
     }
 }
 
@@ -5263,6 +5358,17 @@ impl BootstrapTrace {
             self.bids_blocked_reserved += 1;
         }
     }
+}
+
+/// S21e.1: mutable runtime state behind [`SeededSurplusTraceSummary`]. Diagnostic
+/// only, never serialized.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct SeededSurplusTrace {
+    max_pre_promotion_seeded_sellers: usize,
+    first_non_vacuous_tick: Option<u64>,
+    cleared_bread_salt_indirect_for_wood: u64,
+    live_bread_salt_indirect_for_wood_ticks: u64,
+    seeded_offerable_surplus_exhausted_tick: Option<u64>,
 }
 
 impl Settlement {
@@ -5831,14 +5937,19 @@ impl Settlement {
                         config.forecast_bias_jitter_bps,
                     );
                     let need = NeedState::rested();
-                    agents.push(build_demography_agent(
-                        id,
-                        &need,
-                        &culture,
-                        &known,
-                        spec,
-                        founder_food,
-                    ));
+                    let vocation = Vocation::Consumer;
+                    let mut agent =
+                        build_demography_agent(id, &need, &culture, &known, spec, founder_food);
+                    if let Some(chain) = config.chain.as_ref() {
+                        if chain.seeded_surplus_bread > 0
+                            && seeded_surplus_seller_class(vocation, Some(household_index))
+                        {
+                            agent
+                                .stock
+                                .add(chain.content.bread(), chain.seeded_surplus_bread);
+                        }
+                    }
+                    agents.push(agent);
                     if spatial {
                         // Mirror the founder's econ id into the world (generation 0, so
                         // it bumps the world's fresh-id watermark past it). Placement at
@@ -5855,7 +5966,7 @@ impl Settlement {
                     }
                     colonists.push(Colonist {
                         id,
-                        vocation: Vocation::Consumer,
+                        vocation,
                         node: None,
                         // A lineage founder is hearth-fed and never re-entered.
                         home_vocation: Vocation::Consumer,
@@ -6213,6 +6324,7 @@ impl Settlement {
             ChainRuntime {
                 content: chain.content.clone(),
                 throughput: chain.throughput,
+                seeded_surplus_bread: chain.seeded_surplus_bread,
                 operating_cost: chain.operating_cost,
                 tier2_threshold: chain.tier2_threshold,
                 tier2_recipe_id: chain.content.tier2_recipe_id(),
@@ -6288,6 +6400,8 @@ impl Settlement {
             multigood: MultigoodMoney::default(),
             acquisition: AcquisitionLedger::default(),
             bootstrap_trace: BootstrapTrace::default(),
+            bread_seller_trace: Vec::new(),
+            seeded_surplus_trace: SeededSurplusTrace::default(),
             econ_tick: 0,
             last_report: EconTickReport::default(),
             commons_gold: Gold::ZERO,
@@ -6470,6 +6584,8 @@ impl Settlement {
             multigood: MultigoodMoney::default(),
             acquisition: AcquisitionLedger::default(),
             bootstrap_trace: BootstrapTrace::default(),
+            bread_seller_trace: Vec::new(),
+            seeded_surplus_trace: SeededSurplusTrace::default(),
             econ_tick: 0,
             last_report: EconTickReport::default(),
             commons_gold: Gold::ZERO,
@@ -6710,6 +6826,11 @@ impl Settlement {
         // post-promotion bread moves on the spot tape.
         let provenance_barter_trades_start = self.society.barter_trades.len();
         let provenance_spot_trades_start = self.society.trades.len();
+        let pre_market_seeded_sellers = if was_pre_promotion {
+            self.seeded_offerable_wood_seller_count()
+        } else {
+            0
+        };
         if self.barter.is_some() {
             self.society
                 .step_rejecting_v2_money_goods(&self.money_rejection_goods);
@@ -6751,6 +6872,12 @@ impl Settlement {
                 report.promoted.insert(emerged, minted);
             }
         }
+        self.record_bread_seller_provenance(provenance_barter_trades_start);
+        self.observe_seeded_surplus_probe_tick(
+            provenance_barter_trades_start,
+            pre_market_seeded_sellers,
+            was_pre_promotion,
+        );
 
         // ---- 5b-bis. PROVENANCE: MARKET (S16): sink this tick's market-consume bread and
         // attribute the bread→medium trades produced-vs-minted, in the within-step order
@@ -6847,6 +6974,7 @@ impl Settlement {
         // the tracked food actually held (every inflow credited, every outflow debited). No-op
         // off the path.
         self.finalize_acquisition_ledger();
+        self.update_seeded_offerable_surplus_exhaustion();
         for &good in &self.goods {
             report
                 .whole_system_after
@@ -10690,6 +10818,292 @@ impl Settlement {
         self.provenance_bread_good()
     }
 
+    fn seeded_surplus_enabled(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(|chain| chain.seeded_surplus_bread > 0)
+    }
+
+    fn seller_can_offer_bread_for_salt_indirect_wood(&self, agent: &Agent, bread: GoodId) -> bool {
+        let Some(barter) = self.barter.as_ref() else {
+            return false;
+        };
+        agent.would_accept_indirect_barter_swap_with_stock(
+            &agent.stock,
+            bread,
+            SALT,
+            WOOD,
+            1,
+            MarketabilityAcceptance {
+                durability_aware_acceptance: barter.menger.durability_aware_acceptance,
+                config: &barter.menger.marketability,
+            },
+        )
+    }
+
+    fn seeded_surplus_agent_class(&self, agent: AgentId) -> bool {
+        let Some(vocation) = self.vocation_of_id(agent) else {
+            return false;
+        };
+        seeded_surplus_seller_class(vocation, self.colonist_household(agent))
+    }
+
+    /// S21e.1: count pinned seeded sellers whose SeededMinted bread is still an
+    /// actual sellable unit under the same indirect-barter preservation rule the
+    /// offer generator uses. This is intentionally not a provisioning approximation.
+    fn seeded_offerable_wood_seller_count(&self) -> usize {
+        if !self.seeded_surplus_enabled() || !self.acquisition_ledger_active() {
+            return 0;
+        }
+        let Some(bread) = self.acquisition_food_good() else {
+            return 0;
+        };
+        self.live_colonist_slots
+            .iter()
+            .filter(|&&slot| {
+                let colonist = &self.colonists[slot];
+                if !seeded_surplus_seller_class(colonist.vocation, colonist.household) {
+                    return false;
+                }
+                if self
+                    .acquisition
+                    .held_by_agent_channel(colonist.id, FoodChannel::SeededMinted)
+                    == 0
+                {
+                    return false;
+                }
+                self.society.agents.get(colonist.id).is_some_and(|agent| {
+                    agent.stock.get(bread) > 0
+                        && self.seller_can_offer_bread_for_salt_indirect_wood(agent, bread)
+                })
+            })
+            .count()
+    }
+
+    /// S21e.1: total seeded-origin bread that is currently **offerable** — held above
+    /// the holder's protected hunger (bread Now/Next) allocation, so giving a unit
+    /// passes the real barter preservation rule (`barter_swap_acceptable` /
+    /// `preserved_near_allocations_above_target`).
+    ///
+    /// This is the spec's exhaustion quantity, and it is deliberately
+    /// **target-independent**: "offerable surplus" is a property of the *bread*
+    /// (removable above the hunger floor), not of whether the holder happens to want
+    /// WOOD this tick. The WOOD-want coupling belongs to the seller-count gate
+    /// ([`Self::seeded_offerable_wood_seller_count`]); reusing it here would latch
+    /// exhaustion on the first transient tick every seller is momentarily
+    /// WOOD-satisfied. The quantity itself can move with the holder's hunger floor as
+    /// well as with seed drains, so the latch below means "the first tick the seeded
+    /// lots no longer provide a removable market scaffold under the actual barter
+    /// preservation rule." Counting every seeded-bread holder — not just the pinned
+    /// sellers — makes "no holder has offerable seeded surplus" the honest exhaustion
+    /// test.
+    fn seeded_offerable_surplus_units(&self) -> u64 {
+        if !self.seeded_surplus_enabled() || !self.acquisition_ledger_active() {
+            return 0;
+        }
+        let Some(bread) = self.acquisition_food_good() else {
+            return 0;
+        };
+        self.live_colonist_slots
+            .iter()
+            .map(|&slot| {
+                let id = self.colonists[slot].id;
+                let seeded = self
+                    .acquisition
+                    .held_by_agent_channel(id, FoodChannel::SeededMinted);
+                if seeded == 0 {
+                    return 0;
+                }
+                let Some(agent) = self.society.agents.get(id) else {
+                    return 0;
+                };
+                let held = u64::from(agent.stock.get(bread));
+                let reserved = u64::from(agent.stock_reserved_for_near_wants_barter(bread));
+                // Offerable bread (above the hunger floor) that can be drawn from a
+                // seeded lot: the seeded-origin share of the removable surplus.
+                held.saturating_sub(reserved).min(seeded)
+            })
+            .sum()
+    }
+
+    fn current_tick_acquisition_after_market_consumption(
+        &self,
+        bread: GoodId,
+    ) -> AcquisitionLedger {
+        let mut acquisition = self.acquisition.clone();
+        for &(agent, good, qty) in self.society.consumption_log_last_tick() {
+            if good == bread {
+                acquisition.consume(agent, u64::from(qty));
+            }
+        }
+        acquisition
+    }
+
+    fn bread_trade_parties(
+        trade: &BarterTrade,
+        bread: GoodId,
+    ) -> Option<(AgentId, AgentId, GoodId, u32, BarterReason)> {
+        if trade.a_gives == bread {
+            Some((trade.a, trade.b, trade.b_gives, trade.qty, trade.a_reason))
+        } else if trade.b_gives == bread {
+            Some((trade.b, trade.a, trade.a_gives, trade.qty, trade.b_reason))
+        } else {
+            None
+        }
+    }
+
+    fn bread_salt_indirect_for_wood_live_from_seeded_seller(
+        &self,
+        bread: GoodId,
+        acquisition: &AcquisitionLedger,
+    ) -> bool {
+        self.society.live_barter_offers().iter().any(|offer| {
+            offer.give_good == bread
+                && offer.receive_good == SALT
+                && matches!(offer.reason, BarterReason::IndirectFor { target } if target == WOOD)
+                && self.seeded_surplus_agent_class(offer.agent)
+                && acquisition.held_by_agent_channel(offer.agent, FoodChannel::SeededMinted) > 0
+                && self.society.agents.get(offer.agent).is_some_and(|agent| {
+                    self.seller_can_offer_bread_for_salt_indirect_wood(agent, bread)
+                })
+        })
+    }
+
+    fn seeded_bread_salt_indirect_for_wood_cleared_since(
+        &self,
+        bread: GoodId,
+        barter_trades_start: usize,
+        acquisition: &mut AcquisitionLedger,
+    ) -> u64 {
+        let mut cleared = 0u64;
+        for trade in &self.society.barter_trades[barter_trades_start..] {
+            let Some((seller, buyer, received_good, qty, reason)) =
+                Self::bread_trade_parties(trade, bread)
+            else {
+                continue;
+            };
+            let drawn = acquisition.transfer_as_bought(seller, buyer, u64::from(qty));
+            if received_good == SALT
+                && matches!(reason, BarterReason::IndirectFor { target } if target == WOOD)
+                && self.seeded_surplus_agent_class(seller)
+            {
+                cleared = cleared.saturating_add(drawn[FoodChannel::SeededMinted.index()]);
+            }
+        }
+        cleared
+    }
+
+    fn observe_seeded_surplus_probe_tick(
+        &mut self,
+        barter_trades_start: usize,
+        pre_market_seeded_sellers: usize,
+        was_pre_promotion: bool,
+    ) {
+        if !was_pre_promotion || !self.seeded_surplus_enabled() {
+            return;
+        }
+        let Some(bread) = self.acquisition_food_good() else {
+            return;
+        };
+        self.seeded_surplus_trace.max_pre_promotion_seeded_sellers = self
+            .seeded_surplus_trace
+            .max_pre_promotion_seeded_sellers
+            .max(pre_market_seeded_sellers);
+        let mut acquisition = self.current_tick_acquisition_after_market_consumption(bread);
+        let cleared = self.seeded_bread_salt_indirect_for_wood_cleared_since(
+            bread,
+            barter_trades_start,
+            &mut acquisition,
+        );
+        self.seeded_surplus_trace
+            .cleared_bread_salt_indirect_for_wood = self
+            .seeded_surplus_trace
+            .cleared_bread_salt_indirect_for_wood
+            .saturating_add(cleared);
+        let live = self.bread_salt_indirect_for_wood_live_from_seeded_seller(bread, &acquisition);
+        if live {
+            self.seeded_surplus_trace
+                .live_bread_salt_indirect_for_wood_ticks = self
+                .seeded_surplus_trace
+                .live_bread_salt_indirect_for_wood_ticks
+                .saturating_add(1);
+        }
+        if (cleared > 0 || live) && self.seeded_surplus_trace.first_non_vacuous_tick.is_none() {
+            self.seeded_surplus_trace.first_non_vacuous_tick = Some(self.econ_tick);
+        }
+    }
+
+    fn record_bread_seller_provenance(&mut self, barter_trades_start: usize) {
+        if !self.acquisition_ledger_active() {
+            return;
+        }
+        let Some(bread) = self.acquisition_food_good() else {
+            return;
+        };
+        let mut rows = Vec::new();
+        for trade in &self.society.barter_trades[barter_trades_start..] {
+            let row = if trade.a_gives == bread {
+                Some((
+                    trade.tick,
+                    trade.a,
+                    trade.b,
+                    trade.b_gives,
+                    trade.qty,
+                    trade.a_reason,
+                ))
+            } else if trade.b_gives == bread {
+                Some((
+                    trade.tick,
+                    trade.b,
+                    trade.a,
+                    trade.a_gives,
+                    trade.qty,
+                    trade.b_reason,
+                ))
+            } else {
+                None
+            };
+            let Some((tick, seller, buyer, received_good, qty, reason)) = row else {
+                continue;
+            };
+            rows.push(BreadSellerProvenance {
+                tick,
+                seller,
+                buyer,
+                seller_vocation: self.vocation_of_id(seller),
+                buyer_vocation: self.vocation_of_id(buyer),
+                seller_household: self.colonist_household(seller),
+                buyer_household: self.colonist_household(buyer),
+                bread_good: bread,
+                received_good,
+                qty,
+                reason,
+            });
+        }
+        self.bread_seller_trace.extend(rows);
+    }
+
+    fn update_seeded_offerable_surplus_exhaustion(&mut self) {
+        if !self.seeded_surplus_enabled()
+            || !self.acquisition_ledger_active()
+            || self
+                .seeded_surplus_trace
+                .seeded_offerable_surplus_exhausted_tick
+                .is_some()
+        {
+            return;
+        }
+        // Honest finite-seed exhaustion: the first tick at which no holder has
+        // seeded-origin bread above its protected hunger allocation (offerable surplus
+        // gone, only the eat-only floor left). Target-independent and computed through
+        // the barter-preservation helper, so it does not treat a temporary lack of
+        // WOOD demand as exhaustion.
+        if self.seeded_offerable_surplus_units() == 0 {
+            self.seeded_surplus_trace
+                .seeded_offerable_surplus_exhausted_tick = Some(self.econ_tick);
+        }
+    }
+
     /// S21d.2a: the active chain producers (Miller/Baker and the 3-good cycle roles) — the agents
     /// `set_project_input_bid_overrides` adjudicates and whose buy → eat → bid sequence the
     /// bootstrap microtrace follows.
@@ -12465,6 +12879,32 @@ impl Settlement {
         }
     }
 
+    /// S21e.0 (read-only): realized bread-seller provenance rows from barter
+    /// trades. Runtime-only diagnostic, excluded from canonical bytes.
+    pub fn bread_seller_provenance(&self) -> &[BreadSellerProvenance] {
+        &self.bread_seller_trace
+    }
+
+    /// S21e.1 (read-only): finite seeded-surplus non-vacuity and exhaustion trace.
+    /// Runtime-only diagnostic, excluded from canonical bytes.
+    pub fn seeded_surplus_trace_summary(&self) -> SeededSurplusTraceSummary {
+        SeededSurplusTraceSummary {
+            max_pre_promotion_seeded_sellers: self
+                .seeded_surplus_trace
+                .max_pre_promotion_seeded_sellers,
+            first_non_vacuous_tick: self.seeded_surplus_trace.first_non_vacuous_tick,
+            cleared_bread_salt_indirect_for_wood: self
+                .seeded_surplus_trace
+                .cleared_bread_salt_indirect_for_wood,
+            live_bread_salt_indirect_for_wood_ticks: self
+                .seeded_surplus_trace
+                .live_bread_salt_indirect_for_wood_ticks,
+            seeded_offerable_surplus_exhausted_tick: self
+                .seeded_surplus_trace
+                .seeded_offerable_surplus_exhausted_tick,
+        }
+    }
+
     /// Diagnostic (game-only, read-only): total `gold` held by living colonists
     /// grouped by [`Vocation`] — the probe for the producer-working-capital
     /// hypothesis (do the chain producers cash-starve while the saving
@@ -13062,6 +13502,13 @@ impl Settlement {
             // `starvation_deaths_total`.)
             if self.retire_food_mints() && !self.own_labor_subsistence_can_run() {
                 out.push(2);
+            }
+            // S21e: a finite one-time seeded surplus changes initial holdings and
+            // future behavior, but default 0 must preserve every existing byte stream.
+            // The runtime traces that observe its depletion remain excluded.
+            if chain.seeded_surplus_bread > 0 {
+                out.push(3);
+                out.extend_from_slice(&chain.seeded_surplus_bread.to_le_bytes());
             }
             // The staple mapping steers the next needs/scale phase for *any* chain,
             // role-choice or not, so it is included whenever a chain is active. The
@@ -13692,6 +14139,16 @@ fn forecast_output_price(
     Some(Gold(forecast))
 }
 
+/// S21e.0: the bread-seller classes observed in the mints-on control: latent chain
+/// agents (`Unassigned`, non-household) and demographic household consumers. The
+/// seeded-surplus probe adds finite bread only here.
+fn seeded_surplus_seller_class(vocation: Vocation, household: Option<usize>) -> bool {
+    matches!(
+        (vocation, household),
+        (Vocation::Unassigned, None) | (Vocation::Consumer, Some(_))
+    )
+}
+
 fn build_agent(
     id: AgentId,
     need: &NeedState,
@@ -13726,6 +14183,9 @@ fn build_agent(
                 _ => (chain.bread_buffer, chain.wood_buffer),
             };
             stock.add(staple, staple_buffer);
+            if chain.seeded_surplus_bread > 0 && seeded_surplus_seller_class(vocation, None) {
+                stock.add(chain.content.bread(), chain.seeded_surplus_bread);
+            }
             stock.add(WOOD, wood);
             match vocation {
                 Vocation::Consumer => config.starting_gold_consumer,
