@@ -1,6 +1,12 @@
 # impl-30 — S21g: Mortality-On over the Open-Market Colony (the Malthusian band on a working money market)
 
-Status: SPEC-READY (Codex spec-review: SPEC-READY, no P0/P1; P2 folded in — an explicit cold_start_timing_trace requiring first_hunger_drop < first_starvation_death with survivors, else a cold-start finding)
+Status: LANDED — a **COLD-START FINDING** (money fails under the positive check: the non-cultivating
+demand side is culled before the market forms). Codex review-of-results **PASS-with-caveats** (the
+finding is genuine — reverting both deltas is byte-identical S21f; the cull is localized; controls
+decisive). P1/P2/P3 addressed: both endorsed rescue levers now TESTED (grain-flow to 10× AND
+cultivate-timing to the validator floor — neither rescues); the cold-start hunger-drop trace filtered
+to lineage members; `birth_hunger_ceiling=8` labeled the S17 band value (not a NeedDynamics lab
+default). Spec-review history: SPEC-READY (P2 cold_start_timing_trace folded in).
 Branch: `feat/open-colony-mortality`
 Base: master @ `fa9451e` (S21f landed)
 

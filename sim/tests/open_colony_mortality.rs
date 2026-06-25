@@ -154,9 +154,12 @@ fn cold_start_timing_trace(seed: u64, cfg: &SettlementConfig, ticks: u64) -> Col
             }
         }
 
-        // A founder's hunger DROPS once it eats its own cultivated bread (vs its previous tick).
+        // A LINEAGE founder's hunger DROPS once it eats its own cultivated bread (vs its previous
+        // tick). Filtered to `household_of(i).is_some()` (Codex result-review P2) so this records the
+        // self-feeding cultivators specifically — the cold-start budget is about THEM surviving,
+        // while the non-lineage demand side is what the positive check culls.
         for (i, prev) in prev_hunger.iter_mut().enumerate() {
-            if !s.is_alive(i) {
+            if !s.is_alive(i) || s.household_of(i).is_none() {
                 continue;
             }
             if let Some(n) = s.need_of(i) {
@@ -652,10 +655,12 @@ fn mortality_off_positive_control_money_works() {
 
 #[test]
 fn grain_flow_lever_does_not_rescue_money() {
-    // The spec's endorsed provenance-clean rescue lever is faster first production (grain-flow /
-    // `cultivate_*` timing). It CANNOT rescue the money market, because the dying roles do not
-    // cultivate: faster bread production helps only the cultivators, who already survive. Sweeping
-    // the grain flow up to 10× leaves money dead and the demand side culled at every level.
+    // The first of the spec's two endorsed provenance-clean rescue levers (faster first production):
+    // GRAIN-FLOW. It CANNOT rescue the money market, because the dying roles do not cultivate:
+    // faster bread production helps only the cultivators, who already survive. Sweeping the grain
+    // flow up to 10× leaves money dead and the demand side culled at every level.
+    // (The other endorsed lever — `cultivate_*` timing — is tested separately in
+    // `cultivate_timing_lever_does_not_rescue_money` below.)
     for (label, stock, regen, cap) in [
         ("2x", 960u32, 48u32, 1920u32),
         ("5x", 2400, 120, 4800),
@@ -676,6 +681,38 @@ fn grain_flow_lever_does_not_rescue_money() {
             r.s.acquisition_consumed_by_channel().bought,
             0,
             "grain {label}: still no food is ever bought (no surviving demand side)"
+        );
+    }
+}
+
+#[test]
+fn cultivate_timing_lever_does_not_rescue_money() {
+    // The second endorsed provenance-clean rescue lever (Codex result-review P1): faster CULTIVATE
+    // timing — trigger cultivation earlier (lower `cultivate_hunger_in`, down to the validator floor
+    // of `cultivate_hunger_out + 1 = 4`) and with no patience delay (`cultivate_patience = 1`) — so
+    // sellable bread reaches the book sooner. It STILL does not rescue: the dying roles
+    // (buyers/woodcutters) do not cultivate, and even bread-in-book ~2 ticks earlier does not let
+    // them acquire+eat before the tick-7 cull. So BOTH endorsed levers fail; only seed bread (the
+    // spec's forbidden last resort, which would break `seeded_minted == 0`) could change it.
+    for (label, hunger_in, patience) in [("hi=4,pat=1", 4u16, 1u16), ("hi=5,pat=1", 5, 1)] {
+        let mut cfg = SettlementConfig::frontier_open_colony_mortality();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.cultivate_hunger_in = hunger_in;
+            chain.cultivate_patience = patience;
+        }
+        let r = run(7, &cfg);
+        assert_eq!(
+            r.s.current_money_good(),
+            None,
+            "cultivate {label}: faster cultivation must NOT rescue promotion (the dying roles do not cultivate)"
+        );
+        assert_eq!(
+            r.non_lineage_survivors, 0,
+            "cultivate {label}: the non-provisioning demand side is culled regardless of cultivate timing"
+        );
+        assert!(
+            r.s.starvation_deaths_total() > 0,
+            "cultivate {label}: the positive-check cull still fires"
         );
     }
 }
