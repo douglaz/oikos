@@ -1,6 +1,6 @@
 # impl-29 — S21f: Endogenous Pre-Money Household Production-for-Barter
 
-Status: DRAFT (pre-Codex-spec-review)
+Status: SPEC-READY (revised after Codex spec-review round 1)
 Branch: `feat/household-production-barter`
 Base: master @ `6856297` (S21e landed)
 
@@ -8,133 +8,145 @@ Base: master @ `6856297` (S21e landed)
 
 S21e proved (bounded diagnostic) that a finite *seeded* pre-promotion bread supply is sufficient
 for SALT to monetize under market-financed survival, then for production to take over. The seed was
-a one-time scaffold. **S21f makes that pre-promotion supply ENDOGENOUS:** households *cultivate*
-bread by their own labor, eat what they need, and barter the surplus — *before money exists* — so
-SALT emerges from barter over genuinely produced surplus. This is the Mengerian/regression-theorem
-bootstrap: direct production-for-use + barter of surplus precedes money.
+a one-time scaffold. **S21f makes that pre-promotion supply ENDOGENOUS:** lineage households
+*cultivate* bread by their own labor, eat what they need, and barter the surplus — *before money
+exists* — so SALT emerges from barter over genuinely produced surplus (the Mengerian /
+regression-theorem bootstrap: direct production-for-use + barter of surplus precedes money).
 
 The decisive new bar vs S21e: **the pre-promotion bread sold for SALT must be `SelfProduced`
-(cultivated), not `SeededMinted` (seeded).** The acquisition ledger already distinguishes these
-channels (`FoodChannel::SelfProduced` is credited by own-use cultivation,
-`settlement.rs:9040-9043`), so the endogenous-supply claim is directly provable.
+(cultivated), not `SeededMinted` (seeded).** The acquisition ledger already distinguishes these:
+`run_own_use_cultivation` credits `FoodChannel::SelfProduced` (`settlement.rs:9042`), and
+`transfer_as_bought` books the seller-origin breakdown on sale (`settlement.rs:5134`).
 
-## 1. The key design question for Codex spec-review: NO new engine seam (compose existing mechanisms)?
+Unlike S21e, this is **recurring production from a real depleting grain commons**, not a one-time
+seed — so there is **no "exhaustion" framing**; the honesty guard is that produced bread is *bounded
+by real grain input* (`consumed_as_input[grain]` bounds `produced[bread]`), and that money rests on
+`SelfProduced` supply.
 
-A prior direction review feared S21f needs a *gated pre-market production seam* because own-use
-cultivation runs **post-market** (`run_own_use_cultivation`, `settlement.rs:6935`, after
-`society.step()` at `:6834`) — so cultivated bread is not barter-visible the *same* tick. Two facts
-from the S21f research argue a new seam is **NOT** required:
+## 1. The engine change — a gated cultivation-WITHOUT-FORAGE activation seam (Codex P1)
 
-1. **Cross-tick selling already works.** Cultivation post-market in tick `t` leaves the surplus in
-   stock; tick `t+1`'s barter generator sees `held − stock_reserved_for_near_wants_barter(bread)`
-   (`agent.rs:317`) as offerable and posts a sell lane. The surplus persists across ticks (perishable
-   decay only trims it above the 20-floor). So the supply reaches the market one tick later — fine
-   for a pre-promotion accumulation that must cross the strong-bar window anyway.
-2. **Selling cultivated surplus is a SOLVED mechanism.** The `cultivation_sells_surplus` flag (S16)
-   already routes lineage-cultivated surplus into the market, and `frontier_multigood` (S18) is the
-   proven 3-role template (SALT-anchor consumers ⇄ bread cultivators (lineages) ⇄ WOOD gatherers).
-   S16/S18 cleared real cultivated-bread trades — they just failed to *monetize* SALT under the
-   *legacy single-layer* metric. S21f composes that same supply mechanism with the now-landed
-   two-layer (S21b) + two-lane (S20) + marketability (S21a) machinery.
+S21f is **not** scenario-only (the original draft was wrong): `own_use_cultivation_active()` /
+`chain_runtime_own_use_cultivation_active` (`settlement.rs:10633`, `:14396`) requires
+`own_labor_subsistence && content.forage().is_some()` **in addition to** `own_use_cultivation` +
+the `Cultivate` recipe. So composing `with_cultivate + own_use_cultivation + cultivation_sells_surplus`
+onto `frontier_open_survival` alone would **silently not cultivate**.
 
-**Hypothesis: S21f is primarily a SCENARIO composition (no new engine code) — turn on the existing
-cultivation-sells-surplus supply atop the S21e money machinery, with cross-tick selling.** The spec
-asks Codex to confirm this, or to identify the minimal pre-market seam if cross-tick proves
-insufficient. (Fallback, only if needed: a gated pre-market cultivation phase inserted between the
-input-bid overrides `:6808` and the market `:6822`, reusing the same `report.produced`/
-`consumed_as_input` booking.)
+The fix is a **small gated activation seam, NOT a pre-market production seam, and NOT dummy FORAGE**
+(dummy forage would pollute the value scale with `known.subsistence` and reopen the S12 confusion):
+- Add a gated `ChainConfig::household_barter_cultivation: bool` (default `false`).
+- When set, cultivation **activates without** `own_labor_subsistence`/`with_forage`: the
+  cultivation-active predicate is satisfied by this flag + `with_cultivate()` alone.
+- Cultivation steering / `cultivating` is set from **sustained hunger for eligible lineage members**
+  (the existing `cultivate_hunger_in`/`cultivate_patience` hysteresis, `settlement.rs:8903-8917`),
+  scoped lineage-only via the existing `cultivation_sells_surplus` buy/sell split (so the SALT-rich
+  non-lineage consumers stay pure demand).
+- **`Cultivate` stays POST-market** — the surplus sells **cross-tick** (cultivate tick `t` → surplus
+  persists in stock → barter tick `t+1` posts the sell lane). No pre-market production seam.
+- Default off ⇒ all 19 goldens byte-identical; canonicalized ON-only if it enters future behaviour
+  (it changes production), with a digest regression.
 
 ## 2. The trigger (cold-start) — the open colony supplies its own hunger pressure
 
-Cultivation is hunger-gated: `cultivate_now` requires `hunger >= cultivate_hunger_in (6)` sustained
-`cultivate_patience (2)` ticks (`settlement.rs:8903-8917`). It does NOT self-trigger on a fed colony.
-But S21f's colony has the **food mints retired** (S21d/e), so its agents *are* hunger-stressed once
-the cold-start buffers thin — hunger climbs past 6 (mortality off → they stay hungry, don't die), so
-the existing hunger gate **fires**. So the existing trigger should suffice; the spec must *verify*
-cultivation actually runs (a non-vacuity assertion), not assume it.
+With the food mints retired and the cold-start bread buffers zeroed (§3), the colony is
+hunger-stressed: hunger climbs past `cultivate_hunger_in (6)` (mortality off → agents stay hungry,
+don't die), so the hunger hysteresis fires and lineage members cultivate. The spec must **verify
+cultivation actually runs** (a non-vacuity assertion: cultivators produce `SelfProduced` bread), not
+assume it. If cultivation never fires (buffers keep hunger < 6), tune the buffers down or the
+hunger-in threshold (disclosed), not the result.
 
 ## 3. The scenario — `frontier_household_barter` (a `SettlementConfig`)
 
-Derive from `frontier_open_survival` (`settlement.rs:3802`) — NOT `frontier_seeded_surplus` — and add
-the endogenous cultivation supply:
-- **Keep** (the S21d/e money machinery): `retire_food_mints = true`, `acquisition_ledger = true`,
-  `multi_offer_medium` (S20), `durability_aware_acceptance` + marketability table (S21a),
+Derive from `frontier_open_survival` (`settlement.rs:3802`); the disclosed differences:
+- **Keep** the S21d/e money machinery: `retire_food_mints = true`, `acquisition_ledger = true`,
+  `multi_offer_medium` (S20), `durability_aware_acceptance` + the marketability table (S21a),
   `two_layer_saleability` + `min_direct_use_acceptors` (S21b), the S9 strong-bar gates,
   `min_indirect_target_goods = 2`, mortality OFF.
-- **No seed:** `seeded_surplus_bread = 0` (the whole point — endogenous, not seeded).
-- **Turn on cultivation supply:** `content.with_cultivate()`, `own_use_cultivation = true`,
-  `cultivation_sells_surplus = true` (the S16 lineage-only buy/sell split — keeps the SALT-rich
-  non-lineage consumers as pure demand, avoiding buy-side collapse), the S15 cultivation knobs
-  (`cultivate_consume`, `cultivate_hunger_in/out`, `cultivate_patience`).
-- **WOOD-poor cultivators:** keep `wood_buffer = 12` + zeroed household WOOD so lineage cultivators
-  have the unsatisfied WOOD target that makes them post `bread → SALT IndirectFor{WOOD}` (the S21e
-  mechanism). Mirror `frontier_multigood`'s role separation: SALT consumers ⇄ bread cultivators
-  (lineages) ⇄ WOOD gatherers; neutralize the WOOD<bread lowest-good-id offer-ordering artifact as
-  `frontier_money_from_cultivation` does (`settlement.rs:3568-3576`).
-- **Grain flow (the disclosed sweep axis):** the grain node regen/stock/cap sets the cultivated-bread
-  flow. Disclose the chosen values; the flow is a real depleting commons (S15: 120/4/300), NOT a
-  recurring mint — but it IS the tuning-risk axis (a too-generous regen is "a seed by another name").
-  The sweep (below) must show promotion across a *window* of grain-flow rates.
+- **No seed, no cold-start bread (Codex P1):** `seeded_surplus_bread = 0`, **`bread_buffer = 0`,
+  `consumer_staple_buffer = 0`** — so NO bread enters as `SeededMinted`. (Protected non-bread
+  startup goods are fine; the claim is specifically that pre-promotion *bread* supply is endogenous.)
+- **Turn on endogenous cultivation:** `content.with_cultivate()`, `household_barter_cultivation = true`
+  (the §1 activation seam), `cultivation_sells_surplus = true` (lineage-only buy/sell split), the S15
+  cultivation knobs (`cultivate_consume`, `cultivate_hunger_in/out`, `cultivate_patience`).
+- **Pinned role topology (Codex P2 — pin, don't describe):**
+  - lineage household members = the **cultivators / bread sellers** (WOOD-poor: `wood_buffer = 12`,
+    household WOOD zeroed → an unsatisfied WOOD target → they post `bread → SALT IndirectFor{WOOD}`);
+  - non-lineage `Consumer`s = the **SALT-rich buy side** (`consumer_medium_endowment = 80`),
+    **not cultivation-eligible** (the buy/sell split keeps them pure demand);
+  - `Gatherer`s = **woodcutters**, present and pinned to the WOOD node (`multigood_money = true` if
+    relying on the existing WOOD-node pinning seam), WOOD buffers zeroed/disclosed so WOOD is
+    genuinely gathered/sold;
+  - neutralize the WOOD<bread lowest-good-id offer-ordering artifact as
+    `frontier_money_from_cultivation` does (`settlement.rs:3568-3576`).
+- **Grain flow (the disclosed recurring-supply axis):** the grain node `regen`/`stock`/`cap` sets the
+  cultivated-bread flow. The base inherits a generous grain node (~8000/64/8000); S21f should pin a
+  disclosed value (the S15 commons is 120/4/300). This is a *real depleting commons*, recurring by
+  design — the sweep (below) proves promotion needs a real flow (not "no permanent mint").
 
 ## 4. Falsifiable bar + controls
 
 Classify (seed 7, 1600 ticks):
-- **Non-vacuity (gate):** cultivation actually runs (cultivators produce bread, `SelfProduced`
-  credited) AND ≥1 cleared pre-promotion `bread → SALT IndirectFor{WOOD}` lane whose bread is
-  `SelfProduced`. If cultivation never fires or no SALT lane clears → bad probe (fix), not a finding.
-- **Endogenous supply:** pre-promotion bread sold for SALT is `SelfProduced`, with `SeededMinted`
-  contribution **zero** (no seed, no mint) — the core S21f claim.
-- **SALT promotes** as the medium leader, indirect breadth includes the non-food WOOD target,
-  SALT-mediated share dominant (reuse S21e's `HEADLINE_MIN_SALT_SHARE_BPS`, not a dust bar).
-- **Self-sustaining:** production continues (cultivated + later specialized chain) through the run;
-  food consumed is `SelfProduced`/`Bought`, never `SeededMinted`/`Foraged`; conservation every tick.
-- **Post-promotion** (optional, the stronger result): specialized chain roles adopt and acquire
-  inputs by market trade (the S21e Phase-B clearance, now atop endogenous supply).
+- **Non-vacuity (gate):** cultivation actually runs (lineage cultivators produce `SelfProduced`
+  bread) AND ≥1 cleared pre-promotion `bread → SALT IndirectFor{WOOD}` lane whose bread is
+  `SelfProduced`. Else bad probe (fix), not a finding.
+- **Cross-tick non-vacuity test (Codex P2):** a cultivator produces `SelfProduced` bread at tick `t`;
+  at tick `t+1` its above-reserve bread is visible as a live or cleared `bread → SALT
+  IndirectFor{WOOD}` offer (proves the post-market→next-tick sale path works).
+- **Endogenous supply (the core claim):** pre-promotion bread sold for SALT is `SelfProduced`, with
+  **`SeededMinted` bread sold pre-promotion == 0** (no seed, no mint, zeroed buffers).
+- **SALT promotes** as medium leader, indirect breadth includes the non-food WOOD target,
+  SALT-mediated share dominant (reuse S21e's `HEADLINE_MIN_SALT_SHARE_BPS`).
+- **Production is grain-bounded, not minted (Codex P2):** `produced[bread]` is bounded by
+  `consumed_as_input[grain]` (real commons input), and `SeededMinted`/`Foraged` food consumed ≈ 0 in
+  the tail — production is genuinely from cultivation, recurring, never a mint.
+- **Self-sustaining:** food consumed is `SelfProduced`/`Bought` through the run; conservation every
+  tick. (Stronger, optional: post-promotion specialized chain roles adopt + buy inputs by market.)
 
 Controls (classify, never tune):
-- **cultivation off** (`own_use_cultivation=false`) → reproduces the S21d zero-trade collapse (no
-  endogenous supply).
-- **seeded-surplus (S21e)** → the positive control (seeded supply works) — S21f must match it with
+- **cultivation off** (`household_barter_cultivation=false`) → the S21d zero-trade collapse.
+- **seeded-surplus (S21e)** → positive control (seeded supply works); S21f matches it with
   *cultivated* supply.
-- **no WOOD-poor target** → no/weaker monetization (cultivators don't post the medium lane).
-- **two-layer off / multi-offer off** → no promotion (the S20/S21b machinery is load-bearing).
 - **buy/sell split off** (`cultivation_sells_surplus=false`) → consumers self-cultivate → buy-side
-  collapse → no monetization (proves the role separation matters).
-- **grain-flow sweep** → promotion holds across a *window* of grain regen rates (not one tuned
-  point); report the lower boundary (flow too thin to monetize) and confirm no rate is a de-facto
-  permanent mint.
+  collapse → no monetization.
+- **no WOOD-poor target** → cultivators don't post the medium lane → no/weaker monetization.
+- **two-layer off / multi-offer off** → no promotion.
+- **grain-flow sweep (Codex P2):** zero grain flow → no produced bread / no promotion; low flow →
+  cultivation but insufficient monetization; a middle window → promotion on `SelfProduced` bread;
+  high flow reported but not used to define the claim. Assert produced bread tracks
+  `consumed_as_input[grain]` (real node input bounds it) — recurring production, NOT seed exhaustion.
 
 ## 5. Slices
 
-- **S21f.0** — the `frontier_household_barter` scenario (compose the flags; no engine change if the
-  cross-tick hypothesis holds) + the non-vacuity instrument (cultivation runs + `SelfProduced` SALT
-  lane). [If Codex/cross-tick requires it: a gated pre-market cultivation seam.]
-- **S21f.1** — the classification suite + the run: assert the bar (endogenous `SelfProduced` supply
+- **S21f.0** — the gated `household_barter_cultivation` activation seam (cultivation without the
+  FORAGE/own-labor substrate; lineage hunger-triggered; `Cultivate` stays post-market). Default off;
+  goldens byte-identical; canonicalized ON-only with a digest regression.
+- **S21f.1** — the `frontier_household_barter` scenario (compose the money machinery + cultivation +
+  zeroed bread buffers + pinned roles + grain flow) + the cross-tick non-vacuity test.
+- **S21f.2** — the classification suite + the run: assert the bar (endogenous `SelfProduced` supply
   monetizes SALT) OR classify; the control matrix incl. the grain-flow sweep; determinism; cross-seed
   robustness; a live run.
 
 ## 6. Determinism / golden contract
 
-- All additions gated/scenario-scoped; if the cross-tick composition needs no new flag, the new
-  scenario is purely additive (new `SettlementConfig` builder) ⇒ all 19 golden suites byte-identical.
-  Any new gated flag defaults off + canonicalized ON-only with a digest regression. Acquisition/
-  cultivation traces stay runtime-only.
+- `household_barter_cultivation` defaults off; the new scenario is additive; **all 19 golden suites
+  byte-identical**. The flag is canonicalized ON-only (it changes production) with a digest
+  regression; cultivation/acquisition traces stay runtime-only.
 - `cargo fmt --check` + `clippy --workspace --all-targets -- -D warnings` clean; conservation every
   tick; deterministic.
 
 ## 7. Honest scope
 
 S21f is the **authentic supply mechanism** the S21d→e arc pointed to: endogenous pre-money
-production (cultivated `SelfProduced` bread), not a seeded scaffold. It is still: mortality OFF; the
-grain flow is a disclosed configured commons (the sweep proves a window, not a tuned point); the
-direct-use SALT anchor + thresholds remain configured. It does NOT yet add the positive check
-(mortality-on is the next milestone) or claim full demographic realism. If SALT monetizes on
-cultivated supply, the open colony bootstraps money from genuine pre-money production-for-barter —
-the capstone of the supply question; if it fails, the gate is localized (e.g. cultivation flow
-insufficient, or cross-tick latency too slow for the strong-bar window) as a finding.
+production (cultivated `SelfProduced` bread), not a seeded scaffold. It still: keeps mortality OFF;
+treats the grain node as a disclosed configured commons (the sweep proves promotion needs a real
+flow window, and produced bread is grain-bounded — recurring production, not a mint or a seed); keeps
+the direct-use SALT anchor + thresholds configured. Specialized chain production still waits on money
+(`run_role_choice` unchanged — the household/cultivation path is the *unspecialized* pre-money
+production Menger describes). It does NOT add the positive check (mortality-on is the next milestone).
+If SALT monetizes on cultivated supply, the open colony bootstraps money from genuine pre-money
+production-for-barter — the capstone of the supply question; a clean failure localizes the gate
+(e.g. cultivation flow insufficient, or cross-tick latency too slow for the strong-bar window).
 
 ## 8. Pipeline
 
-Codex spec-review (confirm the no-new-seam composition or pin the seam) → SPEC-READY → rb-lite
-`codex,claude` → independent verification (workspace + all 19 goldens byte-identical + the new suite
-+ a live run) → Codex review-of-results → merge + report/memory + pin.
+rb-lite `codex,claude` (S21f.0→.2) → independent verification (workspace + all 19 goldens
+byte-identical + the new suite + a live run) → Codex review-of-results → merge + report/memory + pin.
