@@ -919,6 +919,24 @@ pub struct ChainConfig {
     /// NOT digested. Off keeps the S16 path exactly, so every existing config and its
     /// goldens are byte-identical. Composes strictly on `cultivation_sells_surplus`.
     pub multigood_money: bool,
+    /// S21f — **household production-for-barter activation seam** (default `false`,
+    /// byte-identical when off). The S15 own-use cultivation path requires the
+    /// own-labor/forage substrate (`own_labor_subsistence && content.forage().is_some()`)
+    /// in addition to `own_use_cultivation` + the `Cultivate` recipe, so it cannot run on
+    /// the open-survival money base (which interns NO forage good). When this flag is
+    /// `true` *and* `own_use_cultivation` + the `Cultivate` recipe are present, cultivation
+    /// becomes an **alternative substrate to forage**: the cultivation steering phase
+    /// ([`Settlement::run_own_labor_subsistence`]) runs with NO forage good interned (so it
+    /// does not pollute the value scale with a phantom `known.subsistence`), eligible
+    /// **lineage** spatial members escalate to cultivation directly from sustained hunger
+    /// (the `cultivate_hunger_in`/`cultivate_patience` hysteresis, no forage tier beneath
+    /// it), and the own-use cultivation phase + the multi-good money routing engage exactly
+    /// as on the forage path. The `Cultivate` recipe stays POST-market, so the cultivated
+    /// surplus sells **cross-tick** (cultivate tick `t` → surplus persists in stock →
+    /// barter tick `t+1` posts the sell lane). Canonicalized **ON-only** (it changes
+    /// production), mirroring the S16/S18/S21d gates: a flag-off config keeps its exact
+    /// prior byte layout. Composes with `own_use_cultivation` (which it does not replace).
+    pub household_barter_cultivation: bool,
     /// S21d.0 — **retire the food mints** (the open-survival probe; default `false`,
     /// byte-identical when off). When `true`, the two staple-food mint sites are skipped
     /// **independent of `own_labor_subsistence`/forage**: the demographic `food_provision`
@@ -1248,6 +1266,9 @@ impl ChainConfig {
             // S18 off by default: no woodcutter routing, no multi-good instrumentation —
             // byte-identical.
             multigood_money: false,
+            // S21f off by default: no household-barter cultivation seam, so cultivation
+            // still requires the forage substrate and every existing config is byte-identical.
+            household_barter_cultivation: false,
             // S21d.0 off by default: the food mints stay, so every existing config and its
             // goldens are byte-identical (canonicalized ON-only).
             retire_food_mints: false,
@@ -1354,6 +1375,9 @@ impl ChainConfig {
             // S18 off by default: no woodcutter routing, no multi-good instrumentation —
             // byte-identical.
             multigood_money: false,
+            // S21f off by default: no household-barter cultivation seam, so cultivation
+            // still requires the forage substrate and every existing config is byte-identical.
+            household_barter_cultivation: false,
             // S21d.0 off by default: the food mints stay, so every existing config and its
             // goldens are byte-identical (canonicalized ON-only).
             retire_food_mints: false,
@@ -1442,6 +1466,9 @@ impl ChainConfig {
             cultivate_patience: 4,
             cultivation_sells_surplus: false,
             multigood_money: false,
+            // S21f off by default: no household-barter cultivation seam, so cultivation
+            // still requires the forage substrate and every existing config is byte-identical.
+            household_barter_cultivation: false,
             // S21d.0 off by default: the food mints stay, so every existing config and its
             // goldens are byte-identical (canonicalized ON-only).
             retire_food_mints: false,
@@ -3888,6 +3915,120 @@ impl SettlementConfig {
         cfg
     }
 
+    /// S21f — **endogenous pre-money household production-for-barter**: the open-survival
+    /// money base ([`Self::frontier_open_survival`], never mutated) with the pre-promotion
+    /// tradeable bread supply made ENDOGENOUS — lineage households *cultivate* bread by
+    /// their own labor (no forage substrate), eat what they need, and barter the surplus
+    /// *before money exists*, so SALT emerges from barter over genuinely produced
+    /// (`SelfProduced`) surplus rather than the S21e one-time seed. The Mengerian /
+    /// regression-theorem bootstrap: direct production-for-use + barter of surplus precedes
+    /// money.
+    ///
+    /// Composed changes vs the open-survival base, each disclosed (none tuned into a result):
+    /// - **No seed, no cold-start bread (so NO bread enters as `SeededMinted`):**
+    ///   `seeded_surplus_bread = 0` (inherited), `bread_buffer = 0`, `consumer_staple_buffer
+    ///   = 0`, and the lineage founders' `starting_food = 0`. With the food mints retired and
+    ///   every bread holding zeroed, the acquisition ledger credits ZERO `SeededMinted` bread,
+    ///   so the pre-promotion bread that monetizes SALT can only be `SelfProduced`.
+    /// - **Spatial households on** (`demography.spatial_households = true`): without it lineage
+    ///   members never become spatial cultivators (eligibility needs `household.is_some() &&
+    ///   spatial_active`) and the milestone is inert.
+    /// - **Endogenous cultivation on:** the no-tool `Cultivate` recipe (`with_cultivate`),
+    ///   `own_use_cultivation = true`, the §1 activation seam `household_barter_cultivation =
+    ///   true` (cultivation without forage), `cultivation_sells_surplus = true` (the lineage-
+    ///   only buy/sell split keeps the SALT-rich consumers a pure demand side), and the S15
+    ///   cultivation knobs (`cultivate_hunger_in = 6`, `cultivate_hunger_out = 3`,
+    ///   `cultivate_consume = 4`, `cultivate_patience = 2`). With the cold-start bread zeroed
+    ///   the colony is hunger-stressed (mortality off, so agents stay hungry, don't die), so
+    ///   the hunger hysteresis fires and lineage members cultivate.
+    /// - **Pinned role topology (mirror S18 `frontier_multigood`, NOT S16):**
+    ///   - **lineage members = the cultivators / bread sellers**, made WOOD-poor (`wood_buffer
+    ///     = 12`, every household `starting_wood`/`wood_provision` zeroed) so their only
+    ///     unsatisfied want is WOOD and their only offerable surplus is bread → they post
+    ///     `bread → SALT IndirectFor{WOOD}`;
+    ///   - **non-lineage `Consumer`s = the SALT-rich buy side** (`consumer_medium_endowment =
+    ///     80`, inherited), not cultivation-eligible (the buy/sell split keeps them pure
+    ///     demand);
+    ///   - **`Gatherer`s = woodcutters**, pinned to the WOOD node by `multigood_money = true`
+    ///     (NOT the round-robin, so grain — the cultivators' input — never draws them off into
+    ///     a third surplus), so WOOD is genuinely gathered and sold.
+    ///   - The WOOD node is KEPT (S21f needs the live WOOD market so cultivators can reach
+    ///     WOOD via SALT); the WOOD<bread offer-ordering artifact is neutralized by role
+    ///     separation + the zeroed lineage WOOD surplus, not by removing WOOD (the S16
+    ///     artifact fix is wrong here).
+    /// - **Grain flow (the disclosed recurring-supply axis):** the grain node sets the
+    ///   cultivated-bread flow — a real depleting commons, recurring by design. Pinned to a
+    ///   disclosed value (the base inherits a generous 8000/64/8000); the grain-flow sweep
+    ///   proves promotion needs a real flow window (and that produced bread is grain-bounded —
+    ///   recurring production, NOT seed exhaustion).
+    ///
+    /// The S21d/e money machinery (`retire_food_mints`, `acquisition_ledger`,
+    /// `multi_offer_medium`, `durability_aware_acceptance` + the marketability table,
+    /// `two_layer_saleability` + `min_direct_use_acceptors`, the S9 strong-bar gates,
+    /// `min_indirect_target_goods = 2`) and mortality-OFF are inherited unchanged. With
+    /// `household_barter_cultivation` reverted the cultivation seam is inert; the scenario is
+    /// additive, so every existing golden stays byte-identical.
+    pub fn frontier_household_barter() -> Self {
+        let mut cfg = Self::frontier_open_survival();
+        if let Some(chain) = cfg.chain.as_mut() {
+            // No seed, no cold-start bread → NO bread enters as `SeededMinted`.
+            chain.seeded_surplus_bread = 0;
+            chain.bread_buffer = 0;
+            chain.consumer_staple_buffer = 0;
+            // The endogenous-cultivation stack: the no-tool grain→bread recipe + the gate +
+            // the §1 activation seam (cultivation without the forage substrate) + the lineage
+            // buy/sell split + the woodcutter→WOOD routing.
+            chain.content = chain.content.clone().with_cultivate();
+            chain.own_use_cultivation = true;
+            chain.household_barter_cultivation = true;
+            chain.cultivation_sells_surplus = true;
+            chain.multigood_money = true;
+            // The S15 cultivation hysteresis: escalate to cultivation at sustained hunger 6,
+            // drop back below 3, eat 4 own-use bread/tick, after 2 consecutive hungry ticks.
+            // `cultivate_hunger_in = 6 < birth_hunger_ceiling = 12` (the preventive check).
+            chain.cultivate_hunger_in = 6;
+            chain.cultivate_hunger_out = 3;
+            chain.cultivate_consume = 4;
+            chain.cultivate_patience = 2;
+            // The cultivators (lineage) are made WOOD-poor so their only unsatisfied want is
+            // WOOD and their only offerable surplus is bread (the non-lineage chain colonists'
+            // WOOD buffer, mirror S21e). Their warmth is non-lethal (mortality off), so the
+            // unmet WOOD want simply drives the `bread → SALT IndirectFor{WOOD}` lane.
+            chain.wood_buffer = 12;
+        }
+        if let Some(demo) = cfg.demography.as_mut() {
+            // Lineage members become spatial cultivators.
+            demo.spatial_households = true;
+            for household in &mut demo.households {
+                // No cold-start bread for the lineage (so no `SeededMinted` bread can be
+                // sold), and WOOD-poor (an unsatisfied WOOD target → the medium lane). The
+                // food mint is retired, so `food_provision` is already a no-op; zeroing
+                // `starting_food` makes the founders hunger-stressed from tick 0, which is
+                // exactly the cold-start trigger for cultivation.
+                household.starting_food = 0;
+                household.starting_wood = 0;
+                household.wood_provision = 0;
+            }
+        }
+        // Pin the grain node to a disclosed recurring-supply flow (the base inherits a
+        // generous 8000/64/8000). A real depleting commons whose regen sets the
+        // cultivated-bread flow — the grain-flow sweep brackets the promotion window.
+        let grain = cfg
+            .chain
+            .as_ref()
+            .expect("the household-barter chain carries a grain good")
+            .content
+            .grain();
+        for node in cfg.nodes.iter_mut() {
+            if node.good == grain {
+                node.stock = 480;
+                node.regen = 24;
+                node.cap = 960;
+            }
+        }
+        cfg
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).
@@ -4733,6 +4874,10 @@ struct ChainRuntime {
     /// `false` for every existing config, so the woodcutter routing and the runtime-only
     /// instrumentation are inert and the run is byte-identical.
     multigood_money: bool,
+    /// S21f: the household-barter cultivation activation seam (see
+    /// [`ChainConfig::household_barter_cultivation`]). `false` for every existing config, so
+    /// cultivation still requires the forage substrate and the run is byte-identical.
+    household_barter_cultivation: bool,
     /// S21d.0: retire the food mints (see [`ChainConfig::retire_food_mints`]). `false` for every
     /// existing config, so the demographic + producer staple mints fire and the run is
     /// byte-identical (the flag is canonicalized ON-only).
@@ -6271,10 +6416,20 @@ impl Settlement {
                     chain.cultivate_hunger_out < chain.cultivate_hunger_in,
                     "own-use cultivation requires cultivate_hunger_out < cultivate_hunger_in"
                 );
-                assert!(
-                    chain.forage_hunger_in < chain.cultivate_hunger_in,
-                    "own-use cultivation requires forage_hunger_in < cultivate_hunger_in"
-                );
+                // S21f: the forage→cultivation tier ordering applies only on the
+                // own-labor/forage substrate, where cultivation is the SECOND tier above
+                // foraging. On the household-barter path there is no forage tier beneath
+                // cultivation (it fires directly from sustained hunger), so the forage knob
+                // is a no-op and this ordering is not required.
+                if own_labor_subsistence_fields_active(
+                    chain.own_labor_subsistence,
+                    chain.content.forage().is_some(),
+                ) {
+                    assert!(
+                        chain.forage_hunger_in < chain.cultivate_hunger_in,
+                        "own-use cultivation requires forage_hunger_in < cultivate_hunger_in"
+                    );
+                }
                 // The sustained-scarcity gate has to span at least one tick. With a
                 // patience of 0 the streak threshold `pressure >= cultivate_patience` is
                 // satisfied even when the pressure streak is 0 (hunger below
@@ -6349,6 +6504,7 @@ impl Settlement {
                 cultivate_patience: chain.cultivate_patience,
                 cultivation_sells_surplus: chain.cultivation_sells_surplus,
                 multigood_money: chain.multigood_money,
+                household_barter_cultivation: chain.household_barter_cultivation,
                 retire_food_mints: chain.retire_food_mints,
                 acquisition_ledger: chain.acquisition_ledger,
                 productive_reentry: chain.productive_reentry,
@@ -8783,17 +8939,33 @@ impl Settlement {
         completed_forage: &BTreeSet<AgentId>,
         report: &mut EconTickReport,
     ) {
-        if !self.own_labor_subsistence_can_run() {
+        // S21f: this steering phase runs on EITHER substrate — the own-labor/forage path
+        // (S12/S14) OR the household-barter cultivation seam (cultivation without forage).
+        // On the household-barter path there is no forage good interned, so the forage
+        // extraction, the forage hysteresis, and the completed-forage credit are ALL gated
+        // off below (guarded by `own_labor`) and only the cultivation steering runs.
+        let own_labor = self.own_labor_subsistence_can_run();
+        if !own_labor && !self.household_barter_cultivation_active() {
             return;
         }
         let chain = self
             .chain
             .as_ref()
-            .expect("the own-labor path carries a chain");
-        let forage = chain
-            .content
-            .forage()
-            .expect("the own-labor path carries a forage good");
+            .expect("the cultivation steering path carries a chain");
+        // The FORAGE substrate exists only on the own-labor path; the household-barter path
+        // interns no forage good (so it never pollutes the value scale with a phantom
+        // `known.subsistence`). `None` there, and every forage-keyed branch below is gated
+        // on `own_labor`, so the household-barter path runs pure cultivation steering.
+        let forage = if own_labor {
+            Some(
+                chain
+                    .content
+                    .forage()
+                    .expect("the own-labor path carries a forage good"),
+            )
+        } else {
+            None
+        };
         let yield_units = chain.forage_yield;
         let h_in = chain.forage_hunger_in;
         let h_out = chain.forage_hunger_out;
@@ -8886,8 +9058,10 @@ impl Settlement {
             };
             // Hysteresis: start foraging at/above `h_in`, stop below `h_out`, else hold.
             // A non-eligible colonist (a lineage member, or one that adopted an active
-            // producer role) never forages and clears any stale flag.
-            let forage_now = if !eligible {
+            // producer role) never forages and clears any stale flag. S21f: on the
+            // household-barter path (`!own_labor`) there is no forage good, so foraging is
+            // always off — only the cultivation tier below steers these colonists.
+            let forage_now = if !eligible || !own_labor {
                 false
             } else if hunger >= h_in {
                 true
@@ -8932,8 +9106,14 @@ impl Settlement {
                 !(self.colonists[slot].foraging && self.colonists[slot].cultivating),
                 "a colonist must forage XOR cultivate — never both in one econ tick"
             );
-            if !commons && completed_forage.contains(&id) {
-                self.credit_produced(id, forage, yield_units, report);
+            // S21f: the completed-forage credit is a forage-path behavior. On the
+            // household-barter path `own_labor` is false (and `forage` is `None`), so it is
+            // skipped — the household-barter cultivator earns its food by cultivating grain,
+            // not by foraging.
+            if own_labor && !commons && completed_forage.contains(&id) {
+                if let Some(forage) = forage {
+                    self.credit_produced(id, forage, yield_units, report);
+                }
             }
         }
     }
@@ -10634,6 +10814,20 @@ impl Settlement {
         self.chain
             .as_ref()
             .is_some_and(chain_runtime_own_use_cultivation_active)
+    }
+
+    /// S21f: whether the **household-barter cultivation seam** is active this tick — the flag
+    /// is on AND the S15 own-use cultivation knobs (the gate + the `Cultivate` recipe) are
+    /// present. When this holds, the cultivation steering phase
+    /// ([`Self::run_own_labor_subsistence`]) runs WITHOUT the own-labor/forage substrate (no
+    /// forage good interned), so eligible lineage members escalate to cultivation directly
+    /// from sustained hunger. Off (every existing config), cultivation still requires the
+    /// forage substrate and the run is byte-identical. Note that whenever this holds,
+    /// [`Self::own_use_cultivation_active`] also holds (the seam is one of its substrates).
+    fn household_barter_cultivation_active(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(chain_runtime_household_barter_cultivation_active)
     }
 
     /// S16: whether the **money-from-produced-bread** path is active this tick — the
@@ -13510,6 +13704,16 @@ impl Settlement {
                 out.push(3);
                 out.extend_from_slice(&chain.seeded_surplus_bread.to_le_bytes());
             }
+            // S21f: the household-barter cultivation seam activates cultivation steering +
+            // the own-use cultivation phase + the multi-good woodcutter routing WITHOUT the
+            // forage substrate — a future-behaviour change for the roster (lineage members
+            // escalate to cultivation, produce bread, barter the surplus). Emitted only when
+            // active (the same gated-block discipline as S16/S18/S21d above) with a DISTINCT
+            // tag (`4`), so the gated markers stay injective and a flag-off chain stays
+            // byte-identical to the pre-S21f stream.
+            if self.household_barter_cultivation_active() {
+                out.push(4);
+            }
             // The staple mapping steers the next needs/scale phase for *any* chain,
             // role-choice or not, so it is included whenever a chain is active. The
             // G3b no-spread control shares the emergent config's physical state but
@@ -14395,10 +14599,10 @@ fn chain_config_forage_commons_active(chain: &ChainConfig) -> bool {
 fn chain_config_own_use_cultivation_active(chain: &ChainConfig) -> bool {
     chain.own_use_cultivation
         && chain.content.cultivate_recipe().is_some()
-        && own_labor_subsistence_fields_active(
+        && (own_labor_subsistence_fields_active(
             chain.own_labor_subsistence,
             chain.content.forage().is_some(),
-        )
+        ) || chain.household_barter_cultivation)
 }
 
 fn chain_runtime_own_labor_subsistence_can_run(chain: &ChainRuntime) -> bool {
@@ -14423,7 +14627,19 @@ fn chain_runtime_forage_commons_active(chain: &ChainRuntime) -> bool {
 fn chain_runtime_own_use_cultivation_active(chain: &ChainRuntime) -> bool {
     chain.own_use_cultivation
         && chain.content.cultivate_recipe().is_some()
-        && chain_runtime_own_labor_subsistence_can_run(chain)
+        && (chain_runtime_own_labor_subsistence_can_run(chain)
+            || chain.household_barter_cultivation)
+}
+
+/// S21f: the household-barter cultivation seam is active this tick iff the flag is on AND
+/// the S15 own-use cultivation knobs (the gate + the `Cultivate` recipe) are present — the
+/// alternative substrate to the own-labor/forage path. Off (every existing config) it is
+/// `false`, so cultivation still requires the forage substrate and the run is
+/// byte-identical.
+fn chain_runtime_household_barter_cultivation_active(chain: &ChainRuntime) -> bool {
+    chain.household_barter_cultivation
+        && chain.own_use_cultivation
+        && chain.content.cultivate_recipe().is_some()
 }
 
 /// S16: money-from-produced-bread is active iff the flag is on AND own-use cultivation is

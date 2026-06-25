@@ -1,6 +1,23 @@
 # impl-29 — S21f: Endogenous Pre-Money Household Production-for-Barter
 
-Status: SPEC-READY (Codex round 1 NEEDS-REVISION → round 2 NEEDS-REVISION [spatial_households + steering seam] → addressed: demography.spatial_households=true; the activation seam pinned across run_own_labor_subsistence + the config/runtime/multigood active predicates with FORAGE-code guarded; WOOD via role separation not node deletion; 3-way cold-start classification)
+Status: IMPLEMENTED — a **SUCCESS**: endogenous cultivated (`SelfProduced`) bread monetizes
+SALT with NO `SeededMinted` bread anywhere. The gated `household_barter_cultivation` seam runs
+cultivation steering + the own-use phase + the woodcutter→WOOD routing WITHOUT the forage
+substrate; the `frontier_household_barter` scenario (zeroed bread buffers + `starting_food`,
+spatial lineages, grain commons 480/24/960) promotes SALT at tick ~71 (seed 7) on cultivated
+supply, indirect breadth {bread, WOOD}, SALT-mediated share ~9777 bps (≥9000 headline bar),
+robust across seeds {3,7,11,19,23}. Cold-start classification = Success (spatial lineage member
+cultivates → hauls grain → produces `SelfProduced` bread → cleared pre-promotion `bread → SALT
+IndirectFor{WOOD}` lane). All 19 goldens byte-identical (flag default off, canonicalized ON-only
+with tag 4 + a digest-split regression). Controls: cultivation-off → S21d zero supply (no
+promotion); no-WOOD-poor-lineage / two-layer-off / multi-offer-off → no promotion; buy/sell-split
+off → STILL monetizes (classified finding — the WOOD market keeps SALT alive; the split only
+scopes the supply to lineages, producing ~5× more bread when off). Grain-flow sweep: zero flow →
+no bread/no promotion; a finite stock with NO regen (240/0/240) → 236 cultivated bread once
+(produced == consumed grain, the grain-bounded identity) then dry, INSUFFICIENT to promote
+(recurring flow needed, NOT seed exhaustion); recurring flow → promotes on `SelfProduced`. `cargo
+fmt`/`clippy --workspace --all-targets -D warnings` clean; deterministic; conservation every tick.
+Prior: SPEC-READY (Codex round 1 NEEDS-REVISION → round 2 NEEDS-REVISION [spatial_households + steering seam] → addressed: demography.spatial_households=true; the activation seam pinned across run_own_labor_subsistence + the config/runtime/multigood active predicates with FORAGE-code guarded; WOOD via role separation not node deletion; 3-way cold-start classification)
 Branch: `feat/household-production-barter`
 Base: master @ `6856297` (S21e landed)
 
