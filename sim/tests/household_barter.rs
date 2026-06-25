@@ -376,6 +376,13 @@ fn frontier_household_barter_classified_seed7_1600() {
 
     // Cultivation fired and conserved.
     assert!(r.conserved_every_tick, "conservation must hold every tick");
+    // S12-pollution tripwire (Codex result-review P3): the activation seam interns NO FORAGE /
+    // `known.subsistence` good — cultivation runs without the forage substrate, so the value
+    // scale is not polluted with a subsistence good (the dummy-forage hazard is impossible).
+    assert!(
+        s.subsistence_good().is_none(),
+        "the household-barter cultivation seam must intern no FORAGE/subsistence good"
+    );
     assert_eq!(
         classify(&r),
         ColdStart::Success,
@@ -626,41 +633,47 @@ fn grain_flow_sweep_brackets_promotion() {
         "zero grain flow must NOT promote (no supply)"
     );
 
-    // A finite grain STOCK with NO regen → cultivation produces bread ONCE (bounded EXACTLY
-    // by the grain consumed — the grain-bounded identity in the cultivation-only regime),
-    // then the commons runs dry. A one-time finite supply is INSUFFICIENT to monetize: this
-    // is the proof that promotion needs a RECURRING flow, NOT seed exhaustion.
-    let finite = run(7, &with_grain_flow(240, 0, 240));
-    assert!(
-        finite.produced_bread > 0,
-        "a finite grain stock produces some bread"
-    );
+    // A finite grain STOCK with NO regen → cultivation produces bread bounded EXACTLY by the
+    // grain consumed (the grain-bounded identity in the cultivation-only regime), then the
+    // commons runs dry. What matters for promotion is the *cumulative* SelfProduced grain
+    // supply, NOT recurrence per se: a SMALL/MEDIUM finite stock is insufficient...
+    for finite_size in [240u32, 960] {
+        let finite = run(7, &with_grain_flow(finite_size, 0, finite_size));
+        assert!(
+            finite.produced_bread > 0,
+            "size {finite_size}: a finite grain stock produces some bread"
+        );
+        assert_eq!(
+            finite.produced_bread, finite.consumed_grain,
+            "size {finite_size}: cultivation-only regime — produced[bread] == consumed[grain] (grain-bounded)"
+        );
+        assert!(
+            finite.produced_bread <= u64::from(finite_size),
+            "size {finite_size}: a finite stock yields at most that many cultivated bread (no recurring mint)"
+        );
+        assert!(
+            finite.s.promoted_at_tick().is_none(),
+            "size {finite_size}: a small/medium one-time finite grain stock is insufficient to monetize"
+        );
+    }
+    // ...while a PURE RECURRING flow (zero initial stock, regen only) IS sufficient — so the
+    // requirement is a real grain supply, deliverable as a recurring commons even with no
+    // starting stock. (A *large enough* finite stock, e.g. 4800, also promotes — it is the
+    // cumulative supply that matters; either way it is GRAIN-bounded SelfProduced bread, never
+    // a bread mint.)
+    let pure_regen = run(7, &with_grain_flow(0, 24, 960));
     assert_eq!(
-        finite.produced_bread, finite.consumed_grain,
-        "with only cultivation running, produced[bread] == consumed_as_input[grain] (grain-bounded)"
-    );
-    assert!(
-        finite.produced_bread <= 240,
-        "a finite stock of 240 grain can yield at most 240 cultivated bread (no recurring mint)"
-    );
-    assert!(
-        finite.s.promoted_at_tick().is_none(),
-        "a one-time finite grain stock is insufficient — SALT must NOT promote (recurring flow needed)"
+        pure_regen.s.current_money_good(),
+        Some(SALT),
+        "a pure recurring grain flow (zero initial stock) must promote SALT on cultivated supply"
     );
 
-    // A real RECURRING flow → SALT promotes on the SelfProduced supply, and produced bread
-    // tracks the grain consumed (recurring production from the real commons).
+    // The headline recurring commons → SALT promotes on SelfProduced bread (zero minted).
     let flow = run(7, &with_grain_flow(480, 24, 960));
     assert_eq!(
         flow.s.current_money_good(),
         Some(SALT),
-        "a recurring grain flow must promote SALT on the cultivated supply"
-    );
-    assert!(
-        flow.consumed_grain > finite.consumed_grain,
-        "the recurring flow consumes far more grain than the one-time stock ({} vs {})",
-        flow.consumed_grain,
-        finite.consumed_grain
+        "the headline recurring grain flow must promote SALT on the cultivated supply"
     );
     assert_eq!(
         flow.s.pre_promotion_bread_for_salt_by_provenance().1,

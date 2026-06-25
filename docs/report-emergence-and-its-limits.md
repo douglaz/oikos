@@ -408,9 +408,32 @@ slice has already produced a deep finding that re-planned the rest:
   **S21f (endogenous pre-money production-for-barter)**. The `seeded_surplus_bread` field defaults 0
   (canonicalized ON-only); the seller-provenance + seeded-surplus traces are runtime-only; all 18
   goldens byte-identical.
-- **Later:** S21f (endogenous pre-money production-for-barter — the authentic supply mechanism),
-  mortality-on, then endogenizing the clearing institution and richer marketability. (Robustness for
-  the in-cycle result is done — §6.)
+- **S21f — Endogenous pre-money household production-for-barter: the supply question CLOSED.** The
+  authentic mechanism S21d→e pointed to, replacing S21e's *seed* with genuine production. Lineage
+  households **cultivate** bread by their own labor (the S15 `Cultivate` grain→bread recipe), eat what
+  they need, and barter the surplus — *before money exists* — so the pre-promotion tradeable supply is
+  **endogenous (`SelfProduced`), with the food mints retired and every bread buffer zeroed (no
+  `SeededMinted` bread ever enters)**. The one engine piece is a gated *cultivation-without-FORAGE
+  activation seam* (`household_barter_cultivation`): it runs the cultivation steering on either the
+  own-labor/forage path *or* this flag, guards the FORAGE-specific code so **no `known.subsistence`
+  good is interned** (no S12 pollution), sets `cultivating` from sustained hunger for spatial lineage
+  members, and leaves specialized chain production still money-gated (`run_role_choice` unchanged — this
+  is *unspecialized* household production, the Mengerian pre-money kind). `Cultivate` stays post-market,
+  so the surplus sells **cross-tick**. **Result (SUCCESS):** SALT promotes as the medium leader with
+  `{WOOD, bread}` breadth, dominant SALT-mediated share, round-tripping; the pre-promotion bread sold
+  for SALT is **100% `SelfProduced`, zero `SeededMinted`** — the open colony bootstraps money from
+  pre-money production-for-barter, *no seed, no mint*. **Honest scope:** what promotion needs is a
+  *sufficient cumulative grain supply* — a recurring grain commons, a pure regen flow (zero initial
+  stock), or even a large-enough finite grain stock all promote, while a small/medium finite stock does
+  not; in every case the supply is **grain-bounded** (`produced[bread] == consumed[grain]` in the
+  cultivation-only regime, never a bread mint). Controls classify, never tune (cultivation off → the
+  S21d collapse; buy/sell-split off → consumers self-feed → buy-side collapse; no WOOD target /
+  two-layer off / multi-offer off → no promotion; S21e seeded surplus is the positive control). This
+  **closes the supply question**: a real pre-money produced supply is sufficient for endogenous money.
+  Remaining scope: mortality OFF, a configured grain commons + role topology + SALT direct-use anchor.
+  All gated default-off; all 20 goldens byte-identical.
+- **Later:** mortality-on (the positive check on a *working market* colony), then endogenizing the
+  clearing institution and richer marketability. (Robustness for the in-cycle result is done — §6.)
 
 ---
 
@@ -437,3 +460,4 @@ slice has already produced a deep finding that re-planned the rest:
 | S21c | Open-discovery lane (capstone slice 1) | fix: a legacy direct-discovery lane lets a below-floor good cross the direct-use floor late (the open-colony prerequisite); all goldens byte-identical |
 | S21d | Open survival, mortality off (capstone slice 2) | finding (Phase A): retiring the food scaffold collapses the pre-promotion barter market to zero trades — production is post-promotion only, so there is no pre-promotion food supply for the medium to circulate against; two-layer fixes the metric, not the supply; all goldens byte-identical |
 | S21e | Finite seeded-surplus probe, mortality off (capstone slice 3) | finding (Success): a one-time finite tradeable bread supply is sufficient — SALT promotes (tick 37) as medium leader with {WOOD,bread} breadth before the seed's offerable surplus exhausts (tick 44), then production replaces it (zero seeded_minted in the tail); localizes the S21d block at supply *generation*; bounded diagnostic scaffold (S21f is the authentic mechanism); all goldens byte-identical |
+| S21f | Endogenous pre-money household production-for-barter (capstone slice 4) | **SUCCESS — the supply question closed: lineage households cultivate bread (`SelfProduced`, zero `SeededMinted`) and barter the surplus pre-money; SALT promotes on it — money bootstraps from genuine pre-money production-for-barter, no seed/no mint** (gated cultivation-without-FORAGE seam; grain-bounded; mortality off); all goldens byte-identical |

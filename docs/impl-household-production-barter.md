@@ -1,6 +1,12 @@
 # impl-29 — S21f: Endogenous Pre-Money Household Production-for-Barter
 
-Status: IMPLEMENTED — a **SUCCESS**: endogenous cultivated (`SelfProduced`) bread monetizes
+Status: LANDED — a **SUCCESS** (Codex review-of-results: PASS-with-caveats; genuine — no hidden bread
+mint, no circular role adoption, the seam clean, specialized DoL still money-gated). P2/P3 addressed:
+the grain-flow sweep now distinguishes finite-stock from recurring-flow (honest claim: *sufficient
+cumulative grain supply* — a recurring commons, a pure regen flow, OR a large-enough finite stock — not
+"recurring flow strictly needed"; always grain-bounded, never a mint); a no-FORAGE/`known.subsistence
+== None` tripwire added; "grain-bounded" scoped to the cultivation-only regime.
+Endogenous cultivated (`SelfProduced`) bread monetizes
 SALT with NO `SeededMinted` bread anywhere. The gated `household_barter_cultivation` seam runs
 cultivation steering + the own-use phase + the woodcutter→WOOD routing WITHOUT the forage
 substrate; the `frontier_household_barter` scenario (zeroed bread buffers + `starting_food`,
