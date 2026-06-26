@@ -47,165 +47,17 @@
 //! ledger, the bread-Now-wants probe, the sold-for-SALT and emergency tallies — are all
 //! runtime-only, never in `canonical_bytes`).
 
-use econ::good::{GoodId, SALT, WOOD};
+use econ::good::{SALT, WOOD};
 use sim::{Settlement, SettlementConfig};
 
-/// A horizon long enough to clear the cold-start, promote (or fail to), and settle (the S21f/g
-/// money suites use 1600).
-const PROBE_TICKS: u64 = 1_600;
-
-/// The robustness seed set (the S21f/g suites use the same).
-const SEEDS: [u64; 5] = [3, 7, 11, 19, 23];
-
-// ---- shared helpers -----------------------------------------------------
-
-fn living(s: &Settlement) -> usize {
-    (0..s.population()).filter(|&i| s.is_alive(i)).count()
-}
-
-/// Living **lineage** members (the self-feeding cultivators — `household_of` is `Some`).
-fn living_lineage(s: &Settlement) -> usize {
-    (0..s.population())
-        .filter(|&i| s.is_alive(i) && s.household_of(i).is_some())
-        .count()
-}
-
-/// Living **non-lineage** roles (the SALT-rich buyers + the woodcutters — the demand side the
-/// positive check culls in S21g; `household_of` is `None`).
-fn living_non_lineage(s: &Settlement) -> usize {
-    (0..s.population())
-        .filter(|&i| s.is_alive(i) && s.household_of(i).is_none())
-        .count()
-}
-
-fn bread_good(s: &Settlement) -> GoodId {
-    s.bread_good()
-        .expect("the demand-bridge chain carries a bread good")
-}
-
-/// Sweep the consumed-only cushion (both axes together: the buyers' `consumer_staple_buffer`
-/// and the woodcutters' `gatherer_food_cushion` to the same size `c`).
-fn with_cushion(c: u32) -> SettlementConfig {
-    with_cushion_split(c, c)
-}
-
-/// Sweep the two cushion axes INDEPENDENTLY: the buyers' `consumer_staple_buffer` to `consumer`
-/// and the woodcutters' `gatherer_food_cushion` to `gatherer`. The diagonal `with_cushion(c)`
-/// is the `consumer == gatherer` case; this lets the knife-edge claim also bracket off-diagonal
-/// (asymmetric) cushion combinations.
-fn with_cushion_split(consumer: u32, gatherer: u32) -> SettlementConfig {
-    let mut cfg = SettlementConfig::frontier_demand_cushion();
-    if let Some(chain) = cfg.chain.as_mut() {
-        chain.consumer_staple_buffer = consumer;
-        chain.gatherer_food_cushion = gatherer;
-    }
-    cfg
-}
-
-/// The emergency seam at a swept `threshold`.
-fn with_emergency(threshold: u16) -> SettlementConfig {
-    let mut cfg = SettlementConfig::frontier_emergency_provision();
-    if let Some(chain) = cfg.chain.as_mut() {
-        chain.emergency_hunger_threshold = threshold;
-    }
-    cfg
-}
-
-// ---- the per-cell classification vector (Codex P2) ----------------------
-
-/// The full 5-tuple the knife-edge sweep classifies every cell by, plus the broken-invariant
-/// guards a run must always pass. Read-only public accessors only, so collecting it perturbs
-/// nothing.
-#[derive(Clone, Copy, Debug)]
-struct Cell {
-    /// (1) The non-lineage demand side is alive at the end of the run (the S21g cull did NOT
-    /// wipe it out).
-    survived: bool,
-    /// (2) The SURVIVING non-lineage roles still emit a present `Horizon::Now` bread want —
-    /// the bridge did not satiate them out of the bread market.
-    demanded: bool,
-    /// (3) SALT promoted to money.
-    promoted: bool,
-    /// (4) Food was materially BOUGHT on the market over the run (a real demand side).
-    bought_materially: bool,
-    /// (5) NO `SeededMinted`/cushion bread was ever sold for SALT, and the pre-promotion
-    /// bread that monetized SALT was `SelfProduced` (minted volume 0) — the hard provenance
-    /// invariant. A cell where this is false is DISQUALIFIED (a seeded-supply result).
-    provenance_clean: bool,
-    // Broken-invariant guards (must hold regardless of the outcome).
-    conserved: bool,
-    bread_minted_max: u64,
-    extinct: bool,
-    credited_seeded_minted: u64,
-    // Figures for reporting.
-    non_lineage: usize,
-    lineage: usize,
-    starvation: u64,
-    bought: u64,
-    self_produced: u64,
-}
-
-impl Cell {
-    /// The S21h SUCCESS: the demand side survives AND still demands AND SALT promotes AND food
-    /// is materially bought AND the provenance is clean.
-    fn is_success(&self) -> bool {
-        self.survived
-            && self.demanded
-            && self.promoted
-            && self.bought_materially
-            && self.provenance_clean
-    }
-}
-
-/// Bread bought over the run below which we do not call the market demand "material".
-const MATERIAL_BOUGHT_FLOOR: u64 = 1_000;
-
-/// Run `(seed, cfg)` for `ticks` and collect the classification vector. The demand probe is
-/// measured on the LIVING non-lineage roles each tick and the max retained, so a cell where
-/// the survivors demand bread at any point (pre- or post-promotion) reads `demanded = true`.
-fn classify(seed: u64, cfg: &SettlementConfig, ticks: u64) -> Cell {
-    let mut s = Settlement::generate(seed, cfg);
-    let bread = bread_good(&s);
-    let mut conserved = true;
-    let mut bread_minted_max = 0u64;
-    let mut demanded_while_alive = false;
-    for _ in 0..ticks {
-        let report = s.econ_tick();
-        conserved &= report.conserves();
-        bread_minted_max = bread_minted_max.max(report.endowment_of(bread));
-        // Demand among the LIVING non-lineage roles — read each tick so a cell whose buyers
-        // survive and demand (even briefly, before any cull) is distinguished from one whose
-        // buyers are sated to zero Now-wants throughout.
-        if living_non_lineage(&s) > 0 && s.living_non_lineage_with_bread_now_wants(bread) > 0 {
-            demanded_while_alive = true;
-        }
-    }
-    let consumed = s.acquisition_consumed_by_channel();
-    let credited = s.acquisition_credited_by_channel();
-    let (pp_produced, pp_minted) = s.pre_promotion_bread_for_salt_by_provenance();
-    let _ = pp_produced;
-    // The hard provenance invariant: NO cushion (SeededMinted) bread sold for SALT, AND the
-    // pre-promotion bread that monetized SALT was SelfProduced (minted volume 0).
-    let provenance_clean = s.seeded_minted_bread_sold_for_salt() == 0 && pp_minted == 0;
-    // Demand among the survivors at the end (the persisting demand side).
-    let demanded_at_end = s.living_non_lineage_with_bread_now_wants(bread) > 0;
-    Cell {
-        survived: living_non_lineage(&s) > 0,
-        demanded: demanded_while_alive && demanded_at_end,
-        promoted: s.current_money_good() == Some(SALT),
-        bought_materially: consumed.bought >= MATERIAL_BOUGHT_FLOOR,
-        provenance_clean,
-        conserved,
-        bread_minted_max,
-        extinct: living(&s) == 0,
-        credited_seeded_minted: credited.seeded_minted,
-        non_lineage: living_non_lineage(&s),
-        lineage: living_lineage(&s),
-        starvation: s.starvation_deaths_total(),
-        bought: consumed.bought,
-        self_produced: consumed.self_produced,
-    }
-}
+// The classification machinery (the `Cell` 5-tuple, `is_success`, `classify`, the living-roster
+// helpers, the cushion/emergency mutators, and the `PROBE_TICKS`/`SEEDS`/`MATERIAL_BOUGHT_FLOOR`
+// constants) lives in the shared test-support module (impl-32 §3.1) so this suite and the S21i
+// robustness appendix classify every cell by the *same* vector. This is a pure move — the tests,
+// their assertions, and their `eprintln!` output below are unchanged.
+#[path = "support/mod.rs"]
+mod support;
+use support::*;
 
 // =========================================================================
 // 1. The determinism / golden contract

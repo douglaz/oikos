@@ -1,6 +1,58 @@
 # impl-32 — S21i: Robustness Appendix (does the S21f/g/h capstone survive the parameter space, or is it a narrow band?)
 
-Status: SPEC-READY — Codex spec-review NEEDS-REVISION → all four open questions settled and the
+Status: LANDED (impl) — test-additive, no engine change. Shared classifier extracted to
+`sim/tests/support/mod.rs` (the `Cell` 5-tuple / `is_success` / `classify` / mutators / constants,
+plus the new `Regime` enum + `Cell::regime` + one-line formatter); `demand_survival_bridge.rs`
+refactored onto it with its 19 tests byte-identical. New suite `sim/tests/robustness_appendix.rs`
+(15 tests) builds parts A/B/B-sensitivity/B′/C. All five pinned goldens byte-identical; whole-tick
+conservation, `bread_minted_max == 0`, no extinction, and provenance-clean-or-disqualified hold on
+every cell.
+
+Round-2 review fixes (rb-lite, both reviewers addressed): (1) the CORE "WOOD-poor magnitude" axis
+no longer sweeps `chain.wood_buffer` — that field only seeds the NON-lineage woodcutters and is
+**outcome-inert** here (every `Cell` figure byte-identical across `{4,8,12,24,48}` for all seeds),
+so it could only ever report a vacuous ROBUST (Reviewer-1 P2). The axis now sweeps the actual
+lane-driving scarcity, the lineage sellers' recurring `wood_provision` (shipped 0 = the hard WOOD
+floor). (2) `assert_guards` now asserts `!extinct` as a hard broken-invariant guard on every cell
+(Reviewer-1 P2 — a whole-colony die-off must fail the guard, not masquerade as a CULL). (3) a new
+`shipped_builders_are_byte_identical` test pins every `(shipped)` band builder canonical- and
+digest-identical to `frontier_emergency_provision`, so a future scenario-default drift can't silently
+desync the `(shipped)` labels (Reviewer-2 P3). (4) the cache-key comment corrected to `(key, seed)`
+(Reviewer-2 P3). `wood_provision` mints WOOD as conserved `report.endowment` and is not tracked
+food, so the bread provenance stays clean and conservation holds.
+
+Outcome (printed by `capstone_robustness_verdict`, `--nocapture`): **MIXED.**
+- Headline regimes stable across `WIDE_SEEDS` (S21f SUCCESS, S21g CULL, S21h.1 SUCCESS); the S21h.1
+  non-lineage survivor count is **12/18 for every WIDE seed** (reported, not pinned).
+- CORE axes: `grain_regen` **ROBUST** (2 SUCCESS steps each side); `lineage_wood_provision`
+  **NARROW** — shipped `wood_provision=0` is BOUNDED-BY-AXIS on the low side (the WOOD floor), but a
+  single notch (`wood_provision=1`) flips every `CROSS_SEEDS` cell to SURVIVED-NO-PROMOTE (bread
+  buying collapses ~6.6k → ~50 as the relaxed WOOD want stops driving the bread→SALT
+  `IndirectFor{WOOD}` lane), so the high-side margin is 0; `emergency_hunger_threshold`
+  **BOUNDED-BY-AXIS** (shipped 11 = top validator bound; low side 4/4 SUCCESS steps);
+  `salt_direct_use_period` **NARROW** — period {4,6,8(shipped),16} all SUCCESS but **period=12 is
+  SURVIVED-NO-PROMOTE across all three `CROSS_SEEDS`** (a non-monotonic promotion hole, provenance
+  clean, demand alive — SALT just fails to lead), so the high-side two-step margin is 0.
+- SENSITIVITY axes all SUCCESS where feasible (acceptors {1,2,3}; gatherers/consumers/founders bands;
+  death_window {2,3,4}; birth_hunger_ceiling {8,10}); `birth_hunger_ceiling=6` and
+  `min_indirect_target_goods=3` skipped as infeasible (logged, not classified). Both interaction-map
+  shipped cells SUCCESS.
+
+Per the pre-named finding mode (§2): the capstone is the band-qualified **MIXED** outcome —
+money + mortality coexist as an existence proof that is seed-robust and band-robust on grain flow,
+hard-bounded on the emergency threshold, but **load-bearing on two CORE axes**:
+`lineage_wood_provision` (the lane needs the lineage at the WOOD floor — one notch of WOOD relief
+kills it) and `salt_direct_use_period` (the period-12 anchor-density hole). WOOD scarcity is thus
+NOT robust — it is the knife-edge the spec's stated intent asks about ("how WOOD-poor must the
+colony be for SALT to lead?"), answered: maximally.
+
+Codex review-of-results: **PASS-WITH-CAVEATS** (no P1, no code blocker — the WOOD-axis swap is honest
+and necessary, guards assert on every swept cell, the period-12 hole is real across `CROSS_SEEDS`, not
+a classifier artifact). Two doc fixes addressed: the §2 verdict taxonomy is now mutually exclusive
+(MIXED = headline-stable + ≥1 narrow + ≥1 robust/bounded CORE axis), and the stale §3.2 CORE-axis text
+now names lineage `wood_provision` (not the inert `chain.wood_buffer`). Report §8 + memory follow.
+
+Pre-impl: SPEC-READY — spec-review NEEDS-REVISION → all four open questions settled and the
 6-item punch-list folded in (§4 records the decisions; §2/§3/§5 carry the changes).
 
 ## 0. One-paragraph summary
@@ -72,14 +124,18 @@ criterion is checkable, not asserted by fiat.
 
 **Capstone verdicts (stated before running; the suite reports which obtains):**
 
+The three verdicts are **mutually exclusive** (checked in order):
+
 - **ROBUST.** Every CORE axis is ROBUST-on-axis (or BOUNDED-BY-AXIS on a hard bound) AND the three
   headline regimes hold across all `WIDE_SEEDS`. → The capstone headline stands as written (still "in
   this configured topology").
-- **NARROW-BAND FINDING.** Any CORE axis is NARROW-on-axis, OR a headline regime fails for some seed.
-  → The capstone is **downgraded** in the report to an existence proof under a narrow band, with the
-  limiting axis/axes named.
-- **MIXED.** Robust on some CORE axes, narrow on others → report the per-axis map; the verdict names
-  which axes are load-bearing.
+- **NARROW-BAND FINDING.** A headline regime fails for some seed, OR every non-bounded CORE axis is
+  NARROW-on-axis (no robust axis remains). → The capstone is **downgraded** in the report to an
+  existence proof under a narrow band, with the limiting axis/axes named.
+- **MIXED.** Otherwise: the headline regimes are seed-stable but the CORE axes split — at least one is
+  NARROW-on-axis **and** at least one is ROBUST-on-axis or BOUNDED-BY-AXIS. → Report the per-axis map;
+  the verdict names which axes are load-bearing. (A MIXED result is itself band-qualified: the headline
+  holds only within the disclosed envelope, narrow on the load-bearing axes.)
 
 This is a classification, not a pass/fail gate: **a narrow-band finding is a first-class, publishable
 outcome**, exactly as S21d/S21g were. The verdict test (§3.2 C) **must not assert "ROBUST"** — it
@@ -154,9 +210,13 @@ structure or hit hard feasibility bounds — Codex P1/P2).
   2. **Grain flow** `nodes[grain].regen` — band scaling pre-money food supply down and up around the
      shipped 24, e.g. `{12, 18, 24, 36, 48}`. Too little starves the lineage; too much over-feeds and
      may collapse bread demand.
-  3. **WOOD-poor magnitude** `chain.wood_buffer` — band around the shipped 12, e.g. `{4,8,12,24,48}`.
-     The S21e second diagnostic axis: WOOD scarcity is what makes bread→SALT IndirectFor{WOOD} lanes
-     form; how WOOD-poor must the colony be for SALT to lead?
+  3. **WOOD-poor magnitude** — the lineage sellers' recurring `wood_provision`, band `{0,1,2,3,4}`,
+     shipped **0** (the hard WOOD floor → low side BOUNDED-BY-AXIS; the two-step criterion applies on
+     the high side). **Not `chain.wood_buffer`** — that field seeds only the non-lineage woodcutters and
+     is outcome-inert here (every `Cell` figure is byte-identical across its band for all seeds, a
+     vacuous ROBUST); the lane-driving scarcity is the lineage sellers' unsatisfied WOOD want, relaxed
+     one notch per unit of `wood_provision`. The S21e second diagnostic axis: WOOD scarcity is what
+     makes bread→SALT IndirectFor{WOOD} lanes form; how WOOD-poor must the colony be for SALT to lead?
   4. **SALT anchor density** `barter.salt_direct_use_period` (1-in-N carry the direct SALT want) —
      band around the shipped period 8, e.g. `{4,6,8,12,16}` (smaller period = denser anchor). How
      dense must the regression-theorem direct-use anchor be?
