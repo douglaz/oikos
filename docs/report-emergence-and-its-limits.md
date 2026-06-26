@@ -3,7 +3,7 @@
 *An experimental report on emergent money, capital, and survival in a praxeologic simulation.*
 
 > Status: working research report (raw material for a future article). Covers the milestone arc
-> through S21g (the money sub-arc, the full open-colony-capstone *supply* arc, and the mortality-on capstone — a cold-start finding). Every result below
+> through S21h (the money sub-arc, the full open-colony-capstone *supply* arc, the mortality-on cold-start finding, and its resolution — a produced demand-side survival floor that lets money and mortality coexist). Every result below
 > was built additively behind a default-off flag, kept the prior conformance goldens byte-identical,
 > conserved every tick, ran deterministically, and was reviewed by an independent second model (Codex)
 > at both the spec and the result stage. Honest negative findings are reported as first-class results,
@@ -309,14 +309,16 @@ two-lane order book," or "scaffold-free colony money") overstates what the runs 
 
 ---
 
-## 7. The open-colony arc (supply question closed; mortality-on a cold-start finding) and open directions
+## 7. The open-colony arc (supply question closed; mortality-on resolved via a demand-side survival floor) and open directions
 
 The capstone — embedding the working two-lane money into an *open* colony (on-market survival +
-terminal consumption, removing the S19 abstractions) — was built as a slice arc S21c→S21f and **its
+terminal consumption, removing the S19 abstractions) — was built as a slice arc S21c→S21h and **its
 supply question is now closed** (S21f: endogenous pre-money production-for-barter monetizes SALT, no
 seed/no mint, for this configured open-market topology), then stress-tested under the positive check
-(S21g — a cold-start finding: mortality culls the non-cultivating demand side before the market forms;
-see below). The arc began with a deep finding that re-planned the rest:
+(S21g — a cold-start finding: mortality culls the non-cultivating demand side before the market forms),
+and the finding **then resolved** (S21h — a produced demand-side survival floor lets money and mortality
+coexist after a one-off cold-start cull; see below). The arc began with a deep finding that re-planned
+the rest:
 
 - **S21a — Marketability / carrying cost (a finding).** Two-lane clearing (S20) fixed the *round-trip*
   but not the *saleability race*; with on-market survival, S18's universal-necessity dominance would
@@ -350,8 +352,8 @@ see below). The arc began with a deep finding that re-planned the rest:
   is **path-dependent** (once the eligible candidate set is non-empty, a good that crosses the
   direct-use floor *late* can be starved of further direct offers). That path-dependence is a
   documented limitation to fix where it actually bites: open-colony integration.
-- **The open-colony capstone (a 5-slice sub-arc — supply question closed at S21f, mortality-on a
-  cold-start finding at S21g).** Embedding the
+- **The open-colony capstone (a 6-slice sub-arc — supply question closed at S21f, mortality-on a
+  cold-start finding at S21g, resolved via a demand-side survival floor at S21h).** Embedding the
   money machinery into a rich *open* colony — where agents survive by **buying food on the market**
   (terminal consumption financed by production/sales, no off-market hearth mint, no own-labor forage)
   — was built S21c→S21f with **mortality off** to isolate the money/supply question, then S21g turned
@@ -370,7 +372,10 @@ see below). The arc began with a deep finding that re-planned the rest:
   households cultivate `SelfProduced` bread and barter the surplus pre-money, monetizing SALT with no
   seed/no mint; see below)*; and **S21g — mortality-on over the open-market colony** *(landed as a
   **cold-start finding**: the positive check culls the non-cultivating demand side before the market
-  forms, so money fails under mortality — a spec pre-named outcome; see below)*. Mortality went last so
+  forms, so money fails under mortality — a spec pre-named outcome; see below)*; and **S21h — the
+  demand-side survival bridge** *(landed as the **resolution Success**: a produced own-labor emergency
+  survival floor keeps the demand side alive-and-hungry, so money and mortality coexist after a one-off
+  cold-start cull; a seeded one-time cushion does NOT — the knife-edge finding; see below)*. Mortality went last so
   a monetary failure could not be masked by a demographic wipeout, and it was meaningful precisely
   because the colony finally had a working clearing market to survive in — which is exactly what the
   finding isolates: the *demand side* of that market cannot survive the positive check's cold-start. The
@@ -499,20 +504,44 @@ see below). The arc began with a deep finding that re-planned the rest:
   seeds {3, 7, 11, 19, 23}; a 10k-persistence smoke confirms no late die-off and money stays dead. All
   gated default-off; `starvation_deaths_total` stays out of `canonical_bytes`; all 20 goldens
   byte-identical (mirroring `frontier_mortality`).
-- **Next (S21h — the S21g-localized step): a demand-side survival bridge.** Keep the non-cultivating
-  buyers/woodcutters alive long enough for the market to form under mortality, sliced like the supply
-  arc: *S21h.0* a bounded diagnostic (a finite, **consumed-only** survival cushion for the non-lineage
-  roles — eaten, never sold — does the demand side simply surviving bring S21f money back under
-  mortality?), then *S21h.1* the authentic mechanism (a produced, costly, low-yield, self-consumed
-  emergency self-provisioning fallback triggered near critical hunger, that **preserves bread demand**
-  rather than collapsing the buyers into the cultivation commune). The deep dilemma to test: a bridge
-  *weak* enough to preserve demand may fail to keep buyers alive, while one *strong* enough to keep
-  them alive may crowd out the market and kill money — if so, that knife-edge is itself a finding (the
-  model needs a finer survival/consumption structure before money and mortality coexist).
-- **Then / later:** an S21f/S21g **robustness appendix** (seeds, grain flow, WOOD-poor magnitude, SALT
-  anchor density, strong-bar thresholds — before any article submission); endogenizing the role
-  topology (households *drift* into roles) and the clearing institution (the two-lane book is still
-  configured). (Robustness for the in-cycle result is done — §6.)
+- **S21h — Demand-side survival bridge: money and mortality coexist (the S21g resolution).** Keep the
+  non-cultivating buyers/woodcutters alive long enough for the market to form under mortality, sliced
+  like the supply arc (S21e seeded → S21f produced). Codex predicted the dilemma: a bridge *weak* enough
+  to preserve demand may fail to keep buyers alive; one *strong* enough to keep them alive may sate them
+  out of the bread market and kill money. **The result splits exactly along that dilemma.** *S21h.0 — the
+  consumed-only cushion (the bounded diagnostic):* a finite starting bread cushion for the two culled
+  roles (buyers' `consumer_staple_buffer`, woodcutters' new `gatherer_food_cushion`), eaten but never
+  sold. **The knife-edge finding: no cushion size yields a *clean* demand-bridge success.** Too small →
+  only 4–5 of 18 survive (too thin a demand hub to monetize SALT); too large → the cushion sates the
+  buyers out of the bread market while it lasts, then runs out and the full cull lands anyway. On the
+  equal-buffer diagonal SALT never promotes at all (across sizes and seeds); off the diagonal there is
+  likewise no clean success — and the cells that *do* promote do so **only by selling seeded
+  (`SeededMinted`) cushion bread for SALT**, the seeded-supply-*disqualified* path (the S21e/S21f trap),
+  not an authentic demand bridge; the hard per-cell `SeededMinted`-sold-for-SALT==0 invariant is what
+  classifies those cells as disqualified rather than as successes. A one-time stock cannot keep the
+  demand side both *alive* and *hungry* through the pre-money wait. *S21h.1 — produced emergency
+  self-provisioning (the authentic mechanism):* a **configured own-labor survival institution** — a
+  produced, **no-grain-input**, low-yield, self-consumed own-labor bread floor (the engine's established
+  own-labor subsistence tier, *not* ordinary grain→flour→bread production and *not* the removal of all
+  survival scaffolding) that fires only near starvation and pulls hunger to one notch below the trigger
+  — a recurring near-critical floor, immediately eaten, **no offerable remainder** (so it can never be
+  sold for SALT or fake supply). **This threads the knife-edge:** it keeps 12 of the 18 non-lineage roles
+  alive *and* hungry (so they still demand and buy bread), and **SALT promotes on the lineage's
+  `SelfProduced` bread** (`seeded_minted == 0` entirely; the pre-promotion bread that monetizes SALT is
+  `SelfProduced`, not minted or emergency). So the open colony finally has **money + mortality together —
+  after a one-off cold-start cull** (6 of 18 non-lineage roles still die; starvation then *stops*: a
+  partial bridged band, durable to 10k ticks, **not** full demand-side survival nor an ongoing
+  positive-check band). A recurring produced floor sits in the window a one-time stock cannot: it keeps
+  the role alive *without satiating it*. Robust across seeds {3,7,11,19,23} and the threshold sweep 7–11;
+  every new field/flag defaults off, canonicalized ON-only with injective digest tags, conservation every
+  tick; all 21 prior goldens byte-identical. *(Codex review-of-results: PASS-WITH-CAVEATS — no P0/P1
+  result defect; the cushion negative is scoped to "no clean success in the tested sweep" and the
+  coexistence claim to the partial one-off cull, per the wording above.)*
+- **Then / later:** an S21f/S21g/S21h **robustness appendix** (seeds, grain flow, WOOD-poor magnitude,
+  SALT anchor density, strong-bar thresholds, the emergency-floor yield/threshold window — before any
+  article submission); endogenizing the role topology (households *drift* into roles, rather than the
+  emergency floor being a *configured* survival institution) and the clearing institution (the two-lane
+  book is still configured). (Robustness for the in-cycle result is done — §6.)
 
 ---
 
@@ -541,3 +570,4 @@ see below). The arc began with a deep finding that re-planned the rest:
 | S21e | Finite seeded-surplus probe, mortality off (capstone slice 3) | finding (Success): a one-time finite tradeable bread supply is sufficient — SALT promotes (tick 37) as medium leader with {WOOD,bread} breadth before the seed's offerable surplus exhausts (tick 44), then production replaces it (zero seeded_minted in the tail); localizes the S21d block at supply *generation*; bounded diagnostic scaffold (S21f is the authentic mechanism); all goldens byte-identical |
 | S21f | Endogenous pre-money household production-for-barter (capstone slice 4) | **SUCCESS — the supply question closed: lineage households cultivate bread (`SelfProduced`, zero `SeededMinted`) and barter the surplus pre-money; SALT promotes on it — money bootstraps from genuine pre-money production-for-barter, no seed/no mint** (gated cultivation-without-FORAGE seam; grain-bounded; mortality off); all goldens byte-identical |
 | S21g | Mortality-on over the open-market colony (capstone, the positive check) | finding (money fails under mortality, a spec pre-named outcome): turning the S17 positive check ON (`hunger_critical=need_max`, `birth_hunger_ceiling=8`, the S17 deltas) over the S21f money colony culls all 18 non-self-provisioning market roles (SALT-rich buyers + woodcutters) in a one-off cold-start cull (~tick 7) before any market forms — SALT never promotes, no food is ever bought; the self-feeding cultivation lineage survives (cold-start timing trace: `first_hunger_drop 5 < first_starvation_death 7`) into a quiescent subsistence commune. Mortality-off control = S21f money works; neither endorsed rescue lever (grain-flow nor cultivate-timing) can rescue (the dying roles don't cultivate); robust across seeds; all goldens byte-identical |
+| S21h | Demand-side survival bridge (capstone slice 6, the S21g resolution) | **SUCCESS — money and mortality coexist:** a produced no-grain-input own-labor emergency survival floor (a configured subsistence institution) keeps 12 of 18 non-lineage roles alive *and* hungry, so SALT promotes on the lineage's `SelfProduced` bread (`seeded_minted == 0`) under the positive check — after a one-off cold-start cull (6/18 still die, then starvation stops: a partial bridged band, durable to 10k). The bounded diagnostic (a finite *seeded* consumed-only cushion, S21h.0) is the **knife-edge finding**: no cushion size threads it cleanly — too small culls, too large sates out of the market; the diagonal never promotes, off-diagonal promotions are seeded-supply-disqualified. Robust across seeds + threshold sweep; all goldens byte-identical (Codex review-of-results: PASS-WITH-CAVEATS, no P0/P1) |
