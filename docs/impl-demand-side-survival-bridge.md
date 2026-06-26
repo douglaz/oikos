@@ -1,6 +1,26 @@
 # impl-31 — S21h: Demand-Side Survival Bridge (does keeping the buyers alive bring money back under mortality?)
 
-Status: SPEC-READY (Codex round 1 + round 2 NEEDS-REVISION → all addressed: no-input emergency fork settled; the emergency good pinned to the BREAD staple credited SelfProduced, immediately consumed, no offerable remainder [not FORAGE — avoids S12 pollution]; cushion 'consumed-only' overclaim fixed with a hard per-cell seeded-sold==0 invariant; the 5-tuple sweep classifier; demand-preservation test)
+Status: IMPLEMENTED — Codex review-of-results PASS-WITH-CAVEATS (framing scoped below;
+no P0/P1 result defect). **S21h.0 = the KNIFE-EDGE FINDING**: no seeded-cushion size yields a
+clean demand-bridge success (too small → only 4–5 of 18 survive, too thin to monetize; too
+large → sated out of the market then the cull lands anyway). On the equal-buffer diagonal SALT
+never promotes at all (across sizes and seeds); off the diagonal there is likewise no clean
+success — and the cells that *do* promote do so only by selling seeded `SeededMinted` cushion
+bread for SALT (the seeded-supply-*disqualified* path, not an authentic demand bridge). The
+hard per-cell `SeededMinted`-sold-for-SALT==0 invariant is what classifies those cells as
+disqualified rather than as successes. **S21h.1 = the SUCCESS** (the produced near-critical
+emergency BREAD floor threads it: 12 of 18 non-lineage roles survive AND still demand AND buy,
+SALT promotes on the lineage's `SelfProduced` bread, `seeded_minted == 0` entirely, robust
+across seeds {3,7,11,19,23} and the threshold sweep 7–11; durable to 10k ticks). The emergency
+floor is a *configured own-labor survival institution* — a recurring no-grain-input subsistence
+tier (the engine's established own-labor subsistence path), not ordinary grain→flour→bread
+production and not the removal of all survival scaffolding. So the open colony has **money +
+mortality together after a one-off cold-start cull** (6 of 18 non-lineage roles still die;
+starvation then stops — a partial bridged band, not full demand-side survival nor an ongoing
+positive-check band). All 21 existing goldens byte-identical; `fmt`/`clippy --workspace
+--all-targets -D warnings` clean; conservation every tick; deterministic. Suite:
+`sim/tests/demand_survival_bridge.rs` (19 tests).
+Prior: SPEC-READY (Codex round 1 + round 2 NEEDS-REVISION → all addressed: no-input emergency fork settled; the emergency good pinned to the BREAD staple credited SelfProduced, immediately consumed, no offerable remainder [not FORAGE — avoids S12 pollution]; cushion 'consumed-only' overclaim fixed with a hard per-cell seeded-sold==0 invariant; the 5-tuple sweep classifier; demand-preservation test)
 Branch: `feat/demand-side-survival-bridge`
 Base: master @ `b7beb39` (S21g landed)
 

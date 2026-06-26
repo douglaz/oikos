@@ -1224,6 +1224,25 @@ pub struct ChainConfig {
     pub cycle_b_input_buffer: u32,
     /// S19: Y units each role C producer starts holding and reserves as recipe input.
     pub cycle_c_input_buffer: u32,
+    /// S21h.0: a finite **consumed-only** starting bread cushion for the NON-LINEAGE
+    /// woodcutters (`Vocation::Gatherer`, built via [`build_agent`] — lineage members use
+    /// `build_demography_agent`). A dedicated field rather than the shared `bread_buffer`
+    /// (which also seeds the chain's other non-consumer roles) so raising it can never
+    /// re-seed lineage/seller bread and break the `SelfProduced`/sold-for-SALT provenance.
+    /// `0` for every existing config, so the gatherers carry no bread and the run is
+    /// byte-identical (canonicalized ON-only). The buyers' analogous cushion reuses the
+    /// already-wired `consumer_staple_buffer`.
+    pub gatherer_food_cushion: u32,
+    /// S21h.1: the gated EMERGENCY self-provisioning trigger — a non-lineage
+    /// `Consumer`/`Gatherer` becomes eligible for the near-critical own-labor bread floor
+    /// ([`Settlement::run_emergency_self_provision`]) **only when its hunger reaches this
+    /// threshold**, and the floor pulls its projected hunger down to just below it
+    /// (`threshold - 1`), so the role survives WITHOUT being satiated out of the bread
+    /// market (demand-preserving). `0` (off) for every existing config, so the phase is
+    /// inert and the run is byte-identical (canonicalized ON-only). When on it is
+    /// validated above the lineage `cultivate_hunger_in` trigger and strictly below
+    /// `hunger_critical`, so it fires within the alive-but-lethal-pressure window.
+    pub emergency_hunger_threshold: u16,
 }
 
 impl ChainConfig {
@@ -1336,6 +1355,11 @@ impl ChainConfig {
             cycle_a_input_buffer: 0,
             cycle_b_input_buffer: 0,
             cycle_c_input_buffer: 0,
+            // S21h off by default: no demand-side survival bridge — the gatherers carry no
+            // bread cushion and the emergency self-provisioning phase is inert, so every
+            // existing config and its goldens are byte-identical (both canonicalized ON-only).
+            gatherer_food_cushion: 0,
+            emergency_hunger_threshold: 0,
         }
     }
 
@@ -1437,6 +1461,9 @@ impl ChainConfig {
             cycle_a_input_buffer: 0,
             cycle_b_input_buffer: 0,
             cycle_c_input_buffer: 0,
+            // S21h off by default (see `grain_flour_bread`).
+            gatherer_food_cushion: 0,
+            emergency_hunger_threshold: 0,
         }
     }
 
@@ -1516,6 +1543,9 @@ impl ChainConfig {
             cycle_a_input_buffer: 6,
             cycle_b_input_buffer: 6,
             cycle_c_input_buffer: 6,
+            // S21h off by default (see `grain_flour_bread`).
+            gatherer_food_cushion: 0,
+            emergency_hunger_threshold: 0,
         }
     }
 }
@@ -4084,6 +4114,68 @@ impl SettlementConfig {
         cfg
     }
 
+    /// S21h.0 — the **consumed-only demand-side survival cushion** (the bounded diagnostic):
+    /// [`Self::frontier_open_colony_mortality`] (the S21g colony where the positive check
+    /// culls the non-cultivating demand side before the money market forms) plus a finite
+    /// STARTING bread cushion for the two non-lineage market roles that S21g wipes out:
+    /// - the SALT-rich buyers (`Vocation::Consumer`): the already-wired `consumer_staple_buffer`;
+    /// - the specialist woodcutters (`Vocation::Gatherer`): the new dedicated
+    ///   `gatherer_food_cushion` (NOT the shared `bread_buffer`, which would re-seed the
+    ///   lineage/seller bread and break the sold-for-SALT provenance).
+    ///
+    /// The cushion is **consumed-only**: it is swept to the `SeededMinted` acquisition channel
+    /// at generation and eaten over the run — so S21h.0 RELAXES the S21g "`seeded_minted`
+    /// *consumed* == 0" bar (the cushion IS eaten) but KEEPS the hard per-cell invariant
+    /// "`seeded_minted` *sold-for-SALT* == 0" ([`Self::seeded_minted_bread_sold_for_salt`] /
+    /// [`Self::pre_promotion_bread_for_salt_by_provenance`]): SALT must promote only on the
+    /// lineage's `SelfProduced` bread, never on cushion bread (a cell that sells cushion bread
+    /// for SALT is a seeded-supply result, not a demand-survival one — disqualified).
+    ///
+    /// The two cushion sizes are the disclosed knife-edge sweep axis (the acceptance suite
+    /// brackets the regimes: too-weak → the S21g cull; a middle window → buyers survive AND
+    /// still demand bread AND SALT promotes; too-strong → buyers satiated out of the market →
+    /// no promotion). This default is one disclosed headline cell; every other delta is
+    /// inherited from `frontier_open_colony_mortality`. Default off (both buffers 0) reverts
+    /// to `frontier_open_colony_mortality` byte-for-byte.
+    pub fn frontier_demand_cushion() -> Self {
+        let mut cfg = Self::frontier_open_colony_mortality();
+        if let Some(chain) = cfg.chain.as_mut() {
+            // The headline cell (the suite sweeps both axes). A finite consumed-only cushion
+            // for the two culled non-lineage roles — the buyers and the woodcutters.
+            chain.consumer_staple_buffer = 16;
+            chain.gatherer_food_cushion = 16;
+        }
+        cfg
+    }
+
+    /// S21h.1 — **produced emergency self-provisioning** (the authentic mechanism): instead of
+    /// a finite seeded cushion, the non-lineage demand-side roles keep themselves alive by a
+    /// produced, no-input, low-yield, self-consumed own-labor BREAD floor that fires only near
+    /// starvation ([`Self::run_emergency_self_provision`], gated by
+    /// [`ChainConfig::emergency_hunger_threshold`]). Derived from
+    /// [`Self::frontier_open_colony_mortality`] with the emergency seam on and NO seeded
+    /// cushion — so `seeded_minted == 0` is fully restored (the S21g provenance), and the only
+    /// bread the non-lineage roles ever hold is the emergency `SelfProduced` floor they
+    /// immediately eat (never offerable, never sold for SALT).
+    ///
+    /// The threshold is the disclosed yield-sweep axis: pinned at `11` here (~10–11 per the
+    /// spec — above the lineage `cultivate_hunger_in = 6` trigger and strictly below
+    /// `hunger_critical = 12`, so it fires within the alive-but-lethal-pressure window). The
+    /// floor pulls projected hunger to `threshold - 1`, a near-critical level that keeps the
+    /// role alive WITHOUT satiating it — so it still demands and prefers to BUY bread (the
+    /// demand-preserving property a one-time cushion cannot guarantee). Default off (threshold
+    /// 0) reverts to `frontier_open_colony_mortality` byte-for-byte.
+    pub fn frontier_emergency_provision() -> Self {
+        let mut cfg = Self::frontier_open_colony_mortality();
+        if let Some(chain) = cfg.chain.as_mut() {
+            // No seeded cushion (seeded_minted stays 0); the emergency floor is the only
+            // demand-side survival lever. `11` is ~10–11, above cultivate_hunger_in (6) and
+            // below hunger_critical (12) — the validated alive-but-lethal-pressure window.
+            chain.emergency_hunger_threshold = 11;
+        }
+        cfg
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).
@@ -4666,6 +4758,20 @@ pub struct Settlement {
     /// S21e.1: runtime-only finite seeded-surplus non-vacuity/exhaustion trace.
     /// Diagnostic, not canonical.
     seeded_surplus_trace: SeededSurplusTrace,
+    /// S21h.0: runtime-only cumulative count of `SeededMinted` bread units transferred out
+    /// of a seller (via [`AcquisitionLedger::transfer_as_bought`]) in a bread→SALT trade —
+    /// pre-promotion barter where the counterparty good is SALT, or post-promotion spot
+    /// sales once SALT is the money good. The hard demand-bridge invariant: this stays 0 on
+    /// every cushion cell, so SALT can only monetize on the lineage's `SelfProduced` bread,
+    /// never on cushion (`SeededMinted`) bread. Diagnostic, NOT digested. Independent of the
+    /// `seeded_surplus_enabled` gate (the cushion is a buffer, not `seeded_surplus_bread`).
+    seeded_minted_bread_sold_for_salt: u64,
+    /// S21h.1: runtime-only cumulative emergency-provisioned bread units (produced == eaten
+    /// in [`Self::run_emergency_self_provision`]) — the non-lineage roles' own-labor survival
+    /// floor. The demand-preservation test reads it to confirm the floor is the SURVIVAL
+    /// minimum, not the bulk of the demand side's food (post-promotion their food is
+    /// materially BOUGHT, with the emergency floor a small tail). `0` off the seam; not digested.
+    emergency_bread_provisioned: u64,
     econ_tick: u64,
     last_report: EconTickReport,
     /// The settlement **commons** (G4a real death): the conserved sink that holds a
@@ -4933,6 +5039,14 @@ struct ChainRuntime {
     /// [`ChainConfig::household_barter_cultivation`]). `false` for every existing config, so
     /// cultivation still requires the forage substrate and the run is byte-identical.
     household_barter_cultivation: bool,
+    /// S21h.0: the non-lineage woodcutters' consumed-only bread cushion (see
+    /// [`ChainConfig::gatherer_food_cushion`]). `0` for every existing config; canonicalized
+    /// ON-only (its differing gatherer starting stock already splits the digest).
+    gatherer_food_cushion: u32,
+    /// S21h.1: the emergency self-provisioning trigger (see
+    /// [`ChainConfig::emergency_hunger_threshold`]). `0` (off) for every existing config, so
+    /// the [`Settlement::run_emergency_self_provision`] phase is inert and byte-identical.
+    emergency_hunger_threshold: u16,
     /// S21d.0: retire the food mints (see [`ChainConfig::retire_food_mints`]). `false` for every
     /// existing config, so the demographic + producer staple mints fire and the run is
     /// byte-identical (the flag is canonicalized ON-only).
@@ -5421,6 +5535,17 @@ impl AcquisitionLedger {
         let mut held = [0u64; FoodChannel::COUNT];
         for lot in self.lots.values().flat_map(|q| q.iter()) {
             held[lot.channel.index()] += lot.qty;
+        }
+        held
+    }
+
+    /// Tracked-food currently held by one agent, split by channel.
+    fn held_by_agent(&self, agent: AgentId) -> [u64; FoodChannel::COUNT] {
+        let mut held = [0u64; FoodChannel::COUNT];
+        if let Some(queue) = self.lots.get(&agent) {
+            for lot in queue {
+                held[lot.channel.index()] += lot.qty;
+            }
         }
         held
     }
@@ -6511,6 +6636,43 @@ impl Settlement {
                     );
                 }
             }
+            // S21h.1: the emergency self-provisioning threshold ordering (mirror the
+            // cultivation ordering checks above). When the gated phase is on it must fire
+            // (1) ABOVE the lineage `cultivate_hunger_in` trigger (so the non-lineage
+            // emergency floor is distinct from — and slower than — the lineage's cultivation
+            // hysteresis, and never pre-empts it), and (2) STRICTLY BELOW `hunger_critical`
+            // (so the floor fires within the alive-but-lethal-pressure window, before the
+            // hunger clamp, rather than only once a death streak has begun). Off (every
+            // existing config, threshold 0) both checks are skipped and the run is unchanged.
+            if chain.emergency_hunger_threshold > 0 {
+                // The emergency floor produces and eats the chain's BREAD to relieve hunger,
+                // but the need readback only treats `known.hunger` (or `known.subsistence`)
+                // as food — so a chain whose bread is NOT the hunger staple would make the
+                // floor produce + consume a good that never lowers hunger, and the seam would
+                // silently fail (the role still starves). Require the produced bread to be the
+                // hunger good (mirror the own-use cultivation check above).
+                assert!(
+                    chain.content.bread() == known.hunger,
+                    "emergency self-provisioning requires the produced bread to be the hunger \
+                     good (the needs readback only relieves hunger from known.hunger / \
+                     known.subsistence, so a non-staple emergency bread floor would never \
+                     lower hunger and the seam would silently fail)"
+                );
+                assert!(
+                    chain.emergency_hunger_threshold < config.dynamics.hunger_critical,
+                    "emergency self-provisioning requires emergency_hunger_threshold < \
+                     hunger_critical (else the floor only fires once the role is already \
+                     critical / past the hunger clamp)"
+                );
+                if chain_config_own_use_cultivation_active(chain) {
+                    assert!(
+                        chain.cultivate_hunger_in < chain.emergency_hunger_threshold,
+                        "emergency self-provisioning requires cultivate_hunger_in < \
+                         emergency_hunger_threshold (the non-lineage emergency floor is \
+                         distinct from and slower than the lineage cultivation trigger)"
+                    );
+                }
+            }
             // S7.2 prerequisite: a built tool is useless unless holding it makes the
             // builder eligible to adopt (S7.1), so producible capital requires the
             // tool-acquisition gate. The capital scenario composes both; this guards a
@@ -6560,6 +6722,8 @@ impl Settlement {
                 cultivation_sells_surplus: chain.cultivation_sells_surplus,
                 multigood_money: chain.multigood_money,
                 household_barter_cultivation: chain.household_barter_cultivation,
+                gatherer_food_cushion: chain.gatherer_food_cushion,
+                emergency_hunger_threshold: chain.emergency_hunger_threshold,
                 retire_food_mints: chain.retire_food_mints,
                 acquisition_ledger: chain.acquisition_ledger,
                 productive_reentry: chain.productive_reentry,
@@ -6613,6 +6777,8 @@ impl Settlement {
             bootstrap_trace: BootstrapTrace::default(),
             bread_seller_trace: Vec::new(),
             seeded_surplus_trace: SeededSurplusTrace::default(),
+            seeded_minted_bread_sold_for_salt: 0,
+            emergency_bread_provisioned: 0,
             econ_tick: 0,
             last_report: EconTickReport::default(),
             commons_gold: Gold::ZERO,
@@ -6797,6 +6963,8 @@ impl Settlement {
             bootstrap_trace: BootstrapTrace::default(),
             bread_seller_trace: Vec::new(),
             seeded_surplus_trace: SeededSurplusTrace::default(),
+            seeded_minted_bread_sold_for_salt: 0,
+            emergency_bread_provisioned: 0,
             econ_tick: 0,
             last_report: EconTickReport::default(),
             commons_gold: Gold::ZERO,
@@ -7144,6 +7312,16 @@ impl Settlement {
         // just-cultivated bread can endow this tick's newborn). A no-op off the gated
         // cultivation path, so every other run is byte-identical.
         self.run_own_use_cultivation(&mut report);
+
+        // ---- 6a-bis'. EMERGENCY SELF-PROVISIONING (S21h.1): the demand-side survival
+        // bridge — each hungry non-lineage Consumer/Gatherer that reached the emergency
+        // threshold produces (own labor, no input) and immediately eats just enough bread to
+        // pull its hunger one notch below the threshold, so it survives WITHOUT being
+        // satiated out of the bread market (demand-preserving). Conserved (produced ==
+        // eaten, never offered), credited SelfProduced. After the own-use cultivation phase
+        // and BEFORE the own-use consume passes (so its consume-log tail is sinked by them).
+        // A no-op off the gated seam, so every other run is byte-identical.
+        self.run_emergency_self_provision(&mut report);
 
         // ---- 6a-ter. PROVENANCE: OWN-USE CONSUME (S16): sink the cultivators' own-use bread
         // consume (the consumed-log tail past the market pass), produced-first. No-op off path.
@@ -9310,6 +9488,126 @@ impl Settlement {
         }
     }
 
+    /// EMERGENCY SELF-PROVISIONING phase (S21h.1): the demand-side survival bridge. A
+    /// **non-lineage** `Consumer`/`Gatherer` (the SALT-rich buyers + the specialist
+    /// woodcutters — `household: None`, never cultivators) that has reached
+    /// [`ChainConfig::emergency_hunger_threshold`] produces, BY ITS OWN LABOR and from no
+    /// input, just enough of the tracked hunger staple (BREAD — not a FORAGE/subsistence
+    /// good, so the value scale never gains a `known.subsistence` term) to pull its
+    /// projected hunger down to one notch BELOW the threshold, then immediately eats all of
+    /// it through the same consumption-readback seam the own-use cultivation uses.
+    ///
+    /// The bread is booked `report.produced` (a conserved own-labor source, never a mint or
+    /// endowment) and credited [`FoodChannel::SelfProduced`] — the credit the fixed
+    /// own-labor forage path lacks but the cultivation path has — so `seeded_minted` stays
+    /// 0. **Produced units == eaten units in the same phase, so nothing offerable remains
+    /// after the tick** (no sellable remainder ⇒ emergency bread can never be sold for SALT
+    /// ⇒ it cannot fake supply or monetize the token). The pull-to-`threshold-1` cap is the
+    /// near-critical floor that keeps the role ALIVE without satiating it: residual hunger
+    /// stays high, so the role still demands and prefers to BUY bread (demand-preserving),
+    /// self-provisioning only the shortfall its market purchases this tick did not cover.
+    ///
+    /// Runs AFTER the market step (so the bread is made post-clearing and never offered) and
+    /// after the own-use cultivation phase, BEFORE the provenance/acquisition own-use consume
+    /// passes (so its consume-log tail is sinked by them). A no-op unless the gated seam is
+    /// active, so every other run is byte-identical. Deterministic: slot order, integer
+    /// thresholds, nothing drawn.
+    fn run_emergency_self_provision(&mut self, report: &mut EconTickReport) {
+        if !self.emergency_self_provision_active() {
+            return;
+        }
+        let Some(bread) = self.provenance_bread_good() else {
+            return;
+        };
+        let threshold = self
+            .chain
+            .as_ref()
+            .map_or(0, |chain| chain.emergency_hunger_threshold);
+        if threshold == 0 {
+            return;
+        }
+        // Pull projected hunger to one notch below the trigger — "just enough to not die"
+        // while staying hungry (demand-preserving). Never to 0 (that would satiate the role
+        // out of the bread market — the too-strong failure the cushion sweep exhibits).
+        let target = threshold.saturating_sub(1);
+        let acquisition = self.acquisition_ledger_active();
+        let provenance = self.bread_provenance_active();
+        let hunger_deplete = self.dynamics.hunger_deplete;
+        let hunger_per_food = self.dynamics.hunger_per_food;
+        // The goods the need readback counts as hunger relief (mirrors the own-use
+        // cultivation phase): the hunger staple plus any directly-edible subsistence food.
+        let hunger_staple = self.known.hunger;
+        let subsistence_food = self.known.subsistence;
+        let live = self.live_colonist_slots.clone();
+        for slot in live {
+            let (id, vocation, household, hunger) = {
+                let colonist = &self.colonists[slot];
+                (
+                    colonist.id,
+                    colonist.vocation,
+                    colonist.household,
+                    colonist.need.hunger,
+                )
+            };
+            // Only the NON-LINEAGE demand-side roles self-provision in the emergency: the
+            // buyers (`Consumer`) and the woodcutters (`Gatherer`). Lineage members already
+            // cultivate (their own hysteresis), and active producers earn by the market.
+            if household.is_some()
+                || !matches!(vocation, Vocation::Consumer | Vocation::Gatherer)
+                || hunger < threshold
+            {
+                continue;
+            }
+            // Net out food this role ALREADY ate in this tick's market consume pass. Also
+            // consume any bread it bought later in the same market tick and still holds in
+            // stock BEFORE minting emergency bread: otherwise the stock debit below could eat
+            // the bought loaf and leave the newly credited SelfProduced loaf offerable.
+            let already_food = self
+                .society
+                .consumption_log_last_tick()
+                .iter()
+                .filter(|&&(a, g, _)| {
+                    a == id && (g == hunger_staple || Some(g) == subsistence_food)
+                })
+                .fold(0u32, |acc, &(_, _, qty)| acc.saturating_add(qty));
+            let needed =
+                food_needed_to_reach_hunger(hunger, hunger_deplete, hunger_per_food, target)
+                    .saturating_sub(already_food);
+            if needed == 0 {
+                continue;
+            }
+            let held_bread = self.society.free_stock_after_all_reserves(id, bread);
+            let held_eat = held_bread.min(needed);
+            self.consume_own_use_stock(id, bread, held_eat);
+            let eat = needed.saturating_sub(held_eat);
+            if eat == 0 {
+                continue;
+            }
+            // PRODUCE the floor from own labor (no grain input): conserved `report.produced`,
+            // credited SelfProduced — then immediately eat ALL of it, so no offerable unit
+            // remains. `credit_produced` books the produced side; `consume_own_use_stock`
+            // debits + logs the consume the next-tick readback advances hunger from.
+            self.credit_produced(id, bread, eat, report);
+            // Book the produced-origin units into the bread-provenance ledger too (symmetric
+            // with the own-use cultivation phase) so the immediately-following own-use consume
+            // sink draws THESE produced units rather than over-drawing some other produced
+            // bread the role happens to hold — keeping the produced-vs-minted attribution
+            // exact if the emergency seam is ever composed with a seeded/minted-bread path.
+            // Conserves: produced credited here is sunk by the own-use consume pass this tick.
+            if provenance {
+                self.bread_provenance.credit_produced(id, u64::from(eat));
+            }
+            if acquisition {
+                self.acquisition
+                    .credit(id, FoodChannel::SelfProduced, u64::from(eat));
+            }
+            self.consume_own_use_stock(id, bread, eat);
+            self.emergency_bread_provisioned = self
+                .emergency_bread_provisioned
+                .saturating_add(u64::from(eat));
+        }
+    }
+
     /// S15 own-use readback seam: debit `qty` of `good` from `agent`'s OWN stock and
     /// record the consumption in the readback log, so the `sim` need readback advances
     /// the agent's hunger from it next tick (a debit alone would conserve but never feed
@@ -10916,6 +11214,18 @@ impl Settlement {
         self.cultivation_sells_surplus_active()
     }
 
+    /// S21h.1: whether the **emergency self-provisioning** seam is active this tick — the
+    /// `emergency_hunger_threshold` is set (>0) AND the chain carries a bread good to make.
+    /// When this holds, [`Self::run_emergency_self_provision`] runs the near-critical
+    /// own-labor bread floor for the hungry non-lineage roles after the market step. Off
+    /// (every existing config, threshold 0) the phase is inert and the run is byte-identical.
+    fn emergency_self_provision_active(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(|chain| chain.emergency_hunger_threshold > 0)
+            && self.provenance_bread_good().is_some()
+    }
+
     /// S21d.0: whether the food mints are retired this tick — the open-survival probe gate.
     /// When this holds, the demographic `food_provision` hearth and the producer staple
     /// floor skip minting the hunger staple (WOOD/warmth provision is unaffected), so the
@@ -11449,14 +11759,29 @@ impl Settlement {
             self.bootstrap_trace.observe_food_eat(agent, tick);
         }
         // This tick's bread trades (seller = the bread giver) — the buyer acquires `Bought`.
-        let mut bread_trades: Vec<(AgentId, AgentId, u64)> = self.society.barter_trades
+        // The 4th tuple element flags whether the bread was sold FOR SALT (the counterparty
+        // good is SALT in a pre-promotion barter, or — post-promotion — a spot sale once SALT
+        // is the money good): the S21h.0 hard invariant tallies the `SeededMinted` share of
+        // exactly those sales.
+        let money_is_salt = self.society.current_money_good() == Some(SALT);
+        let mut bread_trades: Vec<(AgentId, AgentId, u64, bool)> = self.society.barter_trades
             [barter_trades_start..]
             .iter()
             .filter_map(|trade| {
                 if trade.a_gives == food {
-                    Some((trade.a, trade.b, u64::from(trade.qty)))
+                    Some((
+                        trade.a,
+                        trade.b,
+                        u64::from(trade.qty),
+                        trade.b_gives == SALT,
+                    ))
                 } else if trade.b_gives == food {
-                    Some((trade.b, trade.a, u64::from(trade.qty)))
+                    Some((
+                        trade.b,
+                        trade.a,
+                        u64::from(trade.qty),
+                        trade.a_gives == SALT,
+                    ))
                 } else {
                     None
                 }
@@ -11470,12 +11795,18 @@ impl Settlement {
                         trade.seller,
                         trade.buyer,
                         u64::from(trade.qty),
+                        money_is_salt,
                     ))
                 }),
         );
         let mut producer_buyers: BTreeSet<AgentId> = BTreeSet::new();
-        for (seller, buyer, qty) in bread_trades {
-            self.acquisition.transfer_as_bought(seller, buyer, qty);
+        for (seller, buyer, qty, received_salt) in bread_trades {
+            let drawn = self.acquisition.transfer_as_bought(seller, buyer, qty);
+            if received_salt {
+                self.seeded_minted_bread_sold_for_salt = self
+                    .seeded_minted_bread_sold_for_salt
+                    .saturating_add(drawn[FoodChannel::SeededMinted.index()]);
+            }
             if producers.contains(&buyer) {
                 producer_buyers.insert(buyer);
             }
@@ -13106,10 +13437,74 @@ impl Settlement {
         AcquisitionChannels::from_array(self.acquisition.held_by_channel())
     }
 
+    /// S21h.1 (read-only): tracked food (bread) currently HELD by the living non-lineage
+    /// demand-side roles, split by channel. In the emergency-provision scenario, these roles
+    /// never cultivate; any `SelfProduced` units held here would therefore be emergency bread
+    /// that was not immediately consumed.
+    pub fn non_lineage_acquisition_held_by_channel(&self) -> AcquisitionChannels {
+        let mut held = [0u64; FoodChannel::COUNT];
+        for colonist in &self.colonists {
+            if !colonist.alive || colonist.household.is_some() {
+                continue;
+            }
+            let by_channel = self.acquisition.held_by_agent(colonist.id);
+            for channel in FoodChannel::ALL {
+                held[channel.index()] += by_channel[channel.index()];
+            }
+        }
+        AcquisitionChannels::from_array(held)
+    }
+
     /// S21d.1 (read-only): tracked food (bread) ever CREDITED (entered stock) per channel — the
     /// inflow totals (e.g. how much seeded/minted food ever entered vs how much bought).
     pub fn acquisition_credited_by_channel(&self) -> AcquisitionChannels {
         AcquisitionChannels::from_array(self.acquisition.credited_by_channel)
+    }
+
+    /// S21h.0 (read-only): cumulative `SeededMinted` bread units SOLD FOR SALT over the run —
+    /// the share of any bread→SALT sale (pre-promotion barter for SALT, or post-promotion
+    /// spot sale once SALT is money) drawn FIFO from the seller's seeded/cushion lots. The
+    /// hard demand-bridge invariant: this must stay `0` on every cushion cell, so SALT can
+    /// monetize ONLY on the lineage's `SelfProduced` bread, never on cushion (`SeededMinted`)
+    /// bread (else the cell is a seeded-supply result, not a demand-survival one). `0` off the
+    /// acquisition-ledger path. Runtime-only; not digested.
+    pub fn seeded_minted_bread_sold_for_salt(&self) -> u64 {
+        self.seeded_minted_bread_sold_for_salt
+    }
+
+    /// S21h.1 (read-only): cumulative emergency-provisioned bread (produced == immediately
+    /// eaten) over the run — the non-lineage roles' own-labor survival floor. The
+    /// demand-preservation test compares it against bought food: the floor must be the
+    /// SURVIVAL minimum, not the bulk of the demand side's diet (post-promotion their food is
+    /// materially bought). `0` off the emergency seam. Runtime-only; not digested.
+    pub fn emergency_bread_provisioned(&self) -> u64 {
+        self.emergency_bread_provisioned
+    }
+
+    /// S21h (read-only): the number of LIVING NON-LINEAGE roles (`household_of` is `None` —
+    /// the SALT-rich buyers + the woodcutters) whose freshly regenerated value scale carries
+    /// at least one present (`Horizon::Now`, `qty > 0`) bread want — the **demand-survival
+    /// probe**. The food-want ladder is rebuilt each tick from current hunger, so a role
+    /// satiated to hunger 0 emits ZERO `Now` bread wants: a non-zero count means the demand
+    /// side both survives AND still demands bread (the S21h window), while `0` means the
+    /// demand side is dead or sated out of the market. Reads the live scales only; not
+    /// digested. `bread` is the chain's bread good ([`Self::bread_good`]).
+    pub fn living_non_lineage_with_bread_now_wants(&self, bread: GoodId) -> usize {
+        (0..self.colonists.len())
+            .filter(|&index| {
+                let colonist = &self.colonists[index];
+                if !colonist.alive || colonist.household.is_some() {
+                    return false;
+                }
+                self.society.agents.get(colonist.id).is_some_and(|agent| {
+                    agent.scale.iter().any(|want| {
+                        want.kind == WantKind::Good(bread)
+                            && matches!(want.horizon, Horizon::Now)
+                            && want.qty > 0
+                    })
+                })
+            })
+            .count()
     }
 
     /// S21d.2a (read-only): the cross-tick bootstrap microtrace summary — the buy → eat → bid
@@ -13768,6 +14163,27 @@ impl Settlement {
             // byte-identical to the pre-S21f stream.
             if self.household_barter_cultivation_active() {
                 out.push(4);
+            }
+            // S21h.0: the non-lineage woodcutters' consumed-only bread cushion changes
+            // their initial holdings (and so future behaviour). The differing gatherer
+            // starting stock already shifts the colonist-roster bytes below, but a DISTINCT
+            // tag (`5`) plus the value makes the gated marker self-evidently injective and
+            // ON-only — default 0 emits nothing, so a flag-off chain stays byte-identical to
+            // the pre-S21h stream. (The acquisition ledger that classifies the cushion as
+            // `SeededMinted` is a runtime-only diagnostic and is deliberately NOT digested.)
+            if chain.gatherer_food_cushion > 0 {
+                out.push(5);
+                out.extend_from_slice(&chain.gatherer_food_cushion.to_le_bytes());
+            }
+            // S21h.1: the emergency self-provisioning seam fires a near-critical own-labor
+            // bread floor for the non-lineage roles whenever it is on — a future-behaviour
+            // change for the roster (those roles produce + immediately eat emergency bread).
+            // Emitted only when on (the same gated-block discipline as S15/S16/S21f above)
+            // with a DISTINCT tag (`6`) plus the threshold, so the gated markers stay
+            // injective and a flag-off chain stays byte-identical to the pre-S21h stream.
+            if self.emergency_self_provision_active() {
+                out.push(6);
+                out.extend_from_slice(&chain.emergency_hunger_threshold.to_le_bytes());
             }
             // The staple mapping steers the next needs/scale phase for *any* chain,
             // role-choice or not, so it is included whenever a chain is active. The
@@ -14439,6 +14855,21 @@ fn build_agent(
             // byte-identical.
             let (staple_buffer, wood) = match vocation {
                 Vocation::Consumer => (chain.consumer_staple_buffer, chain.consumer_wood_buffer),
+                // S21h.0: the non-lineage woodcutters (Gatherers are built here; lineage
+                // members go through `build_demography_agent`) carry the dedicated
+                // `gatherer_food_cushion` ADDED ON TOP of the shared `bread_buffer` they would
+                // otherwise get from the `_ =>` arm — a dedicated knob so the demand-side
+                // survival cushion can be raised without disturbing `bread_buffer` (which
+                // seeds the chain's other non-consumer roles). `0` for every existing config,
+                // so a gatherer's starting bread is exactly `bread_buffer` and the run is
+                // byte-identical; on the S21h scenarios `bread_buffer == 0`, so the cushion is
+                // the gatherer's only bread.
+                Vocation::Gatherer => (
+                    chain
+                        .bread_buffer
+                        .saturating_add(chain.gatherer_food_cushion),
+                    chain.wood_buffer,
+                ),
                 _ => (chain.bread_buffer, chain.wood_buffer),
             };
             stock.add(staple, staple_buffer);
