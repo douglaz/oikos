@@ -3,7 +3,7 @@
 *An experimental report on emergent money, capital, and survival in a praxeologic simulation.*
 
 > Status: working research report (raw material for a future article). Covers the milestone arc
-> through S22a (the money sub-arc, the full open-colony-capstone *supply* arc, the mortality-on cold-start finding, its resolution — a produced demand-side survival floor that lets money and mortality coexist — the robustness appendix that finds that coexistence is *band-qualified* (MIXED, load-bearing on WOOD scarcity and SALT-anchor density), and the first role-topology slice: endogenizing cultivation entry, where the food-producing class self-forms as *fluid* participation rather than a stable class). Every result below
+> through S22b (the money sub-arc, the full open-colony-capstone *supply* arc, the mortality-on cold-start finding, its resolution — a produced demand-side survival floor that lets money and mortality coexist — the robustness appendix that finds that coexistence is *band-qualified* (MIXED, load-bearing on WOOD scarcity and SALT-anchor density), and the role-topology arc: endogenizing cultivation entry (S22a — the food-producing class self-forms as *fluid* participation, not a stable class) and testing whether accumulated skill produces occupation (S22b — it does not; the lever bites but does not change the hunger-gated entry/exit, naming the next condition for a division of labor)). Every result below
 > was built additively behind a default-off flag, kept the prior conformance goldens byte-identical,
 > conserved every tick, ran deterministically, and was reviewed by an independent second model (Codex)
 > at both the spec and the result stage. Honest negative findings are reported as first-class results,
@@ -650,6 +650,46 @@ per the wording above).
 
 ---
 
+## 10. Accumulated advantage alone does not produce occupation (S22b)
+
+S22a showed cultivation is *fluid* participation, not an occupation. Codex's read was that hunger
+pressure produces survival behavior, not specialization, and that the minimal **authentic** mechanism
+for stickiness is **role-specific accumulated advantage** (capital/skill lock-in), not a generic
+switching penalty. S22b tests the cleanest such mechanism: a default-off, per-agent **cultivation
+skill** (born 0) that accumulates on *realized* cultivation output and slowly decays otherwise, and that
+raises only the **grain hauled per cultivating trip** — the one conservation-safe lever (a bigger
+debited draw on the conserved grain node, routed through a gated per-trip harvest-room override that
+never mutates the agent's permanent carry capacity; the 1:1 grain→bread recipe is untouched). The whole
+question hinges on the lever actually *biting*, so the suite carries a mandatory non-vacuity test.
+
+**Verdict: `NoStickinessDespiteSkill` across all seeds — and it is a deep, well-isolated finding.** The
+lever bites: the non-vacuity test passes on every seed (a max-skill cultivator harvests strictly more
+grain — 144 vs 72, the 2× per-trip haul — and produces strictly more bread, ~124 vs ~72, than a skill-0
+cultivator, under matched conditions over the same horizon). Money, mortality, provenance, and
+conservation all survive. **But accumulated harvest-efficiency advantage does not change the
+entry/exit dynamics:** under S22a's fluid hunger-driven participation, agents still rotate into and out
+of cultivation on hunger regardless of skill, so per-capita churn stays at the matched-seed S22a
+baseline (no fall toward the pre-registered 0.5× drop bar) and no persistent membership cohort forms.
+
+The controls **isolate the mechanism rather than tune it**: even where skill *matures* —
+`skill_gain=100` drives skill to ~995 (a mature cohort of 4–5 taking ~40% of harvested grain, a
+diagnostic upper-bound), and the **no-decay** control ratchets skill to the cap (~39% grain share) — the
+verdict is *still* `NoStickinessDespiteSkill`: no persistent cohort, churn unchanged, no monopolization.
+So it is not that skill cannot accumulate; it is that **productivity-while-cultivating does not make an
+agent decide to *stay* a cultivator** when hunger is what gates entry and exit. The boundary is named
+precisely: occupational stickiness needs a mechanism that changes the *decision to stay* — heritable
+skill, durable capital, or a profit-driven role chooser (S22c+) — or a participation regime that holds
+an agent in cultivation long enough for advantage to matter. The robustness sweep maps the edges (a
+starved grain node tips to oscillation; low/no grain-flow correctly classifies commune collapse, not
+faked success). All goldens byte-identical; conservation preserved by construction. Codex
+review-of-results: PASS-WITH-CAVEATS (no P1/P2 code-correctness defect — the over-carry path is
+conserved; three P3 framing fixes folded in, incl. clarifying the churn metric).
+
+This is the paper-strengthening outcome Codex predicted either way: a clean negative that **names the
+next necessary condition** for an authentic division of labor.
+
+---
+
 ## Appendix — milestone index
 
 | Sxx | Title | Outcome |
@@ -678,3 +718,4 @@ per the wording above).
 | S21h | Demand-side survival bridge (capstone slice 6, the S21g resolution) | **SUCCESS — money and mortality coexist:** a produced no-grain-input own-labor emergency survival floor (a configured subsistence institution) keeps 12 of 18 non-lineage roles alive *and* hungry, so SALT promotes on the lineage's `SelfProduced` bread (`seeded_minted == 0`) under the positive check — after a one-off cold-start cull (6/18 still die, then starvation stops: a partial bridged band, durable to 10k). The bounded diagnostic (a finite *seeded* consumed-only cushion, S21h.0) is the **knife-edge finding**: no cushion size threads it cleanly — too small culls, too large sates out of the market; the diagonal never promotes, off-diagonal promotions are seeded-supply-disqualified. Robust across seeds + threshold sweep; all goldens byte-identical (Codex review-of-results: PASS-WITH-CAVEATS, no P0/P1) |
 | S21i | Robustness appendix — does the S21f/g/h capstone survive the parameter space? | **MIXED (band-qualified):** sweeps the three scenarios across 12 seeds + parameter bands, classifying every cell with the same 5-tuple machinery (test-additive, all goldens byte-identical). Headline regimes seed-robust (S21f SUCCESS / S21g CULL / S21h.1 SUCCESS; 12/18 survivors every wide seed). CORE axes: `grain_regen` ROBUST; `emergency_hunger_threshold` BOUNDED-BY-AXIS (shipped = top validator bound); `lineage wood_provision` NARROW (shipped 0 = WOOD floor — one notch of WOOD relief collapses the bread→SALT lane); `salt_direct_use_period` NARROW (non-monotonic period-12 promotion hole). So money+mortality coexistence is real and seed-robust but **load-bearing on WOOD scarcity and SALT-anchor density** — an existence proof within a disclosed envelope, not a broad result (Codex review-of-results: PASS-WITH-CAVEATS, no P1) |
 | S22a | Endogenize cultivation entry (role-topology slice 1) | **SUCCESS, fluid participation:** a default-off gate relaxes cultivation eligibility from "lineage member" to "any spatial colonist under sustained hunger pressure" (reusing the existing pressure/patience hysteresis, steering-flag only, all goldens byte-identical). Money + mortality survive the relaxed producer identity — SALT promotes on clean `SelfProduced` bread, a living buyer cohort persists. But it is **fluid/rotating participation, not a stable class**: ~5% cultivate at any instant (settled) yet all 18 non-lineage roles rotate through (churn ~23/agent) — "everyone occasionally self-provisions under hunger, then buys." Dissolves the lineage *privilege*, not a sticky division of labor (S22b+). Control findings: the hysteresis is not load-bearing for aggregate stability; the emergency floor is no longer the sole survival bridge (Codex review-of-results: PASS-WITH-CAVEATS, no P1) |
+| S22b | Occupational stickiness via cultivation skill (role-topology slice 2) | **FINDING — accumulated advantage alone does NOT produce occupation:** a default-off bounded per-agent cultivation skill (born 0, accumulates on realized output, decays otherwise) raises only grain-haul capacity per cultivating trip (conservation-safe per-trip room override; goldens byte-identical). The lever BITES (non-vacuity passes: max-skill cultivator harvests 2× grain + more bread vs skill-0, every seed) and money/mortality/provenance/conservation survive — but skill does not change the hunger-gated entry/exit, so churn stays at the matched-seed S22a baseline and no persistent membership cohort forms. Even where skill matures (no-decay / high-gain → ~40% grain share) it is STILL no-stickiness. Names the next condition: occupation needs a mechanism that changes the decision to STAY (heritable skill / durable capital / profit-driven chooser, S22c+) (Codex review-of-results: PASS-WITH-CAVEATS, no P1/P2) |
