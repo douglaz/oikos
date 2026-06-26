@@ -1,6 +1,34 @@
 # impl-34 — S22b: Occupational Stickiness via Bounded Cultivation Skill (does accumulated advantage turn fluid participation into a stable role split?)
 
-Status: SPEC-READY — Codex spec-review NEEDS-REVISION → five decisions settled (§8) and the 6-item
+Status: LANDED — verdict **NO STICKINESS DESPITE SKILL** across all SEEDS. The lever BITES (the
+mandatory non-vacuity test passes: a SKILL_CAP cultivator harvests strictly more grain — 144 vs 72,
+exactly 2× the per-trip haul — AND produces strictly more bread than a skill-0 cultivator on every
+seed), and money + mortality + provenance + conservation all survive. But under the FLUID
+hunger-driven participation S22a found, skill never matures: an agent cultivates only in short spells,
+so per-tick decay erodes the gain between them and the steady-state skill stays low (max ~180 ≪ the
+500 maturity, mature-cohort count 0). Churn therefore stays at the matched-seed S22a baseline (≈2.7,
+no fall toward the 0.5× drop bar) and no persistent membership cohort forms — accumulated
+harvest-efficiency advantage ALONE does not turn fluid self-provisioning into a stable occupation. The
+no-decay control confirms the mechanism: with decay off, skill ratchets to the cap (mature cohort
+forms, ~36% grain share — a diagnostic upper-bound approximation, attributed at horizon-maturity) yet it
+is STILL NoStickinessDespiteSkill (no persistent cohort, churn unchanged, no monopolization). The robustness sweep maps the boundary — a starved grain node tips to
+OSCILLATION (intense competition over a depleting commons), abundant grain stays NoStickinessDespiteSkill;
+low-grain-flow correctly classifies CommuneCollapse (not faked success). All five tripwire goldens are
+byte-identical; off the flag the chain is byte-identical to the S22a stream. The honest next boundary:
+stickiness needs a stronger lock-in than a soft, decaying harvest-efficiency skill (heritable skill,
+durable capital, or a profit-driven role chooser — the S22c+ scope) OR a participation regime that
+holds an agent cultivating long enough for skill to mature.
+
+Codex review-of-results: **PASS-WITH-CAVEATS** (no P1/P2 code-correctness issue — the per-trip
+over-carry path is conserved: the node is debited, and death/estate collection drains arbitrary carried
+quantities via `withdraw_agent_carry`/`remove_agent`; no leak/double-count/digest problem). Three P3
+framing fixes folded in: the stale "~23" churn references reworded to the matched-seed `churn_per_capita`
+≈2.7 baseline (the ~23 was a different S22a diagnostic); the non-vacuity claim reworded from "per
+cultivating opportunity" to "matched conditions over the same horizon"; the grain-share scoped as a
+horizon-maturity diagnostic upper-bound approximation (it only feeds the MONO_SHARE+damage cull check,
+so it cannot fake the verdict).
+
+Prior status: SPEC-READY — Codex spec-review NEEDS-REVISION → five decisions settled (§8) and the 6-item
 punch-list folded in: a MANDATORY non-vacuity test + a distinct LEVER-INERT outcome (§2/§7); skill
 credits ACTUAL realized cultivation output, not the `cultivating` flag (§3.2); cap-zero control is
 behavior-identical, not byte-identical (§5/§7); churn compared to the MATCHED-SEED S22a baseline
@@ -63,8 +91,11 @@ role split — a persistent cultivator cohort *and* persistent non-cultivating b
 promotes on clean `SelfProduced` bread, mortality is survived, and conservation holds?
 
 **SUCCESS** (all of, across `SEEDS`, vs the S22a baseline):
-1. **Churn falls materially** — per-ever-cultivating-agent enter/exit churn drops well below the S22a
-   ~23 (a pre-stated `CHURN_DROP` threshold in §7), i.e. agents stop rapidly rotating.
+1. **Churn falls materially** — per-ever-cultivating-agent enter/exit churn drops to ≤ `CHURN_DROP` ×
+   the **matched-seed skill-off baseline** (§7), i.e. agents stop rapidly rotating. (NOTE: this suite's
+   `churn_per_capita()` metric reads ≈2.7 on the skill-off baseline; the "~23/agent" figure in the S22a
+   report was a different, un-normalized churn diagnostic — the comparison here is always matched-seed,
+   same metric on both sides, so the two numbers are not directly comparable.)
 2. **A persistent cultivator cohort forms** — a set of agents cultivates for ≥ `PERSIST_FRACTION` of the
    final window (sticky membership), distinct from a non-cultivating buyer cohort that persists too.
 3. **Money survives** — SALT promotes on clean (`seeded_minted == 0`) `SelfProduced` bread; food is
@@ -199,7 +230,8 @@ except `cultivation_skill = true`. Mortality on, S20/S21a/b/c money, emergency f
 ## 5. Controls (classify, never tune)
 
 - **Skill-off control** = `frontier_endogenous_cultivation` (S22a) — must reproduce the fluid-participation
-  baseline (churn ~23, success-but-fluid), establishing the comparison.
+  baseline (the matched-seed `churn_per_capita()` ≈2.7 on this suite's metric, success-but-fluid),
+  establishing the comparison every treatment seed is measured against.
 - **Stickiness ON** = `frontier_occupational_stickiness` — the treatment, classified vs the S22a baseline.
 - **No-decay vs decay** — `SKILL_DECAY = 0` vs the shipped decay: isolates whether decay is what makes
   the cohort *stable* (with no decay, skill ratchets monotonically — does that over-lock or monopolize?).

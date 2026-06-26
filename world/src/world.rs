@@ -39,6 +39,17 @@ pub enum Task {
     Idle,
     /// Walk to the node's tile and harvest up to `want` units (once, on arrival).
     GoHarvest(NodeId, u32),
+    /// Walk to the node's tile and harvest up to `want` units (once, on arrival),
+    /// using an **explicit per-trip room cap** `room_cap` *instead of* the agent's
+    /// [`AgentState::carry_room`]. The harvest moves `min(want, node.stock, room_cap)`,
+    /// so a `room_cap` above the agent's standing carry room lets a single trip draw
+    /// MORE of the conserved node stock without ever touching the agent's permanent
+    /// `carry_cap` (the carried total may temporarily exceed it; the next deposit drains
+    /// it). The node is still debited, so conservation is untouched — this is a faster
+    /// draw on the regen, never a mint. Only ever assigned on the gated cultivation-skill
+    /// path (a skilled cultivator's grain trip), so every pre-S22b stream never produces
+    /// it and stays byte-identical.
+    GoHarvestWithRoom(NodeId, u32, u32),
     /// Walk to the forage node's tile and forage (once, on arrival). Unlike
     /// [`Task::GoHarvest`] it relocates NO world good — the foraged subsistence is
     /// produced and credited at the econ layer (booked `report.produced`), so the
@@ -178,6 +189,11 @@ fn write_task_canonical(task: Task, out: &mut Vec<u8>) {
             out.extend_from_slice(&node.0.to_le_bytes());
             out.extend_from_slice(&want.to_le_bytes());
         }
+        Task::GoHarvestWithRoom(node, want, room_cap) => {
+            out.extend_from_slice(&node.0.to_le_bytes());
+            out.extend_from_slice(&want.to_le_bytes());
+            out.extend_from_slice(&room_cap.to_le_bytes());
+        }
         Task::GoForage(node, want) => {
             out.extend_from_slice(&node.0.to_le_bytes());
             out.extend_from_slice(&want.to_le_bytes());
@@ -202,6 +218,9 @@ fn task_tag(task: Task) -> u8 {
         // path is the only emitter, so every pre-S12 stream never produces 4 and
         // stays byte-identical.
         Task::GoForage(_, _) => 4,
+        // S22b: the per-trip room-capped harvest. Only the gated cultivation-skill path
+        // emits it, so every pre-S22b stream never produces 5 and stays byte-identical.
+        Task::GoHarvestWithRoom(_, _, _) => 5,
     }
 }
 
@@ -497,6 +516,7 @@ impl World {
         let valid = match task {
             Task::Idle => true,
             Task::GoHarvest(node, _) => (node.0 as usize) < self.nodes.len(),
+            Task::GoHarvestWithRoom(node, _, _) => (node.0 as usize) < self.nodes.len(),
             Task::GoForage(node, _) => (node.0 as usize) < self.nodes.len(),
             Task::GoDeposit(sp) => (sp.0 as usize) < self.stockpiles.len(),
             Task::GoTo(pos) => self.grid.in_bounds(pos),
@@ -565,6 +585,7 @@ impl World {
             Task::Idle => None,
             Task::GoTo(pos) => Some(pos),
             Task::GoHarvest(node, _) => self.nodes.get(node.0 as usize).map(|n| n.pos),
+            Task::GoHarvestWithRoom(node, _, _) => self.nodes.get(node.0 as usize).map(|n| n.pos),
             Task::GoForage(node, _) => self.nodes.get(node.0 as usize).map(|n| n.pos),
             Task::GoDeposit(sp) => self.stockpiles.get(sp.0 as usize).map(|s| s.pos),
         }
@@ -652,6 +673,21 @@ impl World {
                 let node = &mut self.nodes[node_id.0 as usize];
                 let good = node.good;
                 let moved = node.harvest(want, room);
+                let state = self.agents.get_mut(&id).unwrap();
+                state.add_carry(good, moved);
+                state.task = Task::Idle;
+                state.clear_path();
+                report.harvested += u64::from(moved);
+            }
+            Task::GoHarvestWithRoom(node_id, want, room_cap) => {
+                // S22b: the explicit per-trip room cap REPLACES the agent's standing
+                // carry room, so a skilled cultivator can draw `min(want, stock, room_cap)`
+                // of the conserved grain in one trip without mutating its permanent
+                // `carry_cap`. The carried total may exceed `carry_cap` until the next
+                // deposit drains it; the node is still debited, so conservation holds.
+                let node = &mut self.nodes[node_id.0 as usize];
+                let good = node.good;
+                let moved = node.harvest(want, room_cap);
                 let state = self.agents.get_mut(&id).unwrap();
                 state.add_carry(good, moved);
                 state.task = Task::Idle;
@@ -1126,6 +1162,24 @@ mod tests {
             "foraging and harvesting the same node must digest apart"
         );
 
+        // GoHarvestWithRoom carries a (node, want, room_cap) payload and a distinct tag,
+        // so the room cap registers and the variant digests apart from a plain GoHarvest
+        // with the same (node, want).
+        let mut a = base.clone();
+        let mut b = base.clone();
+        a.assign_task(agent, Task::GoHarvestWithRoom(node, 2, 4));
+        b.assign_task(agent, Task::GoHarvestWithRoom(node, 2, 5));
+        assert_ne!(a.digest(), b.digest());
+        let mut a = base.clone();
+        let mut b = base.clone();
+        a.assign_task(agent, Task::GoHarvestWithRoom(node, 2, 2));
+        b.assign_task(agent, Task::GoHarvest(node, 2));
+        assert_ne!(
+            a.canonical_bytes(),
+            b.canonical_bytes(),
+            "the room-override harvest must digest apart from a plain harvest"
+        );
+
         let mut a = base.clone();
         let mut b = base;
         a.assign_task(agent, Task::GoDeposit(StockpileId(0)));
@@ -1214,6 +1268,51 @@ mod tests {
         assert_eq!(world.stockpile_get(sp, FOOD), 5);
         assert_eq!(world.agent_carry(agent, FOOD), 0);
         assert_eq!(world.total_goods(), total_before);
+    }
+
+    #[test]
+    fn harvest_with_room_draws_more_than_carry_cap_and_conserves() {
+        // S22b: the per-trip room override lets a single harvest move MORE than the
+        // agent's standing carry room (`carry_cap = 5`), bounded only by `want`,
+        // `node.stock`, and the explicit `room_cap` — a faster draw on the conserved
+        // node stock, never a mint. The carried total exceeds `carry_cap` until the
+        // next deposit drains it, and the world total never changes (relocation only).
+        let mut world = open_world(5, 1);
+        let agent = world.add_agent(Pos::new(0, 0), 5, 5).unwrap();
+        let node = world
+            .add_node(ResourceNode::new(Pos::new(2, 0), FOOD, 12, 0, 12))
+            .unwrap();
+        let sp = world
+            .add_stockpile(Stockpile::new(Pos::new(4, 0), 100))
+            .unwrap();
+        let total_before = world.total_goods();
+
+        // A plain GoHarvest would be capped at carry_room = carry_cap = 5; the override
+        // with room_cap = 10 moves min(10, 12, 10) = 10 instead.
+        world.assign_task(agent, Task::GoHarvestWithRoom(node, 10, 10));
+        let report = world.tick();
+        assert_eq!(
+            report.harvested, 10,
+            "the room override draws beyond carry_cap"
+        );
+        assert_eq!(world.agent_carry(agent, FOOD), 10);
+        assert_eq!(world.node(node).unwrap().stock, 2);
+        assert_eq!(world.total_goods(), total_before);
+
+        // The deposit drains the over-cap carry; conservation holds end to end.
+        world.assign_task(agent, Task::GoDeposit(sp));
+        let report = world.tick();
+        assert_eq!(report.deposited, 10);
+        assert_eq!(world.agent_carry(agent, FOOD), 0);
+        assert_eq!(world.total_goods(), total_before);
+
+        // Node stock binds below the room cap: min(10, 2, 10) = 2.
+        world.assign_task(agent, Task::GoHarvestWithRoom(node, 10, 10));
+        let report = world.tick();
+        assert_eq!(
+            report.harvested, 2,
+            "node stock still binds the room override"
+        );
     }
 
     #[test]

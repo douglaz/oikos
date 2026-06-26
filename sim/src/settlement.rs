@@ -127,6 +127,21 @@ pub const FAST_TICKS_PER_ECON_TICK: u64 = 24;
 /// ceiling. The headroom only ensures a bumper haul is fully converted in one tick.
 const OWN_USE_CULTIVATION_LABOR_BUDGET: u32 = 48;
 
+/// S22b — pinned **cultivation-skill** magnitudes (the bounded accumulate/decay scalar that
+/// raises a skilled cultivator's per-trip grain haul). Modest, house-style, NOT tuned to a
+/// target: a small per-tick gain, a slow decay (`DECAY < GAIN`, so sustained cultivation builds
+/// a durable advantage idleness erodes only gradually), a bounded cap, and a ≤2× haul ceiling.
+/// They are the [`ChainConfig`] defaults; the controls/sweep override the chain fields, never
+/// these constants. Skill is born at 0 (earned, not inherited).
+const SKILL_GAIN: u16 = 50;
+const SKILL_DECAY: u16 = 5;
+const SKILL_CAP: u16 = 1_000;
+/// S22b: the full-skill grain-haul multiplier (the harvest-room ceiling). At skill `SKILL_CAP`
+/// a cultivator's per-trip haul is `SKILL_HAUL_CEILING × carry_cap`; `2` is the shipped ≤2×
+/// bound (`carry_cap + carry_cap·skill/cap`). `1` is the no-op (skill has no productivity effect —
+/// the cap-zero control), and a larger value (e.g. `4`) is the exaggerated-cap SENSITIVITY probe.
+const SKILL_HAUL_CEILING: u32 = 2;
+
 /// Econ ticks per settlement "year" — the horizon unit the smoke test counts in.
 /// A placeholder cadence, not a balance figure.
 pub const ECON_TICKS_PER_YEAR: u64 = 12;
@@ -957,6 +972,38 @@ pub struct ChainConfig {
     /// prior byte layout. Composes on `cultivation_sells_surplus` (the path whose eligibility
     /// branch it overrides).
     pub endogenous_cultivation_entry: bool,
+    /// S22b — **bounded cultivation skill** (default `false`, byte-identical when off). When
+    /// `true` *and* the endogenous-cultivation-entry path is active
+    /// ([`Self::endogenous_cultivation_entry`]), each colonist carries a bounded, earned-not-
+    /// inherited [`Colonist::cultivation_skill`] scalar that ACCUMULATES on a tick of realized
+    /// cultivation output (grain actually harvested AND converted to bread) and DECAYS on any
+    /// tick without it. Skill raises ONLY the per-trip **grain-haul capacity** of a cultivating
+    /// agent's grain `GoHarvest` (`haul = carry_cap + carry_cap·(ceiling−1)·skill/skill_cap`,
+    /// capped at `skill_haul_ceiling × carry_cap`), routed through the gated
+    /// [`world::Task::GoHarvestWithRoom`] per-trip room override — a faster draw on the conserved
+    /// grain node, NEVER a higher bread-per-grain ratio, so conservation is untouched by
+    /// construction (the 1:1 recipe and all produced/consumed_as_input accounting are unchanged).
+    /// The lever tests whether mild accumulated productivity turns S22a's fluid self-provisioning
+    /// into a stable occupational split. Canonicalized **ON-only** (digest tag 8 + the skill
+    /// parameters + the per-colonist skill state), mirroring the S16/S18/S21/S22a gates: a
+    /// flag-off config keeps its exact prior byte layout. Composes on `endogenous_cultivation_entry`.
+    pub cultivation_skill: bool,
+    /// S22b: the per-tick skill GAIN credited on a realized-cultivation-output tick (default
+    /// [`SKILL_GAIN`]). Consulted only while `cultivation_skill` is active.
+    pub skill_gain: u16,
+    /// S22b: the per-tick skill DECAY applied on a tick without realized cultivation output
+    /// (default [`SKILL_DECAY`]; `< skill_gain`). `0` is the no-decay control (skill ratchets
+    /// monotonically). Consulted only while `cultivation_skill` is active.
+    pub skill_decay: u16,
+    /// S22b: the skill ceiling (default [`SKILL_CAP`]). Skill saturates here; `0` makes the
+    /// productivity effect a no-op (the cap-zero control). Consulted only while
+    /// `cultivation_skill` is active.
+    pub skill_cap: u16,
+    /// S22b: the full-skill grain-haul multiplier / harvest-room ceiling (default
+    /// [`SKILL_HAUL_CEILING`] = 2 ⇒ ≤2× `carry_cap` at full skill). `1` is the no-op (cap-zero)
+    /// control; a larger value (e.g. `4`) is the exaggerated-cap SENSITIVITY probe. Consulted
+    /// only while `cultivation_skill` is active.
+    pub skill_haul_ceiling: u32,
     /// S21d.0 — **retire the food mints** (the open-survival probe; default `false`,
     /// byte-identical when off). When `true`, the two staple-food mint sites are skipped
     /// **independent of `own_labor_subsistence`/forage**: the demographic `food_provision`
@@ -1311,6 +1358,14 @@ impl ChainConfig {
             // S22a off by default: cultivation eligibility stays pinned to the lineage, so
             // every existing config is byte-identical (canonicalized ON-only).
             endogenous_cultivation_entry: false,
+            // S22b off by default: no per-agent cultivation skill, so the grain-haul lever is
+            // inert and every existing config is byte-identical (canonicalized ON-only). The
+            // magnitudes are the pinned house-style defaults, consulted only when the gate is on.
+            cultivation_skill: false,
+            skill_gain: SKILL_GAIN,
+            skill_decay: SKILL_DECAY,
+            skill_cap: SKILL_CAP,
+            skill_haul_ceiling: SKILL_HAUL_CEILING,
             // S21d.0 off by default: the food mints stay, so every existing config and its
             // goldens are byte-identical (canonicalized ON-only).
             retire_food_mints: false,
@@ -1428,6 +1483,14 @@ impl ChainConfig {
             // S22a off by default: cultivation eligibility stays pinned to the lineage, so
             // every existing config is byte-identical (canonicalized ON-only).
             endogenous_cultivation_entry: false,
+            // S22b off by default: no per-agent cultivation skill, so the grain-haul lever is
+            // inert and every existing config is byte-identical (canonicalized ON-only). The
+            // magnitudes are the pinned house-style defaults, consulted only when the gate is on.
+            cultivation_skill: false,
+            skill_gain: SKILL_GAIN,
+            skill_decay: SKILL_DECAY,
+            skill_cap: SKILL_CAP,
+            skill_haul_ceiling: SKILL_HAUL_CEILING,
             // S21d.0 off by default: the food mints stay, so every existing config and its
             // goldens are byte-identical (canonicalized ON-only).
             retire_food_mints: false,
@@ -1525,6 +1588,14 @@ impl ChainConfig {
             // S22a off by default: cultivation eligibility stays pinned to the lineage, so
             // every existing config is byte-identical (canonicalized ON-only).
             endogenous_cultivation_entry: false,
+            // S22b off by default: no per-agent cultivation skill, so the grain-haul lever is
+            // inert and every existing config is byte-identical (canonicalized ON-only). The
+            // magnitudes are the pinned house-style defaults, consulted only when the gate is on.
+            cultivation_skill: false,
+            skill_gain: SKILL_GAIN,
+            skill_decay: SKILL_DECAY,
+            skill_cap: SKILL_CAP,
+            skill_haul_ceiling: SKILL_HAUL_CEILING,
             // S21d.0 off by default: the food mints stay, so every existing config and its
             // goldens are byte-identical (canonicalized ON-only).
             retire_food_mints: false,
@@ -4250,6 +4321,37 @@ impl SettlementConfig {
         cfg
     }
 
+    /// S22b — **occupational stickiness via bounded cultivation skill** (the headline):
+    /// [`Self::frontier_endogenous_cultivation`] (the S22a fluid-participation money colony,
+    /// mortality on) with the **only** change being `cultivation_skill = true`. Skill is born at
+    /// 0 and accumulates ([`SKILL_GAIN`]) while an agent actually cultivates (grain harvested AND
+    /// converted to bread), decaying ([`SKILL_DECAY`]) while it does not, saturating at
+    /// [`SKILL_CAP`]; it raises ONLY the per-trip grain-haul capacity of a cultivating agent's
+    /// grain trip (the [`world::Task::GoHarvestWithRoom`] override, `≤ SKILL_HAUL_CEILING ×
+    /// carry_cap`), a conservation-safe faster draw on the conserved grain node — never the
+    /// bread-per-grain ratio.
+    ///
+    /// Everything else is inherited unchanged from S22a: the relaxed cultivation eligibility, the
+    /// S20+S21a/b/c money machinery, the emergency floor, the grain commons, the WOOD-poor
+    /// topology, the `seeded_minted == 0` provenance, and mortality on. The central S22b
+    /// question: does mild accumulated productivity turn S22a's FLUID self-provisioning into a
+    /// STABLE role split — a persistent cultivator cohort plus persistent non-cultivating buyers
+    /// — while preserving money, mortality, and provenance? Or does it produce no stickiness /
+    /// commune / monopolization / money failure (each a first-class finding)?
+    ///
+    /// Determinism: `cultivation_skill` is canonicalized ON-only (digest tag 8 + the skill
+    /// parameters + the per-colonist skill state), so only THIS scenario's digest changes; with
+    /// the flag reverted to `false` it is byte-identical to `frontier_endogenous_cultivation`.
+    /// The skill-distribution / grain-share / persistent-cohort / churn diagnostics are all
+    /// runtime-only (never digested).
+    pub fn frontier_occupational_stickiness() -> Self {
+        let mut cfg = Self::frontier_endogenous_cultivation();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.cultivation_skill = true;
+        }
+        cfg
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).
@@ -4732,6 +4834,16 @@ struct Colonist {
     /// unrelated grain holders run the own-use recipe. Serialized only on the active
     /// cultivation path because it steers future production.
     cultivation_stock_pending: bool,
+    /// S22b own-use cultivation **skill** — a bounded, earned-not-inherited scalar (born `0`)
+    /// that ACCUMULATES by [`ChainConfig::skill_gain`] on a tick of realized cultivation output
+    /// (grain actually harvested AND converted to bread) and DECAYS by
+    /// [`ChainConfig::skill_decay`] on any tick without it, saturating at
+    /// [`ChainConfig::skill_cap`]. It STEERS the next grain trip's per-trip haul capacity (the
+    /// [`world::Task::GoHarvestWithRoom`] override), so it is part of the future-behaviour
+    /// identity whenever the cultivation-skill phase can run; serialized only under that gate
+    /// (mirroring the `cultivating`/`cultivate_pressure` block), so a flag-off colonist block
+    /// stays byte-identical. `0` off the cultivation-skill path.
+    cultivation_skill: u16,
 }
 
 /// A settlement of generated colonists driven over a real `world` + `econ`.
@@ -4870,6 +4982,21 @@ pub struct Settlement {
     /// minimum, not the bulk of the demand side's food (post-promotion their food is
     /// materially BOUGHT, with the emergency floor a small tail). `0` off the seam; not digested.
     emergency_bread_provisioned: u64,
+    /// S22b: per-econ-tick scratch — the set of agent ids that realized cultivation output
+    /// (harvested grain AND converted it to bread, output > 0) in the current tick's
+    /// [`Self::run_own_use_cultivation`]. Drained by [`Self::run_cultivation_skill`] to credit
+    /// skill GAIN to exactly those agents (every other living colonist decays). Cleared and
+    /// refilled each tick; only maintained on the active cultivation-skill path. Runtime-only,
+    /// NOT digested (the per-agent skill it drives IS digested, in the colonist roster).
+    cultivation_skill_producers: BTreeSet<AgentId>,
+    /// S22b: per-agent CUMULATIVE grain hauled (the cultivation input good deposited to econ)
+    /// over the run — the monopolization/grain-share probe + the non-vacuity grain measure.
+    /// Maintained only on the active cultivation-skill path. Runtime-only, NOT digested.
+    cultivation_grain_harvested: BTreeMap<AgentId, u64>,
+    /// S22b: per-agent CUMULATIVE bread produced by own-use cultivation over the run — the
+    /// non-vacuity bread measure (a skilled cultivator must produce strictly more). Maintained
+    /// only on the active cultivation-skill path. Runtime-only, NOT digested.
+    cultivation_bread_produced: BTreeMap<AgentId, u64>,
     econ_tick: u64,
     last_report: EconTickReport,
     /// The settlement **commons** (G4a real death): the conserved sink that holds a
@@ -5141,6 +5268,14 @@ struct ChainRuntime {
     /// [`ChainConfig::endogenous_cultivation_entry`]). `false` for every existing config, so
     /// cultivation eligibility stays pinned to the lineage and the run is byte-identical.
     endogenous_cultivation_entry: bool,
+    /// S22b: the bounded cultivation-skill gate + its magnitudes (see
+    /// [`ChainConfig::cultivation_skill`]). `false`/defaults for every existing config, so the
+    /// grain-haul lever is inert and the run is byte-identical.
+    cultivation_skill: bool,
+    skill_gain: u16,
+    skill_decay: u16,
+    skill_cap: u16,
+    skill_haul_ceiling: u32,
     /// S21h.0: the non-lineage woodcutters' consumed-only bread cushion (see
     /// [`ChainConfig::gatherer_food_cushion`]). `0` for every existing config; canonicalized
     /// ON-only (its differing gatherer starting stock already splits the digest).
@@ -6445,6 +6580,7 @@ impl Settlement {
                 cultivating: false,
                 cultivate_pressure: 0,
                 cultivation_stock_pending: false,
+                cultivation_skill: 0,
             });
         }
 
@@ -6536,6 +6672,7 @@ impl Settlement {
                         cultivating: false,
                         cultivate_pressure: 0,
                         cultivation_stock_pending: false,
+                        cultivation_skill: 0,
                     });
                 }
             }
@@ -6948,6 +7085,11 @@ impl Settlement {
                 multigood_money: chain.multigood_money,
                 household_barter_cultivation: chain.household_barter_cultivation,
                 endogenous_cultivation_entry: chain.endogenous_cultivation_entry,
+                cultivation_skill: chain.cultivation_skill,
+                skill_gain: chain.skill_gain,
+                skill_decay: chain.skill_decay,
+                skill_cap: chain.skill_cap,
+                skill_haul_ceiling: chain.skill_haul_ceiling,
                 gatherer_food_cushion: chain.gatherer_food_cushion,
                 emergency_hunger_threshold: chain.emergency_hunger_threshold,
                 retire_food_mints: chain.retire_food_mints,
@@ -7005,6 +7147,9 @@ impl Settlement {
             seeded_surplus_trace: SeededSurplusTrace::default(),
             seeded_minted_bread_sold_for_salt: 0,
             emergency_bread_provisioned: 0,
+            cultivation_skill_producers: BTreeSet::new(),
+            cultivation_grain_harvested: BTreeMap::new(),
+            cultivation_bread_produced: BTreeMap::new(),
             econ_tick: 0,
             last_report: EconTickReport::default(),
             commons_gold: Gold::ZERO,
@@ -7191,6 +7336,9 @@ impl Settlement {
             seeded_surplus_trace: SeededSurplusTrace::default(),
             seeded_minted_bread_sold_for_salt: 0,
             emergency_bread_provisioned: 0,
+            cultivation_skill_producers: BTreeSet::new(),
+            cultivation_grain_harvested: BTreeMap::new(),
+            cultivation_bread_produced: BTreeMap::new(),
             econ_tick: 0,
             last_report: EconTickReport::default(),
             commons_gold: Gold::ZERO,
@@ -7279,6 +7427,18 @@ impl Settlement {
         // here: G4a's estate settlement drains its stranded pending units to the
         // commons at death and drops the attribution, so `credit_stock`'s rejection
         // of a freed id is a defensive backstop, not a live path.
+        // S22b: accumulate per-agent grain hauled (the cultivation input good deposited this
+        // tick) — the monopolization / grain-share probe + the non-vacuity grain measure.
+        // Runtime-only (never digested); maintained only on the active cultivation-skill path.
+        if self.cultivation_skill_active() {
+            if let Some(grain) = self.cultivation_input_good() {
+                for (&(id, good), &qty) in &fast.deposited {
+                    if good == grain {
+                        *self.cultivation_grain_harvested.entry(id).or_insert(0) += u64::from(qty);
+                    }
+                }
+            }
+        }
         self.record_pending_deposits(fast.deposited);
         report.transferred = self.transfer_pending_deposits();
         // S18: accumulate the WOOD relocated node→econ this tick — the provenance bound for
@@ -7538,6 +7698,14 @@ impl Settlement {
         // just-cultivated bread can endow this tick's newborn). A no-op off the gated
         // cultivation path, so every other run is byte-identical.
         self.run_own_use_cultivation(&mut report);
+
+        // ---- 6a-bis-skill. CULTIVATION SKILL (S22b): advance each colonist's bounded
+        // cultivation skill from this tick's realized cultivation output — gain for the agents
+        // that actually harvested grain AND converted it to bread, decay for everyone else.
+        // After the own-use cultivation phase (so its producer set is filled) and before births
+        // (a newborn is added later, born at skill 0). A no-op off the gated skill path, so
+        // every other run is byte-identical.
+        self.run_cultivation_skill();
 
         // ---- 6a-bis'. EMERGENCY SELF-PROVISIONING (S21h.1): the demand-side survival
         // bridge — each hungry non-lineage Consumer/Gatherer that reached the emergency
@@ -8141,6 +8309,18 @@ impl Settlement {
         } else {
             None
         };
+        // S22b: when bounded cultivation skill is active, a cultivating agent's grain trip uses a
+        // PER-TRIP haul capacity scaled by its skill (`GoHarvestWithRoom`, room = want = haul),
+        // never the agent's permanent `carry_cap`. Resolved only on the active skill path, so
+        // every pre-S22b run keeps the plain `GoHarvest(grain, carry_cap)` (byte-identical).
+        let (skill_active, skill_cap, skill_ceiling) =
+            self.chain.as_ref().map_or((false, 0u16, 0u32), |chain| {
+                (
+                    self.cultivation_skill_active(),
+                    chain.skill_cap,
+                    chain.skill_haul_ceiling,
+                )
+            });
         // S14: in the capped-commons mode a forager HARVESTS the FORAGE node (depleting
         // it, so per-capita yield falls), then deposits — the real haul cycle. In the
         // S12 marker mode it forages (relocating nothing) and is credited a fixed yield.
@@ -8158,6 +8338,20 @@ impl Settlement {
                 if let Some(grain_node) = grain_node {
                     let task = if self.world.agent_carry_total(id) > 0 {
                         Task::GoDeposit(self.exchange)
+                    } else if skill_active {
+                        // The skilled per-trip haul. At skill 0 (or ceiling ≤ 1) this is exactly
+                        // `carry_cap`, so `GoHarvestWithRoom(grain, carry_cap, carry_cap)` harvests
+                        // `min(carry_cap, stock)` — behaviour-identical to the S22a
+                        // `GoHarvest(grain, carry_cap)` (which is room-capped at carry_cap), only
+                        // the task tag differs. A skilled cultivator draws up to
+                        // `ceiling × carry_cap` of the conserved grain in one trip.
+                        let haul = cultivation_haul(
+                            self.carry_cap,
+                            colonist.cultivation_skill,
+                            skill_cap,
+                            skill_ceiling,
+                        );
+                        Task::GoHarvestWithRoom(grain_node, haul, haul)
                     } else {
                         Task::GoHarvest(grain_node, self.carry_cap)
                     };
@@ -8888,6 +9082,7 @@ impl Settlement {
                 cultivating: false,
                 cultivate_pressure: 0,
                 cultivation_stock_pending: false,
+                cultivation_skill: 0,
             });
             let child_slot = self.colonists.len() - 1;
             self.live_colonist_slots.push(child_slot);
@@ -9630,6 +9825,14 @@ impl Settlement {
         // S21d.1: cultivated bread is SELF-PRODUCED for the acquisition ledger too (the own-use
         // consume below is debited by the acquisition own-use pass).
         let acquisition = self.acquisition_ledger_active();
+        // S22b: on the cultivation-skill path, record which agents realize cultivation output
+        // this tick (output > 0) so [`Self::run_cultivation_skill`] credits skill GAIN to exactly
+        // those, plus the per-agent cumulative produced-bread diagnostic. Reset the per-tick
+        // producer scratch up front. Inert (and the counters stay empty) off the skill path.
+        let skill_active = self.cultivation_skill_active();
+        if skill_active {
+            self.cultivation_skill_producers.clear();
+        }
         let hunger_target = 0;
         let hunger_deplete = self.dynamics.hunger_deplete;
         let hunger_per_food = self.dynamics.hunger_per_food;
@@ -9672,6 +9875,9 @@ impl Settlement {
             let max_runs = free_input.checked_div(input_qty).unwrap_or(0);
             let grain_labor_budget = max_runs.saturating_mul(recipe_labor);
             let mut remaining_labor = OWN_USE_CULTIVATION_LABOR_BUDGET.min(grain_labor_budget);
+            // S22b: bread this agent actually cultivated this tick (the realized output the skill
+            // accumulate rule credits — NOT the mere `cultivating` flag).
+            let mut realized_bread = 0u64;
             while recipe_labor > 0 && remaining_labor >= recipe_labor {
                 let Some(applied) = self
                     .society
@@ -9695,9 +9901,20 @@ impl Settlement {
                     self.acquisition
                         .credit(id, FoodChannel::SelfProduced, u64::from(out_qty));
                 }
+                if out_good == bread {
+                    realized_bread += u64::from(out_qty);
+                }
                 if let Some((in_good, in_qty)) = applied.input {
                     *report.consumed_as_input.entry(in_good).or_insert(0) += u64::from(in_qty);
                 }
+            }
+            // S22b: a tick with realized cultivation output (grain hauled AND converted to bread)
+            // earns skill; record it for the skill-update pass + the cumulative produced-bread
+            // diagnostic. An agent merely flagged `cultivating` while walking/blocked/on a
+            // depleted node produces nothing here and so earns no skill (it decays instead).
+            if skill_active && realized_bread > 0 {
+                self.cultivation_skill_producers.insert(id);
+                *self.cultivation_bread_produced.entry(id).or_insert(0) += realized_bread;
             }
             let has_remaining_input =
                 input_good.is_some_and(|input| self.cultivation_input_in_stock(id, input));
@@ -9726,6 +9943,34 @@ impl Settlement {
                     .saturating_sub(already_food);
             let eat = consume.min(held).min(target);
             self.consume_own_use_stock(id, bread, eat);
+        }
+    }
+
+    /// CULTIVATION-SKILL UPDATE phase (S22b): advance each living colonist's bounded
+    /// [`Colonist::cultivation_skill`] from this tick's realized cultivation output. An agent in
+    /// [`Self::cultivation_skill_producers`] (it actually harvested grain AND converted it to
+    /// bread this tick) gains [`ChainConfig::skill_gain`], saturating at
+    /// [`ChainConfig::skill_cap`]; every other living colonist decays by
+    /// [`ChainConfig::skill_decay`]. Runs AFTER [`Self::run_own_use_cultivation`] (so the
+    /// producer set is filled) and BEFORE births (a newborn is added later, born at skill 0).
+    /// Deterministic: slot order, integer thresholds, nothing drawn. A no-op off the gated
+    /// cultivation-skill path, so every other run is byte-identical.
+    fn run_cultivation_skill(&mut self) {
+        if !self.cultivation_skill_active() {
+            return;
+        }
+        let (gain, decay, cap) = self.chain.as_ref().map_or((0, 0, 0), |chain| {
+            (chain.skill_gain, chain.skill_decay, chain.skill_cap)
+        });
+        let producers = std::mem::take(&mut self.cultivation_skill_producers);
+        let live = self.live_colonist_slots.clone();
+        for slot in live {
+            let colonist = &mut self.colonists[slot];
+            colonist.cultivation_skill = if producers.contains(&colonist.id) {
+                colonist.cultivation_skill.saturating_add(gain).min(cap)
+            } else {
+                colonist.cultivation_skill.saturating_sub(decay)
+            };
         }
     }
 
@@ -11450,6 +11695,19 @@ impl Settlement {
         self.chain
             .as_ref()
             .is_some_and(chain_runtime_endogenous_cultivation_entry_active)
+    }
+
+    /// S22b: whether **bounded cultivation skill** is active this tick — the
+    /// `cultivation_skill` flag is on AND the S22a endogenous-cultivation-entry path is active
+    /// (it composes strictly on it). When this holds, the per-agent skill scalar accumulates/
+    /// decays each econ tick, a skilled cultivator's grain trip uses the
+    /// [`world::Task::GoHarvestWithRoom`] per-trip haul override, and the skill state + parameters
+    /// enter the digest (ON-only). Off (every existing config) it is `false`, so the grain-haul
+    /// lever is inert, no skill bytes are serialized, and the run is byte-identical.
+    fn cultivation_skill_active(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(chain_runtime_cultivation_skill_active)
     }
 
     /// S18: whether the **money-from-a-multi-good-economy** path is active this tick — the
@@ -13372,6 +13630,63 @@ impl Settlement {
             .map_or(0, |c| self.acquisition.bought_credited_of(c.id))
     }
 
+    /// S22b: the bounded cultivation **skill** of the colonist at generation `index` (born `0`,
+    /// saturating at [`ChainConfig::skill_cap`]). `0` off the cultivation-skill path. The
+    /// skill-distribution diagnostic (max / mean / count above a maturity threshold) reads it.
+    /// Runtime-readable; the underlying field IS digested (ON-only, with the colonist roster).
+    pub fn cultivation_skill_of(&self, index: usize) -> u16 {
+        self.colonists.get(index).map_or(0, |c| c.cultivation_skill)
+    }
+
+    /// S22b: cumulative grain the colonist at generation `index` hauled (the cultivation input
+    /// good deposited to econ) over the run — the monopolization / grain-share probe + the
+    /// non-vacuity grain measure. `0` off the cultivation-skill path. Runtime-only; not digested.
+    pub fn cultivation_grain_harvested_of(&self, index: usize) -> u64 {
+        self.colonists.get(index).map_or(0, |c| {
+            self.cultivation_grain_harvested
+                .get(&c.id)
+                .copied()
+                .unwrap_or(0)
+        })
+    }
+
+    /// S22b: cumulative bread the colonist at generation `index` produced by own-use cultivation
+    /// over the run — the non-vacuity bread measure (a high-skill cultivator must produce
+    /// strictly more). `0` off the cultivation-skill path. Runtime-only; not digested.
+    pub fn cultivation_bread_produced_of(&self, index: usize) -> u64 {
+        self.colonists.get(index).map_or(0, |c| {
+            self.cultivation_bread_produced
+                .get(&c.id)
+                .copied()
+                .unwrap_or(0)
+        })
+    }
+
+    /// S22b (test-only lever control): pin EVERY living colonist's cultivation skill to `skill`
+    /// (clamped to [`ChainConfig::skill_cap`]). The mandatory non-vacuity test re-applies it
+    /// before each econ tick — the per-trip haul reads skill at task-assignment time, the
+    /// end-of-tick [`Self::run_cultivation_skill`] then overwrites it — so a CAP-pinned run and a
+    /// 0-pinned run differ ONLY by the grain-haul capacity, isolating the lever's effect. A no-op
+    /// off the cultivation-skill path (the skill is never read there).
+    pub fn set_all_cultivation_skill(&mut self, skill: u16) {
+        let cap = self.chain.as_ref().map_or(u16::MAX, |c| c.skill_cap);
+        let skill = skill.min(cap);
+        for &slot in &self.live_colonist_slots {
+            self.colonists[slot].cultivation_skill = skill;
+        }
+    }
+
+    /// S22b (test-only lever control): pin the cultivation skill of the colonist at generation
+    /// `index` to `skill` (clamped to [`ChainConfig::skill_cap`]). Lets a controlled non-vacuity
+    /// micro-harness drive ONE designated cultivator to `SKILL_CAP` while holding the rest of the
+    /// colony fixed, isolating that agent's per-opportunity grain/bread productivity.
+    pub fn set_cultivation_skill_for_test(&mut self, index: usize, skill: u16) {
+        let cap = self.chain.as_ref().map_or(u16::MAX, |c| c.skill_cap);
+        if let Some(colonist) = self.colonists.get_mut(index) {
+            colonist.cultivation_skill = skill.min(cap);
+        }
+    }
+
     /// S15: the chain's bread good (the cultivation output / hunger staple), or `None`
     /// for a non-chain settlement. The acceptance suite reads cultivated-bread
     /// production through it.
@@ -14509,6 +14824,21 @@ impl Settlement {
             if self.endogenous_cultivation_entry_active() {
                 out.push(7);
             }
+            // S22b: the bounded cultivation-skill gate changes who out-harvests grain (a skilled
+            // cultivator hauls more per trip), a future-behaviour change for the roster. Emitted
+            // only when active (the same gated-block discipline as S16/S18/S21/S22a above) with a
+            // DISTINCT tag (`8`) plus the skill magnitudes that steer the haul/accumulate/decay,
+            // so the gated markers stay injective and a flag-off chain stays byte-identical to the
+            // pre-S22b stream. (The per-agent skill state is serialized with the colonist roster
+            // below; the skill-distribution / grain-share / churn diagnostics it pairs with are
+            // runtime-only and deliberately NOT digested.)
+            if self.cultivation_skill_active() {
+                out.push(8);
+                out.extend_from_slice(&chain.skill_gain.to_le_bytes());
+                out.extend_from_slice(&chain.skill_decay.to_le_bytes());
+                out.extend_from_slice(&chain.skill_cap.to_le_bytes());
+                out.extend_from_slice(&chain.skill_haul_ceiling.to_le_bytes());
+            }
             // The staple mapping steers the next needs/scale phase for *any* chain,
             // role-choice or not, so it is included whenever a chain is active. The
             // G3b no-spread control shares the emergent config's physical state but
@@ -14867,6 +15197,12 @@ impl Settlement {
         // on the active-phase predicate, so every pre-S15 config keeps its per-colonist
         // layout byte-identical.
         let cultivation_serialized = self.own_use_cultivation_active();
+        // S22b: the per-colonist `cultivation_skill` scalar steers the next grain trip's haul
+        // capacity only while the cultivation-skill phase can run; gate its bytes on the
+        // active-phase predicate (which implies `cultivation_serialized`, so it nests inside the
+        // cultivation block below), so every pre-S22b config keeps its per-colonist layout
+        // byte-identical.
+        let skill_serialized = self.cultivation_skill_active();
         out.extend_from_slice(&(self.colonists.len() as u32).to_le_bytes());
         for colonist in &self.colonists {
             out.extend_from_slice(&colonist.id.0.to_le_bytes());
@@ -14936,6 +15272,14 @@ impl Settlement {
                 // steers whether settled grain can still be converted after the visible
                 // cultivating flag clears.
                 out.push(u8::from(colonist.cultivation_stock_pending));
+                // S22b: the cultivation skill scalar steers the next grain trip's per-trip haul
+                // capacity, so two states identical but for it diverge on a future harvest —
+                // part of the future-behaviour identity whenever the cultivation-skill phase
+                // runs. Nested inside the cultivation block (the gate implies it), emitted only
+                // under `skill_serialized`, so a pre-S22b colonist block stays byte-identical.
+                if skill_serialized {
+                    out.extend_from_slice(&colonist.cultivation_skill.to_le_bytes());
+                }
             }
             if role_choice_active {
                 // The latent specialty (G3b) steers each tick's role-choice
@@ -15460,6 +15804,14 @@ fn chain_runtime_endogenous_cultivation_entry_active(chain: &ChainRuntime) -> bo
     chain.endogenous_cultivation_entry && chain_runtime_cultivation_sells_surplus_active(chain)
 }
 
+/// S22b: bounded cultivation skill is active iff the flag is on AND the S22a
+/// endogenous-cultivation-entry path is active (it composes strictly on it). Off (every existing
+/// config) it is `false`, so the grain-haul lever, the skill accumulate/decay, and the ON-only
+/// digest surface never engage and the run is byte-identical.
+fn chain_runtime_cultivation_skill_active(chain: &ChainRuntime) -> bool {
+    chain.cultivation_skill && chain_runtime_endogenous_cultivation_entry_active(chain)
+}
+
 /// S16: money-from-produced-bread is active iff the flag is on AND own-use cultivation is
 /// active (it composes strictly on the S15 path). Off (every existing config) it is
 /// `false`, so the buy/sell split and the provenance ledger never engage and the run is
@@ -15485,6 +15837,24 @@ fn config_multigood_money_active(config: &SettlementConfig) -> bool {
             && chain.cultivation_sells_surplus
             && chain_config_own_use_cultivation_active(chain)
     })
+}
+
+/// S22b: the per-trip grain-haul capacity for a cultivating agent of the given `skill` —
+/// `carry_cap + carry_cap·(ceiling−1)·skill/skill_cap`, capped at `ceiling × carry_cap`. At
+/// `skill == 0` (or `skill_cap == 0`, or `ceiling ≤ 1`) it is exactly `carry_cap`, so the lever
+/// is a no-op (the cap-zero control / a fresh-skill cultivator behaves like S22a). At
+/// `skill == skill_cap` it reaches `ceiling × carry_cap` (the shipped `ceiling = 2` ⇒ ≤2×).
+/// Integer, saturating, deterministic — no RNG. NEVER scales the recipe ratio, so conservation
+/// is untouched (a faster draw on the conserved grain node, bounded by `node.stock`).
+fn cultivation_haul(carry_cap: u32, skill: u16, skill_cap: u16, ceiling: u32) -> u32 {
+    if skill == 0 || skill_cap == 0 || ceiling <= 1 {
+        return carry_cap;
+    }
+    let bonus = (u64::from(carry_cap) * u64::from(ceiling - 1) * u64::from(skill)
+        / u64::from(skill_cap)) as u32;
+    carry_cap
+        .saturating_add(bonus)
+        .min(carry_cap.saturating_mul(ceiling))
 }
 
 fn food_needed_to_reach_hunger(
@@ -20618,6 +20988,86 @@ mod tests {
             off_before,
             off.canonical_bytes(),
             "with cultivation off, the unused cultivating state must not steer the digest"
+        );
+    }
+
+    #[test]
+    fn canonical_bytes_include_cultivation_skill() {
+        // S22b: the per-colonist `cultivation_skill` scalar steers the next grain trip's haul
+        // capacity, so on the skill path two states differing only in it must digest apart — and
+        // off the path (S22a, flag off) the unused skill field must NOT serialize (byte-identical).
+        let mut on = Settlement::generate(7, &SettlementConfig::frontier_occupational_stickiness());
+        let before = on.canonical_bytes();
+        on.colonists[0].cultivation_skill = on.colonists[0].cultivation_skill.wrapping_add(50);
+        assert_ne!(
+            before,
+            on.canonical_bytes(),
+            "with cultivation skill on, a colonist's skill scalar must be in the digest"
+        );
+
+        // The skill parameters enter the digest (tag 8) only on the active path: two configs
+        // differing only in a skill magnitude generate apart.
+        let base = Settlement::generate(7, &SettlementConfig::frontier_occupational_stickiness());
+        let mut tweaked = SettlementConfig::frontier_occupational_stickiness();
+        tweaked.chain.as_mut().expect("chain").skill_haul_ceiling = 4;
+        assert_ne!(
+            base.canonical_bytes(),
+            Settlement::generate(7, &tweaked).canonical_bytes(),
+            "the skill haul ceiling must steer the digest on the active path"
+        );
+
+        // Off the skill path (S22a) the cultivation_skill field is never serialized.
+        let mut off = Settlement::generate(7, &SettlementConfig::frontier_endogenous_cultivation());
+        let off_before = off.canonical_bytes();
+        off.colonists[0].cultivation_skill = off.colonists[0].cultivation_skill.wrapping_add(123);
+        assert_eq!(
+            off_before,
+            off.canonical_bytes(),
+            "with cultivation skill off, the unused skill scalar must not steer the digest"
+        );
+    }
+
+    #[test]
+    fn cultivation_skill_reverted_is_byte_identical_to_s22a() {
+        // S22b is one additive, default-off ON-only gate: reverting `cultivation_skill` to false
+        // makes `frontier_occupational_stickiness` byte-identical to `frontier_endogenous_cultivation`
+        // (the S22a stream) across a long horizon, and the ON config splits the digest.
+        let on = Settlement::generate(7, &SettlementConfig::frontier_occupational_stickiness());
+        let s22a = Settlement::generate(7, &SettlementConfig::frontier_endogenous_cultivation());
+        assert_ne!(
+            on.canonical_bytes(),
+            s22a.canonical_bytes(),
+            "the cultivation_skill gate must split the digest vs the S22a base"
+        );
+
+        let mut reverted = SettlementConfig::frontier_occupational_stickiness();
+        reverted.chain.as_mut().expect("chain").cultivation_skill = false;
+        let mut a = Settlement::generate(7, &reverted);
+        let mut b = Settlement::generate(7, &SettlementConfig::frontier_endogenous_cultivation());
+        a.run(1_000);
+        b.run(1_000);
+        assert_eq!(
+            a.canonical_bytes(),
+            b.canonical_bytes(),
+            "reverting cultivation_skill must equal frontier_endogenous_cultivation byte-for-byte"
+        );
+        assert_eq!(a.digest(), b.digest());
+    }
+
+    #[test]
+    fn cultivation_haul_scales_with_skill_bounded() {
+        // S22b: the per-trip haul is carry_cap at skill 0 / cap 0 / ceiling ≤ 1, rises linearly,
+        // and saturates at ceiling × carry_cap at full skill. Never exceeds the ceiling.
+        assert_eq!(cultivation_haul(6, 0, 1000, 2), 6, "skill 0 ⇒ carry_cap");
+        assert_eq!(cultivation_haul(6, 1000, 1000, 2), 12, "full skill ⇒ 2×");
+        assert_eq!(cultivation_haul(6, 500, 1000, 2), 9, "half skill ⇒ +50%");
+        assert_eq!(cultivation_haul(6, 1000, 1000, 1), 6, "ceiling 1 ⇒ no-op");
+        assert_eq!(cultivation_haul(6, 1000, 0, 2), 6, "cap 0 ⇒ no-op");
+        assert_eq!(cultivation_haul(6, 1000, 1000, 4), 24, "ceiling 4 ⇒ 4×");
+        assert_eq!(
+            cultivation_haul(6, 5000, 1000, 2),
+            12,
+            "skill above cap still saturates at the ceiling"
         );
     }
 
