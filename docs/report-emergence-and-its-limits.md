@@ -3,7 +3,7 @@
 *An experimental report on emergent money, capital, and survival in a praxeologic simulation.*
 
 > Status: working research report (raw material for a future article). Covers the milestone arc
-> through S21h (the money sub-arc, the full open-colony-capstone *supply* arc, the mortality-on cold-start finding, and its resolution — a produced demand-side survival floor that lets money and mortality coexist). Every result below
+> through S21i (the money sub-arc, the full open-colony-capstone *supply* arc, the mortality-on cold-start finding, its resolution — a produced demand-side survival floor that lets money and mortality coexist — and the robustness appendix that finds that coexistence is *band-qualified*: MIXED, load-bearing on WOOD scarcity and SALT-anchor density). Every result below
 > was built additively behind a default-off flag, kept the prior conformance goldens byte-identical,
 > conserved every tick, ran deterministically, and was reviewed by an independent second model (Codex)
 > at both the spec and the result stage. Honest negative findings are reported as first-class results,
@@ -307,6 +307,14 @@ The single most defensible claim: **"Endogenous money in OIKOS required both a s
 market institution capable of monetary round-tripping."** Anything broader (e.g. "money needs a
 two-lane order book," or "scaffold-free colony money") overstates what the runs show.
 
+The open-colony arc extends this one notch — *durable token money in an open mortal colony required
+direct-use eligibility, medium-saleability leadership, bilateral monetary round-tripping, pre-money
+produced supply, **and** demand-side survival through the bootstrap* — but the robustness appendix (§8)
+bounds even that: the money+mortality coexistence is **MIXED / band-qualified**, seed-robust but
+load-bearing on WOOD scarcity and SALT-anchor density. So the honest frame for the whole arc is
+**condition decomposition** (which conditions are necessary, and how wide each one's window is), not a
+claim of spontaneous open-colony order.
+
 ---
 
 ## 7. The open-colony arc (supply question closed; mortality-on resolved via a demand-side survival floor) and open directions
@@ -536,12 +544,66 @@ the rest:
   every new field/flag defaults off, canonicalized ON-only with injective digest tags, conservation every
   tick; all 21 prior goldens byte-identical. *(Codex review-of-results: PASS-WITH-CAVEATS — no P0/P1
   result defect; the cushion negative is scoped to "no clean success in the tested sweep" and the
-  coexistence claim to the partial one-off cull, per the wording above.)*
-- **Then / later:** an S21f/S21g/S21h **robustness appendix** (seeds, grain flow, WOOD-poor magnitude,
-  SALT anchor density, strong-bar thresholds, the emergency-floor yield/threshold window — before any
-  article submission); endogenizing the role topology (households *drift* into roles, rather than the
-  emergency floor being a *configured* survival institution) and the clearing institution (the two-lane
-  book is still configured). (Robustness for the in-cycle result is done — §6.)
+  coexistence claim to the partial one-off cull, per the wording above.)* **The robustness appendix
+  (S21i, §8) later showed this coexistence is seed-robust but *band-qualified* (MIXED): load-bearing on
+  WOOD scarcity (the lineage must be at the WOOD floor) and on the SALT-anchor density — not a broad
+  result.**
+- **S21i — the robustness appendix (done; see §8).** The S21f/g/h capstone is **MIXED**: seed-robust
+  and grain-flow-robust, but load-bearing on WOOD scarcity (`lineage wood_provision`) and SALT-anchor
+  density (`salt_direct_use_period`). The coexistence headline is real but **band-qualified**.
+- **Then / later:** endogenizing the role topology (households *drift* into roles via profit/loss,
+  rather than the emergency floor being a *configured* survival institution); endogenizing the clearing
+  institution (the two-lane book is still configured); then the article (framed as *condition
+  decomposition*, per §8's verdict). A follow-up **S21i-b** could decouple the emergency-floor
+  target-pull depth (deferred from S21i as the one engine knob).
+
+---
+
+## 8. The robustness appendix (S21i): the capstone is MIXED — band-qualified, not broad
+
+The whole S20→S21h arc demonstrated each regime at a **single shipped config** (mostly seed 7). Codex's
+post-S21h evaluation named the matching credibility risk plainly: *a hostile reviewer will say you saved
+the market by adding a configured no-input bread floor to the exact agents mortality killed.* S21i is
+the honest answer — not hiding the floor, but measuring **how wide the window is** in which it works.
+It sweeps the three open-colony scenarios across seeds and disclosed parameter bands and classifies
+every cell with the **same** 5-tuple provenance/demand machinery the S21h suite uses (`survived`,
+`demanded`, `promoted`, `bought_materially`, `provenance_clean`), under a verdict criterion designed to
+be *auditable rather than tunable*: a CORE axis is **ROBUST** only with two SUCCESS steps on each side
+of the shipped value (one step is gameable by coarse band spacing), every 1-D cell is classified across
+three seeds, and the verdict test prints the bands + shipped index rather than asserting the answer.
+The suite is purely test-additive (no engine change), so all prior goldens are byte-identical.
+
+**Headline regimes are seed-robust.** Across 12 seeds `{3,7,11,19,23,29,31,37,41,43,47,53}` the three
+regimes are stable: S21f SUCCESS, S21g CULL, S21h.1 SUCCESS — and the S21h.1 non-lineage survivor count
+is **12 of 18 for every wide seed** (reported, not pinned). So the coexistence is not a seed-7 artifact.
+
+**CORE axes (the capstone verdict):**
+
+| Axis | Band (shipped\*) | Criterion | Note |
+|------|------------------|-----------|------|
+| `grain_regen` (pre-money food flow) | {12, 18, 24\*, 36, 48} | **ROBUST** | two SUCCESS steps each side |
+| `emergency_hunger_threshold` | {7, 8, 9, 10, 11\*} | **BOUNDED-BY-AXIS** | shipped 11 = top validator bound (`< hunger_critical`); four SUCCESS steps on the low side |
+| `lineage wood_provision` (WOOD scarcity) | {0\*, 1, 2, 3, 4} | **NARROW** | shipped 0 = the hard WOOD floor (low side bounded); **one notch (`=1`) flips every cross-seed cell to SURVIVED-NO-PROMOTE** — bread buying collapses ~6.6k → ~50 as the relaxed WOOD want stops driving the bread→SALT `IndirectFor{WOOD}` lane |
+| `salt_direct_use_period` (anchor density) | {4, 6, 8\*, 12, 16} | **NARROW** | {4,6,8,16} SUCCESS but **period 12 is a non-monotonic SURVIVED-NO-PROMOTE hole** across all three cross-seeds (demand alive, provenance clean — SALT just fails to lead) |
+
+**SENSITIVITY axes** (classified but excluded from the core verdict): strong-bar acceptors {1,2,3} all
+SUCCESS; `min_indirect_target_goods=3` is infeasible in the two-target `{bread, WOOD}` topology
+(skipped, logged — a failure there would be the topology, not S21h narrowness); role-count bands
+(gatherers/consumers/founders) and mortality-timing bands (`birth_hunger_ceiling {8,10}`,
+`death_window {2,3,4}`) all SUCCESS where feasible (`birth_hunger_ceiling=6` skipped infeasible). Both
+interaction-map shipped cells (threshold×grain, WOOD-poor×anchor) are SUCCESS.
+
+**Verdict: MIXED** — the headline is seed-stable and the CORE axes split (grain flow robust, emergency
+threshold hard-bounded, but WOOD scarcity and anchor density narrow). The honest reading: **money and
+mortality coexist in the open colony as an existence proof within a disclosed envelope, not as a broad
+result.** It is *load-bearing on two conditions*: (i) the lineage sellers must be at the **WOOD floor**
+— one unit of WOOD relief relaxes their unsatisfied WOOD want and the bread→SALT medium lane collapses
+(answering the spec's own question, "how WOOD-poor must the colony be for SALT to lead?" — *maximally*);
+and (ii) the regression-theorem direct-use **anchor density** has a non-monotonic hole (period 12 fails
+where 8 and 16 succeed). This sharpens rather than retracts the capstone: the coexistence is real and
+seed-robust, but it sits on a narrow ridge in WOOD-scarcity and anchor-density space — exactly the kind
+of precondition a *condition-decomposition* account (not an "authentic spontaneous order" claim) should
+state plainly.
 
 ---
 
@@ -571,3 +633,4 @@ the rest:
 | S21f | Endogenous pre-money household production-for-barter (capstone slice 4) | **SUCCESS — the supply question closed: lineage households cultivate bread (`SelfProduced`, zero `SeededMinted`) and barter the surplus pre-money; SALT promotes on it — money bootstraps from genuine pre-money production-for-barter, no seed/no mint** (gated cultivation-without-FORAGE seam; grain-bounded; mortality off); all goldens byte-identical |
 | S21g | Mortality-on over the open-market colony (capstone, the positive check) | finding (money fails under mortality, a spec pre-named outcome): turning the S17 positive check ON (`hunger_critical=need_max`, `birth_hunger_ceiling=8`, the S17 deltas) over the S21f money colony culls all 18 non-self-provisioning market roles (SALT-rich buyers + woodcutters) in a one-off cold-start cull (~tick 7) before any market forms — SALT never promotes, no food is ever bought; the self-feeding cultivation lineage survives (cold-start timing trace: `first_hunger_drop 5 < first_starvation_death 7`) into a quiescent subsistence commune. Mortality-off control = S21f money works; neither endorsed rescue lever (grain-flow nor cultivate-timing) can rescue (the dying roles don't cultivate); robust across seeds; all goldens byte-identical |
 | S21h | Demand-side survival bridge (capstone slice 6, the S21g resolution) | **SUCCESS — money and mortality coexist:** a produced no-grain-input own-labor emergency survival floor (a configured subsistence institution) keeps 12 of 18 non-lineage roles alive *and* hungry, so SALT promotes on the lineage's `SelfProduced` bread (`seeded_minted == 0`) under the positive check — after a one-off cold-start cull (6/18 still die, then starvation stops: a partial bridged band, durable to 10k). The bounded diagnostic (a finite *seeded* consumed-only cushion, S21h.0) is the **knife-edge finding**: no cushion size threads it cleanly — too small culls, too large sates out of the market; the diagonal never promotes, off-diagonal promotions are seeded-supply-disqualified. Robust across seeds + threshold sweep; all goldens byte-identical (Codex review-of-results: PASS-WITH-CAVEATS, no P0/P1) |
+| S21i | Robustness appendix — does the S21f/g/h capstone survive the parameter space? | **MIXED (band-qualified):** sweeps the three scenarios across 12 seeds + parameter bands, classifying every cell with the same 5-tuple machinery (test-additive, all goldens byte-identical). Headline regimes seed-robust (S21f SUCCESS / S21g CULL / S21h.1 SUCCESS; 12/18 survivors every wide seed). CORE axes: `grain_regen` ROBUST; `emergency_hunger_threshold` BOUNDED-BY-AXIS (shipped = top validator bound); `lineage wood_provision` NARROW (shipped 0 = WOOD floor — one notch of WOOD relief collapses the bread→SALT lane); `salt_direct_use_period` NARROW (non-monotonic period-12 promotion hole). So money+mortality coexistence is real and seed-robust but **load-bearing on WOOD scarcity and SALT-anchor density** — an existence proof within a disclosed envelope, not a broad result (Codex review-of-results: PASS-WITH-CAVEATS, no P1) |
