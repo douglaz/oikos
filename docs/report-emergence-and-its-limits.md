@@ -3,7 +3,7 @@
 *An experimental report on emergent money, capital, and survival in a praxeologic simulation.*
 
 > Status: working research report (raw material for a future article). Covers the milestone arc
-> through S21i (the money sub-arc, the full open-colony-capstone *supply* arc, the mortality-on cold-start finding, its resolution — a produced demand-side survival floor that lets money and mortality coexist — and the robustness appendix that finds that coexistence is *band-qualified*: MIXED, load-bearing on WOOD scarcity and SALT-anchor density). Every result below
+> through S22a (the money sub-arc, the full open-colony-capstone *supply* arc, the mortality-on cold-start finding, its resolution — a produced demand-side survival floor that lets money and mortality coexist — the robustness appendix that finds that coexistence is *band-qualified* (MIXED, load-bearing on WOOD scarcity and SALT-anchor density), and the first role-topology slice: endogenizing cultivation entry, where the food-producing class self-forms as *fluid* participation rather than a stable class). Every result below
 > was built additively behind a default-off flag, kept the prior conformance goldens byte-identical,
 > conserved every tick, ran deterministically, and was reviewed by an independent second model (Codex)
 > at both the spec and the result stage. Honest negative findings are reported as first-class results,
@@ -551,9 +551,11 @@ the rest:
 - **S21i — the robustness appendix (done; see §8).** The S21f/g/h capstone is **MIXED**: seed-robust
   and grain-flow-robust, but load-bearing on WOOD scarcity (`lineage wood_provision`) and SALT-anchor
   density (`salt_direct_use_period`). The coexistence headline is real but **band-qualified**.
-- **Then / later:** endogenizing the role topology (households *drift* into roles via profit/loss,
-  rather than the emergency floor being a *configured* survival institution); endogenizing the clearing
-  institution (the two-lane book is still configured); then the article (framed as *condition
+- **S22a — endogenize cultivation entry (done; see §9).** The first slice of role-topology
+  endogenization: relaxing the lineage cultivation *privilege* to any spatial colonist under hunger
+  pressure. Result = SUCCESS but **fluid/rotating participation**, not a stable occupational class.
+- **Then / later:** occupational stickiness + profit-driven role drift (S22b+); endogenizing the
+  clearing institution (the two-lane book is still configured); then the article (framed as *condition
   decomposition*, per §8's verdict). A follow-up **S21i-b** could decouple the emergency-floor
   target-pull depth (deferred from S21i as the one engine knob).
 
@@ -607,6 +609,47 @@ state plainly.
 
 ---
 
+## 9. Endogenizing the role topology (S22a): cultivation becomes a fluid survival behavior
+
+Through S21, the open colony's **food-producing class was pinned** — a pre-identified cultivator
+*lineage* supplied the `SelfProduced` bread; non-lineage buyers and woodcutters never cultivated. That
+lineage privilege was the biggest remaining scaffold against "division of labor arises from *choice*,
+not placement." S22a is the first slice of endogenizing it (Codex-scoped as the smallest meaningful
+step): a default-off gate relaxes cultivation eligibility from "spatial household lineage member" to
+**any spatial colonist under sustained hunger pressure**, reusing the *existing* S15/S21f
+pressure/patience hysteresis — no profit optimizer, no new threshold; the opportunity cost is structural
+(a cultivating tick cannot use the world-task slot). It is a steering-flag change (no vocation
+mutation), additive and default-off, so all goldens stay byte-identical.
+
+**Verdict: SUCCESS — but the honest result is *fluid/rotating participation*, not a stable
+occupational class.** On the headline scenario (mortality on), across all five seeds: SALT promotes on a
+clean (`seeded_minted==0`) supply, food is materially bought after promotion, a living non-cultivating
+buyer cohort (7–10 of 18) persists, the WOOD↔SALT lane clears — **money and mortality survive the
+relaxed producer identity.** But the cultivation is fluid: at any instant only ~5% cultivate (rolling
+share settled), yet the membership rotates rapidly — churn ≈ 23–24 enter/exit transitions per
+ever-cultivating non-lineage colonist over 1600 ticks, and *every* non-lineage role dips in at some
+point. So the honest reading is *"everyone occasionally self-provisions under acute hunger, then returns
+to buying,"* not *"a food-producing class self-forms."* S22a **dissolves the lineage privilege** —
+cultivation is an endogenous survival behavior available to all under pressure — but it does **not**
+demonstrate a stable, sticky division of labor (that is deferred to S22b+, along with profit-driven role
+drift, specialized-producer entry, and a global role chooser). This endogenizes cultivation
+*participation*, not the full vocation topology.
+
+**Controls** (classify, not tune): the pinned-topology baseline still succeeds (the S21h 12/18);
+money-machinery-off fails to promote; low/no grain-flow does not fake success (everyone cultivates,
+nothing trades — a commune collapse); the mortality-off sanity variant succeeds. **Two control
+findings** (Codex review-of-results, reported not forced): (i) the **no-hysteresis control creates no
+distinct failure regime** — the headline already churns far above the oscillation limit, so removing
+most of the hysteresis leaves aggregate stability intact while per-agent churn stays high in both; the
+hysteresis is *not* load-bearing for aggregate stability here; (ii) the **no-emergency-floor control
+does not reproduce the S21g cull** under endogenous entry — relaxing eligibility makes cultivation
+itself a survival path, so the emergency floor is no longer the sole demand-side bridge. Both are honest
+findings about how the relaxed topology changes the colony's survival structure. Codex review-of-results:
+PASS-WITH-CAVEATS (no P1 code defect; the "stable class" framing was downgraded to fluid participation,
+per the wording above).
+
+---
+
 ## Appendix — milestone index
 
 | Sxx | Title | Outcome |
@@ -634,3 +677,4 @@ state plainly.
 | S21g | Mortality-on over the open-market colony (capstone, the positive check) | finding (money fails under mortality, a spec pre-named outcome): turning the S17 positive check ON (`hunger_critical=need_max`, `birth_hunger_ceiling=8`, the S17 deltas) over the S21f money colony culls all 18 non-self-provisioning market roles (SALT-rich buyers + woodcutters) in a one-off cold-start cull (~tick 7) before any market forms — SALT never promotes, no food is ever bought; the self-feeding cultivation lineage survives (cold-start timing trace: `first_hunger_drop 5 < first_starvation_death 7`) into a quiescent subsistence commune. Mortality-off control = S21f money works; neither endorsed rescue lever (grain-flow nor cultivate-timing) can rescue (the dying roles don't cultivate); robust across seeds; all goldens byte-identical |
 | S21h | Demand-side survival bridge (capstone slice 6, the S21g resolution) | **SUCCESS — money and mortality coexist:** a produced no-grain-input own-labor emergency survival floor (a configured subsistence institution) keeps 12 of 18 non-lineage roles alive *and* hungry, so SALT promotes on the lineage's `SelfProduced` bread (`seeded_minted == 0`) under the positive check — after a one-off cold-start cull (6/18 still die, then starvation stops: a partial bridged band, durable to 10k). The bounded diagnostic (a finite *seeded* consumed-only cushion, S21h.0) is the **knife-edge finding**: no cushion size threads it cleanly — too small culls, too large sates out of the market; the diagonal never promotes, off-diagonal promotions are seeded-supply-disqualified. Robust across seeds + threshold sweep; all goldens byte-identical (Codex review-of-results: PASS-WITH-CAVEATS, no P0/P1) |
 | S21i | Robustness appendix — does the S21f/g/h capstone survive the parameter space? | **MIXED (band-qualified):** sweeps the three scenarios across 12 seeds + parameter bands, classifying every cell with the same 5-tuple machinery (test-additive, all goldens byte-identical). Headline regimes seed-robust (S21f SUCCESS / S21g CULL / S21h.1 SUCCESS; 12/18 survivors every wide seed). CORE axes: `grain_regen` ROBUST; `emergency_hunger_threshold` BOUNDED-BY-AXIS (shipped = top validator bound); `lineage wood_provision` NARROW (shipped 0 = WOOD floor — one notch of WOOD relief collapses the bread→SALT lane); `salt_direct_use_period` NARROW (non-monotonic period-12 promotion hole). So money+mortality coexistence is real and seed-robust but **load-bearing on WOOD scarcity and SALT-anchor density** — an existence proof within a disclosed envelope, not a broad result (Codex review-of-results: PASS-WITH-CAVEATS, no P1) |
+| S22a | Endogenize cultivation entry (role-topology slice 1) | **SUCCESS, fluid participation:** a default-off gate relaxes cultivation eligibility from "lineage member" to "any spatial colonist under sustained hunger pressure" (reusing the existing pressure/patience hysteresis, steering-flag only, all goldens byte-identical). Money + mortality survive the relaxed producer identity — SALT promotes on clean `SelfProduced` bread, a living buyer cohort persists. But it is **fluid/rotating participation, not a stable class**: ~5% cultivate at any instant (settled) yet all 18 non-lineage roles rotate through (churn ~23/agent) — "everyone occasionally self-provisions under hunger, then buys." Dissolves the lineage *privilege*, not a sticky division of labor (S22b+). Control findings: the hysteresis is not load-bearing for aggregate stability; the emergency floor is no longer the sole survival bridge (Codex review-of-results: PASS-WITH-CAVEATS, no P1) |
