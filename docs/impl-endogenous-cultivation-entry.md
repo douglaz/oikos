@@ -1,6 +1,42 @@
 # impl-33 — S22a: Endogenous Cultivation Entry (does the food-producing class form from pressure, not lineage identity?)
 
-Status: SPEC-READY — two Codex spec-review rounds folded in. Round 1 (NEEDS-REVISION): four decisions
+Status: LANDED — verdict **SUCCESS, reframed as FLUID cultivation participation** (Codex
+review-of-results PASS-WITH-CAVEATS, no P1 code defect; the framing caveats below are folded in). The
+single engine change (the default-off `endogenous_cultivation_entry` gate + the §3.2 eligibility
+override, canonicalized ON-only with digest tag 7) plus runtime-only diagnostics is implemented; the new
+suite `sim/tests/endogenous_cultivation_entry.rs` classifies the headline
+(`frontier_endogenous_cultivation`, mortality on) as **SUCCESS across all SEEDS** via the §2 ordered
+classifier: **all 18 non-lineage roles enter cultivation** at some point (≫ `MATERIAL_ENTRY_FLOOR=4`),
+14–17 of them sell `SelfProduced` bread for SALT (≥2) at production-time provenance, SALT promotes on a
+clean (`seeded_minted==0`) supply, food is materially bought after promotion, a live non-cultivating
+buyer cohort (7–10) persists, and the WOOD↔SALT lane clears — money + mortality survive the relaxed
+producer identity.
+
+**HONEST FRAMING (Codex P2 — not a stable occupational class).** The cultivation is **FLUID/ROTATING
+participation**, NOT a fixed producer class: at any instant only ~5% are cultivating (rolling share
+settled), but the *membership rotates rapidly* — churn ≈ 23–24 enter/exit transitions per
+ever-cultivating non-lineage colonist over 1600 ticks, and *every* non-lineage role dips in. The honest
+reading is "everyone occasionally self-provisions under acute hunger, then returns to buying," not "a
+food-producing class self-forms." So S22a shows **cultivation is an endogenous survival behavior
+available to all under pressure**, dissolving the lineage *privilege* — it does not show a stable
+division of labor (that, and any occupational stickiness, is S22b+).
+
+Controls: the pinned-topology baseline still succeeds (12/18); money-machinery-off fails to promote
+(Oscillation/MoneyFailure); low/no grain-flow does not fake success (everyone cultivates, nothing
+trades — CommuneCollapse); the mortality-off sanity variant succeeds. **Three control findings (Codex,
+reported not forced):** (1) the no-hysteresis control's literal `cultivate_hunger_out =
+cultivate_hunger_in` is rejected by the engine invariant `out < in`, so it is pinned to the narrowest
+realizable band (`out = in-1`, `patience = 1`) — disclosed, not a retune; (2) **the no-hysteresis
+control does NOT create a distinct failure regime** — the headline already churns far above
+`CHURN_LIMIT`, so removing most hysteresis leaves aggregate stability intact while per-agent churn stays
+high in both; the hysteresis is **not load-bearing** for aggregate stability here; (3) the
+no-emergency-floor control does NOT reproduce the S21g cull under endogenous entry — relaxing
+eligibility makes cultivation itself a survival path, so the emergency floor is no longer the sole
+demand-side bridge. All five tripwire goldens are byte-identical; off the flag the chain is
+byte-identical to the S21h stream; `cargo fmt --check` and
+`cargo clippy --workspace --all-targets -- -D warnings` clean; conservation holds every tick.
+
+Prior: SPEC-READY — two Codex spec-review rounds folded in. Round 1 (NEEDS-REVISION): four decisions
 settled (§8) + 6-item punch-list (eligibility override pinned §3.2; ordered classifier + numeric
 thresholds §2/§7; held/bought gate removed §4; no-hysteresis control pinned §5; material-buyer +
 production-time-provenance diagnostics §3.3). Round 2 (NEEDS-REVISION → pre-approved): the override
@@ -216,11 +252,16 @@ that.)
   (the S21h result), establishing the baseline.
 - **Endogenous-entry ON** = `frontier_endogenous_cultivation` — the treatment; classified vs the pinned
   baseline.
-- **No-hysteresis control** — pinned via the **existing fields** (Codex P2): `cultivate_patience = 1`
-  and `cultivate_hunger_out = cultivate_hunger_in` (no streak, no in/out band). No new flag. Expected to
-  oscillate or over-enter (shows the hysteresis is load-bearing, not decorative).
-- **No-emergency-floor control** — endogenous entry with the S21h emergency floor off — expected to
-  reproduce the S21g demand-side cull (or a close variant), showing the bridge is still needed.
+- **No-hysteresis control** — pinned via the **existing fields**: `cultivate_patience = 1` and
+  `cultivate_hunger_out = cultivate_hunger_in − 1` (the engine validates `out < in`, so the literal
+  `out = in` is unrealizable — disclosed). *Pre-named expectation was oscillation;* **landed result
+  (control finding):** it does NOT create a distinct failure regime — the headline already churns far
+  above `CHURN_LIMIT`, so removing most hysteresis leaves aggregate stability intact while per-agent
+  churn stays high in both. The hysteresis is **not load-bearing** for aggregate stability here.
+- **No-emergency-floor control** — endogenous entry with the S21h emergency floor off. *Pre-named
+  expectation was an S21g-like cull;* **landed result (control finding):** it does NOT reproduce the
+  cull — relaxing eligibility makes cultivation itself a survival path, so the emergency floor is no
+  longer the sole demand-side bridge.
 - **Money-machinery-off controls** — endogenous entry with two-layer saleability / two-lane clearing
   off — money should fail/degrade, proving the money machinery is still load-bearing (not that entry
   alone makes money).
@@ -259,8 +300,11 @@ re-trigger `run_role_choice` recursion.
     does not, that is reported as a control finding, not a reason to adjust the constant.
   - DEMAND-SIDE COLLAPSE = living non-lineage ≈ 0 before the promotion tick (reuse the S21g/S21h
     survivor metric).
-- All six controls (§5) behave as pre-named (pinned succeeds; no-hysteresis oscillates; no-floor culls;
-  money-off fails; grain-starved doesn't fake success) — each is a test.
+- All six controls (§5) are tests; each is classified and its result reported (whether or not it matches
+  the pre-named expectation). Landed: pinned succeeds; money-off fails; grain-starved doesn't fake
+  success (CommuneCollapse); mortality-off succeeds; **two control findings** — no-hysteresis creates no
+  distinct failure regime (the hysteresis is not load-bearing for aggregate stability), and
+  no-emergency-floor does not reproduce the S21g cull (cultivation entry is itself a survival path).
 - Conservation holds every tick on every run; `bread_minted_max == 0`; provenance clean-or-disqualified;
   no extinction masquerading as a regime (hard `!extinct` guard, the S21i lesson).
 - Robustness mini-sweep over the existing pressure thresholds + grain flow, classified, no tuning to

@@ -99,9 +99,10 @@ pub use settlement::{
     recipe_adoption_pays_for_money, AcquisitionChannels, BankConfig, BarterConfig, BenchSurface,
     BootstrapTraceSummary, CandidateAcceptances, CapitalBuildOutcome, CapitalDecision,
     CapitalDeclineReason, ChainConfig, CycleConfig, CycleKind, DirectIndirectAcceptances,
-    EconTickReport, EstateDestination, ForageCommons, LineageStats, NodeSpec, OrderStat,
-    ProducerCash, ProducerRole, Settlement, SettlementConfig, TaxLevy, TaxPolicy, TenderBench,
-    TenderPolicy, TraderEndowment, Vocation, ECON_TICKS_PER_YEAR, FAST_TICKS_PER_ECON_TICK,
+    EconTickReport, EntrantClassSale, EstateDestination, ForageCommons, LineageStats, NodeSpec,
+    OrderStat, ProducerCash, ProducerRole, Settlement, SettlementConfig, TaxLevy, TaxPolicy,
+    TenderBench, TenderPolicy, TraderEndowment, Vocation, ECON_TICKS_PER_YEAR,
+    FAST_TICKS_PER_ECON_TICK,
 };
 
 /// Read-only re-exports of the `econ`/`life` types that make up the settlement's

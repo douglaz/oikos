@@ -937,6 +937,26 @@ pub struct ChainConfig {
     /// production), mirroring the S16/S18/S21d gates: a flag-off config keeps its exact
     /// prior byte layout. Composes with `own_use_cultivation` (which it does not replace).
     pub household_barter_cultivation: bool,
+    /// S22a — **endogenous cultivation entry** (default `false`, byte-identical when off).
+    /// Through S21 the food-producing class is pinned: the S16 buy/sell split restricts
+    /// household-barter cultivation eligibility to the spatial **lineage**
+    /// (`household.is_some() && spatial_active`), so the non-lineage roles (the SALT-rich
+    /// buyers + the woodcutters) never cultivate regardless of hunger. When this flag is
+    /// `true` *and* the money-from-produced-bread path is active
+    /// ([`Self::cultivation_sells_surplus`]), the cultivation eligibility set is **relaxed**:
+    /// ANY spatial colonist (lineage or not) becomes eligible to enter cultivation through the
+    /// SAME existing S15/S21f pressure/patience hysteresis — the food-producing class can then
+    /// self-form from sustained hunger rather than assigned identity. The relaxation is ONLY
+    /// the household/spatial membership predicate; the `Consumer|Gatherer|Unassigned` vocation
+    /// filter is **preserved** (an active Miller/Baker is still excluded), no `Vocation` is
+    /// mutated (a steering-flag-only change via the existing `cultivating` flag), and the
+    /// Miller/Baker money gate is untouched. The opportunity cost stays structural (a
+    /// cultivating tick cannot also gather WOOD / use the world-task slot — market buying in the
+    /// econ step is unaffected). Canonicalized **ON-only** (it changes
+    /// who produces), mirroring the S16/S18/S21d/h gates: a flag-off config keeps its exact
+    /// prior byte layout. Composes on `cultivation_sells_surplus` (the path whose eligibility
+    /// branch it overrides).
+    pub endogenous_cultivation_entry: bool,
     /// S21d.0 — **retire the food mints** (the open-survival probe; default `false`,
     /// byte-identical when off). When `true`, the two staple-food mint sites are skipped
     /// **independent of `own_labor_subsistence`/forage**: the demographic `food_provision`
@@ -1288,6 +1308,9 @@ impl ChainConfig {
             // S21f off by default: no household-barter cultivation seam, so cultivation
             // still requires the forage substrate and every existing config is byte-identical.
             household_barter_cultivation: false,
+            // S22a off by default: cultivation eligibility stays pinned to the lineage, so
+            // every existing config is byte-identical (canonicalized ON-only).
+            endogenous_cultivation_entry: false,
             // S21d.0 off by default: the food mints stay, so every existing config and its
             // goldens are byte-identical (canonicalized ON-only).
             retire_food_mints: false,
@@ -1402,6 +1425,9 @@ impl ChainConfig {
             // S21f off by default: no household-barter cultivation seam, so cultivation
             // still requires the forage substrate and every existing config is byte-identical.
             household_barter_cultivation: false,
+            // S22a off by default: cultivation eligibility stays pinned to the lineage, so
+            // every existing config is byte-identical (canonicalized ON-only).
+            endogenous_cultivation_entry: false,
             // S21d.0 off by default: the food mints stay, so every existing config and its
             // goldens are byte-identical (canonicalized ON-only).
             retire_food_mints: false,
@@ -1496,6 +1522,9 @@ impl ChainConfig {
             // S21f off by default: no household-barter cultivation seam, so cultivation
             // still requires the forage substrate and every existing config is byte-identical.
             household_barter_cultivation: false,
+            // S22a off by default: cultivation eligibility stays pinned to the lineage, so
+            // every existing config is byte-identical (canonicalized ON-only).
+            endogenous_cultivation_entry: false,
             // S21d.0 off by default: the food mints stay, so every existing config and its
             // goldens are byte-identical (canonicalized ON-only).
             retire_food_mints: false,
@@ -4176,6 +4205,51 @@ impl SettlementConfig {
         cfg
     }
 
+    /// S22a — **endogenous cultivation entry over the demand-bridged money colony** (the
+    /// headline): [`Self::frontier_emergency_provision`] (the S21h.1 colony where money +
+    /// mortality coexist on the pinned cultivator lineage) with the **only** change being
+    /// `endogenous_cultivation_entry = true`. That relaxes cultivation eligibility from the
+    /// spatial lineage to ANY spatial colonist (the `Consumer|Gatherer|Unassigned` vocation
+    /// filter preserved), so the food-producing class can self-form from sustained hunger via
+    /// the existing S15/S21f pressure/patience hysteresis rather than assigned lineage identity.
+    ///
+    /// Everything else is inherited unchanged: the S20+S21a/b/c money machinery, the emergency
+    /// floor (`emergency_hunger_threshold = 11`), the grain commons (480/24/960), the WOOD-poor
+    /// cultivator topology, `multigood_money`, `retire_food_mints`, `acquisition_ledger`, the
+    /// `seeded_minted == 0` provenance, and mortality ON (`hunger_critical = need_max = 12`,
+    /// `birth_hunger_ceiling = 8`). The central S22a question: does cultivation participation
+    /// ENDOGENIZE (non-lineage agents enter under hunger and sell `SelfProduced` bread) while
+    /// the open colony still promotes SALT and survives the positive check — or was the pinned
+    /// producer lineage load-bearing (pinned-lineage necessity / commune collapse / etc.)?
+    ///
+    /// Determinism: `endogenous_cultivation_entry` is canonicalized ON-only (digest tag 7), so
+    /// only THIS scenario's digest changes; with the flag reverted to `false` it is
+    /// byte-identical to `frontier_emergency_provision`. The entrant-class provenance split, the
+    /// rolling cultivator/buyer diagnostics, and the per-agent bought counter are all
+    /// runtime-only (never digested).
+    pub fn frontier_endogenous_cultivation() -> Self {
+        let mut cfg = Self::frontier_emergency_provision();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.endogenous_cultivation_entry = true;
+        }
+        cfg
+    }
+
+    /// S22a — **mortality-off endogenous-entry sanity variant** (diagnostic only): the S21f
+    /// household-barter money colony ([`Self::frontier_household_barter`], mortality OFF) with
+    /// `endogenous_cultivation_entry = true`. It proves the entry seam fires and the
+    /// food-producing class can self-form WITHOUT the positive check confounding the read (no
+    /// cold-start cull, no emergency floor) — the clean control for "does relaxing the producer
+    /// identity admit non-lineage cultivators at all?" Not the headline (mortality is off);
+    /// byte-identical to `frontier_household_barter` with the flag reverted.
+    pub fn frontier_endogenous_cultivation_no_mortality() -> Self {
+        let mut cfg = Self::frontier_household_barter();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.endogenous_cultivation_entry = true;
+        }
+        cfg
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).
@@ -4436,6 +4510,30 @@ pub struct AcquisitionChannels {
     pub seeded_minted: u64,
     pub self_produced: u64,
     pub foraged: u64,
+}
+
+/// S22a: a read-only snapshot of the produced bread→SALT volume split by the PRODUCER's class
+/// recorded at PRODUCTION time (spatial lineage vs non-lineage entrant), plus the distinct
+/// producers per class. The entrant-class provenance the S22a classifier reads: whether the
+/// food-producing class that monetized SALT formed from the pinned lineage, self-formed from
+/// non-lineage agents under hunger, or both. See
+/// [`Settlement::bread_for_salt_by_entrant_class`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EntrantClassSale {
+    /// Cumulative produced bread→SALT volume produced by spatial LINEAGE members (whole-run).
+    pub lineage_volume: u64,
+    /// Cumulative produced bread→SALT volume produced by NON-lineage entrants (whole-run).
+    pub nonlineage_volume: u64,
+    /// The same lineage split accumulated only over PRE-promotion ticks (frozen at the
+    /// promotion tick) — the causality probe for whether lineage production drove a promotion.
+    pub pre_promotion_lineage_volume: u64,
+    /// The same non-lineage split over PRE-promotion ticks (frozen at the promotion tick).
+    pub pre_promotion_nonlineage_volume: u64,
+    /// Distinct LINEAGE producers whose `SelfProduced` bread reached a bread→SALT sale.
+    pub lineage_sellers: usize,
+    /// Distinct NON-lineage entrants whose `SelfProduced` bread reached a bread→SALT sale — the
+    /// SUCCESS criterion "≥2 non-lineage entrants sell `SelfProduced` bread".
+    pub nonlineage_sellers: usize,
 }
 
 impl AcquisitionChannels {
@@ -5039,6 +5137,10 @@ struct ChainRuntime {
     /// [`ChainConfig::household_barter_cultivation`]). `false` for every existing config, so
     /// cultivation still requires the forage substrate and the run is byte-identical.
     household_barter_cultivation: bool,
+    /// S22a: the endogenous cultivation-entry gate (see
+    /// [`ChainConfig::endogenous_cultivation_entry`]). `false` for every existing config, so
+    /// cultivation eligibility stays pinned to the lineage and the run is byte-identical.
+    endogenous_cultivation_entry: bool,
     /// S21h.0: the non-lineage woodcutters' consumed-only bread cushion (see
     /// [`ChainConfig::gatherer_food_cushion`]). `0` for every existing config; canonicalized
     /// ON-only (its differing gatherer starting stock already splits the digest).
@@ -5100,6 +5202,22 @@ struct CapitalBuild {
     project: Project,
 }
 
+/// S22a (runtime-only diagnostic): a produced-bread lot tagged with the class of the agent
+/// that PRODUCED it (cultivated/baked the grain). Carried alongside the flat `produced`
+/// balance so a bread→SALT sale can be attributed to who PRODUCED the bread (the entrant), not
+/// who SOLD it — the seller's `cultivating` flag may already be false at trade time, and a
+/// produced loaf may transfer (inheritance / resale) before it sells. Never digested.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ProducedLot {
+    /// The producing agent at production time.
+    producer: AgentId,
+    /// Whether the producer was a spatial **lineage** member (`household.is_some()`) at
+    /// production time. Class is a stable per-agent property, so production-time and sale-time
+    /// reads agree.
+    lineage: bool,
+    qty: u64,
+}
+
 /// S16: the **produced-bread provenance ledger** — a per-agent, stock-origin balance that
 /// classifies a bread→medium trade as **produced** (the seller's bread was cultivated, the
 /// claim S16 makes) vs **minted/residual** (seeded buffer or a hearth mint). Role/
@@ -5147,21 +5265,76 @@ struct BreadProvenance {
     /// the first econ tick a produced bread→medium trade cleared.
     first_produced_surplus_tick: Option<u64>,
     first_produced_bread_for_salt_tick: Option<u64>,
+    /// S22a (runtime-only, NOT digested): per-agent FIFO of produced-bread lots tagged by the
+    /// PRODUCER's class, mirroring `produced` exactly (same credit/draw/transfer/sink order),
+    /// so a bread→SALT sale's produced units can be split lineage vs non-lineage by who
+    /// cultivated them — the production-time entrant-class provenance.
+    produced_lots: BTreeMap<AgentId, VecDeque<ProducedLot>>,
+    /// S22a: cumulative produced bread→SALT volume split by producer class (whole-run), plus
+    /// the pre-promotion-only split (frozen at the promotion tick). Their sums equal the
+    /// produced totals above.
+    salt_volume_produced_lineage: u64,
+    salt_volume_produced_nonlineage: u64,
+    pre_promotion_salt_volume_produced_lineage: u64,
+    pre_promotion_salt_volume_produced_nonlineage: u64,
+    /// S22a: distinct producers whose `SelfProduced` bread reached a bread→SALT sale, split by
+    /// class — the count of non-lineage ENTRANTS that actually monetized their cultivated bread.
+    lineage_salt_producers: BTreeSet<AgentId>,
+    nonlineage_salt_producers: BTreeSet<AgentId>,
 }
 
 impl BreadProvenance {
-    /// Credit `qty` produced-origin bread to `agent` (a production event).
-    fn credit_produced(&mut self, agent: AgentId, qty: u64) {
+    /// Credit `qty` produced-origin bread to `agent` (a production event). `lineage` is the
+    /// producer's class at production time (S22a), recorded in the class-tagged lot.
+    fn credit_produced(&mut self, agent: AgentId, qty: u64, lineage: bool) {
         if qty == 0 {
             return;
         }
         *self.produced.entry(agent).or_insert(0) += qty;
         self.produced_credited += qty;
+        self.produced_lots
+            .entry(agent)
+            .or_default()
+            .push_back(ProducedLot {
+                producer: agent,
+                lineage,
+                qty,
+            });
     }
 
-    /// Draw `qty` of `agent`'s bread, produced-origin FIRST; returns the produced units
-    /// drawn. The caller decides whether the drawn units are a sink or a transfer.
-    fn draw(&mut self, agent: AgentId, qty: u64) -> u64 {
+    /// Pop `qty` of `agent`'s produced-class lots FIFO, returning the drawn lots (their sum is
+    /// `min(qty, held)`). Keeps `produced_lots` in lockstep with the flat `produced` balance.
+    fn pop_lots(&mut self, agent: AgentId, mut qty: u64) -> Vec<ProducedLot> {
+        let mut drawn = Vec::new();
+        let Some(queue) = self.produced_lots.get_mut(&agent) else {
+            return drawn;
+        };
+        while qty > 0 {
+            let Some(front) = queue.front_mut() else {
+                break;
+            };
+            let take = front.qty.min(qty);
+            drawn.push(ProducedLot {
+                producer: front.producer,
+                lineage: front.lineage,
+                qty: take,
+            });
+            front.qty -= take;
+            qty -= take;
+            if front.qty == 0 {
+                queue.pop_front();
+            }
+        }
+        if queue.is_empty() {
+            self.produced_lots.remove(&agent);
+        }
+        drawn
+    }
+
+    /// Draw `qty` of `agent`'s bread, produced-origin FIRST; returns the class-tagged lots
+    /// drawn (in FIFO order, summing to the produced units drawn). The caller decides whether
+    /// the drawn units are a sink or a transfer.
+    fn draw(&mut self, agent: AgentId, qty: u64) -> Vec<ProducedLot> {
         let held = self.produced.get(&agent).copied().unwrap_or(0);
         let drawn = held.min(qty);
         if drawn > 0 {
@@ -5172,39 +5345,47 @@ impl BreadProvenance {
                 self.produced.insert(agent, remaining);
             }
         }
-        drawn
+        self.pop_lots(agent, drawn)
     }
 
     /// A SINK debit (eaten/spoiled/estate→commons): draw produced-first to `produced_sunk`.
+    /// Returns the produced units sunk.
     fn sink(&mut self, agent: AgentId, qty: u64) -> u64 {
-        let drawn = self.draw(agent, qty);
+        let drawn: u64 = self.draw(agent, qty).iter().map(|lot| lot.qty).sum();
         self.produced_sunk += drawn;
         drawn
     }
 
     /// A TRANSFER debit (sale/endowment/inheritance): draw produced-first from `from` and
-    /// credit the same produced units to `to`, preserving origin. Returns the produced
-    /// units moved (the produced share of the transfer).
-    fn transfer(&mut self, from: AgentId, to: AgentId, qty: u64) -> u64 {
-        let drawn = self.draw(from, qty);
+    /// credit the same produced units (with their producer-class lots) to `to`, preserving
+    /// origin. Returns the class-tagged lots moved (the produced share of the transfer).
+    fn transfer(&mut self, from: AgentId, to: AgentId, qty: u64) -> Vec<ProducedLot> {
+        let lots = self.draw(from, qty);
+        let drawn: u64 = lots.iter().map(|lot| lot.qty).sum();
         if drawn > 0 {
             *self.produced.entry(to).or_insert(0) += drawn;
+            let queue = self.produced_lots.entry(to).or_default();
+            for lot in &lots {
+                queue.push_back(*lot);
+            }
         }
-        drawn
+        lots
     }
 
-    /// Attribute a cleared bread→medium trade by STOCK ORIGIN: the `drawn_produced` units
-    /// the seller's debit drew are PRODUCED, the residual `qty - drawn_produced` is MINTED
-    /// (seeded buffer / a hearth mint). Accumulates the run-total split, the pre-promotion-
-    /// only split (the causality probe, frozen at the promotion tick), and latches the first
-    /// produced bread→medium tick exactly once. `tick` is the current econ tick for the latch.
+    /// Attribute a cleared bread→medium trade by STOCK ORIGIN: the `drawn_lots` the seller's
+    /// debit drew are PRODUCED, the residual `qty - Σ drawn_lots` is MINTED (seeded buffer / a
+    /// hearth mint). Accumulates the run-total split, the pre-promotion-only split (the
+    /// causality probe, frozen at the promotion tick), latches the first produced bread→medium
+    /// tick once, and (S22a) splits the produced volume + distinct sellers by PRODUCER class.
+    /// `tick` is the current econ tick for the latch.
     fn attribute_medium_sale(
         &mut self,
-        drawn_produced: u64,
+        drawn_lots: &[ProducedLot],
         qty: u64,
         was_pre_promotion: bool,
         tick: u64,
     ) {
+        let drawn_produced: u64 = drawn_lots.iter().map(|lot| lot.qty).sum();
         let minted = qty - drawn_produced;
         self.salt_volume_produced += drawn_produced;
         self.salt_volume_minted += minted;
@@ -5215,12 +5396,33 @@ impl BreadProvenance {
         if drawn_produced > 0 && self.first_produced_bread_for_salt_tick.is_none() {
             self.first_produced_bread_for_salt_tick = Some(tick);
         }
+        // S22a: split the produced volume + distinct producers by the entrant class recorded
+        // at PRODUCTION time (the lot's `lineage`), not the seller's trade-time state.
+        for lot in drawn_lots {
+            if lot.qty == 0 {
+                continue;
+            }
+            if lot.lineage {
+                self.salt_volume_produced_lineage += lot.qty;
+                if was_pre_promotion {
+                    self.pre_promotion_salt_volume_produced_lineage += lot.qty;
+                }
+                self.lineage_salt_producers.insert(lot.producer);
+            } else {
+                self.salt_volume_produced_nonlineage += lot.qty;
+                if was_pre_promotion {
+                    self.pre_promotion_salt_volume_produced_nonlineage += lot.qty;
+                }
+                self.nonlineage_salt_producers.insert(lot.producer);
+            }
+        }
     }
 
     /// Drop a removed agent's produced balance to a sink (the conserved exit when its bread
     /// could not be routed to a living heir — estate→commons). Returns the sunk units.
     fn drop_to_sink(&mut self, agent: AgentId) -> u64 {
         let held = self.produced.remove(&agent).unwrap_or(0);
+        self.produced_lots.remove(&agent);
         self.produced_sunk += held;
         held
     }
@@ -5401,6 +5603,13 @@ struct AcquisitionLedger {
     /// Cumulative tracked-food removed by every NON-consume outflow (sale-out, spoilage, estate,
     /// endowment-out), split by channel — completes the conservation picture beside consumption.
     other_outflow_by_channel: [u64; FoodChannel::COUNT],
+    /// S22a (runtime-only): cumulative tracked food a given agent ever acquired through the
+    /// `Bought` channel (a market purchase). Credited on every `Bought` inflow (a fresh credit
+    /// or a `transfer_as_bought`), never on an origin-preserving move (inheritance is not
+    /// buying). Lets the rolling material-buyer diagnostic count non-cultivating buyers that
+    /// actually transact, distinguishing a genuine division-of-labor split from a commune whose
+    /// non-cultivators are alive but never buy. Never digested.
+    bought_credited_by_agent: BTreeMap<AgentId, u64>,
 }
 
 impl AcquisitionLedger {
@@ -5414,6 +5623,13 @@ impl AcquisitionLedger {
             .or_default()
             .push_back(FoodLot { channel, qty });
         self.credited_by_channel[channel.index()] += qty;
+        // S22a: track per-agent cumulative bought food (market purchases) for the rolling
+        // material-buyer diagnostic. `transfer_as_bought` routes the buyer's inflow through
+        // here, so every market purchase is counted; inheritance/endowment use
+        // `transfer_preserve` (not buying) and are excluded.
+        if channel == FoodChannel::Bought {
+            *self.bought_credited_by_agent.entry(agent).or_insert(0) += qty;
+        }
     }
 
     /// Draw up to `qty` of `agent`'s tracked-food FIFO (oldest first), returning the ordered lots
@@ -5561,6 +5777,15 @@ impl AcquisitionLedger {
                     .map(|lot| lot.qty)
                     .sum()
             })
+            .unwrap_or(0)
+    }
+
+    /// S22a: cumulative `Bought`-channel tracked food the agent ever acquired (the rolling
+    /// material-buyer signal). `0` for an agent that never bought.
+    fn bought_credited_of(&self, agent: AgentId) -> u64 {
+        self.bought_credited_by_agent
+            .get(&agent)
+            .copied()
             .unwrap_or(0)
     }
 }
@@ -6722,6 +6947,7 @@ impl Settlement {
                 cultivation_sells_surplus: chain.cultivation_sells_surplus,
                 multigood_money: chain.multigood_money,
                 household_barter_cultivation: chain.household_barter_cultivation,
+                endogenous_cultivation_entry: chain.endogenous_cultivation_entry,
                 gatherer_food_cushion: chain.gatherer_food_cushion,
                 emergency_hunger_threshold: chain.emergency_hunger_threshold,
                 retire_food_mints: chain.retire_food_mints,
@@ -8945,8 +9171,9 @@ impl Settlement {
                 } else {
                     *report.produced.entry(out_good).or_insert(0) += u64::from(out_qty);
                     if Some(out_good) == provenance_bread {
+                        let lineage = self.is_lineage_agent(id);
                         self.bread_provenance
-                            .credit_produced(id, u64::from(out_qty));
+                            .credit_produced(id, u64::from(out_qty), lineage);
                     }
                     if Some(out_good) == acquisition_bread {
                         self.acquisition
@@ -9228,6 +9455,14 @@ impl Settlement {
         // `household.is_none() || spatial_active` exactly, so every existing run is
         // byte-identical.
         let buy_sell_split = self.cultivation_sells_surplus_active();
+        // S22a: the endogenous cultivation-entry override. When active it RELAXES the S16
+        // buy/sell split's household/spatial membership predicate to ANY spatial colonist
+        // (lineage or not), so the food-producing class can self-form from sustained hunger
+        // rather than assigned lineage identity. It overrides ONLY the membership predicate —
+        // the `Consumer|Gatherer|Unassigned` vocation filter below is preserved (an active
+        // Miller/Baker is still excluded). Off (every existing config) it is false, so the
+        // S16/S13 eligibility is exactly as before and the run is byte-identical.
+        let endogenous_entry = self.endogenous_cultivation_entry_active();
         let cultivate_input = if cultivation {
             self.cultivation_input_good()
         } else {
@@ -9267,7 +9502,12 @@ impl Settlement {
                 // S16: with the buy/sell split on, only LINEAGE spatial members are eligible
                 // (the seeded SALT consumers stay the buy side); off the flag this reduces
                 // to the S13/S14 gate exactly (byte-identical).
-                let spatial_member = if buy_sell_split {
+                // S22a: the endogenous-entry override is a new TOP branch — when active, ANY
+                // spatial colonist is eligible regardless of household, so a non-lineage role
+                // under sustained hunger can enter cultivation through the same hysteresis.
+                let spatial_member = if endogenous_entry {
+                    spatial_active
+                } else if buy_sell_split {
                     colonist.household.is_some() && spatial_active
                 } else {
                     colonist.household.is_none() || spatial_active
@@ -9447,8 +9687,9 @@ impl Settlement {
                 let (out_good, out_qty) = applied.output;
                 *report.produced.entry(out_good).or_insert(0) += u64::from(out_qty);
                 if provenance && out_good == bread {
+                    let lineage = self.is_lineage_agent(id);
                     self.bread_provenance
-                        .credit_produced(id, u64::from(out_qty));
+                        .credit_produced(id, u64::from(out_qty), lineage);
                 }
                 if acquisition && out_good == bread {
                     self.acquisition
@@ -9595,7 +9836,9 @@ impl Settlement {
             // exact if the emergency seam is ever composed with a seeded/minted-bread path.
             // Conserves: produced credited here is sunk by the own-use consume pass this tick.
             if provenance {
-                self.bread_provenance.credit_produced(id, u64::from(eat));
+                let lineage = self.is_lineage_agent(id);
+                self.bread_provenance
+                    .credit_produced(id, u64::from(eat), lineage);
             }
             if acquisition {
                 self.acquisition
@@ -11195,6 +11438,20 @@ impl Settlement {
             .is_some_and(chain_runtime_cultivation_sells_surplus_active)
     }
 
+    /// S22a: whether **endogenous cultivation entry** is active this tick — the
+    /// `endogenous_cultivation_entry` flag is on AND the money-from-produced-bread path is
+    /// active. When this holds, the own-labor subsistence cultivation eligibility set is
+    /// relaxed from the spatial lineage to ANY spatial colonist (the
+    /// `Consumer|Gatherer|Unassigned` vocation filter is preserved), so the food-producing
+    /// class can self-form from sustained hunger via the existing pressure/patience
+    /// hysteresis. Off (every existing config), eligibility stays pinned to the lineage and
+    /// the run is byte-identical. Mirrors [`Self::emergency_self_provision_active`].
+    fn endogenous_cultivation_entry_active(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(chain_runtime_endogenous_cultivation_entry_active)
+    }
+
     /// S18: whether the **money-from-a-multi-good-economy** path is active this tick — the
     /// `multigood_money` flag is on AND the S16 money-from-produced-bread path is active.
     /// When this holds, the woodcutter→WOOD-node routing has fired at generation and the
@@ -11318,10 +11575,10 @@ impl Settlement {
         );
         let tick = self.econ_tick;
         for (seller, buyer, other_good, qty) in bread_trades {
-            let drawn_produced = self.bread_provenance.transfer(seller, buyer, qty);
+            let drawn_lots = self.bread_provenance.transfer(seller, buyer, qty);
             if other_good == medium {
                 self.bread_provenance.attribute_medium_sale(
-                    drawn_produced,
+                    &drawn_lots,
                     qty,
                     was_pre_promotion,
                     tick,
@@ -11960,6 +12217,21 @@ impl Settlement {
     fn bread_provenance_conserves(&self) -> bool {
         let bp = &self.bread_provenance;
         if bp.produced_credited != bp.produced_sunk + bp.total_held() {
+            return false;
+        }
+        // S22a: the class-tagged produced lots mirror the flat `produced` balance exactly (the
+        // entrant-class split is unsound otherwise) — same agents, same per-agent totals.
+        let lot_total = |id: AgentId| -> u64 {
+            bp.produced_lots
+                .get(&id)
+                .map_or(0, |q| q.iter().map(|lot| lot.qty).sum())
+        };
+        if bp.produced_lots.len() != bp.produced.len()
+            || !bp
+                .produced
+                .iter()
+                .all(|(&id, &produced)| lot_total(id) == produced)
+        {
             return false;
         }
         let Some(bread) = self.provenance_bread_good() else {
@@ -12997,6 +13269,17 @@ impl Settlement {
             .map(|&slot| self.colonists[slot].vocation)
     }
 
+    /// S22a (internal): whether the colonist with stable id `id` is a spatial **lineage**
+    /// member (`household.is_some()`) — the producer-class tag recorded at production time for
+    /// the bread-provenance entrant-class split. Class is a stable per-agent property (a seeded
+    /// non-lineage role never gains a household, a lineage member never loses one), so recording
+    /// it at production time and reading it back at sale time agree. `false` for an unknown id.
+    fn is_lineage_agent(&self, id: AgentId) -> bool {
+        self.colonist_slot_by_id
+            .get(&id)
+            .is_some_and(|&slot| self.colonists[slot].household.is_some())
+    }
+
     /// Whether the colonist at generation `index` is still alive.
     pub fn is_alive(&self, index: usize) -> bool {
         self.colonists.get(index).is_some_and(|c| c.alive)
@@ -13076,6 +13359,17 @@ impl Settlement {
     /// Mutually exclusive with [`Self::is_foraging`] — never both true in one econ tick.
     pub fn is_cultivating(&self, index: usize) -> bool {
         self.colonists.get(index).is_some_and(|c| c.cultivating)
+    }
+
+    /// S22a: cumulative tracked food (bread) the colonist at generation `index` ever acquired
+    /// through the `Bought` channel — a market purchase. `0` for an agent that never bought, and
+    /// `0` off the acquisition-ledger path. The rolling material-buyer diagnostic reads it to
+    /// count non-cultivating buyers that actually transact (a genuine division-of-labor split),
+    /// not just non-cultivators that are alive. Runtime-only; not digested.
+    pub fn bought_food_of(&self, index: usize) -> u64 {
+        self.colonists
+            .get(index)
+            .map_or(0, |c| self.acquisition.bought_credited_of(c.id))
     }
 
     /// S15: the chain's bread good (the cultivation output / hunger staple), or `None`
@@ -13824,6 +14118,25 @@ impl Settlement {
         )
     }
 
+    /// S22a (read-only): the produced bread→SALT volume split by the PRODUCER's class recorded
+    /// at PRODUCTION time (spatial lineage vs non-lineage entrant), plus the distinct producers
+    /// per class. The entrant-class provenance — whether the food-producing class that
+    /// monetized SALT formed from the pinned lineage or self-formed from non-lineage agents
+    /// under hunger. Attribution is by who CULTIVATED the bread (the lot tag), NOT the seller's
+    /// `cultivating` state at trade time (a cultivated loaf may sell a later tick or after
+    /// transfer). All-zero off the produced-bread provenance path. Runtime-only; not digested.
+    pub fn bread_for_salt_by_entrant_class(&self) -> EntrantClassSale {
+        let bp = &self.bread_provenance;
+        EntrantClassSale {
+            lineage_volume: bp.salt_volume_produced_lineage,
+            nonlineage_volume: bp.salt_volume_produced_nonlineage,
+            pre_promotion_lineage_volume: bp.pre_promotion_salt_volume_produced_lineage,
+            pre_promotion_nonlineage_volume: bp.pre_promotion_salt_volume_produced_nonlineage,
+            lineage_sellers: bp.lineage_salt_producers.len(),
+            nonlineage_sellers: bp.nonlineage_salt_producers.len(),
+        }
+    }
+
     /// S16 (read-only): total produced-origin bread currently held across living agents —
     /// the produced surplus inventory. `0` off the path.
     pub fn produced_bread_held(&self) -> u64 {
@@ -14184,6 +14497,17 @@ impl Settlement {
             if self.emergency_self_provision_active() {
                 out.push(6);
                 out.extend_from_slice(&chain.emergency_hunger_threshold.to_le_bytes());
+            }
+            // S22a: the endogenous cultivation-entry gate relaxes who is eligible to escalate
+            // to cultivation (any spatial colonist, not just the lineage) — a future-behaviour
+            // change for the roster (non-lineage agents enter cultivation under hunger). Emitted
+            // only when active (the same gated-block discipline as S16/S18/S21d/f/h above) with a
+            // DISTINCT tag (`7`), so the gated markers stay injective and a flag-off chain stays
+            // byte-identical to the pre-S22a stream. (The production-time entrant-class provenance
+            // split + the rolling cultivator/buyer diagnostics it pairs with are runtime-only and
+            // deliberately NOT digested — like `starvation_deaths_total`.)
+            if self.endogenous_cultivation_entry_active() {
+                out.push(7);
             }
             // The staple mapping steers the next needs/scale phase for *any* chain,
             // role-choice or not, so it is included whenever a chain is active. The
@@ -15126,6 +15450,14 @@ fn chain_runtime_household_barter_cultivation_active(chain: &ChainRuntime) -> bo
     chain.household_barter_cultivation
         && chain.own_use_cultivation
         && chain.content.cultivate_recipe().is_some()
+}
+
+/// S22a: endogenous cultivation entry is active iff the flag is on AND the
+/// money-from-produced-bread path is active (it composes strictly on the S16 path whose
+/// buy/sell eligibility branch it overrides). Off (every existing config) it is `false`, so
+/// the eligibility relaxation never engages and the run is byte-identical.
+fn chain_runtime_endogenous_cultivation_entry_active(chain: &ChainRuntime) -> bool {
+    chain.endogenous_cultivation_entry && chain_runtime_cultivation_sells_surplus_active(chain)
 }
 
 /// S16: money-from-produced-bread is active iff the flag is on AND own-use cultivation is
@@ -19821,21 +20153,32 @@ mod tests {
         // the resold-bought-bread case), a sink draws to `produced_sunk`, and the whole-run
         // identity `credited == sunk + held` holds throughout.
         let mut bp = BreadProvenance::default();
+        let drawn = |lots: &[ProducedLot]| -> u64 { lots.iter().map(|lot| lot.qty).sum() };
         let (a, b, c) = (AgentId(1), AgentId(2), AgentId(3));
-        bp.credit_produced(a, 5);
+        bp.credit_produced(a, 5, true);
         assert_eq!(bp.produced_credited, 5);
         assert_eq!(bp.total_held(), 5);
         // a SELLS 3 produced loaves to b (a transfer): origin preserved at the buyer.
-        assert_eq!(bp.transfer(a, b, 3), 3);
+        assert_eq!(drawn(&bp.transfer(a, b, 3)), 3);
         assert_eq!(bp.produced.get(&a).copied().unwrap_or(0), 2);
         assert_eq!(bp.produced.get(&b).copied().unwrap_or(0), 3);
         // b RESELLS the 3 bought loaves to c — produced origin is preserved (not minted).
-        assert_eq!(bp.transfer(b, c, 3), 3);
+        assert_eq!(drawn(&bp.transfer(b, c, 3)), 3);
         assert_eq!(bp.produced.get(&c).copied().unwrap_or(0), 3);
         // c eats 2 (a sink) — produced-first to the sunk counter.
         assert_eq!(bp.sink(c, 2), 2);
         assert_eq!(bp.produced_sunk, 2);
         assert_eq!(bp.produced_credited, bp.produced_sunk + bp.total_held());
+        // S22a: the produced lots mirror the flat balance exactly through every move.
+        assert_eq!(bp.produced.get(&c).copied().unwrap_or(0), 1);
+        assert_eq!(
+            bp.produced_lots
+                .get(&c)
+                .map(|q| q.iter().map(|lot| lot.qty).sum::<u64>())
+                .unwrap_or(0),
+            1,
+            "the class-tagged lots stay in lockstep with the flat produced balance"
+        );
     }
 
     #[test]
@@ -19900,19 +20243,20 @@ mod tests {
         // other-origin pool: drawing it (sale or resale) yields ZERO produced — attributed
         // minted, never mis-attributed produced. A mixed holder draws produced-first.
         let mut bp = BreadProvenance::default();
+        let drawn = |lots: &[ProducedLot]| -> u64 { lots.iter().map(|lot| lot.qty).sum() };
         let (holder, buyer, third) = (AgentId(1), AgentId(2), AgentId(3));
         // holder sells 4 MINTED loaves (none ever credited produced): 0 produced drawn.
-        assert_eq!(bp.transfer(holder, buyer, 4), 0);
+        assert_eq!(drawn(&bp.transfer(holder, buyer, 4)), 0);
         assert_eq!(bp.produced.get(&buyer).copied().unwrap_or(0), 0);
         // the buyer reselling that minted bread is likewise not mis-attributed.
-        assert_eq!(bp.transfer(buyer, third, 4), 0);
+        assert_eq!(drawn(&bp.transfer(buyer, third, 4)), 0);
         // a MIXED holder (2 produced + minted residual): a 5-loaf sale draws the 2 produced.
-        bp.credit_produced(holder, 2);
-        assert_eq!(bp.transfer(holder, buyer, 5), 2);
+        bp.credit_produced(holder, 2, true);
+        assert_eq!(drawn(&bp.transfer(holder, buyer, 5)), 2);
         assert_eq!(bp.produced.get(&holder).copied().unwrap_or(0), 0);
         assert_eq!(bp.produced.get(&buyer).copied().unwrap_or(0), 2);
         // estate→commons drops a dead agent's produced bread to the sink (conserved exit).
-        bp.credit_produced(third, 3);
+        bp.credit_produced(third, 3, true);
         assert_eq!(bp.drop_to_sink(third), 3);
         assert_eq!(bp.produced_credited, bp.produced_sunk + bp.total_held());
     }
@@ -19935,7 +20279,7 @@ mod tests {
         let buyer = agents[1];
 
         s.bread_provenance = BreadProvenance::default();
-        s.bread_provenance.credit_produced(seller, 3);
+        s.bread_provenance.credit_produced(seller, 3, true);
         s.society
             .agents
             .get_mut(seller)
@@ -19992,9 +20336,20 @@ mod tests {
         // spot_bread_sales` covers the spot-tape transfer wiring; this exercises the
         // produced/minted accumulation arm directly so it never runs untested.
         let mut bp = BreadProvenance::default();
-        // A pre-promotion 5-loaf sale that drew 3 produced: 3 produced, 2 minted; pre-
-        // promotion split mirrors the run total, the first-produced latch fires at tick 10.
-        bp.attribute_medium_sale(3, 5, true, 10);
+        // A pre-promotion 5-loaf sale that drew 3 produced (a lineage producer's lot): 3
+        // produced, 2 minted; pre-promotion split mirrors the run total, the first-produced
+        // latch fires at tick 10. S22a: the produced 3 attribute to the LINEAGE class.
+        let lineage_producer = AgentId(7);
+        bp.attribute_medium_sale(
+            &[ProducedLot {
+                producer: lineage_producer,
+                lineage: true,
+                qty: 3,
+            }],
+            5,
+            true,
+            10,
+        );
         assert_eq!((bp.salt_volume_produced, bp.salt_volume_minted), (3, 2));
         assert_eq!(
             (
@@ -20004,10 +20359,31 @@ mod tests {
             (3, 2)
         );
         assert_eq!(bp.first_produced_bread_for_salt_tick, Some(10));
-        // A later, post-promotion 4-loaf MINTED sale (0 produced drawn): minted only, the
-        // pre-promotion split is FROZEN, and the first-produced latch does not move.
-        bp.attribute_medium_sale(0, 4, false, 20);
-        assert_eq!((bp.salt_volume_produced, bp.salt_volume_minted), (3, 6));
+        // S22a: the produced volume + distinct seller attribute to the lineage class only.
+        assert_eq!(
+            (
+                bp.salt_volume_produced_lineage,
+                bp.salt_volume_produced_nonlineage
+            ),
+            (3, 0)
+        );
+        assert!(bp.lineage_salt_producers.contains(&lineage_producer));
+        assert!(bp.nonlineage_salt_producers.is_empty());
+        // A later, post-promotion 4-loaf sale: 1 produced by a NON-lineage entrant, 3 minted.
+        // The whole-run produced/minted updates, the pre-promotion split is FROZEN, the
+        // first-produced latch does not move, and the non-lineage class + seller is recorded.
+        let nonlineage_producer = AgentId(9);
+        bp.attribute_medium_sale(
+            &[ProducedLot {
+                producer: nonlineage_producer,
+                lineage: false,
+                qty: 1,
+            }],
+            4,
+            false,
+            20,
+        );
+        assert_eq!((bp.salt_volume_produced, bp.salt_volume_minted), (4, 5));
         assert_eq!(
             (
                 bp.pre_promotion_salt_volume_produced,
@@ -20021,6 +20397,25 @@ mod tests {
             Some(10),
             "the first produced bread→medium latch fires exactly once"
         );
+        // S22a: the post-promotion non-lineage produced unit attributes to the non-lineage
+        // class + seller; the FROZEN pre-promotion class split stays lineage-only.
+        assert_eq!(
+            (
+                bp.salt_volume_produced_lineage,
+                bp.salt_volume_produced_nonlineage
+            ),
+            (3, 1)
+        );
+        assert_eq!(
+            (
+                bp.pre_promotion_salt_volume_produced_lineage,
+                bp.pre_promotion_salt_volume_produced_nonlineage
+            ),
+            (3, 0),
+            "the pre-promotion entrant-class split freezes after promotion"
+        );
+        assert!(bp.nonlineage_salt_producers.contains(&nonlineage_producer));
+        assert_eq!(bp.lineage_salt_producers.len(), 1);
     }
 
     #[test]
@@ -20054,7 +20449,7 @@ mod tests {
             .expect("donor")
             .stock
             .add(bread, 3);
-        s.bread_provenance.credit_produced(donor, 3);
+        s.bread_provenance.credit_produced(donor, 3, true);
 
         // The advance's conserved in-kind move of 2 loaves donor→producer. The PHYSICAL move
         // alone strands the produced origin: the donor's produced (3) now exceeds its bread
@@ -20128,7 +20523,7 @@ mod tests {
             .stock
             .add(bread, 4);
         s.bread_provenance = BreadProvenance::default();
-        s.bread_provenance.credit_produced(deceased, 4);
+        s.bread_provenance.credit_produced(deceased, 4, true);
 
         let commons_before = s.commons_stock_of(bread);
         assert!(s.settle_estate_to_heirs(deceased));
