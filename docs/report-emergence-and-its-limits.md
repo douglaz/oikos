@@ -3,7 +3,7 @@
 *An experimental report on emergent money, capital, and survival in a praxeologic simulation.*
 
 > Status: working research report (raw material for a future article). Covers the milestone arc
-> through S22c (the money sub-arc, the full open-colony-capstone *supply* arc, the mortality-on cold-start finding, its resolution — a produced demand-side survival floor that lets money and mortality coexist — the robustness appendix that finds that coexistence is *band-qualified* (MIXED, load-bearing on WOOD scarcity and SALT-anchor density), and the role-topology arc: endogenizing cultivation entry (S22a — the food-producing class self-forms as *fluid* participation, not a stable class) and testing whether accumulated skill produces occupation (S22b — it does not; the lever bites but does not change the hunger-gated entry/exit) and whether a realized monetary stay-decision does (S22c — it does not either; the profit-stay signal bites with a genuine counterfactual exit-flip but retains only marginally, so the consistent boundary is that occupation needs durable lock-in, not a stronger in-the-moment incentive)). Every result below
+> through S22d (the money sub-arc, the full open-colony-capstone *supply* arc, the mortality-on cold-start finding, its resolution — a produced demand-side survival floor that lets money and mortality coexist — the robustness appendix that finds that coexistence is *band-qualified* (MIXED, load-bearing on WOOD scarcity and SALT-anchor density), and the role-topology arc: endogenizing cultivation entry (S22a — the food-producing class self-forms as *fluid* participation, not a stable class) and testing whether accumulated skill produces occupation (S22b — it does not; the lever bites but does not change the hunger-gated entry/exit) and whether a realized monetary stay-decision does (S22c — it does not either; the profit-stay signal bites with a genuine counterfactual exit-flip but retains only marginally) and whether sunk, owned, durable capital does (S22d — it does not either; the owner-exclusive cultivation tool bites hardest of all, owners take up to 71% of grain, yet capital can only be earned by already sustaining the fluid role so a rare few capitalize and dominate rather than a class forming — a clean four-step negative whose consistent boundary is that occupation needs an explicit role-choice/assignment institution, or endowed/inherited capital, not a lever earned from within the fluid regime)). Every result below
 > was built additively behind a default-off flag, kept the prior conformance goldens byte-identical,
 > conserved every tick, ran deterministically, and was reviewed by an independent second model (Codex)
 > at both the spec and the result stage. Honest negative findings are reported as first-class results,
@@ -722,8 +722,47 @@ accumulated productivity doesn't change the exit (S22b, no stickiness) → even 
 incentive* retains only marginally (S22c, no-stay-despite-profit).** Each lever *bites* yet none yields a
 durable cultivator class — the consistent signal is that occupation needs **durable lock-in** (heritable
 craft across generations, or sunk role-specific capital that makes *leaving* costly), not a stronger
-in-the-moment incentive. That is the sharply-named boundary the eventual article can rest the
-division-of-labor section on.
+in-the-moment incentive. S22d then tested the durable-lock-in hypothesis itself.
+
+---
+
+## 12. Even sunk, owned capital does not produce occupation (S22d)
+
+S22c named the candidate: durable lock-in (sunk, asset-specific capital). S22d builds it — a default-off,
+buildable, **durable, agent-owned, role-specific cultivation tool** (a "plow"): a cultivator that
+sustains realized output (a new tenure counter) invests a sunk WOOD+labor cost into a durable owned tool
+(a dedicated good + `BuildCultivationTool` template + a separate pre-money build phase, never the
+money-gated producer-capital path). The tool raises **only its owner's** grain-haul ceiling **while it
+cultivates** (asset-specific, owner-exclusive, conservation-safe — a bigger debited node draw, the 1:1
+recipe and `produced` accounting untouched), so the owner's durable comparative advantage flows through
+the *unmodified* S22c profit-stay — no fiat flag, no exit edit.
+
+**Verdict: `NoStickinessDespiteCapital` (4/5 seeds; `CapitalLeverInert` on the 5th where no tool
+happened to form).** The lever bites *hardest* of the arc: the non-vacuity test passes every seed (a
+tool owner harvests 7200 vs 2400 grain and bread under matched opportunity), and owners durably
+out-produce — owner bread ≈6.4k vs ≈71 for the transient non-owners, owner grain share up to **0.71**.
+Yet it still does not produce occupation: per-ever-cultivating churn falls only ~2.5→~2.3 (short of the
+0.5× bar) and no persistent owner-cohort of four forms. **The WOOD-poverty confound is resolved by the
+sweep:** the headline already uses a *cheap* tool (`tool_build_wood=1`, so capital forms), and across
+`tool_build_wood ∈ {0,1,4,16}` × `haul_ceiling ∈ {1,2,3,6}` owner-share stays a tiny minority
+(0.00–0.10) with no four-owner cohort even when owners take 41–71% of the grain — and at the highest
+boost the buyer side collapses toward **monopolization** rather than a healthy split. The real boundary
+is a **chicken-and-egg**: the lock-in asset can only be *earned by already sustaining* the fluid role, so
+a rare one or two agents capitalize and dominate, never a class. Controls isolate it cleanly:
+productivity-only (same boost to all, no owned asset) is not sticky; non-durable/rented (tool consumed
+after one use) is not sticky; zero-build-input and the capital-alone (profit-stay-off) variant are
+`CapitalLeverInert` across all seeds. Conservation, `bread_minted_max==0`, the tool-stock accounting
+invariant (`built−destroyed==stock`), and a `plow_never_trades` guard all hold. Codex review-of-results:
+PASS-WITH-CAVEATS (no P1; the negative is honest if **bounded** to *capital earned from within this
+fluid, WOOD-poor regime* — it does not rule out pre-built/endowed, credit-financed, or
+inheritance-heavy capital producing a class).
+
+**The role-topology arc is now a clean four-step negative** — hunger, accumulated skill, a profit
+stay-incentive, and even sunk owned capital each *bite* but none converts fluid participation into a
+durable division of labor. The repeatedly-named next condition is an explicit **role-choice /
+role-assignment institution** (or capital that is *endowed/inherited* rather than earned from within the
+fluid regime), which is exactly the boundary the eventual article's division-of-labor section can rest
+on as a sequence of falsified sufficiency claims.
 
 ---
 
@@ -757,3 +796,4 @@ division-of-labor section on.
 | S22a | Endogenize cultivation entry (role-topology slice 1) | **SUCCESS, fluid participation:** a default-off gate relaxes cultivation eligibility from "lineage member" to "any spatial colonist under sustained hunger pressure" (reusing the existing pressure/patience hysteresis, steering-flag only, all goldens byte-identical). Money + mortality survive the relaxed producer identity — SALT promotes on clean `SelfProduced` bread, a living buyer cohort persists. But it is **fluid/rotating participation, not a stable class**: ~5% cultivate at any instant (settled) yet all 18 non-lineage roles rotate through (churn ~23/agent) — "everyone occasionally self-provisions under hunger, then buys." Dissolves the lineage *privilege*, not a sticky division of labor (S22b+). Control findings: the hysteresis is not load-bearing for aggregate stability; the emergency floor is no longer the sole survival bridge (Codex review-of-results: PASS-WITH-CAVEATS, no P1) |
 | S22b | Occupational stickiness via cultivation skill (role-topology slice 2) | **FINDING — accumulated advantage alone does NOT produce occupation:** a default-off bounded per-agent cultivation skill (born 0, accumulates on realized output, decays otherwise) raises only grain-haul capacity per cultivating trip (conservation-safe per-trip room override; goldens byte-identical). The lever BITES (non-vacuity passes: max-skill cultivator harvests 2× grain + more bread vs skill-0, every seed) and money/mortality/provenance/conservation survive — but skill does not change the hunger-gated entry/exit, so churn stays at the matched-seed S22a baseline and no persistent membership cohort forms. Even where skill matures (no-decay / high-gain → ~40% grain share) it is STILL no-stickiness. Names the next condition: occupation needs a mechanism that changes the decision to STAY (heritable skill / durable capital / profit-driven chooser, S22c+) (Codex review-of-results: PASS-WITH-CAVEATS, no P1/P2) |
 | S22c | Profit-driven cultivation retention (role-topology slice 3) | **FINDING — a realized monetary stay-decision bites but does NOT produce occupation:** a default-off rule lets a post-money cultivator stay past the hunger-exit when its recent realized cultivation-sale return ≥ its outside option (per-agent proceeds attributed at sale-time to the original producer via `produced_lots`; rolling 48-tick rate; inert pre-money). The signal is genuinely non-vacuous — a real counterfactual exit-flip fires, it discriminates across ~20-24 agents, 4-7 are retained, grain share rises to 0.06-0.26 — and money/mortality/provenance/conservation all survive. But churn falls only ~2.7→~2.4 (short of the 0.5× bar) and no persistent membership cohort forms; a window sweep + permissive sensitivity stay NoStay. Controls: signal-inert-pre-money (anti-circularity), zero-returns→SignalVacuous, flag-off→S22a. Completes the 3-step arc (hunger discovers → skill doesn't change exit → profit-stay retains only marginally) → occupation needs durable lock-in, not an in-the-moment incentive (S22d+) (Codex review-of-results: PASS-WITH-CAVEATS, no P1/P2) |
+| S22d | Durable role-specific cultivation capital (role-topology slice 4) | **FINDING — even sunk, owned capital does NOT produce occupation:** a default-off durable agent-owned cultivation tool ("plow"; new good + `BuildCultivationTool` template + separate pre-money build phase) raises only its owner's grain-haul ceiling while cultivating, flowing through the unmodified S22c profit-stay (owner-exclusive, conservation-safe, no fiat flag). Verdict NoStickinessDespiteCapital (4/5; CapitalLeverInert on the 5th). The lever bites hardest of the arc (owner 7200 vs 2400 grain matched; owner grain share up to 0.71) but churn falls only ~2.5→~2.3 and no 4-owner cohort forms. WOOD-poverty confound resolved by the sweep (cheap wood + big boost still no cohort; high boost → buyers collapse toward monopolization). The boundary is chicken-and-egg: the lock-in can only be EARNED by already sustaining the fluid role, so a rare 1-2 capitalize and dominate, never a class. Controls: productivity-only + non-durable not sticky; zero-build + capital-alone CapitalLeverInert. Completes a clean 4-step negative → occupation needs an explicit role-choice/assignment institution (or endowed/inherited capital), not a lever earned from within. (Codex review-of-results: PASS-WITH-CAVEATS, no P1; bounded to earned-from-within capital) |
