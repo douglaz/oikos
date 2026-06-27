@@ -142,6 +142,23 @@ const SKILL_CAP: u16 = 1_000;
 /// the cap-zero control), and a larger value (e.g. `4`) is the exaggerated-cap SENSITIVITY probe.
 const SKILL_HAUL_CEILING: u32 = 2;
 
+/// S22c — pinned **profit-driven-retention** magnitudes (the post-money stay-decision that lets a
+/// cultivating agent remain cultivating past the normal hunger exit when its realized
+/// cultivation-sale return clears its outside option). House-style, NOT tuned to a target:
+///
+/// * [`RETURN_WINDOW`] — the rolling window (econ ticks) over which a colonist's realized
+///   cultivation-sale vs non-cultivation-sale proceeds are accumulated as the return signal.
+/// * [`RETENTION_MARGIN_BPS`] — the basis-point margin the cultivation rate must clear the outside
+///   rate by; `0` is the shipped slice (cultivating must earn *at least* the outside option),
+///   swept as sensitivity.
+/// * [`RETENTION_MATERIAL_FLOOR`] — a small floor on the windowed cultivation proceeds so a single
+///   dust sale cannot lock an agent in (the signal must be a real, recurring realized gain).
+///
+/// All three are the pinned defaults; the controls/sweep override them, never these constants.
+const RETURN_WINDOW: u64 = 48;
+const RETENTION_MARGIN_BPS: u64 = 0;
+const RETENTION_MATERIAL_FLOOR: u64 = 2;
+
 /// Econ ticks per settlement "year" — the horizon unit the smoke test counts in.
 /// A placeholder cadence, not a balance figure.
 pub const ECON_TICKS_PER_YEAR: u64 = 12;
@@ -988,6 +1005,37 @@ pub struct ChainConfig {
     /// parameters + the per-colonist skill state), mirroring the S16/S18/S21/S22a gates: a
     /// flag-off config keeps its exact prior byte layout. Composes on `endogenous_cultivation_entry`.
     pub cultivation_skill: bool,
+    /// S22c — **profit-driven cultivation retention** (default `false`, byte-identical when off).
+    /// When `true` *and* the endogenous-cultivation-entry path is active
+    /// ([`Self::endogenous_cultivation_entry`]; orthogonal to `cultivation_skill`, works with it on
+    /// or off), the cultivation *exit* branch is profit-modulated: a currently-cultivating agent
+    /// remains cultivating past the normal hunger exit when, **only after money exists**
+    /// (`current_money_good() == Some(SALT)` — the hard anti-circularity gate), its realized
+    /// cultivation-sale return over a rolling [`RETURN_WINDOW`] clears both a small material floor
+    /// ([`RETENTION_MATERIAL_FLOOR`]) and its outside option (its own realized non-cultivation sale
+    /// rate, or the colony reference non-cultivating-seller rate, plus [`RETENTION_MARGIN_BPS`]).
+    /// Entry stays hunger/pressure-gated (S22a/b unchanged) — only the exit is profit-modulated.
+    /// The per-agent rolling-return accumulators STEER the next `cultivating` flag, so they are
+    /// FUTURE-BEHAVIOUR state serialized into the digest **ON-only** (the `cultivation_skill`
+    /// discipline), NOT runtime-only; the counterfactual-flip count / proceeds distributions are
+    /// runtime-only diagnostics. Canonicalized **ON-only** (digest tag 9), mirroring the
+    /// S16/S18/S21/S22a/b gates: a flag-off config keeps its exact prior byte layout. Composes on
+    /// `endogenous_cultivation_entry`.
+    pub profit_driven_retention: bool,
+    /// S22c: the rolling-return window length in econ ticks (default [`RETURN_WINDOW`]). The
+    /// per-agent realized cultivation-sale / non-cultivation-sale proceeds are accumulated over the
+    /// trailing `return_window` ticks. Consulted only while `profit_driven_retention` is active;
+    /// swept as the window sensitivity axis.
+    pub return_window: u64,
+    /// S22c: the basis-point margin the cultivation per-sale-tick rate must clear the outside rate
+    /// by (default [`RETENTION_MARGIN_BPS`] = 0 ⇒ cultivating must earn *at least* the outside
+    /// option). Consulted only while `profit_driven_retention` is active; swept as sensitivity.
+    pub retention_margin_bps: u64,
+    /// S22c: the floor on windowed cultivation proceeds below which the stay is inert (default
+    /// [`RETENTION_MATERIAL_FLOOR`]) — so a single dust sale cannot lock an agent in. `0` is the
+    /// permissive control (any realized cultivation sale qualifies). Consulted only while
+    /// `profit_driven_retention` is active.
+    pub retention_material_floor: u64,
     /// S22b: the per-tick skill GAIN credited on a realized-cultivation-output tick (default
     /// [`SKILL_GAIN`]). Consulted only while `cultivation_skill` is active.
     pub skill_gain: u16,
@@ -1362,6 +1410,13 @@ impl ChainConfig {
             // inert and every existing config is byte-identical (canonicalized ON-only). The
             // magnitudes are the pinned house-style defaults, consulted only when the gate is on.
             cultivation_skill: false,
+            // S22c off by default: the cultivation exit stays pure hunger/pressure (no profit-stay),
+            // so every existing config is byte-identical (canonicalized ON-only). The window/margin/
+            // floor are the pinned house-style defaults, consulted only when the gate is on.
+            profit_driven_retention: false,
+            return_window: RETURN_WINDOW,
+            retention_margin_bps: RETENTION_MARGIN_BPS,
+            retention_material_floor: RETENTION_MATERIAL_FLOOR,
             skill_gain: SKILL_GAIN,
             skill_decay: SKILL_DECAY,
             skill_cap: SKILL_CAP,
@@ -1487,6 +1542,13 @@ impl ChainConfig {
             // inert and every existing config is byte-identical (canonicalized ON-only). The
             // magnitudes are the pinned house-style defaults, consulted only when the gate is on.
             cultivation_skill: false,
+            // S22c off by default: the cultivation exit stays pure hunger/pressure (no profit-stay),
+            // so every existing config is byte-identical (canonicalized ON-only). The window/margin/
+            // floor are the pinned house-style defaults, consulted only when the gate is on.
+            profit_driven_retention: false,
+            return_window: RETURN_WINDOW,
+            retention_margin_bps: RETENTION_MARGIN_BPS,
+            retention_material_floor: RETENTION_MATERIAL_FLOOR,
             skill_gain: SKILL_GAIN,
             skill_decay: SKILL_DECAY,
             skill_cap: SKILL_CAP,
@@ -1592,6 +1654,13 @@ impl ChainConfig {
             // inert and every existing config is byte-identical (canonicalized ON-only). The
             // magnitudes are the pinned house-style defaults, consulted only when the gate is on.
             cultivation_skill: false,
+            // S22c off by default: the cultivation exit stays pure hunger/pressure (no profit-stay),
+            // so every existing config is byte-identical (canonicalized ON-only). The window/margin/
+            // floor are the pinned house-style defaults, consulted only when the gate is on.
+            profit_driven_retention: false,
+            return_window: RETURN_WINDOW,
+            retention_margin_bps: RETENTION_MARGIN_BPS,
+            retention_material_floor: RETENTION_MATERIAL_FLOOR,
             skill_gain: SKILL_GAIN,
             skill_decay: SKILL_DECAY,
             skill_cap: SKILL_CAP,
@@ -4352,6 +4421,53 @@ impl SettlementConfig {
         cfg
     }
 
+    /// S22c — **profit-driven cultivation retention** (the HEADLINE):
+    /// [`Self::frontier_endogenous_cultivation`] (the S22a fluid-participation money colony, skill
+    /// OFF, mortality on) with the **only** change being `profit_driven_retention = true`. That
+    /// makes the cultivation EXIT profit-modulated: a currently-cultivating agent remains
+    /// cultivating past the normal hunger exit when, **only after money exists**
+    /// (`current_money_good() == Some(SALT)`), its realized cultivation-sale return over a rolling
+    /// [`RETURN_WINDOW`] clears both a small material floor and its outside option. Entry stays
+    /// hunger/pressure-gated (S22a unchanged) — *hunger discovers the role; money makes it
+    /// occupationally persistent.* Skill OFF isolates the stay decision as the sole new lever.
+    ///
+    /// Everything else is inherited unchanged from S22a: the relaxed cultivation eligibility, the
+    /// S20+S21a/b/c money machinery, the emergency floor, the grain commons, the WOOD-poor
+    /// topology, the `seeded_minted == 0` provenance, and mortality on. The central S22c question:
+    /// does a realized monetary stay-decision turn S22a's FLUID participation into a STABLE role
+    /// split — a persistent cultivator cohort plus persistent non-cultivating buyers — while
+    /// preserving money, mortality, and provenance? Or does the signal not discriminate
+    /// (SIGNAL VACUOUS), or stay without a cohort, or collapse the market (each a first-class
+    /// finding)?
+    ///
+    /// Determinism: `profit_driven_retention` is canonicalized ON-only (digest tag 9 + the
+    /// per-agent rolling-return window, which steers the next `cultivating` flag), so only THIS
+    /// scenario's digest changes; with the flag reverted to `false` it is byte-identical to
+    /// `frontier_endogenous_cultivation`. The counterfactual-flip / proceeds-distribution
+    /// diagnostics it pairs with are runtime-only (never digested).
+    pub fn frontier_profit_retention() -> Self {
+        let mut cfg = Self::frontier_endogenous_cultivation();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.profit_driven_retention = true;
+        }
+        cfg
+    }
+
+    /// S22c — **profit-driven retention composed with bounded skill** (the skill-ON variant, a
+    /// composition read): [`Self::frontier_occupational_stickiness`] (the S22b skill colony) with
+    /// the **only** change being `profit_driven_retention = true`. Skill (S22b) may raise the
+    /// cultivation surplus a skilled cultivator can sell, but the stay is still mediated by
+    /// *realized* gain, not by "skilled" — they compose, not conflate. Compared to its matched
+    /// no-retention baseline `frontier_occupational_stickiness` (S22b), not the skill-off S22a
+    /// baseline. Byte-identical to `frontier_occupational_stickiness` with the flag reverted.
+    pub fn frontier_profit_retention_skill() -> Self {
+        let mut cfg = Self::frontier_occupational_stickiness();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.profit_driven_retention = true;
+        }
+        cfg
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).
@@ -4844,6 +4960,16 @@ struct Colonist {
     /// (mirroring the `cultivating`/`cultivate_pressure` block), so a flag-off colonist block
     /// stays byte-identical. `0` off the cultivation-skill path.
     cultivation_skill: u16,
+    /// S22c own-use cultivation **return window** — a rolling [`RETURN_WINDOW`]-tick FIFO of this
+    /// colonist's realized post-money cultivation-sale vs non-cultivation-sale SALT proceeds (one
+    /// [`ReturnTick`] per tick it realized SOME sale). It STEERS the cultivation *exit*: when
+    /// [`Settlement::profit_stay_active`] reads a clearing realized return it keeps the colonist
+    /// cultivating past the normal hunger exit, so it is part of the future-behaviour identity
+    /// whenever the profit-driven-retention phase can run; serialized only under that gate
+    /// (mirroring the `cultivation_skill` block), so a flag-off colonist block stays
+    /// byte-identical. Empty off the profit-driven-retention path (and pre-money, where there are
+    /// no SALT sales to credit).
+    cultivation_return_window: VecDeque<ReturnTick>,
 }
 
 /// A settlement of generated colonists driven over a real `world` + `econ`.
@@ -4997,6 +5123,23 @@ pub struct Settlement {
     /// non-vacuity bread measure (a skilled cultivator must produce strictly more). Maintained
     /// only on the active cultivation-skill path. Runtime-only, NOT digested.
     cultivation_bread_produced: BTreeMap<AgentId, u64>,
+    /// S22c: per-econ-tick scratch — each seller's realized post-money SALT proceeds from selling
+    /// its OWN cultivated bread surplus this tick (`price × own-produced qty`, attributed via
+    /// `produced_lots` where `lot.producer == seller`). Cleared at the start of
+    /// [`Self::run_bread_provenance_market`] and filled as each post-promotion bread→SALT spot
+    /// sale is attributed; drained by [`Self::update_cultivation_returns`] into the per-colonist
+    /// [`Colonist::cultivation_return_window`]. Maintained only on the active
+    /// profit-driven-retention path. Runtime scratch, NOT digested (the window it feeds IS).
+    cultivation_proceeds_scratch: BTreeMap<AgentId, u64>,
+    /// S22c (runtime-only diagnostic, NOT digested): the agent ids RETAINED-BY-PROFIT this tick —
+    /// agents whose cultivation `cultivate_now` was true ONLY because [`Self::profit_stay_active`]
+    /// fired (they were past the hunger exit, no input in flight, not pressure-escalating, so the
+    /// flag-off path would have EXITED them). The counterfactual exit-flip set. Cleared/refilled
+    /// each tick in [`Self::run_own_labor_subsistence`]; empty off the profit-driven-retention path.
+    profit_retained_ids: BTreeSet<AgentId>,
+    /// S22c (runtime-only diagnostic): the union of [`Self::profit_retained_ids`] over the whole
+    /// run — distinct agents ever retained-by-profit. Not digested.
+    profit_retained_ever: BTreeSet<AgentId>,
     econ_tick: u64,
     last_report: EconTickReport,
     /// The settlement **commons** (G4a real death): the conserved sink that holds a
@@ -5272,6 +5415,15 @@ struct ChainRuntime {
     /// [`ChainConfig::cultivation_skill`]). `false`/defaults for every existing config, so the
     /// grain-haul lever is inert and the run is byte-identical.
     cultivation_skill: bool,
+    /// S22c: the profit-driven-retention gate (see [`ChainConfig::profit_driven_retention`]).
+    /// `false` for every existing config, so the cultivation exit stays pure hunger/pressure and
+    /// the run is byte-identical.
+    profit_driven_retention: bool,
+    /// S22c: the rolling-return window / outside-margin / material floor (see the matching
+    /// [`ChainConfig`] fields). Consulted only while `profit_driven_retention` is active.
+    return_window: u64,
+    retention_margin_bps: u64,
+    retention_material_floor: u64,
     skill_gain: u16,
     skill_decay: u16,
     skill_cap: u16,
@@ -5342,6 +5494,70 @@ struct CapitalBuild {
 /// balance so a bread→SALT sale can be attributed to who PRODUCED the bread (the entrant), not
 /// who SOLD it — the seller's `cultivating` flag may already be false at trade time, and a
 /// produced loaf may transfer (inheritance / resale) before it sells. Never digested.
+/// S22c — one rolling-window econ tick's realized sale proceeds for one colonist: the
+/// post-money SALT proceeds it realized from selling its OWN cultivated bread surplus
+/// (`cultivation_proceeds`, attributed via `produced_lots` where `lot.producer == seller`) and
+/// from any NON-cultivation sale (`outside_proceeds`, e.g. WOOD→SALT) — the realized outside
+/// option. Only ticks on which the colonist realized SOME sale are stored; entries older than
+/// [`RETURN_WINDOW`] are pruned. Both feed [`Settlement::profit_stay_active`], so the window is
+/// FUTURE-BEHAVIOUR state digested ON-only (with the colonist roster), NOT runtime-only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ReturnTick {
+    /// The econ tick this row was realized on.
+    tick: u64,
+    /// Post-money SALT proceeds (`price × own-produced qty`) from selling the colonist's OWN
+    /// cultivated bread surplus this tick.
+    cultivation_proceeds: u64,
+    /// Post-money SALT proceeds from the colonist's NON-cultivation sales (e.g. WOOD→SALT) this
+    /// tick — the realized outside option.
+    outside_proceeds: u64,
+}
+
+/// S22c: sum a colonist's rolling return window over the last `return_window` ticks ending at
+/// `tick`, returning `(cult_sum, cult_sale_ticks, outside_sum, outside_sale_ticks)` — its windowed
+/// realized cultivation-sale and non-cultivation-sale proceeds and the count of distinct ticks each
+/// was realized on. A read-time window filter (so an entry the previous tick's prune left one step
+/// stale is excluded) keeps the rate exactly the trailing `return_window` completed ticks.
+fn window_return_sums(
+    window: &VecDeque<ReturnTick>,
+    tick: u64,
+    return_window: u64,
+) -> (u64, u64, u64, u64) {
+    let mut cult_sum = 0u64;
+    let mut cult_ticks = 0u64;
+    let mut out_sum = 0u64;
+    let mut out_ticks = 0u64;
+    if return_window == 0 {
+        return (0, 0, 0, 0);
+    }
+    for entry in window {
+        if tick.saturating_sub(entry.tick) > return_window {
+            continue;
+        }
+        if entry.cultivation_proceeds > 0 {
+            cult_sum = cult_sum.saturating_add(entry.cultivation_proceeds);
+            cult_ticks += 1;
+        }
+        if entry.outside_proceeds > 0 {
+            out_sum = out_sum.saturating_add(entry.outside_proceeds);
+            out_ticks += 1;
+        }
+    }
+    (cult_sum, cult_ticks, out_sum, out_ticks)
+}
+
+/// One bread trade this tick, normalized to (seller-of-bread, buyer, what-the-buyer-gave, qty,
+/// per-unit spot price). `spot_price` is `Some` for a spot-tape trade (so the S22c post-promotion
+/// bread→SALT proceeds can be credited to the producing seller) and `None` for a barter trade.
+#[derive(Clone, Copy, Debug)]
+struct BreadTradeRow {
+    seller: AgentId,
+    buyer: AgentId,
+    other_good: Option<GoodId>,
+    qty: u64,
+    spot_price: Option<u64>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ProducedLot {
     /// The producing agent at production time.
@@ -6581,6 +6797,7 @@ impl Settlement {
                 cultivate_pressure: 0,
                 cultivation_stock_pending: false,
                 cultivation_skill: 0,
+                cultivation_return_window: VecDeque::new(),
             });
         }
 
@@ -6673,6 +6890,7 @@ impl Settlement {
                         cultivate_pressure: 0,
                         cultivation_stock_pending: false,
                         cultivation_skill: 0,
+                        cultivation_return_window: VecDeque::new(),
                     });
                 }
             }
@@ -7086,6 +7304,10 @@ impl Settlement {
                 household_barter_cultivation: chain.household_barter_cultivation,
                 endogenous_cultivation_entry: chain.endogenous_cultivation_entry,
                 cultivation_skill: chain.cultivation_skill,
+                profit_driven_retention: chain.profit_driven_retention,
+                return_window: chain.return_window,
+                retention_margin_bps: chain.retention_margin_bps,
+                retention_material_floor: chain.retention_material_floor,
                 skill_gain: chain.skill_gain,
                 skill_decay: chain.skill_decay,
                 skill_cap: chain.skill_cap,
@@ -7150,6 +7372,9 @@ impl Settlement {
             cultivation_skill_producers: BTreeSet::new(),
             cultivation_grain_harvested: BTreeMap::new(),
             cultivation_bread_produced: BTreeMap::new(),
+            cultivation_proceeds_scratch: BTreeMap::new(),
+            profit_retained_ids: BTreeSet::new(),
+            profit_retained_ever: BTreeSet::new(),
             econ_tick: 0,
             last_report: EconTickReport::default(),
             commons_gold: Gold::ZERO,
@@ -7339,6 +7564,9 @@ impl Settlement {
             cultivation_skill_producers: BTreeSet::new(),
             cultivation_grain_harvested: BTreeMap::new(),
             cultivation_bread_produced: BTreeMap::new(),
+            cultivation_proceeds_scratch: BTreeMap::new(),
+            profit_retained_ids: BTreeSet::new(),
+            profit_retained_ever: BTreeSet::new(),
             econ_tick: 0,
             last_report: EconTickReport::default(),
             commons_gold: Gold::ZERO,
@@ -7429,8 +7657,10 @@ impl Settlement {
         // of a freed id is a defensive backstop, not a live path.
         // S22b: accumulate per-agent grain hauled (the cultivation input good deposited this
         // tick) — the monopolization / grain-share probe + the non-vacuity grain measure.
-        // Runtime-only (never digested); maintained only on the active cultivation-skill path.
-        if self.cultivation_skill_active() {
+        // Runtime-only (never digested), so extending the gate touches no golden: maintained on
+        // the active cultivation-skill path OR (S22c) the profit-driven-retention path, whose
+        // skill-OFF headline still needs the per-agent grain-share monopolization probe.
+        if self.cultivation_skill_active() || self.profit_driven_retention_active() {
             if let Some(grain) = self.cultivation_input_good() {
                 for (&(id, good), &qty) in &fast.deposited {
                     if good == grain {
@@ -7653,6 +7883,13 @@ impl Settlement {
             provenance_spot_trades_start,
             was_pre_promotion,
         );
+
+        // ---- 5b-bis-S22c. CULTIVATION-RETURN WINDOW (S22c): fold this tick's realized
+        // cultivation-sale proceeds (filled by the provenance market pass) and outside (non-bread)
+        // spot-sale proceeds into each colonist's rolling return window — the future-behaviour
+        // signal the profit-stay exit reads next tick. A no-op off the profit-driven-retention
+        // path, so every other run is byte-identical.
+        self.update_cultivation_returns(provenance_spot_trades_start);
 
         // ---- 5b-bis'. ACQUISITION LEDGER: MARKET (S21d.1): debit this tick's market-consume
         // bread FIFO (by the channel it arrived through) and transfer the bread trades
@@ -9083,6 +9320,7 @@ impl Settlement {
                 cultivate_pressure: 0,
                 cultivation_stock_pending: false,
                 cultivation_skill: 0,
+                cultivation_return_window: VecDeque::new(),
             });
             let child_slot = self.colonists.len() - 1;
             self.live_colonist_slots.push(child_slot);
@@ -9670,7 +9908,30 @@ impl Settlement {
                 c.cultivate_patience,
             )
         });
+        // S22c: the profit-driven-retention exit modulation. When active, a currently-cultivating
+        // agent past its hunger exit (no input in flight, not pressure-escalating) STAYS cultivating
+        // if its realized cultivation return clears its outside option ([`Self::profit_stay_active`]).
+        // Reset the per-tick counterfactual-flip diagnostic set up front; off the path it stays empty.
+        let retention = self.profit_driven_retention_active();
+        if retention {
+            self.profit_retained_ids.clear();
+        }
         let live = self.live_colonist_slots.clone();
+        // S22c: snapshot the START-OF-TICK cultivation roster ONCE, before the slot-by-slot loop
+        // below mutates each colonist's `cultivating` flag. The colony reference outside rate (the
+        // fallback `profit_stay_active` consults for a continuous cultivator with no recent outside
+        // ticks of its own) pools NON-cultivating sellers; reading the LIVE flag mid-pass would let
+        // a later colonist's stay decision depend on whether an earlier slot just entered/exited
+        // cultivation THIS pass — roster-order dependent. Fixing the cohort to the start-of-tick
+        // state removes that dependence. Empty (and never consulted) off the retention path.
+        let cultivating_at_pass_start: BTreeSet<AgentId> = if retention {
+            live.iter()
+                .filter(|&&slot| self.colonists[slot].cultivating)
+                .map(|&slot| self.colonists[slot].id)
+                .collect()
+        } else {
+            BTreeSet::new()
+        };
         for slot in live {
             let (
                 id,
@@ -9752,11 +10013,32 @@ impl Settlement {
             // below `cult_out` AND every hauled grain unit has reached econ stock (so a
             // started grain haul deposits instead of stranding raw carry; settled stock
             // is drained by the cultivation phase even if this flag clears).
+            // S22c: the realized post-money profit-stay term, computed ONLY for a currently-
+            // cultivating eligible agent under the gate (so the cost is bounded to cultivators; off
+            // the path it is always false and the disjunction is exactly today's). It joins the EXIT
+            // branch only — entry stays hunger/pressure-gated (unchanged).
+            let profit_stay = if retention && cultivation && eligible && was_cultivating {
+                self.profit_stay_active(id, &cultivating_at_pass_start)
+            } else {
+                false
+            };
             let cultivate_now = cultivation
                 && eligible
                 && (pressure >= cult_patience
                     || (was_cultivating
-                        && (hunger >= cult_out || has_cultivation_input_in_flight)));
+                        && (hunger >= cult_out || has_cultivation_input_in_flight || profit_stay)));
+            // S22c (runtime-only diagnostic): a counterfactual exit FLIP — this agent is cultivating
+            // THIS tick ONLY because `profit_stay` fired (it is past the hunger exit, has no input in
+            // flight, and is not pressure-escalating), so the flag-off path would have EXITED it. The
+            // mandatory non-vacuity test reads this set.
+            let retained_by_profit = profit_stay
+                && pressure < cult_patience
+                && hunger < cult_out
+                && !has_cultivation_input_in_flight;
+            if retained_by_profit {
+                self.profit_retained_ids.insert(id);
+                self.profit_retained_ever.insert(id);
+            }
             // Mutually exclusive (one world task per econ tick): cultivation takes the
             // task slot when it fires, so the colonist forages XOR cultivates — never
             // both. `cultivate_now` implies `!foraging` here.
@@ -11710,6 +11992,123 @@ impl Settlement {
             .is_some_and(chain_runtime_cultivation_skill_active)
     }
 
+    /// S22c: whether **profit-driven cultivation retention** is active this tick — the
+    /// `profit_driven_retention` flag is on AND the S22a endogenous-cultivation-entry path is
+    /// active (it composes strictly on it; orthogonal to `cultivation_skill`). When this holds,
+    /// the per-agent rolling cultivation-sale/outside-sale return window is maintained (and
+    /// digested ON-only), and the cultivation *exit* branch consults [`Self::profit_stay_active`].
+    /// Off (every existing config) it is `false`, so the window is never created/consulted, the
+    /// exit stays pure hunger/pressure, and the run is byte-identical.
+    fn profit_driven_retention_active(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(chain_runtime_profit_driven_retention_active)
+    }
+
+    /// S22c: the configured profit-driven-retention parameters `(return_window, margin_bps,
+    /// material_floor)`, falling back to the pinned defaults for a settlement with no chain. The
+    /// controls/sweep override the chain fields, never the constants.
+    fn retention_params(&self) -> (u64, u64, u64) {
+        self.chain.as_ref().map_or(
+            (
+                RETURN_WINDOW,
+                RETENTION_MARGIN_BPS,
+                RETENTION_MATERIAL_FLOOR,
+            ),
+            |c| {
+                (
+                    c.return_window,
+                    c.retention_margin_bps,
+                    c.retention_material_floor,
+                )
+            },
+        )
+    }
+
+    /// S22c: the colony **reference outside rate** — the pooled realized non-cultivation sale
+    /// proceeds and sale-tick count over every live colonist that was NOT cultivating at the START
+    /// of this econ tick (`cultivating_at_pass_start`, snapshotted before the stay loop mutates the
+    /// flag, so the pooled cohort is roster-order-independent) and has realized at least one outside
+    /// sale in its window (`Σ outside_sum / Σ outside_ticks` as a rational `(sum, ticks)`). `None`
+    /// when no such reference seller exists (the outside option is then reported as *weak* and falls
+    /// back to 0 in [`Self::profit_stay_active`]). The fallback a continuous cultivator with no
+    /// recent outside ticks of its own compares against (§8.2).
+    fn colony_reference_outside_rate(
+        &self,
+        return_window: u64,
+        cultivating_at_pass_start: &BTreeSet<AgentId>,
+    ) -> Option<(u64, u64)> {
+        let tick = self.econ_tick;
+        let mut sum = 0u64;
+        let mut ticks = 0u64;
+        for &slot in &self.live_colonist_slots {
+            let colonist = &self.colonists[slot];
+            if cultivating_at_pass_start.contains(&colonist.id) {
+                continue;
+            }
+            let (_c_sum, _c_ticks, o_sum, o_ticks) =
+                window_return_sums(&colonist.cultivation_return_window, tick, return_window);
+            if o_ticks > 0 {
+                sum = sum.saturating_add(o_sum);
+                ticks = ticks.saturating_add(o_ticks);
+            }
+        }
+        (ticks > 0).then_some((sum, ticks))
+    }
+
+    /// S22c: the post-money cultivation **stay** decision — whether a currently-cultivating
+    /// colonist `id` should remain cultivating past the normal hunger exit because its realized
+    /// cultivation return clears its outside option. Returns true iff ALL of:
+    /// * profit-driven retention is active AND `current_money_good() == Some(SALT)` (the hard
+    ///   anti-circularity gate — inert pre-money; the signal itself is post-money realized
+    ///   sale proceeds), AND
+    /// * its windowed realized cultivation-sale proceeds clear the material floor
+    ///   ([`RETENTION_MATERIAL_FLOOR`]) over ≥1 sale tick (it is realizing cultivation sales — not
+    ///   one dust sale, not vacuous), AND
+    /// * its cultivation per-sale-tick rate ≥ its outside rate + [`RETENTION_MARGIN_BPS`], where the
+    ///   outside rate is its OWN realized non-cultivation rate when it has recent outside ticks,
+    ///   else the colony reference rate, else 0 (the outside option reported as *weak*).
+    ///
+    /// All comparisons are exact integer cross-multiplications (no float, no RNG). Read-only; the
+    /// cultivation exit branch consults it. `false` for an unknown id / off the path / pre-money.
+    fn profit_stay_active(
+        &self,
+        id: AgentId,
+        cultivating_at_pass_start: &BTreeSet<AgentId>,
+    ) -> bool {
+        if !self.profit_driven_retention_active() || self.society.current_money_good() != Some(SALT)
+        {
+            return false;
+        }
+        let Some(&slot) = self.colonist_slot_by_id.get(&id) else {
+            return false;
+        };
+        let (return_window, margin_bps, material_floor) = self.retention_params();
+        let tick = self.econ_tick;
+        let (cult_sum, cult_ticks, out_sum, out_ticks) = window_return_sums(
+            &self.colonists[slot].cultivation_return_window,
+            tick,
+            return_window,
+        );
+        // Material floor: a real, recurring realized cultivation gain (not one dust sale; not
+        // vacuous). Without it a single tiny sale could lock an agent in.
+        if cult_ticks == 0 || cult_sum < material_floor {
+            return false;
+        }
+        // Outside option: the agent's OWN realized non-cultivation rate, else the colony reference,
+        // else 0 (weak). Kept as `(sum, ticks)` rationals so the rate comparison stays integer.
+        let (o_sum, o_ticks) = if out_ticks > 0 {
+            (out_sum, out_ticks)
+        } else {
+            self.colony_reference_outside_rate(return_window, cultivating_at_pass_start)
+                .unwrap_or((0, 1))
+        };
+        // cult_sum/cult_ticks ≥ (o_sum/o_ticks) · (10000 + margin)/10000, cross-multiplied in u128.
+        let lhs = u128::from(cult_sum) * u128::from(o_ticks) * 10_000;
+        let rhs = u128::from(o_sum) * u128::from(cult_ticks) * (10_000 + u128::from(margin_bps));
+        lhs >= rhs
+    }
+
     /// S18: whether the **money-from-a-multi-good-economy** path is active this tick — the
     /// `multigood_money` flag is on AND the S16 money-from-produced-bread path is active.
     /// When this holds, the woodcutter→WOOD-node routing has fired at generation and the
@@ -11789,6 +12188,13 @@ impl Settlement {
             return 0;
         };
         let medium = self.barter_medium.map(|(good, _)| good);
+        // S22c: clear this tick's cultivation-proceeds scratch up front so the post-promotion
+        // bread→SALT spot sales below refill it; drained by `update_cultivation_returns`. Inert
+        // (and the scratch stays empty) off the profit-driven-retention path.
+        let retention = self.profit_driven_retention_active();
+        if retention {
+            self.cultivation_proceeds_scratch.clear();
+        }
         // The whole consumption log so far is this tick's MARKET consume (cleared at the
         // step's start; the own-use consume has not run yet). Sink its bread, produced-first.
         let market_consume: Vec<(AgentId, u64)> = self
@@ -11805,45 +12211,144 @@ impl Settlement {
         // This tick's bread trades (seller = the bread giver). Transfer the produced origin
         // to the buyer for EVERY bread trade (so a resold loaf keeps its origin), and
         // attribute the produced/minted split for a bread→MEDIUM trade.
-        let mut bread_trades: Vec<(AgentId, AgentId, Option<GoodId>, u64)> =
-            self.society.barter_trades[barter_trades_start..]
-                .iter()
-                .filter_map(|trade| {
-                    if trade.a_gives == bread {
-                        Some((trade.a, trade.b, Some(trade.b_gives), u64::from(trade.qty)))
-                    } else if trade.b_gives == bread {
-                        Some((trade.b, trade.a, Some(trade.a_gives), u64::from(trade.qty)))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+        // The per-unit spot price (S22c) rides alongside as `Option<u64>`: `None` for a barter
+        // trade (no gold price), `Some(price)` for a spot trade — so the post-promotion bread→SALT
+        // proceeds can be credited to the producing seller below.
+        let mut bread_trades: Vec<BreadTradeRow> = self.society.barter_trades
+            [barter_trades_start..]
+            .iter()
+            .filter_map(|trade| {
+                if trade.a_gives == bread {
+                    Some(BreadTradeRow {
+                        seller: trade.a,
+                        buyer: trade.b,
+                        other_good: Some(trade.b_gives),
+                        qty: u64::from(trade.qty),
+                        spot_price: None,
+                    })
+                } else if trade.b_gives == bread {
+                    Some(BreadTradeRow {
+                        seller: trade.b,
+                        buyer: trade.a,
+                        other_good: Some(trade.a_gives),
+                        qty: u64::from(trade.qty),
+                        spot_price: None,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
         let spot_medium = self.society.current_money_good();
         bread_trades.extend(
             self.society.trades[spot_trades_start..]
                 .iter()
                 .filter_map(|trade| {
-                    (trade.good == bread).then_some((
-                        trade.seller,
-                        trade.buyer,
-                        spot_medium,
-                        u64::from(trade.qty),
-                    ))
+                    (trade.good == bread).then_some(BreadTradeRow {
+                        seller: trade.seller,
+                        buyer: trade.buyer,
+                        other_good: spot_medium,
+                        qty: u64::from(trade.qty),
+                        spot_price: Some(trade.price.0),
+                    })
                 }),
         );
         let tick = self.econ_tick;
-        for (seller, buyer, other_good, qty) in bread_trades {
-            let drawn_lots = self.bread_provenance.transfer(seller, buyer, qty);
-            if other_good == medium {
+        // S22c: credit the producing seller's realized proceeds only on POST-PROMOTION bread spot
+        // sales for SALT (the spot tape with SALT as money), and only for the OWN-cultivated share
+        // of the drawn lots (`lot.producer == seller`) — resold/minted bread is ignored.
+        let credit_proceeds = retention && spot_medium == Some(SALT);
+        for row in bread_trades {
+            let drawn_lots = self
+                .bread_provenance
+                .transfer(row.seller, row.buyer, row.qty);
+            if row.other_good == medium {
                 self.bread_provenance.attribute_medium_sale(
                     &drawn_lots,
-                    qty,
+                    row.qty,
                     was_pre_promotion,
                     tick,
                 );
             }
+            if let Some(price) = row.spot_price {
+                if credit_proceeds {
+                    let own_qty: u64 = drawn_lots
+                        .iter()
+                        .filter(|lot| lot.producer == row.seller)
+                        .map(|lot| lot.qty)
+                        .sum();
+                    if own_qty > 0 {
+                        let proceeds = price.saturating_mul(own_qty);
+                        *self
+                            .cultivation_proceeds_scratch
+                            .entry(row.seller)
+                            .or_insert(0) += proceeds;
+                    }
+                }
+            }
         }
         cursor
+    }
+
+    /// S22c: fold this tick's realized cultivation-sale proceeds (the scratch
+    /// [`Self::run_bread_provenance_market`] filled) and this tick's NON-cultivation (outside)
+    /// spot-sale proceeds into each live colonist's rolling [`Colonist::cultivation_return_window`],
+    /// pruning entries older than [`RETURN_WINDOW`]. Runs right after the provenance market pass (so
+    /// the cultivation scratch is filled) and reads the post-promotion spot trades for the
+    /// outside-option side. Only ticks on which a colonist realized SOME sale store a row, so a
+    /// continuous cultivator with no outside ticks falls back to the colony reference in
+    /// [`Self::profit_stay_active`]. Deterministic (slot order, integer proceeds, no RNG). A no-op
+    /// off the profit-driven-retention path, so every other run is byte-identical.
+    fn update_cultivation_returns(&mut self, spot_trades_start: usize) {
+        if !self.profit_driven_retention_active() {
+            return;
+        }
+        let (return_window, _margin, _floor) = self.retention_params();
+        // S22c: a zero-length window can never feed `profit_stay_active` (the read-time filter in
+        // `window_return_sums` returns zeros), so storing a row would only leave an inert last-sale
+        // tail in the digested window. Skip storing entirely so a zero-window run keeps an empty,
+        // clean window (the digest never depends on an inert row, and the window never stays full).
+        if return_window == 0 {
+            return;
+        }
+        let Some(bread) = self.provenance_bread_good() else {
+            return;
+        };
+        let tick = self.econ_tick;
+        // The outside option: realized SALT proceeds from each seller's NON-cultivation (non-bread)
+        // spot sales this tick — only once SALT is money (pre-money there are no spot SALT sales).
+        let mut outside: BTreeMap<AgentId, u64> = BTreeMap::new();
+        if self.society.current_money_good() == Some(SALT) {
+            for trade in &self.society.trades[spot_trades_start..] {
+                if trade.good != bread {
+                    *outside.entry(trade.seller).or_insert(0) +=
+                        trade.price.0.saturating_mul(u64::from(trade.qty));
+                }
+            }
+        }
+        // Keep entries within the last `return_window` ticks (drop tick < tick - return_window + 1).
+        let cutoff = tick.saturating_sub(return_window.saturating_sub(1));
+        let live = self.live_colonist_slots.clone();
+        for slot in live {
+            let id = self.colonists[slot].id;
+            let cult = self
+                .cultivation_proceeds_scratch
+                .get(&id)
+                .copied()
+                .unwrap_or(0);
+            let out = outside.get(&id).copied().unwrap_or(0);
+            let window = &mut self.colonists[slot].cultivation_return_window;
+            while window.front().is_some_and(|e| e.tick < cutoff) {
+                window.pop_front();
+            }
+            if cult > 0 || out > 0 {
+                window.push_back(ReturnTick {
+                    tick,
+                    cultivation_proceeds: cult,
+                    outside_proceeds: out,
+                });
+            }
+        }
     }
 
     /// S16: sink this tick's OWN-USE cultivation bread consume (the log tail past the market
@@ -13662,6 +14167,70 @@ impl Settlement {
         })
     }
 
+    /// S22c: the colonist at generation `index`'s windowed realized cultivation-sale proceeds (the
+    /// own-cultivated bread→SALT SALT proceeds over the trailing [`RETURN_WINDOW`] ticks) — the
+    /// per-agent return signal `profit_stay_active` reads. `0` off the profit-driven-retention path
+    /// (the window is empty) and pre-money. Runtime-readable; the underlying window IS digested
+    /// (ON-only, with the colonist roster). The non-vacuity test reads it to prove the signal
+    /// VARIES across agents (not a single agent firing once).
+    pub fn recent_cultivation_proceeds_of(&self, index: usize) -> u64 {
+        let (return_window, _m, _f) = self.retention_params();
+        self.colonists.get(index).map_or(0, |c| {
+            window_return_sums(&c.cultivation_return_window, self.econ_tick, return_window).0
+        })
+    }
+
+    /// S22c: the colonist at generation `index`'s windowed realized non-cultivation (outside) sale
+    /// proceeds over the trailing [`RETURN_WINDOW`] ticks — its realized outside option. `0` off the
+    /// path / pre-money / for a continuous cultivator with no outside sales (which then falls back
+    /// to the colony reference in the rule). Runtime-readable; the window IS digested ON-only.
+    pub fn recent_outside_proceeds_of(&self, index: usize) -> u64 {
+        let (return_window, _m, _f) = self.retention_params();
+        self.colonists.get(index).map_or(0, |c| {
+            window_return_sums(&c.cultivation_return_window, self.econ_tick, return_window).2
+        })
+    }
+
+    /// S22c (runtime-only diagnostic): whether the colonist at generation `index` is RETAINED-BY-
+    /// PROFIT this tick — cultivating ONLY because the profit-stay term fired (past the hunger exit,
+    /// no input in flight, not pressure-escalating), so the flag-off path would have EXITED it. The
+    /// counterfactual exit-flip marker. `false` off the path.
+    pub fn is_profit_retained(&self, index: usize) -> bool {
+        self.colonists
+            .get(index)
+            .is_some_and(|c| self.profit_retained_ids.contains(&c.id))
+    }
+
+    /// S22c (runtime-only diagnostic): the count of agents retained-by-profit THIS tick — the
+    /// counterfactual exit-flip count. `0` off the path.
+    pub fn profit_retained_now(&self) -> usize {
+        self.profit_retained_ids.len()
+    }
+
+    /// S22c (runtime-only diagnostic): distinct agents ever retained-by-profit over the run. `0`
+    /// off the path. The non-vacuity test reads it to confirm the flip is not a one-agent fluke.
+    pub fn profit_retained_ever_count(&self) -> usize {
+        self.profit_retained_ever.len()
+    }
+
+    /// S22c: the chain's `cultivate_hunger_out` threshold — the hysteresis exit below which a
+    /// cultivating agent normally leaves (the non-vacuity test reads it to confirm a retained agent
+    /// is genuinely past the exit). `0` for a non-chain settlement.
+    pub fn cultivate_hunger_out(&self) -> u16 {
+        self.chain.as_ref().map_or(0, |c| c.cultivate_hunger_out)
+    }
+
+    /// S22c (test-only control): empty EVERY colonist's cultivation-return window. The
+    /// ZERO-RETURNS control re-applies it before each econ tick — the cultivate decision reads an
+    /// empty window, so `profit_stay_active` never fires (the material floor is never cleared) — so
+    /// stickiness must DISAPPEAR even with the rule ON, proving the *signal* (not the rule's mere
+    /// presence) drives any retention. A no-op off the profit-driven-retention path.
+    pub fn clear_cultivation_return_windows(&mut self) {
+        for colonist in &mut self.colonists {
+            colonist.cultivation_return_window.clear();
+        }
+    }
+
     /// S22b (test-only lever control): pin EVERY living colonist's cultivation skill to `skill`
     /// (clamped to [`ChainConfig::skill_cap`]). The mandatory non-vacuity test re-applies it
     /// before each econ tick — the per-trip haul reads skill at task-assignment time, the
@@ -14839,6 +15408,21 @@ impl Settlement {
                 out.extend_from_slice(&chain.skill_cap.to_le_bytes());
                 out.extend_from_slice(&chain.skill_haul_ceiling.to_le_bytes());
             }
+            // S22c: the profit-driven-retention gate makes the cultivation EXIT profit-modulated (a
+            // currently-cultivating agent stays past the hunger exit on a clearing realized return)
+            // — a future-behaviour change for the roster. Emitted only when active (the same
+            // gated-block discipline as S16/S18/S21/S22a/b above) with a DISTINCT tag (`9`), so the
+            // gated markers stay injective and a flag-off chain stays byte-identical to the pre-S22c
+            // stream. (The per-agent rolling-return window it maintains IS digested — serialized
+            // with the colonist roster below, ON-only — because it steers the next `cultivating`
+            // flag; the counterfactual-flip / proceeds-distribution diagnostics it pairs with are
+            // runtime-only and deliberately NOT digested.)
+            if self.profit_driven_retention_active() {
+                out.push(9);
+                out.extend_from_slice(&chain.return_window.to_le_bytes());
+                out.extend_from_slice(&chain.retention_margin_bps.to_le_bytes());
+                out.extend_from_slice(&chain.retention_material_floor.to_le_bytes());
+            }
             // The staple mapping steers the next needs/scale phase for *any* chain,
             // role-choice or not, so it is included whenever a chain is active. The
             // G3b no-spread control shares the emergent config's physical state but
@@ -15203,6 +15787,12 @@ impl Settlement {
         // cultivation block below), so every pre-S22b config keeps its per-colonist layout
         // byte-identical.
         let skill_serialized = self.cultivation_skill_active();
+        // S22c: the per-colonist `cultivation_return_window` steers the next cultivation EXIT (the
+        // profit-stay decision) only while the profit-driven-retention phase can run; gate its
+        // bytes on the active-phase predicate (which implies `cultivation_serialized`, so it nests
+        // inside the cultivation block below), so every pre-S22c config keeps its per-colonist
+        // layout byte-identical.
+        let retention_serialized = self.profit_driven_retention_active();
         out.extend_from_slice(&(self.colonists.len() as u32).to_le_bytes());
         for colonist in &self.colonists {
             out.extend_from_slice(&colonist.id.0.to_le_bytes());
@@ -15279,6 +15869,22 @@ impl Settlement {
                 // under `skill_serialized`, so a pre-S22b colonist block stays byte-identical.
                 if skill_serialized {
                     out.extend_from_slice(&colonist.cultivation_skill.to_le_bytes());
+                }
+                // S22c: the rolling cultivation-return window steers the next cultivation EXIT (a
+                // clearing realized return keeps the colonist cultivating past the hunger exit), so
+                // two states identical but for it diverge on a future tick — part of the
+                // future-behaviour identity whenever the profit-driven-retention phase runs. Nested
+                // inside the cultivation block (the gate implies it), emitted only under
+                // `retention_serialized` (length-prefixed so the variable window is injective), so
+                // a pre-S22c colonist block stays byte-identical.
+                if retention_serialized {
+                    let window = &colonist.cultivation_return_window;
+                    out.extend_from_slice(&(window.len() as u32).to_le_bytes());
+                    for entry in window {
+                        out.extend_from_slice(&entry.tick.to_le_bytes());
+                        out.extend_from_slice(&entry.cultivation_proceeds.to_le_bytes());
+                        out.extend_from_slice(&entry.outside_proceeds.to_le_bytes());
+                    }
                 }
             }
             if role_choice_active {
@@ -15810,6 +16416,15 @@ fn chain_runtime_endogenous_cultivation_entry_active(chain: &ChainRuntime) -> bo
 /// digest surface never engage and the run is byte-identical.
 fn chain_runtime_cultivation_skill_active(chain: &ChainRuntime) -> bool {
     chain.cultivation_skill && chain_runtime_endogenous_cultivation_entry_active(chain)
+}
+
+/// S22c: profit-driven cultivation retention is active iff the flag is on AND the S22a
+/// endogenous-cultivation-entry path is active (it composes strictly on it; orthogonal to
+/// `cultivation_skill`). Off (every existing config) it is `false`, so the per-agent return
+/// window, the profit-stay exit modulation, and the ON-only digest surface never engage and the
+/// run is byte-identical.
+fn chain_runtime_profit_driven_retention_active(chain: &ChainRuntime) -> bool {
+    chain.profit_driven_retention && chain_runtime_endogenous_cultivation_entry_active(chain)
 }
 
 /// S16: money-from-produced-bread is active iff the flag is on AND own-use cultivation is
@@ -17908,6 +18523,43 @@ fn belief_vec() -> Vec<PriceBelief> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn return_window_counts_last_completed_tick() {
+        let window = VecDeque::from([
+            ReturnTick {
+                tick: 98,
+                cultivation_proceeds: 3,
+                outside_proceeds: 5,
+            },
+            ReturnTick {
+                tick: 99,
+                cultivation_proceeds: 7,
+                outside_proceeds: 0,
+            },
+            ReturnTick {
+                tick: 100,
+                cultivation_proceeds: 0,
+                outside_proceeds: 11,
+            },
+        ]);
+
+        assert_eq!(
+            window_return_sums(&window, 101, 0),
+            (0, 0, 0, 0),
+            "a zero configured return window must remain empty"
+        );
+        assert_eq!(
+            window_return_sums(&window, 101, 1),
+            (0, 0, 11, 1),
+            "a one-tick return window must include the last completed tick"
+        );
+        assert_eq!(
+            window_return_sums(&window, 101, 2),
+            (7, 1, 11, 1),
+            "the inclusive cutoff must count exactly the configured completed ticks"
+        );
+    }
 
     #[test]
     fn external_econ_canonical_tags_are_pinned() {

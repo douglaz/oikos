@@ -1,6 +1,28 @@
 # impl-35 — S22c: Profit-Driven Cultivation Retention (does a monetary stay-decision turn fluid participation into occupation?)
 
-Status: SPEC-READY — Codex spec-review NEEDS-REVISION → five decisions settled (§8) and the punch-list
+Status: LANDED (impl-35) — headline verdict **NO STAY DESPITE PROFIT** across all `SEEDS`. The
+signal is **non-vacuous** (a real counterfactual exit flip fires on every seed — a post-money agent
+past its hunger exit is RETAINED where the matched S22a run EXITS — and the cultivation-proceeds
+signal varies across ~20 agents; the zero-returns control kills it, the rule is inert pre-money), and
+money + mortality + clean `SelfProduced` provenance all survive (conservation every tick,
+`bread_minted_max == 0`, `seeded_minted == 0`). But at this magnitude the realized monetary
+stay-decision does NOT produce occupation: per-ever-cultivating-agent churn falls only ~2.7→~2.4
+(short of the `CHURN_DROP` 0.5× bar) and no persistent membership cohort forms. This rules out **this
+simple realized post-money sale-proceeds stay rule at the tested windows/margins** (not every possible
+stay rule); the next *likely* boundary (S22d) is durable role-specific capital / heritable skill, not
+this realized-return retention rule. Engine change is
+one additive default-off gate (tag 9, ON-only) + the per-agent rolling-return window (digested
+ON-only) + the one exit-branch injection; all existing goldens byte-identical.
+
+Codex review-of-results: **PASS-WITH-CAVEATS** (no P1/P2 defect — per-agent proceeds attribution is
+correctly sale-time/own-produced-only/FIFO through the existing provenance lots, ignoring
+resold/minted bread; anti-circularity is real, `profit_stay_active` gated on
+`current_money_good()==Some(SALT)` with return windows filled only from post-promotion spot sales; the
+counterfactual exit flip is genuine; the verdict is honest; the rolling window is correctly ON-only
+digested). One P3 folded in: the next-boundary wording scoped to "this realized-return stay rule at the
+tested windows/margins," not every possible stay rule.
+
+Status (spec): SPEC-READY — Codex spec-review NEEDS-REVISION → five decisions settled (§8) and the punch-list
 folded in: the return signal is **per-agent cultivation-sale proceeds** (provenance+trade attribution),
 NOT gold-delta (vacuous by phase order — bread sells a tick after it's produced); the rolling-return
 accumulators are **digested ON-only** (they steer behaviour — not runtime-only) (§3.2/§6); the outside
