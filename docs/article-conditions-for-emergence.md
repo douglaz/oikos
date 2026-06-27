@@ -1,0 +1,382 @@
+# Conditions for Emergent Money, and the Limits of Emergent Occupation
+
+### A praxeologic agent-based study under a no-smuggling, conservation, and adversarial-review discipline
+
+*Working paper distilled from the OIKOS experimental record (milestones S5–S22d). Companion to the
+running report `report-emergence-and-its-limits.md`, which carries the per-milestone detail.*
+
+---
+
+## Abstract
+
+We build an agent-based model (OIKOS) to ask whether the core phenomena of Austrian/Misesian economics —
+the division of labor, capital, originary interest, entrepreneurial profit and loss, Malthusian
+population dynamics, and money — can **emerge** from individual action under scarcity, rather than being
+assumed. The model is grounded in strict physical conservation (a per-tick ledger asserted every tick)
+and strict determinism (no live randomness; per-agent heterogeneity from a hashed seed), and every
+milestone passed a deliberately adversarial pipeline: a written falsifiable spec, an independent
+second-model review of the spec, an implement→review build loop, independent re-verification, and an
+independent second-model review of the *landed* result. Two methodological guards did most of the work:
+**byte-identical conformance digests** (a new, default-off feature must not move any prior result's
+canonical state) and a **no-tuning discipline** (set principled parameters, *report* the outcome, sweep
+rather than search for a passing value), which together make the **negative** findings trustworthy.
+
+Two headline results. First, **money emergence decomposes into separable necessary conditions**: a token
+became Mengerian money only when it had (1) real direct-use demand as a non-circular eligibility floor,
+(2) leadership in *medium* (re-trade) saleability rather than in consumption, (3) a tradeable pre-money
+supply to circulate against, and (4) an exchange institution permitting monetary round-tripping. Each
+condition was isolated by a matched failure; no single one sufficed. Second, and symmetrically, **a
+durable division of labor does *not* self-form** from a fluid participation base: across four mechanisms
+— hunger pressure, accumulated skill, a realized profit stay-incentive, and sunk owned role-specific
+capital — each demonstrably *bites* yet **none** produces a persistent occupational class. The
+consistent boundary is that occupation appears to require an explicit role-choice/assignment institution
+or *endowed/inherited* capital, not an advantage earned from within the fluid regime. We report these as
+**model findings, not theorems**, and disclose the configured scaffolds that remain.
+
+---
+
+## 1. Introduction
+
+Mengerian theory holds that a medium of exchange arises spontaneously because some commodity is more
+*saleable* than others, letting agents trade indirectly when no direct double coincidence of wants
+exists. Austrian theory more broadly treats the division of labor, capital, and interest as emergent
+features of purposeful action under scarcity. OIKOS is a testbed for taking those claims literally: can
+each phenomenon arise from agents pursuing their own ends, with **no smuggling** — no configured
+preference that assumes the conclusion (no "agents want money" before money exists; no "agents prefer
+bread" so the production chain has a reason to run)?
+
+The contribution is twofold. Substantively, we offer a **condition decomposition**: rather than a single
+"money emerged" event, a sequence of matched successes and failures isolates *which* conditions money
+emergence requires, and a parallel sequence isolates *which* the emergence of a stable occupation does
+**not** get for free. Methodologically, we offer a discipline for making such claims credible in an ABM
+— conservation, determinism, byte-identical regression digests, adversarial second-model review at both
+the design and result stages, and the treatment of precisely-bounded negative findings as first-class
+results.
+
+---
+
+## 2. Model and method
+
+**The economy.** Goods are gathered from depleting/regenerating resource nodes or transformed by labor
+through recipes. Physical conservation is enforced by a per-tick identity asserted on every good every
+tick:
+
+```
+after = before + regen + endowment + produced − consumed_as_input − consumed − promoted − spoiled
+```
+
+so nothing is created or destroyed except through a named, accounted channel. The simulation is strictly
+deterministic — no live RNG in the loop; per-agent heterogeneity comes from a hashed seed — so each run
+is a fixed, reproducible trajectory pinned by a digest of canonical state.
+
+**The pipeline.** Each milestone went through: (1) read-only research mapping the relevant machinery to
+grounded `file:line` facts; (2) a written spec stating purpose, an honest *falsifiable bar*, the slices,
+the acceptance tests, and the named principled-failure modes; (3) an independent second-model
+**spec review** (Codex) iterated to readiness; (4) a build (typically a two-implementer / multi-reviewer
+loop) against the spec until the review panel is clean; (5) independent re-verification of the suite,
+the digests, and the load-bearing assertions; (6) an independent second-model **result review** of the
+*landed* artifact — is the finding genuine, was anything tuned to pass, is the claim honestly scoped;
+(7) merge and record. The pipeline was not uniformly clean — reviewer panels often degraded, and runs
+occasionally died on transient API failure or external interference and were relaunched — and a few
+milestones were gated by the orchestrator's independent verification plus the result review rather than a
+full clean panel. The invariant was the second-model spec- and result-review on *every* milestone.
+
+**Two decisive guards.** (a) **Byte-identical digests**: every new capability is added behind a
+default-off flag and canonicalized "on-only," so the prior milestones' digests must remain identical
+when the flag is off; this caught accidental coupling immediately and underwrites every "all goldens
+byte-identical" claim. (b) **No tuning**: parameters are set on principle, the outcome is *reported*, and
+where a value could be load-bearing it is *swept*, not searched — so a negative result cannot be a
+failure to find a passing setting, and a positive result cannot be an artifact of one.
+
+---
+
+## 3. Foundational mechanisms
+
+Before money, the production, capital, demographic, and survival mechanisms were each shown to
+self-organize (most demonstrated with money present — they are non-money-rule colony mechanisms; the
+*emergence of money itself* is §4, and whether a *division of labor self-forms from a fluid base* — as
+opposed to a chain running on assigned roles — is §6). The roles here are designated or emergent-by-tool;
+the self-formation of an occupational class is the separate, negatively-answered question of §6:
+
+- **Specialized chain & provisioning (S5–S6).** A specialized grain→flour→bread production chain *runs
+  and sustains at population scale* among gatherers, millers, and bakers trading through an exchange,
+  under designated or already-emergent roles. (Whether a *division of labor self-forms* from a fluid
+  base — rather than running on assigned roles — is the separate question of §6, which answers it
+  negatively.)
+- **Producible capital (S7).** Tools are produced from wood + labor over time via a project lifecycle —
+  capital is a roundabout, time-consuming investment, not a fixed endowment.
+- **Originary interest (S10).** Per-agent time preference makes the capital decision an ordinal
+  intertemporal choice — interest as a feature of valuation, not a configured rate.
+- **Entrepreneurial profit/loss (S11).** Fallible, biased per-agent price forecasts drive production;
+  a real shock perturbs the economy and loss *selects* through capital — error made falsifiable.
+- **Spatial households (S13).** The reproducing lineage is unified with the spatial world so the
+  population that *grows* can *work the land*.
+- **Forage carrying capacity — the Malthusian preventive check (S14).** Foraging is a capped commons
+  (per-capita yield falls with crowding); population grows while fed and *plateaus* when scarcity
+  raises hunger past the birth ceiling and births stall — an endogenous carrying capacity, no deaths
+  required.
+- **Agricultural intensification — Boserup (S15).** Under forage scarcity the unfed surplus *cultivates*
+  bread (a more roundabout, more laborious tap on the abundant grain resource), *raising* carrying
+  capacity. Cultivation is adopted *only* under pressure — the authentic driver is population pressure,
+  not a seeded preference for bread.
+- **Mortality — the Malthusian positive check (S17).** Re-enabling starvation on the plateaued colony
+  at principled thresholds yields a genuine oscillating carrying-capacity *band* (births and deaths both
+  phase-track hunger, no drift, no extinction). The insight: the preventive check binds on *potential*
+  births while the positive check binds on *already-living* marginal mouths — both operate at once, on
+  two different populations.
+
+---
+
+## 4. Money emergence: a decomposition into necessary conditions
+
+Money was the hardest thread, and the arc became a progressive isolation of *exactly what emergence
+requires*. We tried to make a neutral token (SALT) emerge from real exchange.
+
+- **Emergence under a scaffold (S8/S9).** SALT promotes to money without a circular "medium want": it
+  has a real, heterogeneous direct *use* (the regression-theorem anchor) and must clear a genuine
+  *indirect-acceptance breadth* gate. This passed — **within a provisioned ecology**.
+- **The first deep finding: a minted-supply scaffold (S12).** Retiring the colony's food *mints*
+  (hearths producing bread with no labor) showed the S9 emergence was not provision-autarkic: the minted
+  hearth was the load-bearing *supply* — the counterparty the SALT-holders circulated *against*.
+  Removing it removed the bread *seller*, and the one-offer barter book turned "no seller" into a
+  circulation choke. Strong-bar emergence is genuine in a *provisioned* bread economy, not yet in a
+  fully *produced* one.
+- **Produced supply alone yields direct trade, not a medium (S16).** On a genuinely produced economy,
+  letting produced bread trade for SALT formed and scaled a market (100% produced bread, by a provenance
+  ledger) — **yet SALT never promoted**: the bread-for-SALT trades were *direct* final-good purchases
+  (acquiring bread to eat), giving the token no *indirect* re-trade breadth. Produced supply alone gives
+  direct food trade, not a monetized medium. (This is not "food is the money.")
+- **Perfect coincidence: the necessity beats the token (S18).** Add a second good (WOOD) and a real
+  bread⇄WOOD division of labor, and the economy has a *perfect* double coincidence — it clears by direct
+  barter, and the abundant universal necessity dominates the (legacy total-acceptance) saleability race.
+  A medium is only needed to bridge *absent* double coincidence (Menger/Jevons).
+- **The token leads, but clearing deadlocks (S19).** A 3-good cycle with *no* pairwise double
+  coincidence makes the cycle goods bad direct media, so the neutral token finally **wins the
+  saleability-leader race** — yet still does not promote: a **one-live-offer-per-agent** book left every
+  agent posting "give output → SALT" while missing the complementary "give SALT → input," so no indirect
+  SALT trade cleared. The remaining barrier was isolated all the way down to the **clearing institution**.
+- **The resolution: a two-lane order book (S20).** Enriching the *exchange institution* (not the money
+  rule) so each agent can hold **both** a bid (`give SALT → input`) and an ask (`give output → SALT`) at
+  once lets the seeded SALT round-trip the ring by ordinary **pairwise** matching. **SALT promoted** — it
+  led, then cleared the *unchanged* strong-bar gate; the medium genuinely round-trips. Authenticity held:
+  the matcher stayed strictly pairwise (no central clearing-house that would settle the triangle
+  *without* money), the barter/clearing code was byte-for-byte unchanged, and controls proved money
+  load-bearing (flag off → the S19 deadlock returns; no SALT seed → nothing clears).
+
+**The four conditions.** A token became money only with: **(1)** real direct-use demand (a non-circular
+eligibility floor); **(2)** *medium*-saleability leadership — most accepted in re-trade, not in
+consumption; **(3)** a tradeable pre-money surplus to circulate against; **(4)** an exchange institution
+permitting monetary round-tripping. The failures were diagnostic: necessities dominate *consumption*
+metrics (S18), produced supply alone yields *direct* trade (S16), imperfect coincidence lets the token
+*lead* but one-offer clearing *deadlocks* (S19), and retiring the minted food *seller* removes the
+counterparty the medium circulates against (S12). Under open survival that same retirement *collapses*
+the pre-money market to zero trades (S21d) until endogenous production refills it (S21e/f). **Honest caveat:** condition (4) is partly a genuine economic
+insight (a market needs an institution expressive enough for monetary round-tripping) and partly the
+repair of a *self-imposed* constraint (our one-offer book artificially forbade holding a bid and an ask
+at once); the defensible statement is institutional — *money required both a saleability leader and an
+exchange institution capable of monetary round-tripping* — not "money needs a two-lane order book."
+
+---
+
+## 5. The open-colony capstone: supply, mortality, and a band-qualified result
+
+S20's money lives in a closed *exchange cycle* with off-market survival. The capstone embedded it in an
+*open* colony, removing those abstractions: the first slices make survival **market-financed** (agents
+buy food), and the later mortality-on coexistence result then requires a *disclosed emergency
+subsistence bridge* (S21h below), not pure market survival:
+
+- **Two-layer saleability (S21a/b).** A first slice found the original "saleability = total acceptance
+  share" metric conflates *consumption* with *medium* use — which is why the universal necessity won
+  S18. Splitting it into a **direct-use eligibility floor** (the non-circular regression anchor) and
+  **medium-saleability leadership** (observed re-trade breadth) lets the durable medium promote over the
+  necessity **in a controlled scenario**. In the open colony this fixed the *metric*, not the *supply*
+  gate — promotion there still waited on the supply result below.
+- **The supply question, closed (S21c–f).** Retiring the food scaffold under open survival first
+  *collapsed* the pre-money market to zero trades (S21d) — confirming supply *generation*, not the money
+  machinery, was the gate. A one-time **seeded** tradeable surplus was then shown *sufficient* (S21e),
+  and finally **endogenous pre-money production-for-barter** (lineage households cultivate `SelfProduced`
+  bread and barter the surplus, no seed and no mint) monetized SALT (S21f) — money bootstrapping from
+  genuine pre-money labor.
+- **Mortality: a cold-start finding (S21g).** Turning the positive check on over the open-market money
+  colony *culls* the non-cultivating demand side (the SALT-rich buyers + specialist woodcutters) in a
+  one-off cold-start cull before the market can form: money **or** mortality, not both — the pre-money
+  bootstrap needs the demand side to survive a long hungry foodless wait, and mortality kills that
+  patience.
+- **Resolution: a demand-side survival floor (S21h).** A produced, no-grain-input, self-consumed
+  own-labor emergency floor (a *configured subsistence institution*, immediately eaten, no offerable
+  remainder) keeps the demand side **alive and still hungry**, so SALT promotes on the lineage's
+  `SelfProduced` bread and **money and mortality coexist** — after a one-off cull (a partial bridged
+  band, durable to 10k ticks). A one-time *seeded* cushion does **not** thread it (the knife-edge
+  finding): a static stock either culls (too small) or sates demand out of the market (too large); only
+  a recurring near-critical *produced* floor sits in the window.
+- **Robustness: the capstone is MIXED (S21i).** A test-additive sweep classifies the coexistence across
+  12 seeds and parameter bands with the same provenance/demand machinery. The headline regimes are
+  seed-robust, but the result is **band-qualified**: robust on grain flow, hard-bounded on the emergency
+  threshold, but **load-bearing on WOOD scarcity** (the lineage must sit at the WOOD floor — one notch
+  of relief collapses the bread→SALT medium lane) and on **SALT-anchor density** (a non-monotonic hole).
+  Money+mortality coexistence is real and seed-robust but an *existence proof within a disclosed
+  envelope*, not a broad result.
+
+The honest frame for the whole money arc is therefore **condition decomposition** — which conditions are
+necessary, and how wide each one's window is — not a claim of spontaneous open-colony order.
+
+---
+
+## 6. The division of labor does not self-form: a four-step negative
+
+S21's open colony still *pins* the food-producing class: a pre-identified cultivator lineage supplies the
+bread while non-lineage buyers and woodcutters never cultivate. The role-topology arc relaxes that
+privilege and asks whether a stable division of labor *self-forms*. It is a clean four-step negative;
+each lever was shown to genuinely **bite** (a mandatory non-vacuity test), yet **none** produced a
+persistent occupational class. Stickiness was measured the same way throughout — a material drop in
+per-agent enter/exit churn versus a matched-seed baseline, *and* a persistent **membership** cohort (the
+same agent ids staying in the role).
+
+- **Hunger discovers the role, but only fluidly (S22a).** Relaxing cultivation eligibility from "lineage
+  member" to "any spatial colonist under sustained hunger pressure" keeps money and mortality alive — but
+  the result is **fluid, rotating participation**, not a class: only ~5% cultivate at any instant yet
+  *every* non-lineage agent rotates through (high churn). "Everyone occasionally self-provisions under
+  hunger, then returns to buying." The lineage *privilege* dissolves; a sticky occupation does not appear.
+- **Accumulated skill does not change the exit (S22b).** A per-agent cultivation skill that raises grain
+  haul (conservation-safe; a faster draw on the conserved node) *bites* — a maxed cultivator out-hauls a
+  novice 2× — yet produces **no stickiness**: the exit is hunger-gated, so agents leave as soon as hunger
+  eases regardless of skill; churn is unchanged. Even with skill driven to its cap (≈40% grain share)
+  there is no cohort. Productivity-while-in does not make an agent decide to *stay*.
+- **A realized profit stay-incentive retains only marginally (S22c).** Letting a cultivator *stay* past
+  the hunger exit when its realized post-money cultivation-sale return clears its outside option (a
+  non-circular, realized-proceeds signal, inert before money) *bites*: a genuine counterfactual exit-flip
+  fires and the signal discriminates across agents. Yet churn barely moves and no cohort forms — a stay
+  *incentive* is not enough.
+- **Even sunk, owned, durable capital does not produce a class (S22d).** A buildable, durable,
+  agent-owned, role-specific cultivation tool (a sunk WOOD cost; raises *only its owner's* haul *only
+  while cultivating* — asset-specific; flowing through the unmodified S22c stay-decision, no fiat flag)
+  *bites hardest of all* (on 4 of 5 seeds; one seed inert, with no tool formed): owners durably
+  out-produce and take up to **71%** of harvested grain. Yet occupation still does not form: owner-share
+  stays a tiny minority and no four-owner cohort appears — and a parameter sweep *probes the obvious
+  WOOD-cost confound and finds it does not explain the result* (cheap tools and large boosts still
+  produce no cohort; pushing the boost higher drives the buyer side toward *monopolization*, not a
+  healthy split).
+  The boundary is a **chicken-and-egg**: the lock-in asset can only be *earned by already sustaining* the
+  fluid role, so a rare one or two agents capitalize and dominate rather than a class forming.
+
+**The pattern.** Hunger, accumulated skill, a realized profit incentive, and sunk owned capital each
+*bite* but **none** converts fluid participation into a durable division of labor. The repeatedly-named
+boundary is that occupation appears to require an explicit **role-choice/assignment institution**, or
+capital that is **endowed/inherited** (given up front) rather than earned from within the fluid regime.
+That is a sequence of falsified sufficiency claims, not a single failure — and it names the next
+condition precisely.
+
+---
+
+## 7. Discussion
+
+The two arcs are mirror images under the same discipline. For **money**, we found a set of conditions and
+*met* them, and emergence followed — but only inside a disclosed envelope, and partly by repairing a
+self-imposed institutional constraint. For **occupation**, we probed four candidate sufficiency
+mechanisms and *falsified* each, and the consistent shape of the failures names the missing condition.
+In both cases the value is the decomposition: the model converts vague claims ("money emerges,"
+"specialization emerges") into a graded ledger of *which* conditions are necessary and how robust each
+is.
+
+Two things make the negatives credible rather than mere absences. First, every lever was held to a
+**non-vacuity** standard: we proved the mechanism materially changed agent behavior (skill raised haul,
+the profit signal flipped a real exit, the tool raised owner output) before concluding it failed to
+produce a *class* — so "no occupation" is never "the lever did nothing." Second, **isolating controls**
+distinguished the intended cause from confounds: a productivity-only control and a non-durable control
+showed S22d's (absent) stickiness would not have come from raw output; the WOOD-poverty confound on the
+capital result was ruled out by a sweep. This is the same logic that, on the money side, distinguished
+genuine emergence (S20) from a scaffolded artifact (S9/S12) via provenance ledgers and removal controls.
+
+Methodologically, the study suggests that ABM claims about emergence are most trustworthy when (i) the
+substrate conserves and is deterministic, (ii) regression digests make accidental coupling impossible to
+miss, (iii) parameters are swept rather than searched, (iv) an independent model adversarially reviews
+both the design and the result, and (v) negative findings are reported as first-class, precisely-bounded
+results.
+
+---
+
+## 8. Limitations and threats to validity
+
+We state the scaffolds plainly; a hostile reader should attack these first.
+
+- **Configured strong-bar thresholds and SALT anchor.** What counts as "monetary breadth," the
+  regression-theorem direct-use anchor, and the bootstrap commodity seed are *set, not derived*; the
+  no-seed / no-anchor controls fail by construction. Their *sizes* were swept: the **in-cycle** (S20)
+  promotion is robust across the pinned seed-size and anchor-density bands, but the **open-colony**
+  coexistence is *narrow* in anchor density — including a non-monotonic period-12 promotion hole (S21i) —
+  and the values themselves remain configured.
+- **The S20 money is in a produced exchange *cycle*, not a scaffold-free colony.** Survival is isolated
+  off-market and the input loop is closed (no terminal consumer) — deliberate abstractions that isolate
+  the money question. The earned claim is "endogenous token money in a produced exchange cycle."
+- **SALT is load-bearing, not uniquely destined.** Controls prove a medium is required; they do not
+  prove only SALT could monetize.
+- **The open-colony coexistence is band-qualified (S21i).** Money+mortality coexistence is seed-robust
+  but load-bearing on WOOD scarcity and anchor density — an existence proof within a disclosed envelope.
+- **The four-step occupation negative is bounded** to capital/skill/incentive *earned from within* this
+  fluid, WOOD-poor regime; it does **not** rule out an explicit role-choice institution, or
+  endowed/inherited/credit-financed capital, producing a class. The naming of that next condition is a
+  *plausible* boundary, not a proven impossibility.
+- **Part of S20 repairs a self-imposed artifact.** The one-offer book was our constraint; the S19→S20
+  result is part institutional insight, part removal of a modeling limitation. Stated as such it is a
+  result; stated as a universal law it would be an overclaim.
+- **All of the above are model findings, not theorems.** The contribution is a disciplined decomposition
+  within one simulator, not a proof about economies in general.
+
+---
+
+## 9. Future work
+
+- **Endowed / inherited cultivation capital (the direct S22d sequel).** Give the lock-in *up front* — a
+  minority seeded with tools, tools passing by inheritance — to test whether a persistent owner cohort
+  finally forms. This tests **institutional/endowment sufficiency**, a *different* question from
+  self-formation; an honest success there would read "durable inherited capital can stabilize an
+  occupation that earned capital could not," not "endogenous occupation."
+- **An explicit role-choice / assignment institution** as an alternative path to a stable division of
+  labor.
+- **Endogenizing the remaining money scaffolds** — the two-lane clearing institution and the SALT
+  direct-use anchor — and broadening the open-colony robustness beyond the WOOD-load-bearing envelope.
+
+---
+
+## 10. Conclusion
+
+OIKOS turns two slogans into ledgers. Mengerian money in this model did **not** emerge from direct demand,
+produced supply, or multi-good trade alone; it emerged only when a direct-use eligibility floor, medium-
+saleability leadership, a tradeable pre-money supply, and a round-tripping exchange institution aligned —
+and even then inside a disclosed, band-qualified envelope. A durable division of labor, by contrast, did
+**not** self-form from a fluid base under any of four levers — hunger, skill, a profit stay-incentive, or
+sunk owned capital — each of which demonstrably bit; the consistent boundary is that occupation needs an
+institution or endowment that does not arise from within the fluid regime. Across both arcs the method is
+the message: emergence claims in an ABM become trustworthy when the substrate conserves, the runs are
+deterministic and regression-pinned, parameters are swept rather than searched, an independent model
+audits design and result, and the precisely-bounded "no" is treated as a real finding.
+
+---
+
+## Appendix — milestone index
+
+| Sxx | Title | Outcome |
+|-----|-------|---------|
+| S5/S6 | Specialized chain + provisioning at scale | mechanism |
+| S7 | Producible capital | mechanism |
+| S8/S9 | Money emergence (strong-bar, scaffolded) | mechanism (scaffold-dependent, per S12) |
+| S10 | Originary interest / intertemporal choice | mechanism |
+| S11 | Entrepreneurial error, profit/loss selection | mechanism |
+| S12 | Retire the food mint | finding: emergence rested on a minted bread *supply* scaffold |
+| S13 | Spatial households | structural prerequisite |
+| S14 | Forage carrying capacity | mechanism: endogenous plateau (preventive check) |
+| S15 | Pre-money cultivation | mechanism: Boserup intensification |
+| S16 | Money from produced bread | finding: produced supply → *direct* trade, no monetized medium |
+| S17 | Mortality | mechanism: the full Malthusian band (positive check) |
+| S18 | Produced multi-good money | finding: perfect coincidence → necessity beats the token |
+| S19 | Imperfect-double-coincidence cycle | finding: token *leads* but one-offer clearing deadlocks |
+| S20 | Two-lane bilateral order book | **resolution: endogenous token money emerges (in-cycle)** |
+| S21a/b | Two-layer Mengerian saleability | resolution: direct-use floor + medium-saleability leadership |
+| S21c–f | Open colony, supply question | **closed: endogenous pre-money production-for-barter monetizes SALT** |
+| S21g | Mortality over the open colony | finding: cold-start cull of the non-cultivating demand side |
+| S21h | Demand-side survival floor | **resolution: money + mortality coexist after a one-off cull** |
+| S21i | Robustness appendix | **MIXED: coexistence band-qualified (load-bearing on WOOD scarcity + anchor density)** |
+| S22a | Endogenize cultivation entry | finding: cultivation self-forms as *fluid* participation, not a class |
+| S22b | Cultivation skill | finding: accumulated productivity does not change the hunger-gated exit |
+| S22c | Profit-driven retention | finding: a realized stay-incentive bites but retains only marginally |
+| S22d | Durable role-specific capital | finding: even sunk owned capital → dominant few, not a class (chicken-and-egg) |
