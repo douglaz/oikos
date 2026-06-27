@@ -1,8 +1,8 @@
 # impl-37 — S22e: Endowed + Inherited Cultivation Capital (can capital given UP FRONT and passed down a lineage finally stabilize an occupation?)
 
-Status (spec): NEEDS-REVISION → revised per Codex spec-review (8 findings folded in, §8). Base: master
-`fb9502c` (S22d landed + the article). Composes on S22d (`durable_cultivation_tool`) → S22c
-(`profit_driven_retention`) → S22a (`endogenous_cultivation_entry`).
+Status (spec): SPEC-READY (round-1 8 findings + round-2 2 findings folded in, §8). Base: master `fb9502c`
+(S22d landed + the article). Composes on S22d (`durable_cultivation_tool`) → S22c (`profit_driven_retention`)
+→ S22a (`endogenous_cultivation_entry`).
 
 ## 0. One-paragraph summary
 
@@ -70,7 +70,12 @@ re-pin (`EndowmentOnlyScaffold`) or an owner dynasty that starves the market (`I
 1. **Churn falls materially** — per-ever-cultivating churn ≤ `CHURN_DROP` (0.5) × the matched-seed baseline.
 2. **A persistent owner-LINEAGE cohort forms** — ≥ `PERSIST_COHORT` (4) distinct **owner lineages**, each with
    a living member cultivating ≥ `PERSIST_FRACTION` (0.5) of the final window, **and those lineages are the
-   endowed/inheriting ones** (the sticky cohort is the capitalized one, not a coincidental rotation).
+   endowed/inheriting ones** (the sticky cohort is the capitalized one, not a coincidental rotation). **This
+   bar is only reachable on an EXPANDED lineage roster** (Codex P1): the base `frontier()` has only 2
+   households, so the headline scenario and all matched controls run on a roster of ≥ `ROSTER_HOUSEHOLDS` (8,
+   default; the shipped value gives owner-share head-room) lineage households, with the coherence constraint
+   `PERSIST_COHORT ≤ endowed_tool_count ≤` a minority of `ROSTER_HOUSEHOLDS` (so the cohort can form yet
+   ownership stays a minority). All counts predeclared as `const`, swept.
 3. **Inheritance is load-bearing (the decisive clause, Codex P1 #4)** — the final-window sticky cohort
    **includes ≥1 inherited-tool holder**: an heir who received a plow via a real post-founder-death transfer
    and is in the cohort. I.e. the cohort persists *past* the founders, not just because founders lived the
@@ -112,8 +117,11 @@ primary gate (Codex P1 #3: per-agent persistence can hold without inheritance ma
 
 **Ordered classifier (top-down, first-match-wins — the S21i non-gameability discipline):**
 `EndowmentLeverInert` → `ConservationBroken`/`extinct` → `InheritedMonopoly` → `CommuneCollapse` →
-`MoneyFailureFromLockIn` → `UniversalOwnership` → `ProductivityOnly` → `EndowmentOnlyScaffold` →
-`NoStickinessDespiteEndowment` → `LineageStickySuccess`. Predeclare every threshold as a `const`; do NOT fit.
+`MoneyFailureFromLockIn` → `UniversalOwnership` → `ProductivityOnly` → `EndowmentOnlyScaffold` → **then the
+explicit final success gate (Codex P2):** `if ALL EIGHT success clauses (§2.1–§2.8) pass { LineageStickySuccess }
+else { NoStickinessDespiteEndowment }`. So `LineageStickySuccess` is emitted ONLY when every success clause
+holds; any partial miss not caught by an earlier mode falls to `NoStickinessDespiteEndowment`. Predeclare every
+threshold as a `const`; do NOT fit.
 
 ## 3. Engine design (additive, default-off, conservation-safe)
 
@@ -140,7 +148,10 @@ primary gate (Codex P1 #3: per-agent persistence can hold without inheritance ma
    plows follow the existing heir routing (lineage heir; commons fallback if no heir); if `false`, plows are
    **forced to the commons** even when the rest of the estate goes to the heir. A pure stock transfer in both
    cases — conservation-safe, never a mint, tool-stock total unchanged. Off (gate inactive) ⇒ the existing
-   behavior is completely untouched (goldens byte-identical).
+   behavior is completely untouched (goldens byte-identical). **Impl note (Codex):** implement as a single
+   **stock-map partition before placement** — partition the collected estate map into {plows} vs {everything
+   else}, route each partition to its destination (heir or commons) exactly once, then place; do NOT
+   pre-transfer plows before `collect_estate` (that risks a double-count).
 
 4. **Everything else is S22d/S22c, unchanged.** The owner-exclusive haul boost (owner holds a plow → higher
    grain-haul ceiling while cultivating; non-owner = the S22c no-tool return), the `cultivation_tenure`/build
@@ -169,8 +180,17 @@ primary gate (Codex P1 #3: per-agent persistence can hold without inheritance ma
   cultivates; (c) ≥1 owner enters the retention signal.
 - **The ordered classifier (§2)**, printed `--nocapture`; verdict test prints verdict + deciding metrics
   (primary `LineageStickySuccess` + secondary id-stickiness), does NOT assert SUCCESS.
-- **Scenarios:** `frontier_endowed_capital` (HEADLINE) = `frontier_cultivation_capital` (S22d) +
-  `endowed_cultivation_capital=true` + `cultivation_tool_inheritance=true` + a minority `endowed_tool_count`.
+- **Scenarios (EXPANDED BASE, Codex P1):** `frontier_endowed_capital` (HEADLINE) = `frontier_cultivation_capital`
+  (S22d) **expanded to `ROSTER_HOUSEHOLDS` (≥8) lineage households** + `endowed_cultivation_capital=true` +
+  `cultivation_tool_inheritance=true` + a minority `endowed_tool_count`. The roster is expanded
+  **proportionally** — preserve the WOOD-poor cultivator/woodcutter/consumer ratios, the S21h survival floor,
+  and the grain commons — so the base still sustains money + mortality and is NOT a broken colony. **ALL matched
+  baselines and controls run on the SAME expanded base** (the "matched S22d/S22c baseline" for churn is this
+  scenario with `endowed_cultivation_capital=false`, NOT the original 2-household `frontier_cultivation_capital`).
+- **PRECONDITION CHECK (a test):** on the expanded base with the gate OFF, the colony must reproduce S22d-style
+  `NoStickinessDespiteCapital` (money promotes, mortality coexists, no owner cohort, churn high). If the
+  expanded base itself can't sustain money+mortality or already shows stickiness, that is a **base problem** to
+  report (not an S22e success) — the headline is only interpretable against a working, still-fluid base.
 - **Controls (each a test):**
   - **flag-off** = `frontier_cultivation_capital` (reproduces S22d `NoStickinessDespiteCapital`).
   - **no-inheritance** (endow on, `cultivation_tool_inheritance=false`, plows forced to commons): evaluated
@@ -247,3 +267,14 @@ Redirect cargo to files; never pipe to head/grep (EPIPE → spurious exit 101).
   verdict downgrades, tests classify rather than hard-assert (§2 modes, §4 controls).
 - **P3 selection by hash** — resolved: deterministic hash of `(seed, household_id)`, sorted, digested ON-only;
   report the selected mix (§3.2).
+
+### Round 2 (→ SPEC-READY)
+- **P1 success floor impossible on the 2-household base** — resolved: the headline + all matched controls run
+  on an EXPANDED roster of ≥ `ROSTER_HOUSEHOLDS` (8) lineage households (proportionally expanded to preserve
+  money+mortality), with the coherence constraint `PERSIST_COHORT ≤ endowed_tool_count ≤` minority of the
+  roster, and a precondition test that the gate-off expanded base reproduces S22d `NoStickiness` (§2.2, §4).
+- **P2 explicit final success gate** — resolved: the classifier ends with `if all eight success clauses pass
+  { LineageStickySuccess } else { NoStickinessDespiteEndowment }` (§2 ordered classifier).
+- Codex confirmed sound: corrected inheritance premise, lineage restriction, the post-founder-death /
+  no-inheritance triad (non-circular), and the after-`collect_estate` plow routing (conservation-safe as a
+  single stock-map partition before placement — folded into §3.3).
