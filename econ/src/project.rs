@@ -87,6 +87,16 @@ pub enum ProjectTemplateId {
     /// recipe's `required_tool`) from saved WOOD + labor. The baker-side twin of
     /// [`BuildMill`]; game-only, absent from [`builtin_project_templates`].
     BuildOven,
+    /// S22d durable cultivation capital: the per-agent project that mints a durable
+    /// **cultivation tool** (e.g. a plow) from saved WOOD + labor. Unlike [`BuildMill`]/
+    /// [`BuildOven`] the tool it outputs is NOT a recipe `required_tool` (the no-tool
+    /// `Cultivate` recipe is unchanged) — it raises only the OWNER's grain-HAUL ceiling
+    /// while it cultivates (asset-specificity). It carries its OWN distinct identity (never
+    /// reusing the mill/oven identity, which would pollute producer-chain semantics) and is
+    /// driven by the `sim` cultivation-capital-formation phase (one builder, its own WOOD
+    /// via [`start_project`], its own labor) — never by the lab planner, so it is kept out
+    /// of [`builtin_project_templates`] and the conformance goldens are byte-identical.
+    BuildCultivationTool,
 }
 
 #[derive(Clone, Debug)]
@@ -262,6 +272,25 @@ pub fn build_oven_template(oven: GoodId, wood_qty: u32, required_labor: u32) -> 
         ProjectTemplateId::BuildOven,
         "BuildOven",
         oven,
+        wood_qty,
+        required_labor,
+    )
+}
+
+/// The S22d [`ProjectTemplateId::BuildCultivationTool`] template — a [`build_tool_template`]
+/// that mints the given durable cultivation `tool` (the plow) from `wood_qty` WOOD +
+/// `required_labor` labor. A distinct identity from the mill/oven builds: the tool it mints is
+/// owned in the builder's stock and raises only the owner's grain-haul ceiling while it
+/// cultivates — it gates no recipe. Game-only, absent from [`builtin_project_templates`].
+pub fn build_cultivation_tool_template(
+    tool: GoodId,
+    wood_qty: u32,
+    required_labor: u32,
+) -> ProjectTemplate {
+    build_tool_template(
+        ProjectTemplateId::BuildCultivationTool,
+        "BuildCultivationTool",
+        tool,
         wood_qty,
         required_labor,
     )

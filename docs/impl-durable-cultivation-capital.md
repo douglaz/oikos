@@ -1,6 +1,40 @@
 # impl-36 — S22d: Durable Role-Specific Cultivation Capital (does sunk, owned, asset-specific capital finally produce occupation?)
 
-Status: SPEC-READY — Codex spec-review NEEDS-REVISION → five decisions settled (§8) and the 6-item
+Status: LANDED (impl-36) — headline verdict **NO STICKINESS DESPITE CAPITAL** (4/5 `SEEDS`;
+`CapitalLeverInert` on the 5th, where no tool happened to form). The lever is **non-vacuous**: under
+matched conditions a tool owner harvests STRICTLY more grain AND produces STRICTLY more bread than a
+no-tool cultivator on every seed (7200 vs 2400, grain-limited 1:1), ≥1 tool is built from a real
+sunk WOOD cost on 4/5 seeds, and an owner enters the retention signal on 4/5 seeds. Durable capital
+*bites* (owners persist and out-produce — owner bread median ≈6.4k vs ≈71 for the transient
+non-owner cultivators) yet does NOT produce occupation: per-ever-cultivating churn falls only
+~2.5→~2.3 (short of the `CHURN_DROP` 0.5× bar) and no persistent OWNER cohort of `PERSIST_COHORT`
+forms (owner-share among ever-cultivators ≈0.01 — capital forms but stays a tiny minority because
+the WOOD-poor cultivators can rarely sink even one WOOD). The two falsifiers behave: the
+**productivity-only** control (the same boost to every cultivator, no owned asset) is NOT sticky on
+any seed, and the **non-durable/rented** control consumes the plow after one use (no persistent
+owner cohort) — so the (absent) stickiness was never going to be raw productivity. The
+**profit-stay-OFF** variant is `CapitalLeverInert` on all seeds (without the S22c retention,
+cultivators don't sustain tenure long enough to capitalize). Money + mortality + clean
+`SelfProduced` provenance + conservation every tick + `bread_minted_max == 0` + the tool-stock
+accounting invariant (`built − destroyed == stock`) all hold. The consistent boundary holds:
+**durable capital *earned from within* this fluid, WOOD-poor regime does not convert fluid
+participation into a durable cultivator class** — the lock-in asset can only be earned by already
+sustaining the role, so a rare 1–2 agents capitalize and dominate (at high boost the buyer side
+collapses toward monopolization) rather than a class forming. (Scope, Codex review-of-results P3: this
+is bounded to *earned-from-within* capital in this colony; it does NOT rule out pre-built/endowed,
+credit-financed, inheritance-heavy, or denser-owner capital cohorts producing a class — an explicit
+role-choice / role-assignment institution remains the *plausible* next condition, not a proven one.)
+Engine change: one additive default-off gate (tag 10, ON-only) + a dedicated `CULTIVATION_TOOL` good +
+`BuildCultivationTool` template + a SEPARATE pre-money `run_cultivation_capital_formation` phase + the
+owner-exclusive haul boost + the per-agent cultivation-tenure counter; all existing goldens
+byte-identical. Codex review-of-results: **PASS-WITH-CAVEATS** (no P1; build phase separate+gated, boost
+genuinely owner-exclusive, over-carry conservation-safe, tag 10 ON-only, negative honest if bounded).
+Caveats folded: the tool-stock invariant now asserts `destroyed ≤ built` before the equality (P3); a
+`plow_never_trades` test guards the never-traded claim (P2); the scope is bounded above (P3). The
+ProductivityOnly downgrade is already wired into the headline verdict via the `po_sticky`/`nd_sticky`
+control flags (P2 control-classify discipline satisfied at the verdict level).
+
+Status (spec): SPEC-READY — Codex spec-review NEEDS-REVISION → five decisions settled (§8) and the 6-item
 punch-list folded in: a SEPARATE gated `run_cultivation_capital_formation` (not a reuse of
 money-gated `run_capital_formation`); a NEW cultivation-tool `GoodId` + `BuildCultivationTool` template
 (not mill/oven identity); the build trigger is a NEW realized-cultivation tenure counter, not

@@ -54,6 +54,16 @@ pub const ATELIER: &str = "atelier";
 /// stay byte-identical.
 pub const FORAGE: &str = "forage";
 
+/// S22d durable cultivation capital: the dedicated, durable cultivation **tool** (a
+/// plow) a cultivating colonist builds from saved WOOD + labor. Unlike `MILL`/`OVEN`
+/// it gates NO recipe — the no-tool `Cultivate` recipe is unchanged — it raises only
+/// the OWNER's grain-haul ceiling while it cultivates. A conserved, tracked good
+/// (it joins [`Self::goods`] and [`Self::good_entries`]), `Some` only for a
+/// [`Self::with_cultivation_tool`] set; `None` everywhere else, so every other content
+/// set is byte-identical. Owned in the builder's stock, durable (never consumed by a
+/// recipe), inherited on death, never traded.
+pub const CULTIVATION_TOOL: &str = "plow";
+
 /// S19 imperfect-double-coincidence cycle goods. These are the traded produced
 /// goods in the closed input loop: A consumes Z and produces X; B consumes X and
 /// produces Y; C consumes Y and produces Z.
@@ -148,6 +158,13 @@ pub struct ContentSet {
     cycle_a_tool: Option<GoodId>,
     cycle_b_tool: Option<GoodId>,
     cycle_c_tool: Option<GoodId>,
+    /// S22d: the durable cultivation tool (plow), `Some` only for a
+    /// [`Self::with_cultivation_tool`] set (the gated `durable_cultivation_tool` path).
+    /// `None` everywhere else, so every other set is byte-identical. Interned LAST (after
+    /// every other content good, like [`Self::with_forage`]), so it never shifts an existing
+    /// good id. A conserved, tracked good (it joins [`Self::goods`]/[`Self::good_entries`])
+    /// but gates no recipe.
+    cultivation_tool: Option<GoodId>,
     /// `[mill, bake]` for the plain chain, or `[mill, bake, research, confect]` for
     /// a research-tiers set, in chain order. The `confect` (tier-2) recipe starts
     /// `enabled: false` and is flipped by the `sim` unlock.
@@ -210,6 +227,7 @@ impl ContentSet {
             cycle_a_tool: None,
             cycle_b_tool: None,
             cycle_c_tool: None,
+            cultivation_tool: None,
             recipes,
         }
     }
@@ -297,6 +315,7 @@ impl ContentSet {
             cycle_a_tool: None,
             cycle_b_tool: None,
             cycle_c_tool: None,
+            cultivation_tool: None,
             recipes,
         }
     }
@@ -389,6 +408,21 @@ impl ContentSet {
         self
     }
 
+    /// S22d: intern the [`CULTIVATION_TOOL`] (plow) good onto this content set, returning
+    /// the extended set. Interns over the same registry so the tool takes the next free id
+    /// **after** every existing content good (like [`Self::with_forage`]) — it never shifts a
+    /// grain/flour/bread/forage id, keeping the gated `durable_cultivation_tool` path
+    /// additive. No recipe is added: the tool is built by the `sim` cultivation-capital
+    /// phase (a [`econ::project::ProjectTemplateId::BuildCultivationTool`] project), owned in
+    /// the builder's stock, and raises only the owner's grain-haul ceiling — it gates no
+    /// recipe (the no-tool `Cultivate` recipe is unchanged). Carried only by a
+    /// cultivation-capital content set, so every other set is byte-identical.
+    pub fn with_cultivation_tool(mut self) -> Self {
+        let tool = self.registry.intern(CULTIVATION_TOOL);
+        self.cultivation_tool = Some(tool);
+        self
+    }
+
     /// The raw, gathered good (the only chain good a world node produces).
     pub fn grain(&self) -> GoodId {
         self.grain
@@ -442,6 +476,13 @@ impl ContentSet {
     /// [`Self::with_forage`]. A conserved, tracked good with no recipe.
     pub fn forage(&self) -> Option<GoodId> {
         self.forage
+    }
+
+    /// S22d: the durable cultivation tool (plow), or `None` for a content set without
+    /// [`Self::with_cultivation_tool`]. A conserved, tracked good with no recipe (it raises
+    /// only the owner's grain-haul ceiling, it does not gate the `Cultivate` recipe).
+    pub fn cultivation_tool(&self) -> Option<GoodId> {
+        self.cultivation_tool
     }
 
     pub fn cycle_x(&self) -> Option<GoodId> {
@@ -591,6 +632,10 @@ impl ContentSet {
         goods.extend(self.cycle_a_tool);
         goods.extend(self.cycle_b_tool);
         goods.extend(self.cycle_c_tool);
+        // S22d: the durable cultivation tool is conserved + tracked (the build consumes
+        // WOOD and produces the tool, both accounted), so it joins the ledger. `None`
+        // (omitted) on every non-cultivation-capital set.
+        goods.extend(self.cultivation_tool);
         goods
     }
 
@@ -642,6 +687,9 @@ impl ContentSet {
         }
         if let Some(tool) = self.cycle_c_tool {
             entries.push((CYCLE_C_TOOL, tool));
+        }
+        if let Some(tool) = self.cultivation_tool {
+            entries.push((CULTIVATION_TOOL, tool));
         }
         entries
     }

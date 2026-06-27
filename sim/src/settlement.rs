@@ -82,8 +82,9 @@ use econ::money::{
     ReserveRatioBps, TaxReceivability,
 };
 use econ::project::{
-    advance_project, build_mill_template, build_oven_template, complete_project_if_ready,
-    start_project, Project, ProjectId, ProjectTemplate, ProjectTemplateId, Recipe, RecipeId, Tick,
+    advance_project, build_cultivation_tool_template, build_mill_template, build_oven_template,
+    complete_project_if_ready, start_project, Project, ProjectId, ProjectTemplate,
+    ProjectTemplateId, Recipe, RecipeId, Tick,
 };
 use econ::purpose::{CreditLender, CreditSource, DebtPurpose, ProjectPlanId};
 use econ::rng::Rng;
@@ -158,6 +159,25 @@ const SKILL_HAUL_CEILING: u32 = 2;
 const RETURN_WINDOW: u64 = 48;
 const RETENTION_MARGIN_BPS: u64 = 0;
 const RETENTION_MATERIAL_FLOOR: u64 = 2;
+
+/// S22d — pinned **durable-cultivation-capital** magnitudes (the sunk-cost, owned, role-specific
+/// tool that raises only its owner's grain-haul ceiling while it cultivates). House-style, NOT
+/// tuned to manufacture a cohort; the controls/sweep override the chain fields, never these
+/// constants:
+///
+/// * [`TOOL_BUILD_PATIENCE`] — the realized-cultivation-output tenure (consecutive output ticks,
+///   `Colonist::cultivation_tenure`) a cultivator must sustain before it invests in a tool. A
+///   distinct counter from `cultivate_pressure` (a hunger-ENTRY streak): tenure credits ONLY on a
+///   tick of realized cultivation output and RESETS otherwise, so only a sustained PRODUCING
+///   cultivator builds (not one merely pressured to enter).
+/// * [`CULTIVATION_TOOL_HAUL_CEILING`] — the OWNER's per-trip grain-haul ceiling (×`carry_cap`)
+///   while cultivating, routed through the same conserved-node haul lever as S22b skill. `> 1` so a
+///   tool-owner strictly out-hauls a non-owner (whose ceiling is `1×carry_cap`, the S22c no-tool
+///   return); `1` is the no-boost control. The WOOD/labor build cost reuses the existing
+///   [`ChainConfig::tool_build_wood`]/[`ChainConfig::tool_build_labor`] (the producer-capital
+///   chain is OFF on every cultivation scenario, so the fields are free to drive the plow build).
+const TOOL_BUILD_PATIENCE: u16 = 12;
+const CULTIVATION_TOOL_HAUL_CEILING: u32 = 3;
 
 /// Econ ticks per settlement "year" — the horizon unit the smoke test counts in.
 /// A placeholder cadence, not a balance figure.
@@ -1052,6 +1072,45 @@ pub struct ChainConfig {
     /// control; a larger value (e.g. `4`) is the exaggerated-cap SENSITIVITY probe. Consulted
     /// only while `cultivation_skill` is active.
     pub skill_haul_ceiling: u32,
+    /// S22d — **durable role-specific cultivation capital** (default `false`, byte-identical when
+    /// off). When `true` *and* the profit-driven-retention path is active
+    /// ([`Self::profit_driven_retention`], which itself requires the S22a endogenous-entry path),
+    /// a sustained-producing cultivator may invest a SUNK cost — [`Self::tool_build_wood`] WOOD +
+    /// [`Self::tool_build_labor`] labor (the existing producer-capital build knobs, free because
+    /// the producer chain is off on every cultivation scenario) — into a durable, OWNED,
+    /// role-specific cultivation tool (the [`content::CULTIVATION_TOOL`] good, built by a
+    /// dedicated [`econ::project::ProjectTemplateId::BuildCultivationTool`] project in a SEPARATE
+    /// gated [`Settlement::run_cultivation_capital_formation`] phase — never reusing the
+    /// money-gated mill/oven machinery, so it can build PRE-money). The tool gates no recipe (the
+    /// no-tool `Cultivate` recipe is unchanged); it raises ONLY its owner's grain-HAUL ceiling
+    /// ([`Self::cultivation_tool_haul_ceiling`] × `carry_cap`) **while it cultivates** (asset
+    /// specificity), a conservation-safe faster draw on the conserved grain node (never the
+    /// bread-per-grain ratio). The owner's higher realized cultivation return then flows through
+    /// the UNMODIFIED S22c profit-stay exit — no stay flag is added, no exit branch edited — so
+    /// any stickiness arises from durable OWNERSHIP, not raw productivity. Canonicalized
+    /// **ON-only** (digest tag 10 + the build params + the in-flight builds + the per-colonist
+    /// cultivation tenure), mirroring the S16/S18/S21/S22a/b/c gates: a flag-off config keeps its
+    /// exact prior byte layout. Composes on `profit_driven_retention`.
+    pub durable_cultivation_tool: bool,
+    /// S22d: the realized-cultivation-output tenure (consecutive output ticks) a cultivator must
+    /// sustain before it invests in a tool (default [`TOOL_BUILD_PATIENCE`]). Credited only on a
+    /// tick of realized cultivation output, reset otherwise — distinct from `cultivate_pressure`
+    /// (a hunger-entry streak). Consulted only while `durable_cultivation_tool` is active.
+    pub tool_build_patience: u16,
+    /// S22d: the OWNER's per-trip grain-haul ceiling (×`carry_cap`) while cultivating (default
+    /// [`CULTIVATION_TOOL_HAUL_CEILING`]). `> 1` ⇒ a tool-owner strictly out-hauls a non-owner
+    /// (whose ceiling is `1×carry_cap`); `1` is the no-boost control. Consulted only while
+    /// `durable_cultivation_tool` is active.
+    pub cultivation_tool_haul_ceiling: u32,
+    /// S22d — the **non-durable / rented-tool CONTROL** (default `false`). When `true` (and the
+    /// durable-cultivation-capital path is active), a built plow is CONSUMED (booked
+    /// `consumed_as_input`, a real sink) after the one cultivation opportunity it boosts — so it
+    /// leaves NO persistent stock and the agent must re-build (re-pay the sunk WOOD) each time to
+    /// get the boost again. Same per-use owner-only productivity as the durable tool, but NO
+    /// durable ownership — it isolates *durability* specifically: if it still produces stickiness,
+    /// the stickiness was not from persistence. Consulted only while `durable_cultivation_tool` is
+    /// active. The durable headline keeps it `false`.
+    pub cultivation_tool_non_durable: bool,
     /// S21d.0 — **retire the food mints** (the open-survival probe; default `false`,
     /// byte-identical when off). When `true`, the two staple-food mint sites are skipped
     /// **independent of `own_labor_subsistence`/forage**: the demographic `food_provision`
@@ -1421,6 +1480,10 @@ impl ChainConfig {
             skill_decay: SKILL_DECAY,
             skill_cap: SKILL_CAP,
             skill_haul_ceiling: SKILL_HAUL_CEILING,
+            durable_cultivation_tool: false,
+            tool_build_patience: TOOL_BUILD_PATIENCE,
+            cultivation_tool_haul_ceiling: CULTIVATION_TOOL_HAUL_CEILING,
+            cultivation_tool_non_durable: false,
             // S21d.0 off by default: the food mints stay, so every existing config and its
             // goldens are byte-identical (canonicalized ON-only).
             retire_food_mints: false,
@@ -1553,6 +1616,10 @@ impl ChainConfig {
             skill_decay: SKILL_DECAY,
             skill_cap: SKILL_CAP,
             skill_haul_ceiling: SKILL_HAUL_CEILING,
+            durable_cultivation_tool: false,
+            tool_build_patience: TOOL_BUILD_PATIENCE,
+            cultivation_tool_haul_ceiling: CULTIVATION_TOOL_HAUL_CEILING,
+            cultivation_tool_non_durable: false,
             // S21d.0 off by default: the food mints stay, so every existing config and its
             // goldens are byte-identical (canonicalized ON-only).
             retire_food_mints: false,
@@ -1665,6 +1732,10 @@ impl ChainConfig {
             skill_decay: SKILL_DECAY,
             skill_cap: SKILL_CAP,
             skill_haul_ceiling: SKILL_HAUL_CEILING,
+            durable_cultivation_tool: false,
+            tool_build_patience: TOOL_BUILD_PATIENCE,
+            cultivation_tool_haul_ceiling: CULTIVATION_TOOL_HAUL_CEILING,
+            cultivation_tool_non_durable: false,
             // S21d.0 off by default: the food mints stay, so every existing config and its
             // goldens are byte-identical (canonicalized ON-only).
             retire_food_mints: false,
@@ -4468,6 +4539,94 @@ impl SettlementConfig {
         cfg
     }
 
+    /// S22d — **durable role-specific cultivation capital** (the HEADLINE):
+    /// [`Self::frontier_profit_retention`] (the S22c profit-stay money colony, skill OFF, mortality
+    /// on) with the **only** changes being `durable_cultivation_tool = true` and the durable
+    /// cultivation-tool good ([`content::CULTIVATION_TOOL`]) interned onto the content set. A
+    /// sustained-producing cultivator may invest a SUNK cost (`tool_build_wood` WOOD +
+    /// `tool_build_labor` labor) into a durable, OWNED plow it then keeps; the plow raises ONLY
+    /// its owner's grain-haul ceiling ([`ChainConfig::cultivation_tool_haul_ceiling`] × `carry_cap`)
+    /// **while it cultivates** (asset specificity). The owner's higher realized cultivation return
+    /// then flows through the UNMODIFIED S22c profit-stay exit — no stay flag is added, no exit
+    /// branch edited — so any stickiness comes from durable OWNERSHIP, not raw productivity.
+    ///
+    /// Everything else is inherited unchanged from S22c/S22a: the relaxed cultivation eligibility,
+    /// the S20+S21 money machinery, the emergency floor, the grain commons, the WOOD-poor topology,
+    /// the `seeded_minted == 0` provenance, profit-stay on, and mortality on. The central S22d
+    /// question: does a durable, owned, role-specific cultivation tool finally turn the fluid regime
+    /// into a stable role split — a persistent cohort of tool-owning cultivators plus persistent
+    /// non-owner buyers — while money/mortality/provenance/conservation survive AND the stickiness
+    /// is durability/ownership, not raw productivity (the controls falsify it)?
+    ///
+    /// Determinism: `durable_cultivation_tool` is canonicalized ON-only (digest tag 10 + the build
+    /// params + the in-flight builds + the per-colonist cultivation tenure) and the plow good is
+    /// interned only on THIS content set, so only this scenario's digest changes; every existing
+    /// golden is byte-identical (the gate + good are confined to the new scenario). The tool-owner /
+    /// sunk-cost / churn diagnostics it pairs with are runtime-only (never digested).
+    pub fn frontier_cultivation_capital() -> Self {
+        let mut cfg = Self::frontier_profit_retention();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.durable_cultivation_tool = true;
+            chain.content = chain.content.clone().with_cultivation_tool();
+            // The WOOD-poor cultivation colony's cultivators are food-focused and hold little
+            // WOOD (they buy it for warmth and consume it), so the producer-capital default
+            // (`tool_build_wood = 6`) leaves the lever inert (almost no cultivator can ever
+            // afford it). `1` is the modest sunk cost at which a sustained-producing cultivator
+            // that transiently holds WOOD CAN invest — non-vacuous yet still a MINORITY (only a
+            // few ever-cultivators capitalize; the sweep raises it to show the build-out boundary).
+            // NOT tuned to a cohort target; the verdict test never asserts SUCCESS.
+            chain.tool_build_wood = 1;
+        }
+        cfg
+    }
+
+    /// S22d — **durable cultivation capital with the profit-stay EFFECT neutralized** (the
+    /// profit-stay-OFF variant, a control read): [`Self::frontier_cultivation_capital`] with the
+    /// retention material floor set impossibly high so [`Settlement::profit_stay_active`] always
+    /// returns false — the durable-capital gate stays active (it composes on the
+    /// profit-driven-retention path, so the flag must remain set) and the tool still builds + boosts
+    /// the owner's haul, but NO agent is ever retained by profit, so the only cultivation exit is
+    /// hunger. Tests whether capital ALONE (without the profit-stay exit) moves the hunger-only exit
+    /// — expected: no (the durable advantage needs the stay decision to bite). Reported as a
+    /// control, not the headline.
+    pub fn frontier_cultivation_capital_no_stay() -> Self {
+        let mut cfg = Self::frontier_cultivation_capital();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.retention_material_floor = u64::MAX;
+        }
+        cfg
+    }
+
+    /// S22d — the **non-durable / rented-tool CONTROL**: [`Self::frontier_cultivation_capital`] with
+    /// `cultivation_tool_non_durable = true`, so a built plow is consumed after the one cultivation
+    /// opportunity it boosts (no persistent stock). Same per-use owner-only productivity as the
+    /// durable headline, but NO durable ownership — it isolates *durability*: it must NOT produce
+    /// stickiness (else the durable headline's stickiness was not from persistence). A control.
+    pub fn frontier_cultivation_capital_non_durable() -> Self {
+        let mut cfg = Self::frontier_cultivation_capital();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.cultivation_tool_non_durable = true;
+        }
+        cfg
+    }
+
+    /// S22d — the **productivity-only CONTROL**: [`Self::frontier_profit_retention`] (the S22c
+    /// profit-stay colony, durable capital OFF) with bounded skill turned on and its haul ceiling
+    /// raised to the tool's ([`CULTIVATION_TOOL_HAUL_CEILING`]). Driven with EVERY cultivator's
+    /// skill pinned to the cap each tick (the test re-applies it), every cultivating agent draws the
+    /// SAME boosted haul the tool confers — but with NO buildable, owned, durable asset (skill is
+    /// earned, not owned, and pinned uniformly here). If this colony-wide productivity bump still
+    /// produces stickiness, the durable headline's stickiness was raw output, not capital
+    /// (PRODUCTIVITY ONLY). A control, never the headline.
+    pub fn frontier_cultivation_capital_productivity_only() -> Self {
+        let mut cfg = Self::frontier_profit_retention();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.cultivation_skill = true;
+            chain.skill_haul_ceiling = CULTIVATION_TOOL_HAUL_CEILING;
+        }
+        cfg
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).
@@ -4970,6 +5129,17 @@ struct Colonist {
     /// byte-identical. Empty off the profit-driven-retention path (and pre-money, where there are
     /// no SALT sales to credit).
     cultivation_return_window: VecDeque<ReturnTick>,
+    /// S22d own-use cultivation **tenure** — a streak of consecutive econ ticks on which this
+    /// colonist realized cultivation output (grain harvested AND converted to bread), credited by
+    /// [`Settlement::run_cultivation_capital_formation`] and RESET on any tick without realized
+    /// output. Distinct from `cultivate_pressure` (a hunger-ENTRY streak that resets once eating
+    /// works): tenure measures sustained PRODUCING cultivation. It STEERS the tool-build decision
+    /// (a cultivator invests once tenure ≥ [`ChainConfig::tool_build_patience`]), so it is part of
+    /// the future-behaviour identity whenever the durable-cultivation-capital phase can run;
+    /// serialized only under that gate (nested in the cultivation block, mirroring the
+    /// `cultivation_skill` block), so a flag-off colonist block stays byte-identical. `0` off the
+    /// durable-cultivation-capital path.
+    cultivation_tenure: u16,
 }
 
 /// A settlement of generated colonists driven over a real `world` + `econ`.
@@ -5140,6 +5310,31 @@ pub struct Settlement {
     /// S22c (runtime-only diagnostic): the union of [`Self::profit_retained_ids`] over the whole
     /// run — distinct agents ever retained-by-profit. Not digested.
     profit_retained_ever: BTreeSet<AgentId>,
+    /// S22d: in-flight per-builder durable-cultivation-tool projects (a
+    /// [`ProjectTemplateId::BuildCultivationTool`] each). Each holds a cultivating builder's own
+    /// committed WOOD + advancing labor; on completion the plow credits the builder's stock and
+    /// the entry is removed. SEPARATE from `capital_builds` (the money-gated mill/oven phase) so
+    /// the cultivation tool can build PRE-money. Steers future ticks (which builder, how much
+    /// labor advanced) ⇒ digested ON-only under the gate. Empty unless
+    /// [`ChainConfig::durable_cultivation_tool`] is active, so every other run is byte-identical.
+    cultivation_tool_builds: Vec<CapitalBuild>,
+    /// S22d: a monotonic id source for cultivation-tool projects, distinct from
+    /// `next_capital_project_id`. Only advanced by the cultivation-capital phase. Digested ON-only.
+    next_cultivation_tool_project_id: u32,
+    /// S22d: per-econ-tick scratch — the set of agent ids that realized cultivation output this
+    /// tick (the tenure-credit set), filled in [`Self::run_own_use_cultivation`] and drained by
+    /// [`Self::run_cultivation_capital_formation`] to credit/reset the per-colonist tenure. Cleared
+    /// and refilled each tick; only maintained on the active durable-cultivation-capital path.
+    /// Runtime scratch, NOT digested (the tenure it drives IS, in the colonist roster).
+    cultivation_tool_producers: BTreeSet<AgentId>,
+    /// S22d observability (read-only, NOT digested): the whole-system count of durable cultivation
+    /// tools built over the run, the cumulative WOOD consumed building them (the measured SUNK
+    /// cost), and the cumulative tools DESTROYED — `0` for the durable headline, positive only on
+    /// the non-durable/rented control (each built plow consumed after one cultivation opportunity).
+    /// The tool-stock accounting invariant is `built − destroyed == stock_total`. No phase reads them.
+    cultivation_tools_built: u64,
+    cultivation_tool_wood_consumed: u64,
+    cultivation_tools_destroyed: u64,
     econ_tick: u64,
     last_report: EconTickReport,
     /// The settlement **commons** (G4a real death): the conserved sink that holds a
@@ -5428,6 +5623,13 @@ struct ChainRuntime {
     skill_decay: u16,
     skill_cap: u16,
     skill_haul_ceiling: u32,
+    /// S22d: the durable-cultivation-capital gate + its build/boost knobs (see
+    /// [`ChainConfig::durable_cultivation_tool`]). `false`/defaults for every existing config, so
+    /// the cultivation-capital phase is inert, no tool is ever built, and the run is byte-identical.
+    durable_cultivation_tool: bool,
+    tool_build_patience: u16,
+    cultivation_tool_haul_ceiling: u32,
+    cultivation_tool_non_durable: bool,
     /// S21h.0: the non-lineage woodcutters' consumed-only bread cushion (see
     /// [`ChainConfig::gatherer_food_cushion`]). `0` for every existing config; canonicalized
     /// ON-only (its differing gatherer starting stock already splits the digest).
@@ -6798,6 +7000,7 @@ impl Settlement {
                 cultivation_stock_pending: false,
                 cultivation_skill: 0,
                 cultivation_return_window: VecDeque::new(),
+                cultivation_tenure: 0,
             });
         }
 
@@ -6891,6 +7094,7 @@ impl Settlement {
                         cultivation_stock_pending: false,
                         cultivation_skill: 0,
                         cultivation_return_window: VecDeque::new(),
+                        cultivation_tenure: 0,
                     });
                 }
             }
@@ -7312,6 +7516,10 @@ impl Settlement {
                 skill_decay: chain.skill_decay,
                 skill_cap: chain.skill_cap,
                 skill_haul_ceiling: chain.skill_haul_ceiling,
+                durable_cultivation_tool: chain.durable_cultivation_tool,
+                tool_build_patience: chain.tool_build_patience,
+                cultivation_tool_haul_ceiling: chain.cultivation_tool_haul_ceiling,
+                cultivation_tool_non_durable: chain.cultivation_tool_non_durable,
                 gatherer_food_cushion: chain.gatherer_food_cushion,
                 emergency_hunger_threshold: chain.emergency_hunger_threshold,
                 retire_food_mints: chain.retire_food_mints,
@@ -7375,6 +7583,12 @@ impl Settlement {
             cultivation_proceeds_scratch: BTreeMap::new(),
             profit_retained_ids: BTreeSet::new(),
             profit_retained_ever: BTreeSet::new(),
+            cultivation_tool_builds: Vec::new(),
+            next_cultivation_tool_project_id: 0,
+            cultivation_tool_producers: BTreeSet::new(),
+            cultivation_tools_built: 0,
+            cultivation_tool_wood_consumed: 0,
+            cultivation_tools_destroyed: 0,
             econ_tick: 0,
             last_report: EconTickReport::default(),
             commons_gold: Gold::ZERO,
@@ -7567,6 +7781,12 @@ impl Settlement {
             cultivation_proceeds_scratch: BTreeMap::new(),
             profit_retained_ids: BTreeSet::new(),
             profit_retained_ever: BTreeSet::new(),
+            cultivation_tool_builds: Vec::new(),
+            next_cultivation_tool_project_id: 0,
+            cultivation_tool_producers: BTreeSet::new(),
+            cultivation_tools_built: 0,
+            cultivation_tool_wood_consumed: 0,
+            cultivation_tools_destroyed: 0,
             econ_tick: 0,
             last_report: EconTickReport::default(),
             commons_gold: Gold::ZERO,
@@ -7943,6 +8163,14 @@ impl Settlement {
         // (a newborn is added later, born at skill 0). A no-op off the gated skill path, so
         // every other run is byte-identical.
         self.run_cultivation_skill();
+
+        // ---- 6a-bis-capital. CULTIVATION CAPITAL FORMATION (S22d): credit each cultivator's
+        // realized-output tenure, advance/complete in-flight durable-cultivation-tool builds, and
+        // start a new build for each sustained-producing cultivator that can afford the sunk
+        // WOOD+labor cost. SEPARATE from the money-gated mill/oven capital phase (it can build
+        // PRE-money). After the own-use cultivation + skill phases (so the producer set is filled)
+        // and before births. A no-op off the gated path, so every other run is byte-identical.
+        self.run_cultivation_capital_formation(&mut report);
 
         // ---- 6a-bis'. EMERGENCY SELF-PROVISIONING (S21h.1): the demand-side survival
         // bridge — each hungry non-lineage Consumer/Gatherer that reached the emergency
@@ -8558,6 +8786,22 @@ impl Settlement {
                     chain.skill_haul_ceiling,
                 )
             });
+        // S22d: when durable cultivation capital is active, a tool-OWNING cultivator draws up to
+        // `cultivation_tool_haul_ceiling × carry_cap` per grain trip (the owner-EXCLUSIVE boost),
+        // routed through the same `GoHarvestWithRoom` per-trip room override as S22b skill — a
+        // faster draw on the conserved grain node, never a higher bread-per-grain ratio. Resolved
+        // only on the active path, so every off-path run keeps its prior grain-haul behaviour.
+        let (tool_active, tool_ceiling) = self.chain.as_ref().map_or((false, 0u32), |chain| {
+            (
+                self.durable_cultivation_tool_active(),
+                chain.cultivation_tool_haul_ceiling,
+            )
+        });
+        let tool_good = if tool_active {
+            self.cultivation_tool_good()
+        } else {
+            None
+        };
         // S14: in the capped-commons mode a forager HARVESTS the FORAGE node (depleting
         // it, so per-capita yield falls), then deposits — the real haul cycle. In the
         // S12 marker mode it forages (relocating nothing) and is credited a fixed yield.
@@ -8575,22 +8819,45 @@ impl Settlement {
                 if let Some(grain_node) = grain_node {
                     let task = if self.world.agent_carry_total(id) > 0 {
                         Task::GoDeposit(self.exchange)
-                    } else if skill_active {
-                        // The skilled per-trip haul. At skill 0 (or ceiling ≤ 1) this is exactly
-                        // `carry_cap`, so `GoHarvestWithRoom(grain, carry_cap, carry_cap)` harvests
-                        // `min(carry_cap, stock)` — behaviour-identical to the S22a
-                        // `GoHarvest(grain, carry_cap)` (which is room-capped at carry_cap), only
-                        // the task tag differs. A skilled cultivator draws up to
-                        // `ceiling × carry_cap` of the conserved grain in one trip.
-                        let haul = cultivation_haul(
-                            self.carry_cap,
-                            colonist.cultivation_skill,
-                            skill_cap,
-                            skill_ceiling,
-                        );
-                        Task::GoHarvestWithRoom(grain_node, haul, haul)
                     } else {
-                        Task::GoHarvest(grain_node, self.carry_cap)
+                        // The base per-trip haul: the S22b skilled haul when skill is active, else
+                        // the plain `carry_cap` (the S22c no-tool return). At skill 0 (or ceiling
+                        // ≤ 1) `cultivation_haul` returns exactly `carry_cap`.
+                        let base_haul = if skill_active {
+                            cultivation_haul(
+                                self.carry_cap,
+                                colonist.cultivation_skill,
+                                skill_cap,
+                                skill_ceiling,
+                            )
+                        } else {
+                            self.carry_cap
+                        };
+                        // S22d: a tool-OWNING cultivator (holds the plow) draws up to
+                        // `owner_ceiling × carry_cap` — strictly more than a non-owner's
+                        // `carry_cap` — ONLY while cultivating (asset specificity). Bounded by
+                        // `node.stock`; the 1:1 grain→bread recipe is unchanged (a faster
+                        // conserved-node draw, never a mint).
+                        let owns_tool = tool_good.is_some_and(|tool| {
+                            self.society
+                                .agents
+                                .get(id)
+                                .is_some_and(|agent| agent.stock.get(tool) > 0)
+                        });
+                        let haul = if owns_tool {
+                            base_haul.max(self.carry_cap.saturating_mul(tool_ceiling))
+                        } else {
+                            base_haul
+                        };
+                        // `GoHarvestWithRoom(grain, carry_cap, carry_cap)` is behaviour-identical
+                        // to `GoHarvest(grain, carry_cap)` (both room-capped at carry_cap), only
+                        // the task tag differs — so a non-skilled non-owner keeps the exact S22c
+                        // `GoHarvest` task and stays byte-identical.
+                        if skill_active || owns_tool {
+                            Task::GoHarvestWithRoom(grain_node, haul, haul)
+                        } else {
+                            Task::GoHarvest(grain_node, self.carry_cap)
+                        }
                     };
                     self.world.assign_task(id, task);
                     continue;
@@ -9321,6 +9588,7 @@ impl Settlement {
                 cultivation_stock_pending: false,
                 cultivation_skill: 0,
                 cultivation_return_window: VecDeque::new(),
+                cultivation_tenure: 0,
             });
             let child_slot = self.colonists.len() - 1;
             self.live_colonist_slots.push(child_slot);
@@ -10115,6 +10383,14 @@ impl Settlement {
         if skill_active {
             self.cultivation_skill_producers.clear();
         }
+        // S22d: on the durable-cultivation-capital path, record the same realized-output set so
+        // [`Self::run_cultivation_capital_formation`] credits cultivation TENURE to exactly those
+        // agents (and resets everyone else), plus the per-agent cumulative produced-bread
+        // diagnostic. Reset the per-tick scratch up front. Inert off the path.
+        let tool_active = self.durable_cultivation_tool_active();
+        if tool_active {
+            self.cultivation_tool_producers.clear();
+        }
         let hunger_target = 0;
         let hunger_deplete = self.dynamics.hunger_deplete;
         let hunger_per_food = self.dynamics.hunger_per_food;
@@ -10194,9 +10470,20 @@ impl Settlement {
             // earns skill; record it for the skill-update pass + the cumulative produced-bread
             // diagnostic. An agent merely flagged `cultivating` while walking/blocked/on a
             // depleted node produces nothing here and so earns no skill (it decays instead).
-            if skill_active && realized_bread > 0 {
-                self.cultivation_skill_producers.insert(id);
-                *self.cultivation_bread_produced.entry(id).or_insert(0) += realized_bread;
+            if realized_bread > 0 {
+                if skill_active {
+                    self.cultivation_skill_producers.insert(id);
+                }
+                // S22d: the same realized-output set drives the tenure credit (a sustained
+                // PRODUCING cultivator builds, not one merely flagged `cultivating`).
+                if tool_active {
+                    self.cultivation_tool_producers.insert(id);
+                }
+                // The cumulative produced-bread diagnostic is maintained on EITHER the skill or
+                // the cultivation-capital path (the S22d non-vacuity test reads it with skill off).
+                if skill_active || tool_active {
+                    *self.cultivation_bread_produced.entry(id).or_insert(0) += realized_bread;
+                }
             }
             let has_remaining_input =
                 input_good.is_some_and(|input| self.cultivation_input_in_stock(id, input));
@@ -10253,6 +10540,193 @@ impl Settlement {
             } else {
                 colonist.cultivation_skill.saturating_sub(decay)
             };
+        }
+    }
+
+    /// CULTIVATION CAPITAL FORMATION phase (S22d): the SEPARATE, gated, PRE-money-capable build
+    /// of the durable, OWNED, role-specific cultivation tool (the plow) — deliberately NOT a reuse
+    /// of [`Self::run_capital_formation`] (which is money-gated and hardcodes the mill/oven
+    /// goods/recipes). Three deterministic sub-steps (slot order, integer state, nothing drawn):
+    ///
+    /// 1. **Credit tenure.** Each live colonist that realized cultivation output this tick (the
+    ///    `cultivation_tool_producers` set [`Self::run_own_use_cultivation`] filled) gains one
+    ///    tick of cultivation TENURE (saturating); every other live colonist RESETS to 0. Tenure
+    ///    is the sustained-PRODUCING-cultivation streak that gates the build — distinct from the
+    ///    hunger-entry `cultivate_pressure`.
+    /// 2. **Advance + complete in-flight builds.** Each in-flight project advances one labor unit
+    ///    (the builder's own labor) and completes against the builder's own stock, crediting the
+    ///    durable plow (booked `produced`). A dead builder's project is dropped (its committed
+    ///    WOOD was already booked `consumed_as_input` at the start tick — a forfeit, conserved).
+    /// 3. **Start new builds.** Each currently-cultivating colonist whose tenure ≥
+    ///    `tool_build_patience`, that holds NO plow yet, has no in-flight build, and can afford
+    ///    `tool_build_wood` WOOD, commits that WOOD (booked `consumed_as_input`) into a new
+    ///    [`ProjectTemplateId::BuildCultivationTool`] project + advances one labor unit; if that
+    ///    completes the build, the plow credits its stock immediately, else the project is stored.
+    ///
+    /// The build inputs reuse the existing [`ChainConfig::tool_build_wood`]/`tool_build_labor`
+    /// (the producer-capital chain is off on every cultivation scenario, so they are free). The
+    /// SUNK WOOD is real and permanently consumed — the commitment that creates the owner
+    /// population and the opportunity cost of leaving. The committed labor is replayed via
+    /// `record_external_labor_used` so the next needs readback sees it. A no-op off the
+    /// durable-cultivation-capital path, so every other run is byte-identical. Conservation holds
+    /// by construction (WOOD `consumed_as_input` at start, the durable plow `produced` at
+    /// completion — never a recipe-ratio change or mint).
+    fn run_cultivation_capital_formation(&mut self, report: &mut EconTickReport) {
+        if !self.durable_cultivation_tool_active() {
+            return;
+        }
+        let chain = self
+            .chain
+            .as_ref()
+            .expect("the cultivation-capital path carries a chain");
+        let Some(tool_good) = chain.content.cultivation_tool() else {
+            return;
+        };
+        let wood_qty = chain.tool_build_wood;
+        let build_labor = chain.tool_build_labor;
+        let patience = chain.tool_build_patience;
+        let tick = self.society.tick.0;
+        let mut labor_used: Vec<(AgentId, u32)> = Vec::new();
+        let live = self.live_colonist_slots.clone();
+
+        // ---- 1. CREDIT TENURE (realized-output streak; reset otherwise).
+        let producers = std::mem::take(&mut self.cultivation_tool_producers);
+        for &slot in &live {
+            let colonist = &mut self.colonists[slot];
+            colonist.cultivation_tenure = if producers.contains(&colonist.id) {
+                colonist.cultivation_tenure.saturating_add(1)
+            } else {
+                0
+            };
+        }
+
+        // ---- 1b. NON-DURABLE / RENTED CONTROL: consume each owner's plow after the one
+        // cultivation opportunity it boosted (an owner that realized output THIS tick held the plow
+        // during this tick's fast-loop haul). Runs BEFORE the builds below, so a plow built THIS
+        // tick — which did not boost this tick's already-past haul — is NOT consumed this tick; it
+        // boosts next tick, then is consumed next tick. Booked `consumed_as_input` (a real sink),
+        // so the agent must re-build (re-pay the sunk WOOD) to get the boost again — no persistent
+        // ownership. Inert (the plow persists) for the durable headline.
+        if self.cultivation_tool_non_durable_active() {
+            for &slot in &live {
+                let id = self.colonists[slot].id;
+                if !producers.contains(&id) {
+                    continue;
+                }
+                if let Some(agent) = self.society.agents.get_mut(id) {
+                    if agent.stock.get(tool_good) > 0 && agent.stock.remove(tool_good, 1) {
+                        *report.consumed_as_input.entry(tool_good).or_insert(0) += 1;
+                        self.cultivation_tools_destroyed =
+                            self.cultivation_tools_destroyed.saturating_add(1);
+                    }
+                }
+            }
+        }
+
+        // ---- 2. ADVANCE + COMPLETE in-flight builds (each its own labor).
+        let mut finished: Vec<usize> = Vec::new();
+        for bi in 0..self.cultivation_tool_builds.len() {
+            let builder = self.cultivation_tool_builds[bi].builder;
+            let alive = self
+                .colonist_slot_by_id
+                .get(&builder)
+                .is_some_and(|&s| self.colonists[s].alive);
+            if !alive {
+                // The committed WOOD was already booked `consumed_as_input` at the start tick, so
+                // the forfeit needs no further booking (conservation already balanced).
+                finished.push(bi);
+                continue;
+            }
+            {
+                let build = &mut self.cultivation_tool_builds[bi];
+                if build.project.labor_advanced < build.template.required_labor
+                    && advance_project(&mut build.project)
+                {
+                    labor_used.push((builder, 1));
+                }
+            }
+            let qty = self.cultivation_tool_builds[bi].project.output_qty;
+            let completed = match self.society.agents.get_mut(builder) {
+                Some(agent) => {
+                    let build = &mut self.cultivation_tool_builds[bi];
+                    complete_project_if_ready(&mut build.project, &build.template, &mut agent.stock)
+                }
+                None => false,
+            };
+            if completed {
+                *report.produced.entry(tool_good).or_insert(0) += u64::from(qty);
+                self.cultivation_tools_built =
+                    self.cultivation_tools_built.saturating_add(u64::from(qty));
+                finished.push(bi);
+            }
+        }
+        for &bi in finished.iter().rev() {
+            self.cultivation_tool_builds.remove(bi);
+        }
+
+        // ---- 3. START new builds. A currently-cultivating colonist with sustained producing
+        // tenure, no plow yet, no in-flight build, and enough saved WOOD invests its OWN WOOD +
+        // labor — per-agent (no global stage choice, no single-in-flight gate).
+        for &slot in &live {
+            let (id, cultivating, tenure) = {
+                let c = &self.colonists[slot];
+                (c.id, c.cultivating, c.cultivation_tenure)
+            };
+            if !cultivating || tenure < patience {
+                continue;
+            }
+            if self.cultivation_tool_builds.iter().any(|b| b.builder == id) {
+                continue;
+            }
+            // Must hold no plow yet (else it is already an owner) and enough saved WOOD to fund
+            // the build from its OWN endowment — the sunk cost that makes ownership a minority.
+            let can_fund = self.society.agents.get(id).is_some_and(|agent| {
+                agent.stock.get(tool_good) == 0 && agent.stock.get(WOOD) >= wood_qty
+            });
+            if !can_fund {
+                continue;
+            }
+            let template = build_cultivation_tool_template(tool_good, wood_qty, build_labor);
+            let pid = ProjectId(self.next_cultivation_tool_project_id);
+            let started = match self.society.agents.get_mut(id) {
+                Some(agent) => start_project(&template, &mut agent.stock, pid, Tick(tick)),
+                None => None,
+            };
+            if let Some(mut project) = started {
+                *report.consumed_as_input.entry(WOOD).or_insert(0) += u64::from(wood_qty);
+                self.cultivation_tool_wood_consumed = self
+                    .cultivation_tool_wood_consumed
+                    .saturating_add(u64::from(wood_qty));
+                if project.labor_advanced < template.required_labor && advance_project(&mut project)
+                {
+                    labor_used.push((id, 1));
+                }
+                self.next_cultivation_tool_project_id =
+                    self.next_cultivation_tool_project_id.wrapping_add(1);
+                let completed = match self.society.agents.get_mut(id) {
+                    Some(agent) => {
+                        complete_project_if_ready(&mut project, &template, &mut agent.stock)
+                    }
+                    None => false,
+                };
+                if completed {
+                    let qty = project.output_qty;
+                    *report.produced.entry(tool_good).or_insert(0) += u64::from(qty);
+                    self.cultivation_tools_built =
+                        self.cultivation_tools_built.saturating_add(u64::from(qty));
+                } else {
+                    self.cultivation_tool_builds.push(CapitalBuild {
+                        builder: id,
+                        slot,
+                        template,
+                        project,
+                    });
+                }
+            }
+        }
+
+        for (agent, labor) in labor_used {
+            self.society.record_external_labor_used(agent, labor);
         }
     }
 
@@ -12003,6 +12477,42 @@ impl Settlement {
         self.chain
             .as_ref()
             .is_some_and(chain_runtime_profit_driven_retention_active)
+    }
+
+    /// S22d: whether **durable role-specific cultivation capital** is active this tick — the
+    /// `durable_cultivation_tool` flag is on, the S22c profit-driven-retention path is active
+    /// (it composes strictly on it), and the content set carries the cultivation-tool good. When
+    /// this holds, a sustained-producing cultivator may build the durable cultivation tool from a
+    /// sunk WOOD+labor cost
+    /// ([`Self::run_cultivation_capital_formation`]), a tool-OWNER's grain trip uses the higher
+    /// owner haul ceiling while it cultivates, the per-agent cultivation tenure is credited, and
+    /// the tenure + build params + in-flight builds enter the digest (ON-only). Off (every
+    /// existing config) it is `false`, so all of it is inert and the run is byte-identical.
+    fn durable_cultivation_tool_active(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(chain_runtime_durable_cultivation_tool_active)
+    }
+
+    /// S22d: whether the **non-durable / rented-tool control** is active this tick — the
+    /// `cultivation_tool_non_durable` flag is on AND the durable-cultivation-capital path is active.
+    /// When this holds, a built plow is consumed (booked `consumed_as_input`) after the one
+    /// cultivation opportunity it boosts, so no persistent stock accrues. Off (the durable headline
+    /// + every existing config) it is `false`, so a built plow persists.
+    fn cultivation_tool_non_durable_active(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(|c| c.cultivation_tool_non_durable)
+            && self.durable_cultivation_tool_active()
+    }
+
+    /// S22d: the durable cultivation tool good (the plow), when a cultivation-capital content set
+    /// carries one. `None` off the path / for a settlement with no chain — so the owner-haul
+    /// boost, the build, and the owner diagnostics are all inert.
+    fn cultivation_tool_good(&self) -> Option<GoodId> {
+        self.chain
+            .as_ref()
+            .and_then(|c| c.content.cultivation_tool())
     }
 
     /// S22c: the configured profit-driven-retention parameters `(return_window, margin_bps,
@@ -14256,6 +14766,113 @@ impl Settlement {
         }
     }
 
+    /// S22d: the durable cultivation tool good (the plow), or `None` off the
+    /// durable-cultivation-capital path. The owner diagnostics read OWNERSHIP through this good's
+    /// stock (NOT the generic `acquired_tool` bool, which is the mill/oven marker).
+    pub fn cultivation_tool_good_id(&self) -> Option<GoodId> {
+        self.cultivation_tool_good()
+    }
+
+    /// S22d (runtime-only diagnostic): whether the colonist at generation `index` OWNS a durable
+    /// cultivation tool (holds ≥1 plow in its stock). The owner-exclusive boost + the owner-cohort
+    /// overlap read this, NOT `acquired_tool`. `false` off the path / for a non-chain settlement.
+    pub fn owns_cultivation_tool(&self, index: usize) -> bool {
+        let Some(tool) = self.cultivation_tool_good() else {
+            return false;
+        };
+        self.colonists.get(index).is_some_and(|c| {
+            self.society
+                .agents
+                .get(c.id)
+                .is_some_and(|agent| agent.stock.get(tool) > 0)
+        })
+    }
+
+    /// S22d (runtime-only diagnostic): the count of LIVING colonists that own a durable cultivation
+    /// tool right now. `0` off the path.
+    pub fn cultivation_tool_owner_count(&self) -> usize {
+        (0..self.population())
+            .filter(|&i| self.is_alive(i) && self.owns_cultivation_tool(i))
+            .count()
+    }
+
+    /// S22d (runtime-only diagnostic): the per-colonist realized-cultivation-output TENURE streak
+    /// (the build-eligibility counter; consecutive output ticks, reset otherwise). Runtime-readable;
+    /// the underlying counter IS digested (ON-only, with the colonist roster). `0` off the path.
+    pub fn cultivation_tenure_of(&self, index: usize) -> u16 {
+        self.colonists
+            .get(index)
+            .map_or(0, |c| c.cultivation_tenure)
+    }
+
+    /// S22d observability: the whole-system count of durable cultivation tools BUILT over the run
+    /// (the cumulative `produced` plows; never decreases — durable, no decay). `0` until the first
+    /// build. Runtime-only; not digested.
+    pub fn cultivation_tools_built(&self) -> u64 {
+        self.cultivation_tools_built
+    }
+
+    /// S22d observability: the cumulative WOOD permanently consumed building cultivation tools over
+    /// the run — the measured SUNK cost. `0` until the first build. Runtime-only; not digested.
+    pub fn cultivation_tool_wood_consumed(&self) -> u64 {
+        self.cultivation_tool_wood_consumed
+    }
+
+    /// S22d observability: the cumulative durable cultivation tools DESTROYED over the run — `0` for
+    /// the durable headline, positive only on the non-durable/rented control (each plow consumed
+    /// after one cultivation opportunity). The tool-stock accounting invariant is
+    /// `cultivation_tools_built() − cultivation_tools_destroyed() == cultivation_tool_stock_total()`.
+    /// Runtime-only; not digested.
+    pub fn cultivation_tools_destroyed(&self) -> u64 {
+        self.cultivation_tools_destroyed
+    }
+
+    /// S22d observability: the whole-system total of the cultivation-tool good right now (live-agent
+    /// stock + commons/estate + world). The tool-stock accounting invariant pins
+    /// `cultivation_tools_built() − cultivation_tools_destroyed() == cultivation_tool_stock_total()`
+    /// (the durable headline destroys none, so it reduces to `built == stock_total`; the build's
+    /// completion deposits immediately so there is no completed-but-undeposited in-flight). `0` off
+    /// the path. Runtime-only; not digested.
+    pub fn cultivation_tool_stock_total(&self) -> u64 {
+        self.cultivation_tool_good()
+            .map_or(0, |tool| self.whole_system_total(tool))
+    }
+
+    /// S22d: the number of in-flight per-builder cultivation-tool projects right now. Read-only
+    /// diagnostic for tests (a build is dropped on completion or builder death).
+    pub fn active_cultivation_tool_builds(&self) -> usize {
+        self.cultivation_tool_builds.len()
+    }
+
+    /// S22d (test-only matched-condition harness): grant the colonist at generation `index` one
+    /// durable cultivation tool by adding it to the colonist's agent stock. Conservation-safe ONLY
+    /// when called BEFORE the first `econ_tick` (the granted unit is then part of the tick-0
+    /// whole-system baseline, so `before == after` each tick and `conserves()` holds) — the
+    /// non-vacuity micro-harness compares a granted OWNER vs an ungranted no-tool cultivator under
+    /// matched forced cultivation. A no-op off the durable-cultivation-capital path.
+    pub fn grant_cultivation_tool_for_test(&mut self, index: usize) {
+        let Some(tool) = self.cultivation_tool_good() else {
+            return;
+        };
+        if let Some(colonist) = self.colonists.get(index) {
+            let id = colonist.id;
+            if let Some(agent) = self.society.agents.get_mut(id) {
+                agent.stock.add(tool, 1);
+            }
+        }
+    }
+
+    /// S22d (test-only matched-condition harness): pin the colonist at generation `index`'s
+    /// `cultivating` flag to `cultivating`. Re-applied before each `econ_tick` so the next fast
+    /// loop assigns the grain harvest to the designated agent regardless of its hunger — isolating
+    /// the owner-haul boost from the hunger-gated exit (the only difference between the matched
+    /// owner / no-tool runs is then the per-trip haul). Conservation-neutral (a steering flag).
+    pub fn set_cultivating_for_test(&mut self, index: usize, cultivating: bool) {
+        if let Some(colonist) = self.colonists.get_mut(index) {
+            colonist.cultivating = cultivating;
+        }
+    }
+
     /// S15: the chain's bread good (the cultivation output / hunger staple), or `None`
     /// for a non-chain settlement. The acceptance suite reads cultivated-bread
     /// production through it.
@@ -15423,6 +16040,38 @@ impl Settlement {
                 out.extend_from_slice(&chain.retention_margin_bps.to_le_bytes());
                 out.extend_from_slice(&chain.retention_material_floor.to_le_bytes());
             }
+            // S22d: the durable-cultivation-capital gate builds the owned plow + raises the
+            // owner's grain-haul ceiling — a future-behaviour change for the roster (which
+            // cultivators capitalize, and how much grain an owner draws). Emitted only when active
+            // (the same gated-block discipline as S16/S18/S21/S22a/b/c above) with a DISTINCT tag
+            // (`10`) plus the build/boost magnitudes (the sunk WOOD+labor cost, the build patience,
+            // the owner haul ceiling) and the in-flight builds (live state two runs can differ in:
+            // which builder, how much labor advanced), so the gated markers stay injective and a
+            // flag-off chain stays byte-identical to the pre-S22d stream. (The per-agent
+            // cultivation tenure it maintains IS digested — serialized with the colonist roster
+            // below, ON-only — because it steers the build decision; the tool-owner / sunk-cost /
+            // churn diagnostics it pairs with are runtime-only and deliberately NOT digested. The
+            // plow good itself lives in the agent's stock, already serialized.)
+            if self.durable_cultivation_tool_active() {
+                out.push(10);
+                out.extend_from_slice(&chain.tool_build_wood.to_le_bytes());
+                out.extend_from_slice(&chain.tool_build_labor.to_le_bytes());
+                out.extend_from_slice(&chain.tool_build_patience.to_le_bytes());
+                out.extend_from_slice(&chain.cultivation_tool_haul_ceiling.to_le_bytes());
+                out.push(u8::from(chain.cultivation_tool_non_durable));
+                out.extend_from_slice(&self.next_cultivation_tool_project_id.to_le_bytes());
+                out.extend_from_slice(&(self.cultivation_tool_builds.len() as u32).to_le_bytes());
+                for build in &self.cultivation_tool_builds {
+                    out.extend_from_slice(&build.builder.0.to_le_bytes());
+                    out.extend_from_slice(&build.project.id.0.to_le_bytes());
+                    out.push(project_template_id_tag(build.project.template));
+                    out.extend_from_slice(&build.project.started_at.0.to_le_bytes());
+                    out.extend_from_slice(&build.project.output_good.0.to_le_bytes());
+                    out.extend_from_slice(&build.project.output_qty.to_le_bytes());
+                    out.extend_from_slice(&build.template.required_labor.to_le_bytes());
+                    out.extend_from_slice(&build.project.labor_advanced.to_le_bytes());
+                }
+            }
             // The staple mapping steers the next needs/scale phase for *any* chain,
             // role-choice or not, so it is included whenever a chain is active. The
             // G3b no-spread control shares the emergent config's physical state but
@@ -15793,6 +16442,12 @@ impl Settlement {
         // inside the cultivation block below), so every pre-S22c config keeps its per-colonist
         // layout byte-identical.
         let retention_serialized = self.profit_driven_retention_active();
+        // S22d: the per-colonist `cultivation_tenure` steers the next tool-build decision (a
+        // cultivator invests once tenure ≥ `tool_build_patience`) only while the
+        // durable-cultivation-capital phase can run; gate its byte on the active-phase predicate
+        // (which implies `cultivation_serialized`, so it nests inside the cultivation block below),
+        // so every pre-S22d config keeps its per-colonist layout byte-identical.
+        let tool_serialized = self.durable_cultivation_tool_active();
         out.extend_from_slice(&(self.colonists.len() as u32).to_le_bytes());
         for colonist in &self.colonists {
             out.extend_from_slice(&colonist.id.0.to_le_bytes());
@@ -15885,6 +16540,14 @@ impl Settlement {
                         out.extend_from_slice(&entry.cultivation_proceeds.to_le_bytes());
                         out.extend_from_slice(&entry.outside_proceeds.to_le_bytes());
                     }
+                }
+                // S22d: the cultivation tenure streak steers WHEN the colonist next invests in a
+                // tool, so two states identical but for it diverge on a future build — part of the
+                // identity whenever the durable-cultivation-capital phase runs. Nested inside the
+                // cultivation block (the gate implies it), emitted only under `tool_serialized`, so
+                // a pre-S22d colonist block stays byte-identical.
+                if tool_serialized {
+                    out.extend_from_slice(&colonist.cultivation_tenure.to_le_bytes());
                 }
             }
             if role_choice_active {
@@ -16425,6 +17088,20 @@ fn chain_runtime_cultivation_skill_active(chain: &ChainRuntime) -> bool {
 /// run is byte-identical.
 fn chain_runtime_profit_driven_retention_active(chain: &ChainRuntime) -> bool {
     chain.profit_driven_retention && chain_runtime_endogenous_cultivation_entry_active(chain)
+}
+
+/// S22d: durable role-specific cultivation capital is active iff the flag is on, the S22c
+/// profit-driven-retention path is active (it composes strictly on it — the durable advantage
+/// works THROUGH the profit-stay exit, and S22c itself requires the S22a endogenous-entry path),
+/// and the content set carries the cultivation-tool good. The content check keeps a manually
+/// toggled flag without the plow content from changing canonical state while the feature itself
+/// would no-op. Off (every existing config) it is `false`, so the cultivation-capital phase, the
+/// owner-haul boost, the per-agent tenure counter, and the ON-only digest surface never engage and
+/// the run is byte-identical.
+fn chain_runtime_durable_cultivation_tool_active(chain: &ChainRuntime) -> bool {
+    chain.durable_cultivation_tool
+        && chain_runtime_profit_driven_retention_active(chain)
+        && chain.content.cultivation_tool().is_some()
 }
 
 /// S16: money-from-produced-bread is active iff the flag is on AND own-use cultivation is
@@ -18276,6 +18953,7 @@ fn project_template_id_tag(id: ProjectTemplateId) -> u8 {
         ProjectTemplateId::BuildRoad => 1,
         ProjectTemplateId::BuildMill => 2,
         ProjectTemplateId::BuildOven => 3,
+        ProjectTemplateId::BuildCultivationTool => 4,
     }
 }
 
@@ -18696,6 +19374,10 @@ mod tests {
         assert_eq!(project_template_id_tag(ProjectTemplateId::BuildRoad), 1);
         assert_eq!(project_template_id_tag(ProjectTemplateId::BuildMill), 2);
         assert_eq!(project_template_id_tag(ProjectTemplateId::BuildOven), 3);
+        assert_eq!(
+            project_template_id_tag(ProjectTemplateId::BuildCultivationTool),
+            4
+        );
     }
 
     /// The G8c-2 tender policy emits a `SetXTender` event **only** for a knob that
