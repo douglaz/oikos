@@ -2,7 +2,7 @@
 
 ### A praxeologic agent-based study under a no-smuggling, conservation, and adversarial-review discipline
 
-*Working paper distilled from the OIKOS experimental record (milestones S5–S22d). Companion to the
+*Working paper distilled from the OIKOS experimental record (milestones S5–S22e). Companion to the
 running report `report-emergence-and-its-limits.md`, which carries the per-milestone detail.*
 
 ---
@@ -26,12 +26,15 @@ became Mengerian money only when it had (1) real direct-use demand as a non-circ
 (2) leadership in *medium* (re-trade) saleability rather than in consumption, (3) a tradeable pre-money
 supply to circulate against, and (4) an exchange institution permitting monetary round-tripping. Each
 condition was isolated by a matched failure; no single one sufficed. Second, and symmetrically, **a
-durable division of labor does *not* self-form** from a fluid participation base: across four mechanisms
-— hunger pressure, accumulated skill, a realized profit stay-incentive, and sunk owned role-specific
-capital — each demonstrably *bites* yet **none** produces a persistent occupational class. The
-consistent boundary is that occupation appears to require an explicit role-choice/assignment institution
-or *endowed/inherited* capital, not an advantage earned from within the fluid regime. We report these as
-**model findings, not theorems**, and disclose the configured scaffolds that remain.
+durable division of labor does *not* self-form** from a fluid participation base: across five mechanisms
+— hunger pressure, accumulated skill, a realized profit stay-incentive, sunk *earned* owned role-specific
+capital, and even *endowed + inherited* capital given up front — each demonstrably *bites* yet **none**
+produces a persistent occupational class. The decisive turn is the fifth: removing the "must earn the
+lock-in first" chicken-and-egg (by endowing capital and letting it inherit down a lineage) *still* fails,
+because the active hunger/profit **exit** rotates owners out regardless of who owns the means. The
+consistent boundary is therefore that occupation appears to require an explicit role-choice/assignment
+institution that overrides the exit — not capital of any provenance. We report these as **model findings,
+not theorems**, and disclose the configured scaffolds that remain.
 
 ---
 
@@ -222,15 +225,15 @@ necessary, and how wide each one's window is — not a claim of spontaneous open
 
 ---
 
-## 6. The division of labor does not self-form: a four-step negative
+## 6. The division of labor does not self-form: a five-step negative
 
 S21's open colony still *pins* the food-producing class: a pre-identified cultivator lineage supplies the
 bread while non-lineage buyers and woodcutters never cultivate. The role-topology arc relaxes that
-privilege and asks whether a stable division of labor *self-forms*. It is a clean four-step negative;
+privilege and asks whether a stable division of labor *self-forms*. It is a clean five-step negative;
 each lever was shown to genuinely **bite** (a mandatory non-vacuity test), yet **none** produced a
 persistent occupational class. Stickiness was measured the same way throughout — a material drop in
-per-agent enter/exit churn versus a matched-seed baseline, *and* a persistent **membership** cohort (the
-same agent ids staying in the role).
+enter/exit churn versus a matched-seed baseline, *and* a persistent **membership** cohort (the same
+agents — or, for the inheritance step, the same lineages — staying in the role).
 
 - **Hunger discovers the role, but only fluidly (S22a).** Relaxing cultivation eligibility from "lineage
   member" to "any spatial colonist under sustained hunger pressure" keeps money and mortality alive — but
@@ -258,13 +261,29 @@ same agent ids staying in the role).
   healthy split).
   The boundary is a **chicken-and-egg**: the lock-in asset can only be *earned by already sustaining* the
   fluid role, so a rare one or two agents capitalize and dominate rather than a class forming.
+- **Even endowed, inherited capital does not produce a class (S22e).** The chicken-and-egg suggests the
+  escape: give the lock-in *up front* and let it pass *down a lineage*. A minority of lineage households is
+  **endowed** with a plow at generation, and plows **inherit** to the household heir (a switch the
+  falsifying control flips to force them to the commons instead). The lever bites *massively* — **641–681
+  real plow→living-heir inheritance transfers per run**, heirs cultivate, owners out-produce ~3× — yet
+  occupation *still* does not form: cultivation settles ~4%, churn stays ~1× baseline, and **no
+  owner-lineage cohort appears (0/8)**. It is not an unreachable bar: across the full endowment sweep
+  (owner-lineage share 0.12→1.00) the cohort is **flat 0/8**, and even at *universal* ownership — where
+  owners do most of the cultivating — no lineage persists in the role; they rotate. The decisive reading:
+  removing the acquisition chicken-and-egg changes nothing, because the binding constraint is the
+  hunger/profit **exit**, which rotates owners out *regardless of who owns the means*. (Honest scope: a
+  dynastic/institutional-sufficiency test bounded to this endowed/inherited plow institution in this
+  configured colony — not a universal claim about capital or inheritance.)
 
-**The pattern.** Hunger, accumulated skill, a realized profit incentive, and sunk owned capital each
-*bite* but **none** converts fluid participation into a durable division of labor. The repeatedly-named
-boundary is that occupation appears to require an explicit **role-choice/assignment institution**, or
-capital that is **endowed/inherited** (given up front) rather than earned from within the fluid regime.
-That is a sequence of falsified sufficiency claims, not a single failure — and it names the next
-condition precisely.
+**The pattern.** Hunger, accumulated skill, a realized profit incentive, sunk *earned* owned capital, and
+even *endowed + inherited* capital each *bite* but **none** converts fluid participation into a durable
+division of labor. The first four left open whether capital given *up front* would suffice; the fifth
+closes it — and in doing so relocates the boundary. It is **not** the chicken-and-egg of *acquiring*
+capital (S22e removes that); it is that the active hunger/profit **exit regime rotates cultivation
+regardless of ownership**. The remaining named condition is therefore an explicit
+**role-choice/assignment institution that overrides the exit** — not capital of any provenance. That is a
+sequence of five falsified sufficiency claims, not a single failure — and it names the next condition
+precisely.
 
 ---
 
@@ -272,7 +291,7 @@ condition precisely.
 
 The two arcs are mirror images under the same discipline. For **money**, we found a set of conditions and
 *met* them, and emergence followed — but only inside a disclosed envelope, and partly by repairing a
-self-imposed institutional constraint. For **occupation**, we probed four candidate sufficiency
+self-imposed institutional constraint. For **occupation**, we probed five candidate sufficiency
 mechanisms and *falsified* each, and the consistent shape of the failures names the missing condition.
 In both cases the value is the decomposition: the model converts vague claims ("money emerges,"
 "specialization emerges") into a graded ledger of *which* conditions are necessary and how robust each
@@ -312,10 +331,12 @@ We state the scaffolds plainly; a hostile reader should attack these first.
   prove only SALT could monetize.
 - **The open-colony coexistence is band-qualified (S21i).** Money+mortality coexistence is seed-robust
   but load-bearing on WOOD scarcity and anchor density — an existence proof within a disclosed envelope.
-- **The four-step occupation negative is bounded** to capital/skill/incentive *earned from within* this
-  fluid, WOOD-poor regime; it does **not** rule out an explicit role-choice institution, or
-  endowed/inherited/credit-financed capital, producing a class. The naming of that next condition is a
-  *plausible* boundary, not a proven impossibility.
+- **The five-step occupation negative is bounded** to these five levers in this fluid, WOOD-poor,
+  mortality-on regime (and, for the inheritance step, to an endowed/inherited *plow* institution over
+  lineage households). It does **not** rule out an explicit role-choice institution, credit-financed or
+  denser capital, or other endowment designs producing a class. The naming of that next condition is a
+  *plausible* boundary, not a proven impossibility — in particular, "exit overrides ownership" is a
+  finding about *this* hunger/profit exit, not a law about all exits.
 - **Part of S20 repairs a self-imposed artifact.** The one-offer book was our constraint; the S19→S20
   result is part institutional insight, part removal of a modeling limitation. Stated as such it is a
   result; stated as a universal law it would be an overclaim.
@@ -326,13 +347,13 @@ We state the scaffolds plainly; a hostile reader should attack these first.
 
 ## 9. Future work
 
-- **Endowed / inherited cultivation capital (the direct S22d sequel).** Give the lock-in *up front* — a
-  minority seeded with tools, tools passing by inheritance — to test whether a persistent owner cohort
-  finally forms. This tests **institutional/endowment sufficiency**, a *different* question from
-  self-formation; an honest success there would read "durable inherited capital can stabilize an
-  occupation that earned capital could not," not "endogenous occupation."
-- **An explicit role-choice / assignment institution** as an alternative path to a stable division of
-  labor.
+- **An explicit role-choice / assignment institution that overrides the exit.** S22e closed the
+  endowed/inherited-capital path (§6) — capital up front and inherited still loses to the hunger/profit
+  exit — so the live candidate is an institution that changes the *exit/participation* rule itself
+  (a vocation commitment, an assignment, a guild), not another way of supplying capital. This is the
+  direct sequel the five-step negative points to.
+- **Other endowment / capital designs** not covered by S22e — credit-financed tools, denser or
+  non-lineage capital cohorts — remain open as institutional-sufficiency variants.
 - **Endogenizing the remaining money scaffolds** — the two-lane clearing institution and the SALT
   direct-use anchor — and broadening the open-colony robustness beyond the WOOD-load-bearing envelope.
 
@@ -344,9 +365,10 @@ OIKOS turns two slogans into ledgers. Mengerian money in this model did **not** 
 produced supply, or multi-good trade alone; it emerged only when a direct-use eligibility floor, medium-
 saleability leadership, a tradeable pre-money supply, and a round-tripping exchange institution aligned —
 and even then inside a disclosed, band-qualified envelope. A durable division of labor, by contrast, did
-**not** self-form from a fluid base under any of four levers — hunger, skill, a profit stay-incentive, or
-sunk owned capital — each of which demonstrably bit; the consistent boundary is that occupation needs an
-institution or endowment that does not arise from within the fluid regime. Across both arcs the method is
+**not** self-form from a fluid base under any of five levers — hunger, skill, a profit stay-incentive,
+sunk *earned* owned capital, or even *endowed + inherited* capital given up front — each of which
+demonstrably bit; the consistent boundary is that occupation needs an explicit institution that overrides
+the hunger/profit *exit*, since capital of any provenance is rotated out by it. Across both arcs the method is
 the message: emergence claims in an ABM become trustworthy when the substrate conserves, the runs are
 deterministic and regression-pinned, parameters are swept rather than searched, an independent model
 audits design and result, and the precisely-bounded "no" is treated as a real finding.
@@ -380,3 +402,4 @@ audits design and result, and the precisely-bounded "no" is treated as a real fi
 | S22b | Cultivation skill | finding: accumulated productivity does not change the hunger-gated exit |
 | S22c | Profit-driven retention | finding: a realized stay-incentive bites but retains only marginally |
 | S22d | Durable role-specific capital | finding: even sunk owned capital → dominant few, not a class (chicken-and-egg) |
+| S22e | Endowed + inherited capital | finding: even capital given up front + inherited → owners rotate, no lineage cohort (the *exit* binds, not provenance) |
