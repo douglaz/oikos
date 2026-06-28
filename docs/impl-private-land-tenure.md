@@ -1,6 +1,6 @@
 # impl-39 — S23a: Private Land Tenure (does scarce, excludable, losable *place* finally stabilize an occupation?)
 
-Status (spec): REVISED per Codex spec-review round 1 (6 P1 + 3 P2 folded in, §7); pending confirmation. Base:
+Status (spec): REVISED per Codex spec-review rounds 1-2 (6 P1 + 3 P2, then 3 P1 + 1 P2 folded in, §7); pending confirmation. Base:
 master `496566e` (S22f landed + the article at the arc's turn). Opens the **S23 private-property arc**. Composes on S22a (`endogenous_cultivation_entry`) on the
 expanded `ROSTER_HOUSEHOLDS = 8` base; the other S22 exit-cost levers (skill, profit-stay, capital,
 commitment) are **OFF** in the headline so land tenure is the only new exit-cost mechanism. Scoped by Codex
@@ -135,8 +135,11 @@ is its negation: no viable marginal plot, or every non-owner claim attempt fails
    bool` (default false; ON = the `free_reclaim` control); plus the grain-plot **layout** (§3.2). Helper
    `private_land_tenure_active(&self)` = flag on AND `endogenous_cultivation_entry_active()`. Canonicalize
    ON-only with the **next free flag-digest tag (13** unless master advanced) + `land_idle_limit` +
-   `harvest_gate` + `forfeit_on_idle` + `reclaim_reserved_for_prior_owner` + the layout params. Off ⇒
-   byte-identical.
+   `harvest_gate` + `forfeit_on_idle` + `reclaim_reserved_for_prior_owner` + the layout params **and the
+   steering state that persists across ticks: the plot registry (per-plot `owner` + `idle counter`, §3.3) and
+   the per-agent `carried_grain_source` markers (§3.6)**. (The unowned-plot reservation, §3.5(b), is recomputed
+   each pass from positions+tasks+registry — a pure function of already-serialized state, so it is NOT a
+   separate digest field.) Off ⇒ byte-identical.
 
 2. **Concrete grain-plot layout (Codex P1.4 — predeclared, 1-D, NOT tunable by rb-lite).** The world is a
    `width = 64, height = 1` line, exchange at `Pos::new(0, 0)`; distance-to-centre = `x` (Manhattan on the
@@ -146,13 +149,21 @@ is its negation: no viable marginal plot, or every non-owner claim attempt fails
      rich-grain quality).
    - **MARGINAL plots:** `MARGINAL_PLOTS` (default **8**) at `x ∈ {12,18,24,30,36,42,48,54}`, `regen = 12`,
      `cap = 1000` (far + poor, but above the viability floor).
-   - **Scarcity invariant:** `GOOD_PLOTS (4) < eligible cultivators (≈ the ~8-household roster's spatial
-     colonists) < GOOD_PLOTS + MARGINAL_PLOTS (12)` — good land is scarce, total land leaves marginal entry
-     open. `VIABLE_REGEN_FLOOR = 8`, `VIABLE_CAP_FLOOR = 256` (the marginal plots clear it; §2a).
+   - **Scarcity framing (Codex round-2 P1.3 — NOT tied to total eligible-agent count).** The 8-household roster
+     has far more potential entrants (~dozens) than plots, but that is fine: most agents are *buyers*, and in
+     S22 only ~4–5% cultivate at any instant. So the relevant scarcity is over **simultaneous would-be
+     farmers**, not the whole roster. Pin it relationally instead: (a) good land is **contested** —
+     `GOOD_PLOTS (4)` is small, on the order of the target persistent owner cohort (`PERSIST_COHORT = 4`), so
+     good plots cannot host more than a handful of owners; (b) **entry stays open** — `MARGINAL_PLOTS (8)`
+     greatly exceeds the typical number of simultaneous cultivators, so a viable marginal plot is essentially
+     always free to homestead. Do **not** assert any `< eligible cultivators` inequality. `VIABLE_REGEN_FLOOR =
+     8`, `VIABLE_CAP_FLOOR = 256` (the marginal plots clear it; §2a).
    - **Predeclared sweeps (no tuning):** `land_idle_limit ∈ {6, 12, 24, 48}` (default **12**); gradient
      steepness = marginal `regen ∈ {6, 12, 24}`; scarcity = `GOOD_PLOTS ∈ {2, 4, 6}`. The scarcity and
      idle-limit axes MUST be outcome-driving (too abundant → `CommonsEquivalent`/no cohort; too scarce →
-     `HardBarrier`/`LandMonopolyCull`; a middle band → potential success).
+     `HardBarrier`/`LandMonopolyCull`; a middle band → potential success). The **`abundant_good_land` control**
+     (§4) is a *concrete high* `GOOD_PLOTS = 16` (good land no longer scarce — well above any plausible owner
+     cohort), NOT a "≥ eligible agents" comparison.
 
 3. **Plot registry (sim-side, gated — keeps `world` and goldens untouched):** a per-plot map keyed by `NodeId`
    over the grain plots: `owner: Option<AgentId>` + a per-plot **idle counter** (§3.6). It **steers harvest
@@ -166,26 +177,41 @@ is its negation: no viable marginal plot, or every non-owner claim attempt fails
    record `worked(agent, node, moved)` for this tick. This is the single deterministic source for both *claim*
    (§3.5) and *idle-reset* (§3.6).
 
-5. **Pre-arrival ownership validation + claim (Codex P1.1) — the gate must act BEFORE `world.tick`, not just at
-   assignment.** Because `World::apply_arrival` harvests blindly, each fast tick (pre-`world.tick`) re-validate
-   every agent whose task is `GoHarvest{,WithRoom}(grain node N)`: if `harvest_gate` is on and `N` is owned by
-   **another** live agent (a competitor claimed it mid-route, or the agent's own plot reverted), **cancel and
-   re-route** that task to the agent's own plot if any, else its nearest viable unowned plot (§3.7) — so it can
-   never harvest a plot it doesn't own. **Claim:** a `worked(agent, N, moved)` event (§3.4) on an **unowned**
-   eligible plot sets `owner = Some(agent)` (homesteading — money-free, first-come by physical arrival, no
-   allocator/quota). When `harvest_gate` is off (`non_excludable_deed` control), ownership is recorded but
-   harvest is never blocked — the commons behaviour, to prove exclusion (not title) is what bites.
+5. **Pre-arrival validation + a single-targeter reservation + claim (Codex P1.1 + round-2 P1.1) — the gate must
+   act BEFORE `world.tick`, not just at assignment.** Because `World::apply_arrival` harvests blindly, each fast
+   tick runs a **deterministic pre-`world.tick` validation pass** over every agent whose task is
+   `GoHarvest{,WithRoom}(grain node N)`, in a fixed order, doing two things:
+   - **(a) Owned-by-other → reroute.** If `harvest_gate` is on and `N` is owned by **another** live agent
+     (a competitor claimed it, or the agent's own plot reverted), cancel and re-route per §3.7.
+   - **(b) Unowned-plot reservation — closes the same-tick "stampede" race (round-2 P1.1).** Pre-tick
+     validation alone would let *many* agents target the same unowned nearest plot (e.g. all rush `x=2`) and
+     all harvest it the same tick before the post-tick claim assigns ownership. So, in the validation pass, an
+     **unowned** plot may be the live target of **at most one** agent: among all agents currently targeting
+     unowned plot `N`, the **winner** is the one minimizing `(travel_cost = manhattan(agent, N), agent_id)`;
+     every other agent is **rerouted** to its next-nearest *unreserved* unowned (or own) plot per §3.7. The
+     reservation set is **recomputed deterministically from positions + tasks + the registry each pass**
+     (it is a pure function of serialized state, so it adds **no** new digest surface). After the pass, at
+     most one agent can harvest any given unowned plot, and the post-tick `worked` event claims it cleanly.
+   - **Claim:** a `worked(agent, N, moved)` event (§3.4) on an **unowned** eligible plot sets `owner =
+     Some(agent)` (homesteading — money-free, first-come by physical arrival, no allocator/quota). When
+     `harvest_gate` is off (`non_excludable_deed` control), neither (a) nor (b) blocks/reroutes — the commons
+     behaviour, to prove *exclusion* (not title) is what bites.
 
-6. **Forfeiture = TRUE EXIT, not travel/deposit delay (Codex P1.3 — the critical fix).** A far owner legitimately
+6. **Forfeiture = TRUE EXIT, not travel/deposit delay (Codex P1.3 + round-2 P1.2).** A far owner legitimately
    spends ticks travelling and depositing, so "idle = no harvest arrival" would wrongly forfeit active distant
-   owners and *manufacture* churn. Instead the per-plot idle counter only advances while the owner is **NOT
-   engaged** with that plot, where **engaged = any of**: a current `GoHarvest{,WithRoom}` task targeting it, OR
-   carry pulled from it still pending deposit, OR a `worked` event on it this tick. Any engagement **resets**
-   the counter to 0. The plot reverts to unowned only when the counter reaches `land_idle_limit` consecutive
-   **un-engaged** ticks — i.e. the owner genuinely stopped cultivating it (a real exit to buying), not while
-   it's mid-cycle. (`forfeit_on_idle = false` → the counter is inert, the plot is kept while idle: the
-   `no_forfeit` control.) `reclaim_reserved_for_prior_owner = true` → on revert the plot is reserved for its
-   prior owner to re-take at no spatial cost: the `free_reclaim` control (predicts no stickiness).
+   owners and *manufacture* churn. The per-plot idle counter advances only while the owner is **NOT engaged**
+   with that plot — but "carry pulled from it still pending deposit" is **not** detectable from carry alone,
+   which is keyed by *good*, not *source node* (round-2 P1.2). So add a **per-agent
+   `carried_grain_source: Option<NodeId>` marker**: set to `N` on a `worked(agent, N, moved)` event; **kept**
+   while that grain remains in carry / pending deposit (across the `GoDeposit` trip back to the exchange);
+   **cleared** on the deposit transfer. It is per-agent steering state → serialized **ON-only** under tag 13.
+   Then **engaged with plot `N` = any of**: a current `GoHarvest{,WithRoom}(N)` task, OR `carried_grain_source
+   == Some(N)` (a deposit trip from `N` is in progress), OR a `worked(_, N, _)` event this tick. Any engagement
+   **resets** the counter to 0; the plot reverts only after `land_idle_limit` consecutive **un-engaged** ticks
+   — i.e. the owner genuinely stopped cultivating it (a real exit to buying), never mid-cycle. (`forfeit_on_idle
+   = false` → the counter is inert, plot kept while idle: the `no_forfeit` control.)
+   `reclaim_reserved_for_prior_owner = true` → on revert the plot is reserved for its prior owner to re-take at
+   no spatial cost: the `free_reclaim` control (predicts no stickiness).
 
 7. **Targeting that produces the gradient (Codex P2.1 — deterministic tie-breaks).** Under the gate, the
    "go harvest grain" target is chosen as: (a) the agent's **own** plot if it has one and it isn't exhausted;
@@ -228,14 +254,16 @@ is its negation: no viable marginal plot, or every non-owner claim attempt fails
     harvests any plot. Must NOT produce stickiness (proves it's *exclusion*, not title bookkeeping).
   - **free_reclaim** (`reclaim_reserved_for_prior_owner = true`): a lapsed owner re-takes its *same* plot at no
     spatial cost. Must NOT produce stickiness (proves it's the *loss + worse re-entry*, not merely owning).
-  - **abundant_good_land** (`GOOD_PLOTS ≥ eligible cultivators` — sweep value, no scarcity): must NOT produce a
-    scarce owner cohort (→ `CommonsEquivalent`/no cohort).
+  - **abundant_good_land** (`GOOD_PLOTS = 16`, a concrete high value well above any plausible owner cohort —
+    good land no longer scarce; NOT a "≥ eligible agents" comparison): must NOT produce a scarce owner cohort
+    (→ `CommonsEquivalent`/no cohort).
   - **no_forfeit** (`forfeit_on_idle = false` — owner keeps plot while idle): isolates loss-on-exit (predict
     weaker/no stickiness — owning without *losing on exit* isn't enough).
 - **HARD GUARDS every run + cell:** grain conserves every tick; `bread_minted_max == 0`; provenance
-  clean-or-disqualified; `!extinct`; the **plot-registry invariant** (each plot ≤1 owner; claim/abandon/inherit
-  preserve the finite plot set; no plot owned by a dead agent); open-entry guard (unowned plots available
-  unless classified `HardBarrier`).
+  clean-or-disqualified; `!extinct`; the **plot-registry invariant** (each plot ≤1 owner; at most one agent
+  has a live harvest task on any unowned plot after the validation pass; `carried_grain_source` clears on
+  deposit and is never stale; claim/abandon/inherit preserve the finite plot set; no plot owned by a dead
+  agent); open-entry guard (viable marginal plots available unless classified `HardBarrier`).
 - **goldens_unchanged** test pinning the five tripwire digests (copy from `voluntary_cultivation_commitment.rs`).
 - **Robustness mini-sweep** over `land_idle_limit` + the gradient steepness (good/poor `regen` ratio) + good-plot
   scarcity, classified, no tuning. The scarcity + idle-limit axes MUST be outcome-driving (too abundant →
@@ -298,3 +326,17 @@ Redirect cargo to files; never pipe to head/grep (EPIPE → spurious exit 101).
 - **P2.3 HardBarrier vs LandMonopolyCull** — §2: `HardBarrier` = no viable marginal entry (entry impossible);
   `LandMonopolyCull` = entry open but owner grain concentration ≥ MONO_SHARE culls buyers; classifier reordered
   HardBarrier → LandMonopolyCull.
+
+### Round 2 (3 P1 + 1 P2)
+
+- **P1.1 unowned-plot stampede race** — §3.5(b): a deterministic single-targeter reservation in the
+  pre-`world.tick` pass — at most one agent may target any unowned plot (winner by `(manhattan, agent_id)`,
+  others reroute); recomputed each pass from positions+tasks+registry (no new digest surface).
+- **P1.2 carry source tracking** — §3.6: a per-agent `carried_grain_source: Option<NodeId>` (set on `worked`,
+  kept through the deposit trip, cleared on deposit), serialized ON-only; "engaged" now includes
+  `carried_grain_source == Some(N)` so a deposit trip is engagement and distant active owners never forfeit.
+- **P1.3 plot-count invariant wrong for the expanded roster** — §3.2: dropped the `< eligible cultivators`
+  inequality; reframed as good-land contested (`GOOD_PLOTS` ≈ `PERSIST_COHORT`) + open entry
+  (`MARGINAL_PLOTS` ≫ simultaneous cultivators); `abundant_good_land` control = concrete `GOOD_PLOTS = 16`.
+- **P2 registry/digest surface** — §3.1 + §4: the persistent steering state (plot registry + per-agent
+  `carried_grain_source`) is serialized ON-only and added to the invariant; the reservation stays recomputed.
