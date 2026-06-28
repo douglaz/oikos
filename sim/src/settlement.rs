@@ -194,6 +194,26 @@ const ENDOWED_ROSTER_HOUSEHOLDS: usize = 8;
 /// sweep raises it toward universal to show the `UniversalOwnership` boundary.
 const ENDOWED_TOOL_COUNT_DEFAULT: u16 = 4;
 
+/// S22f — the shipped voluntary fixed-term cultivation commitment **term** (the binding length, in
+/// econ ticks): drawn from the existing [`RETURN_WINDOW`] scale so it is not a fitted figure. The
+/// headline/success bar requires `commitment_term < ceil(PERSIST_FRACTION × FINAL_WINDOW)` (the
+/// test asserts it) so a single term mathematically cannot span the persistence window — persistence
+/// must come from RENEWALS from fresh post-expiry signals, not one long binding. The robustness
+/// sweep drives `{12, 24, 48, 96}` around this default; `2 × RETURN_WINDOW` is the over-long end.
+const COMMITMENT_TERM_DEFAULT: u16 = RETURN_WINDOW as u16;
+
+/// S22f — the shipped voluntary-commitment **entry floor**: the floor on a candidate's windowed
+/// realized cultivation proceeds below which its entry signal does not clear (so a single dust sale
+/// cannot trigger an opt-in). Reuses the S22c material-floor logic / magnitude
+/// ([`RETENTION_MATERIAL_FLOOR`]); the `unprofitable_offer` control raises it to `u64::MAX` for zero
+/// uptake.
+const COMMITMENT_ENTRY_FLOOR_DEFAULT: u64 = RETENTION_MATERIAL_FLOOR;
+
+/// S22f — the `fiat_pin` CONTROL's default forced-commit count: a small deterministic minority of
+/// the expanded roster. The control is a bounded forced re-pin used to falsify voluntary uptake, not
+/// the headline; tests may override `commitment_fiat_pin` when they need a different forced count.
+const COMMITMENT_FIAT_PIN_DEFAULT: u16 = 6;
+
 /// Econ ticks per settlement "year" — the horizon unit the smoke test counts in.
 /// A placeholder cadence, not a balance figure.
 pub const ECON_TICKS_PER_YEAR: u64 = 12;
@@ -1156,6 +1176,48 @@ pub struct ChainConfig {
     /// isolates whether inheritance is load-bearing). A pure conserved transfer either way, never a
     /// mint. Consulted only while `endowed_cultivation_capital` is active.
     pub cultivation_tool_inheritance: bool,
+    /// S22f — **voluntary fixed-term cultivation commitment** gate (default `false`, byte-identical
+    /// when off). When `true` AND the S22c profit-driven-retention path is active (it composes
+    /// strictly on [`Self::profit_driven_retention`]; the entry signal IS the S22c realized return,
+    /// inert pre-money via the same `current_money_good() == Some(SALT)` gate), an eligible
+    /// **uncommitted** agent whose own realized cultivation-return signal clears
+    /// [`Self::commitment_entry_floor`] vs its outside option may **voluntarily opt in** to a
+    /// cultivator commitment of [`Self::commitment_term`] econ ticks. While the term runs the agent
+    /// CULTIVATES — the normal hunger/profit cultivation *exit* cannot turn it off (the ONE new exit
+    /// behavior in the arc) — and the term decrements once per econ tick; at expiry the agent
+    /// returns to the normal S22a/S22c fluid logic and re-decides from FRESH realized returns,
+    /// re-committing (a tracked renewal) only if the signal still clears. Commitment overrides the
+    /// EXIT, not vocation eligibility: a committed agent that dies or becomes an active specialized
+    /// producer (leaves the S22a-eligible set) has its commitment cleared deterministically (no
+    /// orphaned binding on a non-cultivator). Pure steering state (no goods — cultivation effects
+    /// flow through the existing grain/bread accounting, the conservation guard). Canonicalized
+    /// **ON-only** (digest tag 12 + [`Self::commitment_term`] + [`Self::commitment_entry_floor`] +
+    /// [`Self::commitment_fiat_pin`] + the per-colonist commitment state), mirroring the
+    /// S16/S18/S21/S22a–e gates: a flag-off config keeps its exact prior byte layout. Composes on
+    /// `profit_driven_retention`.
+    pub voluntary_cultivation_commitment: bool,
+    /// S22f: the binding length in econ ticks (default [`COMMITMENT_TERM_DEFAULT`]). For the
+    /// headline/success bar it MUST satisfy `commitment_term < ceil(PERSIST_FRACTION × FINAL_WINDOW)`
+    /// so a single term cannot span the persistence window (persistence must come from renewals). The
+    /// `nonbinding_term` control sets it to `1` (a one-tick "commitment" reproduces S22c marginal
+    /// retention); the robustness sweep drives `{12, 24, 48, 96}`. Consulted only while
+    /// `voluntary_cultivation_commitment` is active.
+    pub commitment_term: u16,
+    /// S22f: the floor on a candidate's windowed realized cultivation proceeds below which its entry
+    /// signal does not clear (default [`COMMITMENT_ENTRY_FLOOR_DEFAULT`]; reuses the S22c
+    /// material-floor logic). The `unprofitable_offer` control sets it to `u64::MAX` so NO agent's
+    /// signal ever clears (zero uptake → `CommitmentUnchosen`, proving uptake is voluntary/
+    /// signal-gated). Consulted only while `voluntary_cultivation_commitment` is active.
+    pub commitment_entry_floor: u64,
+    /// S22f — the **fiat-pin CONTROL** count (default `0`). When `> 0` (and the commitment gate is
+    /// active), the voluntary signal-gated entry is BYPASSED and the first `commitment_fiat_pin`
+    /// eligible agents (deterministic slot order) are FORCE-committed from the first post-money tick
+    /// and re-pinned on expiry — a forced re-pin of a producer class, not a voluntary institution. It
+    /// must classify `RePinScaffold` and never count as headline success: the forced commits record
+    /// NO signal-gated uptake, leave NO below-floor non-committer set, and earn NO fresh-signal
+    /// renewals, so the voluntary headline (which has all three) is distinguishable even when both
+    /// show low churn. `0` (the headline + every other config) leaves entry purely voluntary.
+    pub commitment_fiat_pin: u16,
     /// S21d.0 — **retire the food mints** (the open-survival probe; default `false`,
     /// byte-identical when off). When `true`, the two staple-food mint sites are skipped
     /// **independent of `own_labor_subsistence`/forage**: the demographic `food_provision`
@@ -1536,6 +1598,13 @@ impl ChainConfig {
             endowed_cultivation_capital: false,
             endowed_tool_count: 0,
             cultivation_tool_inheritance: true,
+            // S22f off by default: no voluntary cultivation commitment, so every existing config and
+            // its goldens are byte-identical (canonicalized ON-only). The term/floor defaults are
+            // consulted only once the gate is on (and composed on S22c profit-driven retention).
+            voluntary_cultivation_commitment: false,
+            commitment_term: COMMITMENT_TERM_DEFAULT,
+            commitment_entry_floor: COMMITMENT_ENTRY_FLOOR_DEFAULT,
+            commitment_fiat_pin: 0,
             // S21d.0 off by default: the food mints stay, so every existing config and its
             // goldens are byte-identical (canonicalized ON-only).
             retire_food_mints: false,
@@ -1679,6 +1748,13 @@ impl ChainConfig {
             endowed_cultivation_capital: false,
             endowed_tool_count: 0,
             cultivation_tool_inheritance: true,
+            // S22f off by default: no voluntary cultivation commitment, so every existing config and
+            // its goldens are byte-identical (canonicalized ON-only). The term/floor defaults are
+            // consulted only once the gate is on (and composed on S22c profit-driven retention).
+            voluntary_cultivation_commitment: false,
+            commitment_term: COMMITMENT_TERM_DEFAULT,
+            commitment_entry_floor: COMMITMENT_ENTRY_FLOOR_DEFAULT,
+            commitment_fiat_pin: 0,
             // S21d.0 off by default: the food mints stay, so every existing config and its
             // goldens are byte-identical (canonicalized ON-only).
             retire_food_mints: false,
@@ -1802,6 +1878,13 @@ impl ChainConfig {
             endowed_cultivation_capital: false,
             endowed_tool_count: 0,
             cultivation_tool_inheritance: true,
+            // S22f off by default: no voluntary cultivation commitment, so every existing config and
+            // its goldens are byte-identical (canonicalized ON-only). The term/floor defaults are
+            // consulted only once the gate is on (and composed on S22c profit-driven retention).
+            voluntary_cultivation_commitment: false,
+            commitment_term: COMMITMENT_TERM_DEFAULT,
+            commitment_entry_floor: COMMITMENT_ENTRY_FLOOR_DEFAULT,
+            commitment_fiat_pin: 0,
             // S21d.0 off by default: the food mints stay, so every existing config and its
             // goldens are byte-identical (canonicalized ON-only).
             retire_food_mints: false,
@@ -4838,6 +4921,119 @@ impl SettlementConfig {
         Self::frontier_cultivation_capital_productivity_only().expanded_endowment_roster()
     }
 
+    /// S22f — **the EXPANDED no-capital S22c base** (the matched baseline + the precondition colony):
+    /// [`Self::frontier_profit_retention`] (the S22a + S22c fluid money colony, skill OFF, durable +
+    /// endowed capital both OFF, no plow content) expanded to [`ENDOWED_ROSTER_HOUSEHOLDS`] lineage
+    /// households via the SAME proportional rescale the S22e base uses — but applied to the no-capital
+    /// S22c base, NOT to `frontier_cultivation_capital`, so the headline carries no plows of any kind
+    /// (Codex P1 #1). This is BOTH the `commitment_off` matched churn baseline AND the precondition
+    /// colony for the S22f suite — the commitment-off expanded base must reproduce S22c/S22e
+    /// no-stickiness. The headline simply flips the commitment gate on top of exactly this roster.
+    /// Byte-identical to itself with the gate reverted (the gate is off here).
+    pub fn frontier_profit_retention_expanded() -> Self {
+        Self::frontier_profit_retention().expanded_endowment_roster()
+    }
+
+    /// S22f — turn the voluntary fixed-term cultivation commitment gate on with the shipped term +
+    /// entry floor (the term defaults to [`COMMITMENT_TERM_DEFAULT`], well below
+    /// `ceil(PERSIST_FRACTION × FINAL_WINDOW)` so a single term cannot span the persistence window).
+    /// A pure gate flip — it adds no capital and changes no other lever, so the headline's stickiness
+    /// (if any) is the commitment institution alone.
+    fn with_voluntary_commitment(mut self) -> Self {
+        if let Some(chain) = self.chain.as_mut() {
+            chain.voluntary_cultivation_commitment = true;
+            chain.commitment_term = COMMITMENT_TERM_DEFAULT;
+            chain.commitment_entry_floor = COMMITMENT_ENTRY_FLOOR_DEFAULT;
+        }
+        self
+    }
+
+    /// S22f — **voluntary fixed-term cultivation commitment** (the HEADLINE):
+    /// [`Self::frontier_profit_retention_expanded`] (the expanded no-capital S22c money colony) with
+    /// the **only** change being `voluntary_cultivation_commitment = true`. Post-money, an eligible
+    /// agent whose OWN realized cultivation-return signal clears the entry floor vs its outside option
+    /// may VOLUNTARILY opt in to a cultivator commitment of [`COMMITMENT_TERM_DEFAULT`] econ ticks;
+    /// while the term runs the normal hunger/profit exit cannot turn its cultivation off; at expiry it
+    /// re-decides from FRESH realized returns (a renewal only if the signal still clears). The
+    /// institution is configured; the UPTAKE (who commits, when) is endogenous and signal-gated. NO
+    /// capital of any kind (durable + endowed both OFF), so any stickiness is the commitment institution
+    /// alone, not "capital + a contract" (Codex P1 #1).
+    ///
+    /// The central S22f question: does an institution that changes the EXIT itself finally turn S22c's
+    /// FLUID participation into a STABLE role split — a persistent VOLUNTARILY-committed cultivator
+    /// cohort plus a fully-fluid non-committed buyer side — while money + mortality + provenance +
+    /// conservation survive, AND is it a genuinely voluntary institution (not a fiat re-pin), with
+    /// persistence across terms driven by renewals from fresh signals? Or is the offer unchosen
+    /// (`CommitmentUnchosen`), uptake universal (`UniversalCommitment`), a disguised pin
+    /// (`RePinScaffold`), or sticky-but-failing (`NoStickinessDespiteCommitment`)?
+    ///
+    /// Determinism: `voluntary_cultivation_commitment` is canonicalized ON-only (digest tag 12 + the
+    /// term/floor/fiat-pin params + the per-colonist commitment state, which steers the next exit), so
+    /// only THIS scenario's digest changes vs the expanded base; with the gate reverted it is
+    /// byte-identical to `frontier_profit_retention_expanded`. The uptake/renewal/below-floor/
+    /// exit-override diagnostics it pairs with are runtime-only (never digested).
+    pub fn frontier_voluntary_commitment() -> Self {
+        Self::frontier_profit_retention_expanded().with_voluntary_commitment()
+    }
+
+    /// S22f — the **unprofitable-offer CONTROL**: [`Self::frontier_voluntary_commitment`] with
+    /// `commitment_entry_floor = u64::MAX`, so NO agent's realized cultivation-return signal ever
+    /// clears the entry floor → ZERO uptake → `CommitmentUnchosen`. Proves the uptake is voluntary /
+    /// signal-gated (not an automatic yes the moment the institution is offered).
+    pub fn frontier_voluntary_commitment_unprofitable() -> Self {
+        let mut cfg = Self::frontier_voluntary_commitment();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.commitment_entry_floor = u64::MAX;
+        }
+        cfg
+    }
+
+    /// S22f — the **nonbinding-term CONTROL**: [`Self::frontier_voluntary_commitment`] with
+    /// `commitment_term = 1`, so a "commitment" binds only the one tick on which it forms (and the
+    /// agent re-decides every tick). A one-tick term should reproduce S22c MARGINAL retention —
+    /// proving the binding *term*, not the act of committing, is what matters.
+    pub fn frontier_voluntary_commitment_nonbinding() -> Self {
+        let mut cfg = Self::frontier_voluntary_commitment();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.commitment_term = 1;
+        }
+        cfg
+    }
+
+    /// S22f — the **fiat-pin CONTROL** (the key anti-repin falsifier):
+    /// [`Self::frontier_voluntary_commitment`] with `commitment_fiat_pin = COMMITMENT_FIAT_PIN_DEFAULT`,
+    /// so the voluntary signal-gated entry is BYPASSED and a configured minority of eligible agents
+    /// are FORCE-committed from the first post-money tick and re-pinned on expiry. It must classify
+    /// `RePinScaffold` and NEVER count as headline success: the forced commits record no signal-gated
+    /// uptake, leave no below-floor non-committer set, and earn no fresh-signal renewals, so the
+    /// voluntary headline is distinguishable even when both show low churn.
+    pub fn frontier_voluntary_commitment_fiat_pin() -> Self {
+        let mut cfg = Self::frontier_voluntary_commitment();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.commitment_fiat_pin = COMMITMENT_FIAT_PIN_DEFAULT;
+        }
+        cfg
+    }
+
+    /// S22f — the **earned-capital composition variant** (SECONDARY, never required for the headline
+    /// verdict): [`Self::frontier_cultivation_capital`] (the S22d durable-capital colony) expanded to
+    /// [`ENDOWED_ROSTER_HOUSEHOLDS`] with the voluntary commitment gate on top. Tests whether the
+    /// commitment institution composes with EARNED capital; reported separately so the headline must
+    /// succeed/fail WITHOUT any capital (Codex P1 #1).
+    pub fn frontier_voluntary_commitment_earned_capital() -> Self {
+        Self::frontier_cultivation_capital()
+            .expanded_endowment_roster()
+            .with_voluntary_commitment()
+    }
+
+    /// S22f — the **endowed-capital composition variant** (SECONDARY, never required for the headline
+    /// verdict): [`Self::frontier_endowed_capital`] (the S22e endowed + inherited capital colony) with
+    /// the voluntary commitment gate on top. Tests whether the commitment institution composes with
+    /// ENDOWED capital; reported separately so the headline must succeed/fail WITHOUT any capital.
+    pub fn frontier_voluntary_commitment_endowed_capital() -> Self {
+        Self::frontier_endowed_capital().with_voluntary_commitment()
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).
@@ -5351,6 +5547,25 @@ struct Colonist {
     /// `cultivation_skill` block), so a flag-off colonist block stays byte-identical. `0` off the
     /// durable-cultivation-capital path.
     cultivation_tenure: u16,
+    /// S22f own-use cultivation **commitment remaining** — the econ ticks left in this colonist's
+    /// current voluntary commitment term (`0` = uncommitted). Set to [`ChainConfig::commitment_term`]
+    /// on a voluntary opt-in (its realized cultivation-return signal cleared
+    /// [`ChainConfig::commitment_entry_floor`] vs its outside option, post-money), decremented once
+    /// per econ tick, and reset to `0` deterministically on expiry or when the agent leaves the
+    /// S22a-eligible set (death / becoming an active specialized producer). While `> 0` it STEERS the
+    /// cultivation EXIT (the binding overrides the normal hunger/profit exit), so it is part of the
+    /// future-behaviour identity whenever the commitment phase can run; serialized only under that
+    /// gate (nested in the cultivation block, mirroring the `cultivation_tenure` block), so a flag-off
+    /// colonist block stays byte-identical. `0` off the voluntary-commitment path.
+    commitment_remaining: u16,
+    /// S22f own-use cultivation **commitment renewals** — the count of times this colonist re-committed
+    /// from a FRESH post-expiry signal (the first opt-in is not a renewal). It does not steer the
+    /// cultivate decision directly, but is part of the commitment future-behaviour identity (the S22c/
+    /// S22e discipline digests the steering state ON-only) and is read by the success bar (every
+    /// persistent committed id needs ≥1 renewal so persistence is RE-CHOSEN, not one mega-term).
+    /// Serialized only under the gate (nested in the cultivation block), so a flag-off colonist block
+    /// stays byte-identical. `0` off the voluntary-commitment path / for a never-renewed committer.
+    commitment_renewals: u16,
 }
 
 /// A settlement of generated colonists driven over a real `world` + `econ`.
@@ -5521,6 +5736,33 @@ pub struct Settlement {
     /// S22c (runtime-only diagnostic): the union of [`Self::profit_retained_ids`] over the whole
     /// run — distinct agents ever retained-by-profit. Not digested.
     profit_retained_ever: BTreeSet<AgentId>,
+    /// S22f (runtime-only diagnostic, NOT digested): distinct agent ids that ever held a commitment
+    /// over the run (voluntary or fiat) — the committed cohort. Doubles as the "has ever committed"
+    /// tracker the voluntary entry seam reads to distinguish a FIRST opt-in from a RENEWAL. Empty off
+    /// the voluntary-commitment path.
+    commitment_committed_ever: BTreeSet<AgentId>,
+    /// S22f (runtime-only diagnostic, NOT digested): per VOLUNTARY committer, the `(econ tick, signal
+    /// value)` at its FIRST signal-gated opt-in — the proof each entry is traceable to that agent's
+    /// own cleared S22c return (the signal value is its windowed realized cultivation proceeds at
+    /// uptake). Fiat-pinned commits are deliberately absent (they have no signal). Empty off the path.
+    commitment_uptake: BTreeMap<AgentId, (u64, u64)>,
+    /// S22f (runtime-only diagnostic, NOT digested): agent ids FORCE-committed by the `fiat_pin`
+    /// control (bypassing the voluntary signal). Empty for the voluntary headline + every other
+    /// config; non-empty only under `commitment_fiat_pin > 0`, where it marks the run as a re-pin.
+    commitment_fiat_ever: BTreeSet<AgentId>,
+    /// S22f (runtime-only diagnostic, NOT digested): eligible UNCOMMITTED agent ids whose entry
+    /// signal was evaluated post-money and fell BELOW the entry floor (windowed cultivation proceeds
+    /// `< commitment_entry_floor`) — the below-floor non-committers that prove the signal
+    /// DISCRIMINATES (entry is a real decision, not a universal auto-yes). Empty off the path.
+    commitment_below_floor_ever: BTreeSet<AgentId>,
+    /// S22f (runtime-only diagnostic, NOT digested): agent ids cultivating THIS tick ONLY because the
+    /// commitment binding overrode the exit (the normal S22a/S22c rule would have exited them).
+    /// Cleared/refilled each tick in [`Self::run_own_labor_subsistence`]; empty off the path.
+    commitment_exit_override_ids: BTreeSet<AgentId>,
+    /// S22f (runtime-only diagnostic, NOT digested): the union of [`Self::commitment_exit_override_ids`]
+    /// over the run — distinct agents whose commitment ever bound a tick the flag-off run would have
+    /// exited (the real exit-override the mandatory non-vacuity test reads). Empty off the path.
+    commitment_exit_override_ever: BTreeSet<AgentId>,
     /// S22d: in-flight per-builder durable-cultivation-tool projects (a
     /// [`ProjectTemplateId::BuildCultivationTool`] each). Each holds a cultivating builder's own
     /// committed WOOD + advancing labor; on completion the plow credits the builder's stock and
@@ -5870,6 +6112,14 @@ struct ChainRuntime {
     endowed_cultivation_capital: bool,
     endowed_tool_count: u16,
     cultivation_tool_inheritance: bool,
+    /// S22f: the voluntary fixed-term cultivation commitment gate + its knobs (see
+    /// [`ChainConfig::voluntary_cultivation_commitment`]). `false`/defaults for every existing
+    /// config, so the commitment entry/binding/expiry seam and the ON-only digest surface never
+    /// engage and the run is byte-identical.
+    voluntary_cultivation_commitment: bool,
+    commitment_term: u16,
+    commitment_entry_floor: u64,
+    commitment_fiat_pin: u16,
     /// S21h.0: the non-lineage woodcutters' consumed-only bread cushion (see
     /// [`ChainConfig::gatherer_food_cushion`]). `0` for every existing config; canonicalized
     /// ON-only (its differing gatherer starting stock already splits the digest).
@@ -5953,6 +6203,24 @@ struct ReturnTick {
     /// Post-money SALT proceeds from the colonist's NON-cultivation sales (e.g. WOOD→SALT) this
     /// tick — the realized outside option.
     outside_proceeds: u64,
+}
+
+/// S22f: the outcome of evaluating an eligible uncommitted agent's voluntary-commitment entry signal
+/// against the SAME rolling cultivation-proceeds / outside-option data S22c uses. Reuses the data +
+/// the entry floor, NOT the `profit_stay_active` exit helper (which is phrased for an already-
+/// cultivating agent around the `cultivate_now` branch), to avoid phase/order ambiguity (Codex P2 #5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CommitmentEntrySignal {
+    /// The signal cleared: windowed realized cultivation proceeds ≥ entry floor over ≥1 sale tick AND
+    /// the cultivation per-sale-tick rate ≥ outside rate + margin. Carries the signal value (windowed
+    /// cultivation proceeds) recorded at uptake.
+    Clears(u64),
+    /// Below the entry floor (no / insufficient realized cultivation proceeds) — a below-floor
+    /// non-committer that proves the signal DISCRIMINATES.
+    BelowFloor,
+    /// Above the floor but the cultivation rate did not beat the outside option — a real decision that
+    /// went the other way (NOT a below-floor case, so it is not counted as discrimination evidence).
+    AboveFloorLoses,
 }
 
 /// S22c: sum a colonist's rolling return window over the last `return_window` ticks ending at
@@ -7241,6 +7509,8 @@ impl Settlement {
                 cultivation_skill: 0,
                 cultivation_return_window: VecDeque::new(),
                 cultivation_tenure: 0,
+                commitment_remaining: 0,
+                commitment_renewals: 0,
             });
         }
 
@@ -7335,6 +7605,8 @@ impl Settlement {
                         cultivation_skill: 0,
                         cultivation_return_window: VecDeque::new(),
                         cultivation_tenure: 0,
+                        commitment_remaining: 0,
+                        commitment_renewals: 0,
                     });
                 }
             }
@@ -7763,6 +8035,10 @@ impl Settlement {
                 endowed_cultivation_capital: chain.endowed_cultivation_capital,
                 endowed_tool_count: chain.endowed_tool_count,
                 cultivation_tool_inheritance: chain.cultivation_tool_inheritance,
+                voluntary_cultivation_commitment: chain.voluntary_cultivation_commitment,
+                commitment_term: chain.commitment_term,
+                commitment_entry_floor: chain.commitment_entry_floor,
+                commitment_fiat_pin: chain.commitment_fiat_pin,
                 gatherer_food_cushion: chain.gatherer_food_cushion,
                 emergency_hunger_threshold: chain.emergency_hunger_threshold,
                 retire_food_mints: chain.retire_food_mints,
@@ -7826,6 +8102,12 @@ impl Settlement {
             cultivation_proceeds_scratch: BTreeMap::new(),
             profit_retained_ids: BTreeSet::new(),
             profit_retained_ever: BTreeSet::new(),
+            commitment_committed_ever: BTreeSet::new(),
+            commitment_uptake: BTreeMap::new(),
+            commitment_fiat_ever: BTreeSet::new(),
+            commitment_below_floor_ever: BTreeSet::new(),
+            commitment_exit_override_ids: BTreeSet::new(),
+            commitment_exit_override_ever: BTreeSet::new(),
             cultivation_tool_builds: Vec::new(),
             next_cultivation_tool_project_id: 0,
             cultivation_tool_producers: BTreeSet::new(),
@@ -8102,6 +8384,12 @@ impl Settlement {
             cultivation_proceeds_scratch: BTreeMap::new(),
             profit_retained_ids: BTreeSet::new(),
             profit_retained_ever: BTreeSet::new(),
+            commitment_committed_ever: BTreeSet::new(),
+            commitment_uptake: BTreeMap::new(),
+            commitment_fiat_ever: BTreeSet::new(),
+            commitment_below_floor_ever: BTreeSet::new(),
+            commitment_exit_override_ids: BTreeSet::new(),
+            commitment_exit_override_ever: BTreeSet::new(),
             cultivation_tool_builds: Vec::new(),
             next_cultivation_tool_project_id: 0,
             cultivation_tool_producers: BTreeSet::new(),
@@ -9951,6 +10239,8 @@ impl Settlement {
                 cultivation_skill: 0,
                 cultivation_return_window: VecDeque::new(),
                 cultivation_tenure: 0,
+                commitment_remaining: 0,
+                commitment_renewals: 0,
             });
             let child_slot = self.colonists.len() - 1;
             self.live_colonist_slots.push(child_slot);
@@ -10546,6 +10836,23 @@ impl Settlement {
         if retention {
             self.profit_retained_ids.clear();
         }
+        // S22f: the voluntary fixed-term commitment seam. When active, an eligible UNCOMMITTED agent
+        // may opt in post-money (its own realized cultivation-return signal clears the entry floor vs
+        // its outside option), binding the cultivation exit for `commitment_term` ticks; at expiry it
+        // re-decides from fresh returns. Reset the per-tick exit-override diagnostic up front; off the
+        // path it stays empty. `money` is the hard anti-circularity gate (inert pre-money). The
+        // fiat-pin control bypasses the signal and MAINTAINS `commitment_fiat_pin` concurrently
+        // committed eligible agents (slot order): an already-committed agent occupies a pin slot, and
+        // free slots are topped up from the uncommitted, so the forced cohort stays at the configured
+        // size and re-pins on expiry rather than growing to swallow the roster.
+        let commitment = self.voluntary_cultivation_commitment_active();
+        let money = self.society.current_money_good() == Some(SALT);
+        let commitment_term = self.commitment_term();
+        let commitment_fiat_pin = self.commitment_fiat_pin();
+        if commitment {
+            self.commitment_exit_override_ids.clear();
+        }
+        let mut fiat_pinned = 0u16;
         let live = self.live_colonist_slots.clone();
         // S22c: snapshot the START-OF-TICK cultivation roster ONCE, before the slot-by-slot loop
         // below mutates each colonist's `cultivating` flag. The colony reference outside rate (the
@@ -10572,6 +10879,7 @@ impl Settlement {
                 was_pressure,
                 was_stock_pending,
                 has_cultivation_input_in_flight,
+                was_commitment_remaining,
             ) = {
                 let colonist = &self.colonists[slot];
                 // The spatial poor with spare labor in an untooled-or-latent role
@@ -10613,6 +10921,7 @@ impl Settlement {
                     colonist.cultivation_stock_pending,
                     cultivate_input
                         .is_some_and(|input| self.cultivation_input_in_flight(colonist.id, input)),
+                    colonist.commitment_remaining,
                 )
             };
             // Hysteresis: start foraging at/above `h_in`, stop below `h_out`, else hold.
@@ -10652,11 +10961,83 @@ impl Settlement {
             } else {
                 false
             };
-            let cultivate_now = cultivation
+            // S22a/S22c normal cultivation decision: entry is hunger/pressure-gated, the exit is
+            // hunger/profit-gated. This is exactly the pre-S22f disjunction; S22f only adds the
+            // commitment binding as an extra exit-override term below.
+            let normal_cultivate = cultivation
                 && eligible
                 && (pressure >= cult_patience
                     || (was_cultivating
                         && (hunger >= cult_out || has_cultivation_input_in_flight || profit_stay)));
+            // S22f: the voluntary fixed-term commitment steering. Off the path `commitment` is false
+            // and `commitment_remaining` stays `was_commitment_remaining` (0 on every non-commitment
+            // config), so `commitment_binds` is false and `cultivate_now` is exactly `normal_cultivate`.
+            let mut commitment_remaining = was_commitment_remaining;
+            if commitment {
+                if !eligible {
+                    // §3.5b: commitment overrides the EXIT, not vocation eligibility. An agent that
+                    // left the S22a-eligible set (became an active specialized producer) drops its
+                    // binding deterministically — no orphaned commitment on a non-cultivator. (A
+                    // dead colonist is removed entirely, so its state drops with it.)
+                    commitment_remaining = 0;
+                } else if money && commitment_fiat_pin > 0 {
+                    // The fiat-pin CONTROL: bypass the voluntary signal and maintain a fixed configured
+                    // number of concurrently-committed eligible agents (slot order). An already-bound
+                    // agent occupies a pin slot; free slots are topped up from the uncommitted, so the
+                    // forced cohort re-pins on expiry without growing to swallow the roster.
+                    if commitment_remaining > 0 {
+                        if fiat_pinned < commitment_fiat_pin {
+                            fiat_pinned = fiat_pinned.saturating_add(1);
+                        } else {
+                            commitment_remaining = 0;
+                        }
+                    } else if fiat_pinned < commitment_fiat_pin {
+                        fiat_pinned = fiat_pinned.saturating_add(1);
+                        commitment_remaining = commitment_term;
+                        self.commitment_fiat_ever.insert(id);
+                        self.commitment_committed_ever.insert(id);
+                    }
+                } else if commitment_remaining == 0 && money {
+                    // Eligible + uncommitted + post-money: voluntary opt-in. Entry is gated by the
+                    // agent's OWN realized cultivation-return signal clearing the entry floor vs its
+                    // outside option — no quota/top-N, inert pre-money.
+                    match self.commitment_entry_signal_clears(id, &cultivating_at_pass_start) {
+                        CommitmentEntrySignal::Clears(signal) => {
+                            commitment_remaining = commitment_term;
+                            if self.commitment_committed_ever.contains(&id) {
+                                // A re-commit from a fresh post-expiry signal — a tracked renewal
+                                // (the first opt-in is not a renewal). Persistence across terms
+                                // must come from re-choosing, not one long binding (§2.5).
+                                self.colonists[slot].commitment_renewals =
+                                    self.colonists[slot].commitment_renewals.saturating_add(1);
+                            } else {
+                                // First voluntary opt-in — record the uptake tick + signal value
+                                // (the proof entry is traceable to the agent's own cleared signal).
+                                self.commitment_uptake.insert(id, (self.econ_tick, signal));
+                            }
+                            self.commitment_committed_ever.insert(id);
+                        }
+                        CommitmentEntrySignal::BelowFloor => {
+                            // A below-floor non-committer — the signal discriminates (entry is a
+                            // real decision, not a universal auto-yes).
+                            self.commitment_below_floor_ever.insert(id);
+                        }
+                        CommitmentEntrySignal::AboveFloorLoses => {}
+                    }
+                }
+            }
+            // S22f: while the term runs the agent CULTIVATES — the binding overrides the normal
+            // hunger/profit exit (the ONE new exit behavior in the arc), gated entirely behind the
+            // voluntary, signal-cleared, post-money entry above.
+            let commitment_binds =
+                commitment && cultivation && eligible && commitment_remaining > 0;
+            let cultivate_now = normal_cultivate || commitment_binds;
+            // S22f (runtime-only diagnostic): a real exit-override — bound this tick but the normal
+            // S22a/S22c rule would have EXITED. The mandatory non-vacuity test reads this set.
+            if commitment_binds && !normal_cultivate {
+                self.commitment_exit_override_ids.insert(id);
+                self.commitment_exit_override_ever.insert(id);
+            }
             // S22c (runtime-only diagnostic): a counterfactual exit FLIP — this agent is cultivating
             // THIS tick ONLY because `profit_stay` fired (it is past the hunger exit, has no input in
             // flight, and is not pressure-escalating), so the flag-off path would have EXITED it. The
@@ -10682,6 +11063,13 @@ impl Settlement {
             self.colonists[slot].cultivate_pressure = pressure;
             self.colonists[slot].cultivation_stock_pending =
                 cultivation && eligible && (was_stock_pending || was_cultivating || cultivate_now);
+            // S22f: persist the per-agent commitment term, decrementing once per econ tick while it
+            // binds (so a `commitment_term`-length opt-in binds exactly that many ticks; at 0 the
+            // agent is uncommitted and re-decides next tick). Off the path `commitment_remaining` is
+            // 0 and `commitment_binds` is false, so this writes 0 (byte-identical, and the field is
+            // not serialized off the gate anyway).
+            self.colonists[slot].commitment_remaining =
+                commitment_remaining.saturating_sub(u16::from(commitment_binds));
             debug_assert!(
                 !(self.colonists[slot].foraging && self.colonists[slot].cultivating),
                 "a colonist must forage XOR cultivate — never both in one econ tick"
@@ -12856,6 +13244,42 @@ impl Settlement {
             .is_some_and(chain_runtime_durable_cultivation_tool_active)
     }
 
+    /// S22f: whether the **voluntary fixed-term cultivation commitment** path is active this tick —
+    /// the `voluntary_cultivation_commitment` flag is on AND the S22c profit-driven-retention path is
+    /// active (which itself requires S22a entry + the money-from-produced-bread path). When this
+    /// holds, the per-agent commitment state is maintained + digested ON-only, the voluntary entry
+    /// seam (gated post-money) can opt eligible agents in, and the cultivation exit is overridden for
+    /// the bound term. Off (every existing config) it is `false`, so all of it is inert and the run
+    /// is byte-identical. (Pre-money inertness is enforced at the entry seam via `current_money_good`.)
+    fn voluntary_cultivation_commitment_active(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(chain_runtime_voluntary_cultivation_commitment_active)
+    }
+
+    /// S22f: the configured commitment binding length (econ ticks), falling back to the pinned
+    /// default for a settlement with no chain. Consulted only while the commitment path is active.
+    fn commitment_term(&self) -> u16 {
+        self.chain
+            .as_ref()
+            .map_or(COMMITMENT_TERM_DEFAULT, |c| c.commitment_term)
+    }
+
+    /// S22f: the configured commitment entry floor (windowed realized cultivation proceeds a
+    /// candidate must clear), falling back to the pinned default for a settlement with no chain.
+    /// Consulted only while the commitment path is active.
+    fn commitment_entry_floor(&self) -> u64 {
+        self.chain
+            .as_ref()
+            .map_or(COMMITMENT_ENTRY_FLOOR_DEFAULT, |c| c.commitment_entry_floor)
+    }
+
+    /// S22f: the configured fiat-pin count (forced commitments bypassing the voluntary signal); `0`
+    /// (the headline + every other config) leaves entry purely voluntary.
+    fn commitment_fiat_pin(&self) -> u16 {
+        self.chain.as_ref().map_or(0, |c| c.commitment_fiat_pin)
+    }
+
     /// S22d: whether the **non-durable / rented-tool control** is active this tick — the
     /// `cultivation_tool_non_durable` flag is on AND the durable-cultivation-capital path is active.
     /// When this holds, a built plow is consumed (booked `consumed_as_input`) after the one
@@ -13014,6 +13438,57 @@ impl Settlement {
         let lhs = u128::from(cult_sum) * u128::from(o_ticks) * 10_000;
         let rhs = u128::from(o_sum) * u128::from(cult_ticks) * (10_000 + u128::from(margin_bps));
         lhs >= rhs
+    }
+
+    /// S22f: the voluntary-commitment **entry** signal for an eligible uncommitted agent `id` — a
+    /// REUSABLE predicate over the SAME rolling cultivation-sale / outside-option data S22c maintains
+    /// (the per-colonist `cultivation_return_window` + the colony reference outside rate) and the
+    /// SAME floor logic, but read with [`Self::commitment_entry_floor`] instead of the retention
+    /// material floor and phrased for an opt-in DECISION rather than the exit. It does NOT call
+    /// [`Self::profit_stay_active`] (which is phrased for an already-cultivating agent around the
+    /// `cultivate_now` branch) — that avoids phase/order ambiguity (Codex P2 #5). Returns
+    /// [`CommitmentEntrySignal::Clears`] with the windowed cultivation proceeds (the recorded signal
+    /// value) iff the proceeds clear the entry floor over ≥1 sale tick AND the cultivation rate ≥
+    /// outside rate + margin; [`CommitmentEntrySignal::BelowFloor`] when the proceeds are below the
+    /// floor (the discriminating below-floor case); else [`CommitmentEntrySignal::AboveFloorLoses`].
+    /// Read-only; the money/active gate is the caller's. All comparisons are exact integer
+    /// cross-multiplications (no float, no RNG).
+    fn commitment_entry_signal_clears(
+        &self,
+        id: AgentId,
+        cultivating_at_pass_start: &BTreeSet<AgentId>,
+    ) -> CommitmentEntrySignal {
+        let Some(&slot) = self.colonist_slot_by_id.get(&id) else {
+            return CommitmentEntrySignal::BelowFloor;
+        };
+        let (return_window, margin_bps, _material_floor) = self.retention_params();
+        let entry_floor = self.commitment_entry_floor();
+        let tick = self.econ_tick;
+        let (cult_sum, cult_ticks, out_sum, out_ticks) = window_return_sums(
+            &self.colonists[slot].cultivation_return_window,
+            tick,
+            return_window,
+        );
+        // Entry floor: a real, recurring realized cultivation gain (not one dust sale; not vacuous).
+        // Below it ⇒ the discriminating below-floor non-committer.
+        if cult_ticks == 0 || cult_sum < entry_floor {
+            return CommitmentEntrySignal::BelowFloor;
+        }
+        // Outside option: the agent's OWN realized non-cultivation rate, else the colony reference,
+        // else 0 (weak). Kept as `(sum, ticks)` rationals so the rate comparison stays integer.
+        let (o_sum, o_ticks) = if out_ticks > 0 {
+            (out_sum, out_ticks)
+        } else {
+            self.colony_reference_outside_rate(return_window, cultivating_at_pass_start)
+                .unwrap_or((0, 1))
+        };
+        let lhs = u128::from(cult_sum) * u128::from(o_ticks) * 10_000;
+        let rhs = u128::from(o_sum) * u128::from(cult_ticks) * (10_000 + u128::from(margin_bps));
+        if lhs >= rhs {
+            CommitmentEntrySignal::Clears(cult_sum)
+        } else {
+            CommitmentEntrySignal::AboveFloorLoses
+        }
     }
 
     /// S18: whether the **money-from-a-multi-good-economy** path is active this tick — the
@@ -14065,6 +14540,10 @@ impl Settlement {
             return;
         }
         self.colonists[slot].alive = false;
+        // S22f §3.5b: a commitment overrides the cultivation EXIT, never survival — drop a dead
+        // committer's binding so no orphaned commitment lingers in the digest on a non-living agent.
+        // `0` for every non-commitment colonist, so this is byte-identical off the path.
+        self.colonists[slot].commitment_remaining = 0;
         if let Ok(index) = self.live_colonist_slots.binary_search(&slot) {
             self.live_colonist_slots.remove(index);
         }
@@ -15118,6 +15597,88 @@ impl Settlement {
     /// off the path. The non-vacuity test reads it to confirm the flip is not a one-agent fluke.
     pub fn profit_retained_ever_count(&self) -> usize {
         self.profit_retained_ever.len()
+    }
+
+    /// S22f: the colonist at generation `index`'s remaining voluntary-commitment term (econ ticks
+    /// left; `0` = uncommitted). Runtime-readable; the underlying field IS digested (ON-only, with the
+    /// colonist roster). `0` off the voluntary-commitment path.
+    pub fn commitment_remaining_of(&self, index: usize) -> u16 {
+        self.colonists
+            .get(index)
+            .map_or(0, |c| c.commitment_remaining)
+    }
+
+    /// S22f: whether the colonist at generation `index` is currently committed (`commitment_remaining
+    /// > 0`). `false` off the path.
+    pub fn is_committed(&self, index: usize) -> bool {
+        self.commitment_remaining_of(index) > 0
+    }
+
+    /// S22f: the colonist at generation `index`'s count of renewals from FRESH post-expiry signals
+    /// (the first opt-in is not a renewal). Runtime-readable; the underlying field IS digested
+    /// (ON-only). `0` off the path / for a never-renewed committer.
+    pub fn commitment_renewals_of(&self, index: usize) -> u16 {
+        self.colonists
+            .get(index)
+            .map_or(0, |c| c.commitment_renewals)
+    }
+
+    /// S22f (runtime-only diagnostic): the distinct agent ids that EVER held a commitment over the run
+    /// (voluntary or fiat) — the committed cohort. Empty off the path.
+    pub fn commitment_committed_ids(&self) -> Vec<u64> {
+        self.commitment_committed_ever
+            .iter()
+            .map(|id| id.0)
+            .collect()
+    }
+
+    /// S22f (runtime-only diagnostic): per VOLUNTARY committer, the `(econ tick, signal value)` at its
+    /// first signal-gated opt-in — each entry traceable to that agent's own cleared S22c return. Keyed
+    /// by `AgentId.0`. Empty off the path / under the fiat-pin control (forced commits have no signal).
+    pub fn commitment_uptake(&self) -> BTreeMap<u64, (u64, u64)> {
+        self.commitment_uptake
+            .iter()
+            .map(|(id, &v)| (id.0, v))
+            .collect()
+    }
+
+    /// S22f (runtime-only diagnostic): the agent ids force-committed by the `fiat_pin` control
+    /// (bypassing the voluntary signal). Empty for the voluntary headline + every other config.
+    pub fn commitment_fiat_ids(&self) -> Vec<u64> {
+        self.commitment_fiat_ever.iter().map(|id| id.0).collect()
+    }
+
+    /// S22f (runtime-only diagnostic): the eligible UNCOMMITTED agent ids whose entry signal fell
+    /// below the entry floor post-money — the below-floor non-committers that prove the signal
+    /// DISCRIMINATES (entry is a real decision). Empty off the path / under the fiat-pin control.
+    pub fn commitment_below_floor_ids(&self) -> Vec<u64> {
+        self.commitment_below_floor_ever
+            .iter()
+            .map(|id| id.0)
+            .collect()
+    }
+
+    /// S22f (runtime-only diagnostic): the distinct agent ids whose commitment ever BOUND a tick the
+    /// matched flag-off run would have exited (a real exit-override) — the mandatory non-vacuity test
+    /// reads it. Empty off the path.
+    pub fn commitment_exit_overridden_ids(&self) -> Vec<u64> {
+        self.commitment_exit_override_ever
+            .iter()
+            .map(|id| id.0)
+            .collect()
+    }
+
+    /// S22f: the configured commitment binding length (econ ticks) — the headline hard guard
+    /// (`commitment_term < ceil(PERSIST_FRACTION × FINAL_WINDOW)`) reads it. The pinned default for a
+    /// non-chain settlement.
+    pub fn commitment_term_config(&self) -> u16 {
+        self.commitment_term()
+    }
+
+    /// S22f: whether the voluntary fixed-term cultivation commitment path is active for this
+    /// settlement (the flag on + the S22c composition). The non-vacuity/precondition test reads it.
+    pub fn voluntary_cultivation_commitment_on(&self) -> bool {
+        self.voluntary_cultivation_commitment_active()
     }
 
     /// S22c: the chain's `cultivate_hunger_out` threshold — the hysteresis exit below which a
@@ -16524,6 +17085,22 @@ impl Settlement {
                     out.extend_from_slice(&(household as u32).to_le_bytes());
                 }
             }
+            // S22f: the voluntary fixed-term cultivation commitment gate makes the cultivation EXIT
+            // overridable for a chosen term (a committed agent cannot exit until the term expires) — a
+            // future-behaviour change for the roster. Emitted only when active (the same gated-block
+            // discipline as S16/S18/S21/S22a–e above) with a DISTINCT tag (`12`) plus the binding term,
+            // the entry floor, and the fiat-pin count (which steer who commits, for how long, and
+            // whether entry is voluntary or forced), so the gated markers stay injective and a flag-off
+            // chain stays byte-identical to the pre-S22f stream. (The per-agent commitment state IS
+            // digested — serialized with the colonist roster below, ON-only — because it steers the
+            // next cultivation exit; the uptake/renewal/below-floor/exit-override diagnostics it pairs
+            // with are runtime-only and deliberately NOT digested.)
+            if self.voluntary_cultivation_commitment_active() {
+                out.push(12);
+                out.extend_from_slice(&chain.commitment_term.to_le_bytes());
+                out.extend_from_slice(&chain.commitment_entry_floor.to_le_bytes());
+                out.extend_from_slice(&chain.commitment_fiat_pin.to_le_bytes());
+            }
             // The staple mapping steers the next needs/scale phase for *any* chain,
             // role-choice or not, so it is included whenever a chain is active. The
             // G3b no-spread control shares the emergent config's physical state but
@@ -16900,6 +17477,12 @@ impl Settlement {
         // (which implies `cultivation_serialized`, so it nests inside the cultivation block below),
         // so every pre-S22d config keeps its per-colonist layout byte-identical.
         let tool_serialized = self.durable_cultivation_tool_active();
+        // S22f: the per-colonist commitment state (`commitment_remaining` / `commitment_renewals`)
+        // steers the next cultivation EXIT (a bound agent cannot exit until the term expires) only
+        // while the voluntary-commitment phase can run; gate its bytes on the active-phase predicate
+        // (which implies `cultivation_serialized`, so it nests inside the cultivation block below), so
+        // every pre-S22f config keeps its per-colonist layout byte-identical.
+        let commitment_serialized = self.voluntary_cultivation_commitment_active();
         out.extend_from_slice(&(self.colonists.len() as u32).to_le_bytes());
         for colonist in &self.colonists {
             out.extend_from_slice(&colonist.id.0.to_le_bytes());
@@ -17000,6 +17583,16 @@ impl Settlement {
                 // a pre-S22d colonist block stays byte-identical.
                 if tool_serialized {
                     out.extend_from_slice(&colonist.cultivation_tenure.to_le_bytes());
+                }
+                // S22f: the commitment remaining/renewals steer the next cultivation EXIT (a bound
+                // agent cannot exit until the term expires), so two states identical but for them
+                // diverge on a future tick — part of the future-behaviour identity whenever the
+                // voluntary-commitment phase runs. Nested inside the cultivation block (the gate
+                // implies it), emitted only under `commitment_serialized`, so a pre-S22f colonist
+                // block stays byte-identical.
+                if commitment_serialized {
+                    out.extend_from_slice(&colonist.commitment_remaining.to_le_bytes());
+                    out.extend_from_slice(&colonist.commitment_renewals.to_le_bytes());
                 }
             }
             if role_choice_active {
@@ -17554,6 +18147,16 @@ fn chain_runtime_durable_cultivation_tool_active(chain: &ChainRuntime) -> bool {
     chain.durable_cultivation_tool
         && chain_runtime_profit_driven_retention_active(chain)
         && chain.content.cultivation_tool().is_some()
+}
+
+/// S22f: the voluntary fixed-term cultivation commitment is active iff the flag is on AND the S22c
+/// profit-driven-retention path is active (it composes strictly on it — the entry signal IS the S22c
+/// realized return, and S22c itself requires the S22a endogenous-entry path). Off (every existing
+/// config) it is `false`, so the commitment entry/binding/expiry seam and the ON-only digest surface
+/// never engage and the run is byte-identical. (The post-money inertness — no commit can form before
+/// SALT promotes — is enforced separately at the entry seam via `current_money_good()`.)
+fn chain_runtime_voluntary_cultivation_commitment_active(chain: &ChainRuntime) -> bool {
+    chain.voluntary_cultivation_commitment && chain_runtime_profit_driven_retention_active(chain)
 }
 
 /// S22e: the deterministic endowment-selection hash of `(world seed, household id)` — a SplitMix64

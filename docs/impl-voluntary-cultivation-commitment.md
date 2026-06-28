@@ -7,6 +7,29 @@ realized-return signal) → S22a (`endogenous_cultivation_entry`); runs on the *
 capital** (durable + endowed both OFF) in the headline. Scoped by Codex ("Build S22f … voluntary fixed-term
 cultivation commitment").
 
+Status (landed): IMPLEMENTED on `feat/voluntary-cultivation-commitment-impl` (engine = additive default-off
+flag `voluntary_cultivation_commitment` + `commitment_term`/`commitment_entry_floor`/`commitment_fiat_pin`,
+digest tag 12, per-agent `commitment_remaining`/`commitment_renewals` steering state digested ON-only; the new
+suite `sim/tests/voluntary_cultivation_commitment.rs`). All existing goldens byte-identical; conservation,
+`bread_minted_max == 0`, provenance-clean, and `!extinct` hold on every run. **Landed verdict (classified, not
+asserted; primary by agent id over `SEEDS = [3, 7, 11, 19, 23]`): `NoStickinessDespiteCommitment` 4/5 +
+`TermTooShortFinding` 1/5 — a SIXTH negative for the role-topology arc, with a NEW positive sub-result.** The
+voluntary institution IS non-vacuous and discriminating (≈ 70–450 distinct agents voluntarily commit per run,
+each traceable to its own cleared signal; ≈ 1800–2100 eligible below-floor agents do NOT commit; every commit
+binds a tick the matched flag-off run would have exited) and for the FIRST time in the arc it forms a
+**persistent committed cohort** (≈ 14–30 distinct committed ids cultivating/committed ≥ ½ the final window,
+every one with ≥1 fresh-signal renewal) that DOMINATES grain production (≈ 0.88–0.94 share) while a fluid
+non-committed buyer side stays alive and materially buys (a real division of labor) — but the **aggregate
+per-ever-cultivating churn does NOT fall** (≈ 2.7 vs the ≈ 2.2–2.7 matched baseline; the turbulent fluid
+majority dominates it), so success clause §2.2 fails. The anti-fiat / anti-circularity guards all separate:
+`fiat_pin` ⇒ `RePinScaffold` (5/5), `unprofitable_offer` ⇒ `CommitmentUnchosen` (zero uptake, 5/5),
+`nonbinding_term` ⇒ not success, the `commitment_off` matched base ⇒ `CommitmentUnchosen` (institution absent),
+and the `commitment_term` sweep `{12,24,48,96}` is outcome-driving (mean persistent committed cohort
+14.4→11.8→19.4→29.4; max-concurrent committed 31.8→…→37.8). Honest headline: *an exit-overriding voluntary
+institution is the FIRST lever in the arc to form a persistent committed cultivator cohort and a working
+division of labor, but it does not lower the colony's aggregate occupational churn in this WOOD-poor,
+mortality-on, high-turnover regime.*
+
 ## 0. One-paragraph summary
 
 The role-topology arc is a clean **five-step negative**: hunger (S22a), accumulated skill (S22b), a realized
