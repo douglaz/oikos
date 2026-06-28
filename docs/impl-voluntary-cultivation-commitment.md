@@ -1,6 +1,7 @@
 # impl-38 — S22f: Voluntary Fixed-Term Cultivation Commitment (does an institution that changes the EXIT finally stabilize an occupation?)
 
-Status (spec): REVISED per Codex spec-review round 1 (3 P1 + 2 P2 folded in, §7); pending confirmation. Base:
+Status (spec): SPEC-READY (Codex spec-review round 1: 3 P1 + 2 P2 folded in, §7; confirmation round: SPEC-READY,
+P3 polish applied). Base:
 master `4969748` (S22e landed + the article at five-step). Composes on S22c (`profit_driven_retention`, the
 realized-return signal) → S22a (`endogenous_cultivation_entry`); runs on the **expanded roster** with **no
 capital** (durable + endowed both OFF) in the headline. Scoped by Codex ("Build S22f … voluntary fixed-term
@@ -68,8 +69,8 @@ not inheritance; lineage persistence reported secondary):
 2. **Churn falls materially** — per-ever-cultivating churn ≤ `CHURN_DROP` (0.5) × the matched-seed baseline.
 3. **A persistent committed cohort forms** — ≥ `PERSIST_COHORT` (4) distinct committed agent ids are
    cultivating/committed ≥ `PERSIST_FRACTION` (0.5) of the final window.
-4. **Uptake is a MINORITY with a live fluid remainder (the non-universal-pin guard, Codex P1 #2)** — the
-   committed cohort is ≤ `COMMIT_SHARE_MAX` (0.6) of ever-cultivating (and of eligible) agents, **and** a
+4. **Uptake is BOUNDED (not universal) with a live fluid remainder (the non-universal-pin guard, Codex P1 #2)**
+   — the committed cohort is ≤ `COMMIT_SHARE_MAX` (0.6) of ever-cultivating (and of eligible) agents, **and** a
    material **non-committed** cohort remains alive, buys, and still sometimes cultivates/exits under the
    normal S22a/S22c rule. (Universal uptake ⇒ a de-facto pin, classified `UniversalCommitment`, not success.)
 5. **Persistence is RE-CHOSEN, not one long pin (Codex P1 #3)** — BOTH: (a) the shipped `commitment_term <
@@ -103,7 +104,7 @@ not inheritance; lineage persistence reported secondary):
 - `TermTooShortFinding` — short terms bite (real commitments) but cannot form persistence (the term < what
   the cohort bar needs).
 - `NoStickinessDespiteCommitment` — commitments happen and bind, but churn/cohort bars still fail.
-- `RoleStickySuccess` — all nine success clauses, not downgraded.
+- `RoleStickySuccess` — all ten success clauses (§2.1–§2.10), not downgraded.
 
 **Ordered classifier (top-down, first-match-wins):** `CommitmentUnchosen` → `SignalVacuous` →
 `ConservationBroken`/`extinct` → `MonopolizationCull` → `CommuneCollapse` → `MoneyFailureFromCommitment` →
