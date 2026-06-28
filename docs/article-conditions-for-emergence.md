@@ -2,7 +2,7 @@
 
 ### A praxeologic agent-based study under a no-smuggling, conservation, and adversarial-review discipline
 
-*Working paper distilled from the OIKOS experimental record (milestones S5–S22e). Companion to the
+*Working paper distilled from the OIKOS experimental record (milestones S5–S22f). Companion to the
 running report `report-emergence-and-its-limits.md`, which carries the per-milestone detail.*
 
 ---
@@ -26,15 +26,20 @@ became Mengerian money only when it had (1) real direct-use demand as a non-circ
 (2) leadership in *medium* (re-trade) saleability rather than in consumption, (3) a tradeable pre-money
 supply to circulate against, and (4) an exchange institution permitting monetary round-tripping. Each
 condition was isolated by a matched failure; no single one sufficed. Second, and symmetrically, **a
-durable division of labor does *not* self-form** from a fluid participation base: across five mechanisms
-— hunger pressure, accumulated skill, a realized profit stay-incentive, sunk *earned* owned role-specific
-capital, and even *endowed + inherited* capital given up front — each demonstrably *bites* yet **none**
-produces a persistent occupational class. The decisive turn is the fifth: removing the "must earn the
-lock-in first" chicken-and-egg (by endowing capital and letting it inherit down a lineage) *still* fails,
-because the active hunger/profit **exit** rotates owners out regardless of who owns the means. The
-consistent boundary is therefore that occupation appears to require an explicit role-choice/assignment
-institution that overrides the exit — not capital of any provenance. We report these as **model findings,
-not theorems**, and disclose the configured scaffolds that remain.
+durable division of labor does *not* self-form** from a fluid participation base under any **incentive or
+capital** lever: hunger pressure, accumulated skill, a realized profit stay-incentive, sunk *earned* owned
+capital, and even *endowed + inherited* capital given up front each demonstrably *bites* yet **none**
+produces a persistent occupational class — because every one leaves the hunger/profit **exit** intact, and
+that exit rotates agents out regardless of who owns the means. The boundary it names is an institution that
+overrides the **exit** itself; a sixth lever supplies exactly that — a **voluntary fixed-term cultivation
+commitment** (opt in under one's own realized return, bound for a term, re-decide at expiry) — and it is the
+arc's **turn**: for the first time the model forms a persistent, renewing, *minority* committed cultivator
+core with a working **two-tier** division of labor (a stable committed core plus a surviving fluid buyer
+side), genuinely voluntary rather than a re-imposed pin. By the predeclared aggregate-churn criterion this
+still classifies as no-stickiness — the colony-wide churn does not fall, *because* the fluid tier keeps
+churning around the stable core — so the honest statement is that an exit-overriding institution stabilizes
+an occupational **core**, not the whole colony. We report all of these as **model findings, not theorems**,
+and disclose the configured scaffolds that remain.
 
 ---
 
@@ -225,13 +230,14 @@ necessary, and how wide each one's window is — not a claim of spontaneous open
 
 ---
 
-## 6. The division of labor does not self-form: a five-step negative
+## 6. The division of labor: five exit-preserving negatives, then an exit-overriding turn
 
 S21's open colony still *pins* the food-producing class: a pre-identified cultivator lineage supplies the
 bread while non-lineage buyers and woodcutters never cultivate. The role-topology arc relaxes that
-privilege and asks whether a stable division of labor *self-forms*. It is a clean five-step negative;
-each lever was shown to genuinely **bite** (a mandatory non-vacuity test), yet **none** produced a
-persistent occupational class. Stickiness was measured the same way throughout — a material drop in
+privilege and asks whether a stable division of labor *self-forms*. The first five levers are a clean
+negative — each leaves the hunger/profit **exit** intact, and each fails; the sixth overrides the exit and
+**turns** the result. Every lever was shown to genuinely **bite** (a mandatory non-vacuity test).
+Stickiness was measured the same way throughout — a material drop in
 enter/exit churn versus a matched-seed baseline, *and* a persistent **membership** cohort (the same
 agents — or, for the inheritance step, the same lineages — staying in the role).
 
@@ -274,16 +280,34 @@ agents — or, for the inheritance step, the same lineages — staying in the ro
   hunger/profit **exit**, which rotates owners out *regardless of who owns the means*. (Honest scope: a
   dynastic/institutional-sufficiency test bounded to this endowed/inherited plow institution in this
   configured colony — not a universal claim about capital or inheritance.)
+- **An exit-overriding voluntary institution turns it — a stable occupational core forms (S22f).** The five
+  negatives all left the exit intact, so the sixth lever changes the exit itself: a **voluntary fixed-term
+  cultivation commitment**. Post-money, an eligible agent whose *own* realized cultivation-return signal
+  clears its outside option may **choose** to commit for a fixed term; while committed the hunger/profit
+  exit cannot turn cultivation off; at expiry it re-decides from fresh returns (a renewal only if the signal
+  still clears). For the **first time in the arc** a persistent occupational cohort forms: 159–450 agents
+  *voluntarily* commit per run (each traceable to its own cleared signal) while ~1800–2100 eligible
+  below-floor agents *decline*; 14–30 committed ids cultivate ≥½ the final window, every one renewed from a
+  fresh signal, a bounded **minority** (commit-share 0.07–0.20); the committed core takes 0.85–0.95 of grain
+  while a **fluid non-committed buyer majority survives and materially buys** — a working **two-tier**
+  division of labor. It is genuinely *not* a re-pin: a `fiat_pin` control (forced commitment) classifies
+  separately, an unprofitable offer gets zero uptake, and a one-tick term forms no persistence. **The one
+  thing that does not happen:** colony-wide per-agent churn does *not* fall (the predeclared success bar), so
+  the formal classification stays *no-stickiness* — but it fails *because* the model now has a stable core
+  plus a still-churning fluid tier, which the aggregate metric (built for the all-fluid regimes above)
+  cannot register. (Composition note: commitment *plus* capital tips into monopolization — the core takes
+  all grain and the lineage goes extinct — reported as a separate cull finding, not the no-capital headline.)
 
-**The pattern.** Hunger, accumulated skill, a realized profit incentive, sunk *earned* owned capital, and
-even *endowed + inherited* capital each *bite* but **none** converts fluid participation into a durable
-division of labor. The first four left open whether capital given *up front* would suffice; the fifth
-closes it — and in doing so relocates the boundary. It is **not** the chicken-and-egg of *acquiring*
-capital (S22e removes that); it is that the active hunger/profit **exit regime rotates cultivation
-regardless of ownership**. The remaining named condition is therefore an explicit
-**role-choice/assignment institution that overrides the exit** — not capital of any provenance. That is a
-sequence of five falsified sufficiency claims, not a single failure — and it names the next condition
-precisely.
+**The pattern.** Five levers that leave the **exit** intact — hunger, accumulated skill, a realized profit
+incentive, sunk *earned* owned capital, and *endowed + inherited* capital — each *bite* but **none**
+converts fluid participation into a division of labor; the binding constraint is the hunger/profit **exit**,
+which rotates agents out regardless of incentive or ownership. The sixth lever **overrides the exit** by
+voluntary contract, and it is the arc's **turn**: a persistent, renewing, minority committed cultivator
+**core** and a two-tier market finally form — the first stable occupation in the arc — though *colony-wide*
+churn stays high because the fluid tier persists around the core. Honestly stated: occupation in this model
+needs an institution that changes the **exit**, and even then it stabilizes a **core**, not the whole
+colony. That is a sequence of five falsified sufficiency claims followed by a sixth that succeeds at
+core-formation but not colony-wide stabilization — a decomposition, not a single yes/no.
 
 ---
 
@@ -291,8 +315,10 @@ precisely.
 
 The two arcs are mirror images under the same discipline. For **money**, we found a set of conditions and
 *met* them, and emergence followed — but only inside a disclosed envelope, and partly by repairing a
-self-imposed institutional constraint. For **occupation**, we probed five candidate sufficiency
-mechanisms and *falsified* each, and the consistent shape of the failures names the missing condition.
+self-imposed institutional constraint. For **occupation**, we probed five exit-preserving sufficiency
+mechanisms and *falsified* each — the consistent shape of the failures naming the missing condition (an
+exit-overriding institution) — then supplied that institution (S22f) and got the arc's first stable
+occupational core, though not colony-wide stabilization.
 In both cases the value is the decomposition: the model converts vague claims ("money emerges,"
 "specialization emerges") into a graded ledger of *which* conditions are necessary and how robust each
 is.
@@ -331,12 +357,15 @@ We state the scaffolds plainly; a hostile reader should attack these first.
   prove only SALT could monetize.
 - **The open-colony coexistence is band-qualified (S21i).** Money+mortality coexistence is seed-robust
   but load-bearing on WOOD scarcity and anchor density — an existence proof within a disclosed envelope.
-- **The five-step occupation negative is bounded** to these five levers in this fluid, WOOD-poor,
-  mortality-on regime (and, for the inheritance step, to an endowed/inherited *plow* institution over
-  lineage households). It does **not** rule out an explicit role-choice institution, credit-financed or
-  denser capital, or other endowment designs producing a class. The naming of that next condition is a
-  *plausible* boundary, not a proven impossibility — in particular, "exit overrides ownership" is a
-  finding about *this* hunger/profit exit, not a law about all exits.
+- **The occupation results are bounded** to these levers in this fluid, WOOD-poor, mortality-on regime
+  (and, for the inheritance step, to an endowed/inherited *plow* institution over lineage households).
+  "Exit overrides ownership" (S22a–e) is a finding about *this* hunger/profit exit, not a law about all
+  exits. **S22f's positive is a bounded, qualified one:** an exit-overriding *voluntary fixed-term*
+  commitment forms a stable occupational **core** + two-tier market, but does **not** lower colony-wide
+  churn, and does **not** generalize to a colony-wide occupational order; it is one institution design over
+  this configured colony, classified by the predeclared bar as no-stickiness with a reported positive
+  sub-result, not relabeled a success. Other institution/endowment designs (assignment, guild, credit) and
+  why the core does not spread remain open.
 - **Part of S20 repairs a self-imposed artifact.** The one-offer book was our constraint; the S19→S20
   result is part institutional insight, part removal of a modeling limitation. Stated as such it is a
   result; stated as a universal law it would be an overclaim.
@@ -347,13 +376,14 @@ We state the scaffolds plainly; a hostile reader should attack these first.
 
 ## 9. Future work
 
-- **An explicit role-choice / assignment institution that overrides the exit.** S22e closed the
-  endowed/inherited-capital path (§6) — capital up front and inherited still loses to the hunger/profit
-  exit — so the live candidate is an institution that changes the *exit/participation* rule itself
-  (a vocation commitment, an assignment, a guild), not another way of supplying capital. This is the
-  direct sequel the five-step negative points to.
-- **Other endowment / capital designs** not covered by S22e — credit-financed tools, denser or
-  non-lineage capital cohorts — remain open as institutional-sufficiency variants.
+- **Why the committed core does not spread colony-wide.** S22f's exit-overriding institution stabilizes an
+  occupational *core* but leaves a churning fluid majority, so aggregate churn stays high. The live question
+  is what would convert the two-tier structure into colony-wide occupational order — a stronger or
+  differently-targeted commitment, a complementary metric of "two-tier stability" predeclared as its own
+  bar, or a structural reason the fluid tier is irreducible here.
+- **Other exit-overriding institution designs** beyond the voluntary fixed-term contract — assignment, a
+  guild with a standing membership benefit, self-raised exit thresholds — as alternative paths to the same
+  core, and a check on whether they avoid the commitment+capital monopolization/cull regime S22f surfaced.
 - **Endogenizing the remaining money scaffolds** — the two-lane clearing institution and the SALT
   direct-use anchor — and broadening the open-colony robustness beyond the WOOD-load-bearing envelope.
 
@@ -365,13 +395,18 @@ OIKOS turns two slogans into ledgers. Mengerian money in this model did **not** 
 produced supply, or multi-good trade alone; it emerged only when a direct-use eligibility floor, medium-
 saleability leadership, a tradeable pre-money supply, and a round-tripping exchange institution aligned —
 and even then inside a disclosed, band-qualified envelope. A durable division of labor, by contrast, did
-**not** self-form from a fluid base under any of five levers — hunger, skill, a profit stay-incentive,
-sunk *earned* owned capital, or even *endowed + inherited* capital given up front — each of which
-demonstrably bit; the consistent boundary is that occupation needs an explicit institution that overrides
-the hunger/profit *exit*, since capital of any provenance is rotated out by it. Across both arcs the method is
-the message: emergence claims in an ABM become trustworthy when the substrate conserves, the runs are
-deterministic and regression-pinned, parameters are swept rather than searched, an independent model
-audits design and result, and the precisely-bounded "no" is treated as a real finding.
+**not** self-form from a fluid base under any of five **incentive or capital** levers — hunger, skill, a
+profit stay-incentive, sunk *earned* owned capital, or even *endowed + inherited* capital given up front —
+because each leaves the hunger/profit *exit* intact and that exit rotates agents out regardless of incentive
+or ownership. Only the sixth lever, which **overrides the exit** by voluntary fixed-term commitment, turns
+the result: a stable, renewing, minority committed cultivator *core* and a two-tier market form — the arc's
+first stable occupation — though colony-wide churn stays high because the fluid tier persists, so by the
+predeclared bar it remains a classified negative with a real positive sub-result. Occupation here needs an
+institution that changes the *exit*, and even then stabilizes a core, not the whole colony. Across both arcs
+the method is the message: emergence claims in an ABM become trustworthy when the substrate conserves, the
+runs are deterministic and regression-pinned, parameters are swept rather than searched, an independent
+model audits design and result, and both the precisely-bounded "no" and the carefully-qualified "partial
+yes" are treated as real findings.
 
 ---
 
@@ -403,3 +438,4 @@ audits design and result, and the precisely-bounded "no" is treated as a real fi
 | S22c | Profit-driven retention | finding: a realized stay-incentive bites but retains only marginally |
 | S22d | Durable role-specific capital | finding: even sunk owned capital → dominant few, not a class (chicken-and-egg) |
 | S22e | Endowed + inherited capital | finding: even capital given up front + inherited → owners rotate, no lineage cohort (the *exit* binds, not provenance) |
+| S22f | Voluntary fixed-term commitment | the turn: an exit-overriding voluntary contract forms a persistent, renewing, minority committed **core** + a two-tier market (first stable occupation); formal verdict still no-stickiness (colony-wide churn unchanged), not a re-pin |
