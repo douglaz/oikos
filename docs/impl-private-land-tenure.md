@@ -1,6 +1,6 @@
 # impl-39 — S23a: Private Land Tenure (does scarce, excludable, losable *place* finally stabilize an occupation?)
 
-Status (spec): REVISED per Codex spec-review rounds 1-2 (6 P1 + 3 P2, then 3 P1 + 1 P2 folded in, §7); pending confirmation. Base:
+Status (spec): SPEC-READY (Codex spec-review rounds 1-2 folded in + round-3 confirmation: SPEC-READY, no P1/P2; impl notes: build the reservation set during the pre-world.tick pass and reroute losers only to unreserved plots; clear carried_grain_source only after both carry and pending transfer for that grain are gone). Base:
 master `496566e` (S22f landed + the article at the arc's turn). Opens the **S23 private-property arc**. Composes on S22a (`endogenous_cultivation_entry`) on the
 expanded `ROSTER_HOUSEHOLDS = 8` base; the other S22 exit-cost levers (skill, profit-stay, capital,
 commitment) are **OFF** in the headline so land tenure is the only new exit-cost mechanism. Scoped by Codex
