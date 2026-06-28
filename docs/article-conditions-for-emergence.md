@@ -379,8 +379,13 @@ We state the scaffolds plainly; a hostile reader should attack these first.
 - **Why the committed core does not spread colony-wide.** S22f's exit-overriding institution stabilizes an
   occupational *core* but leaves a churning fluid majority, so aggregate churn stays high. The live question
   is what would convert the two-tier structure into colony-wide occupational order — a stronger or
-  differently-targeted commitment, a complementary metric of "two-tier stability" predeclared as its own
-  bar, or a structural reason the fluid tier is irreducible here.
+  differently-targeted commitment, or a structural reason the fluid tier is irreducible here. There is a
+  legitimate measurement point too: colony-wide churn penalizes the *deliberately* fluid buyer tier, so a
+  **two-tier-stability metric** (e.g. churn restricted to committed-eligible agents, or core persistence)
+  may be the right measure of core-formation. But to avoid success-bar repair it must be introduced as a
+  **predeclared, out-of-sample measurement appendix with its own predictions** — not a retroactive
+  conversion of S22f's verdict. Under the discipline of this paper, S22f stands as a classified negative
+  with a reported positive sub-result; re-measuring it is future work, not a relabel.
 - **Other exit-overriding institution designs** beyond the voluntary fixed-term contract — assignment, a
   guild with a standing membership benefit, self-raised exit thresholds — as alternative paths to the same
   core, and a check on whether they avoid the commitment+capital monopolization/cull regime S22f surfaced.
