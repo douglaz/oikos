@@ -179,6 +179,21 @@ const RETENTION_MATERIAL_FLOOR: u64 = 2;
 const TOOL_BUILD_PATIENCE: u16 = 12;
 const CULTIVATION_TOOL_HAUL_CEILING: u32 = 3;
 
+/// S22e — the EXPANDED lineage roster for the endowed-capital scenarios. The base cultivation
+/// colony has only 2 lineage households, so the `PERSIST_COHORT` (4) owner-lineage success floor is
+/// unreachable there; the headline + all matched controls run on this many lineage households,
+/// proportionally expanding the WOOD-poor cultivator/woodcutter/consumer demand side so money +
+/// mortality still hold. A multiple of the base household count (2) so the demand side scales by an
+/// exact integer factor. The shipped `ENDOWED_TOOL_COUNT_DEFAULT` minority leaves owner-share
+/// head-room.
+const ENDOWED_ROSTER_HOUSEHOLDS: usize = 8;
+
+/// S22e — the headline endowment count: how many of the [`ENDOWED_ROSTER_HOUSEHOLDS`] lineage
+/// households start with a plow. A MINORITY edge (`2 × count ≤ roster`) that is also `≥`
+/// `PERSIST_COHORT` (4) so an owner-lineage cohort is reachable yet ownership stays a minority. The
+/// sweep raises it toward universal to show the `UniversalOwnership` boundary.
+const ENDOWED_TOOL_COUNT_DEFAULT: u16 = 4;
+
 /// Econ ticks per settlement "year" — the horizon unit the smoke test counts in.
 /// A placeholder cadence, not a balance figure.
 pub const ECON_TICKS_PER_YEAR: u64 = 12;
@@ -1111,6 +1126,36 @@ pub struct ChainConfig {
     /// the stickiness was not from persistence. Consulted only while `durable_cultivation_tool` is
     /// active. The durable headline keeps it `false`.
     pub cultivation_tool_non_durable: bool,
+    /// S22e — **endowed + inherited cultivation capital** gate (default `false`,
+    /// byte-identical when off). When `true` AND the durable-cultivation-capital path is active
+    /// (it composes strictly on [`Self::durable_cultivation_tool`]), a MINORITY of lineage
+    /// households are seeded with one durable cultivation tool (the [`content::CULTIVATION_TOOL`]
+    /// plow) at generation — a conservation-safe INITIAL endowment, no earning required (counted by
+    /// [`Settlement::endowed_cultivation_tools_total`], included in the initial whole-system
+    /// conservation baseline). The genuinely new estate primitive is the plow-routing SWITCH
+    /// [`Self::cultivation_tool_inheritance`]: plows already inherit to the household heir via
+    /// `settle_estate_to_heirs`, so the lever toggles whether they keep that heir path (true) or
+    /// are FORCED to the commons (false, the falsifying control). Everything else reuses S22d
+    /// unchanged (the owner-exclusive haul boost; the unmodified S22c profit-stay as the only
+    /// retention). Canonicalized **ON-only** when it can steer behavior (digest tag 11 +
+    /// [`Self::endowed_tool_count`] + the inheritance switch + the granted household ids), mirroring
+    /// the S16/S18/S21/S22a–d gates: a flag-off config keeps its exact prior byte layout, and the
+    /// zero-endowment/inheritance-on control stays identical to the expanded S22d base. Composes on
+    /// `durable_cultivation_tool`.
+    pub endowed_cultivation_capital: bool,
+    /// S22e: how many lineage households are seeded with a plow at generation — a MINORITY (the
+    /// shipped headline keeps owner-share a minority; the sweep raises it to universal to show the
+    /// `UniversalOwnership` boundary). The endowed households are selected by a deterministic hash
+    /// of `(seed, household_id)` over the eligible lineage set, sorted by hash (NOT lowest-ids).
+    /// Consulted only while `endowed_cultivation_capital` is active. `0` ⇒ no endowment (the
+    /// no-endowment control: tools must be earned, reducing to S22d).
+    pub endowed_tool_count: u16,
+    /// S22e: the plow estate-routing switch (default `true` under the gate). `true` ⇒ plows follow
+    /// the existing heir path (lineage heir; commons fallback); `false` ⇒ plows are FORCED to the
+    /// commons even when the rest of the estate goes to the heir (the no-inheritance control that
+    /// isolates whether inheritance is load-bearing). A pure conserved transfer either way, never a
+    /// mint. Consulted only while `endowed_cultivation_capital` is active.
+    pub cultivation_tool_inheritance: bool,
     /// S21d.0 — **retire the food mints** (the open-survival probe; default `false`,
     /// byte-identical when off). When `true`, the two staple-food mint sites are skipped
     /// **independent of `own_labor_subsistence`/forage**: the demographic `food_provision`
@@ -1484,6 +1529,13 @@ impl ChainConfig {
             tool_build_patience: TOOL_BUILD_PATIENCE,
             cultivation_tool_haul_ceiling: CULTIVATION_TOOL_HAUL_CEILING,
             cultivation_tool_non_durable: false,
+            // S22e off by default: no endowed/inherited cultivation capital, so every existing
+            // config and its goldens are byte-identical (canonicalized ON-only). The inheritance
+            // switch defaults to `true` so that, when the gate IS turned on, plows keep the
+            // existing heir routing unless a control flips it off.
+            endowed_cultivation_capital: false,
+            endowed_tool_count: 0,
+            cultivation_tool_inheritance: true,
             // S21d.0 off by default: the food mints stay, so every existing config and its
             // goldens are byte-identical (canonicalized ON-only).
             retire_food_mints: false,
@@ -1620,6 +1672,13 @@ impl ChainConfig {
             tool_build_patience: TOOL_BUILD_PATIENCE,
             cultivation_tool_haul_ceiling: CULTIVATION_TOOL_HAUL_CEILING,
             cultivation_tool_non_durable: false,
+            // S22e off by default: no endowed/inherited cultivation capital, so every existing
+            // config and its goldens are byte-identical (canonicalized ON-only). The inheritance
+            // switch defaults to `true` so that, when the gate IS turned on, plows keep the
+            // existing heir routing unless a control flips it off.
+            endowed_cultivation_capital: false,
+            endowed_tool_count: 0,
+            cultivation_tool_inheritance: true,
             // S21d.0 off by default: the food mints stay, so every existing config and its
             // goldens are byte-identical (canonicalized ON-only).
             retire_food_mints: false,
@@ -1736,6 +1795,13 @@ impl ChainConfig {
             tool_build_patience: TOOL_BUILD_PATIENCE,
             cultivation_tool_haul_ceiling: CULTIVATION_TOOL_HAUL_CEILING,
             cultivation_tool_non_durable: false,
+            // S22e off by default: no endowed/inherited cultivation capital, so every existing
+            // config and its goldens are byte-identical (canonicalized ON-only). The inheritance
+            // switch defaults to `true` so that, when the gate IS turned on, plows keep the
+            // existing heir routing unless a control flips it off.
+            endowed_cultivation_capital: false,
+            endowed_tool_count: 0,
+            cultivation_tool_inheritance: true,
             // S21d.0 off by default: the food mints stay, so every existing config and its
             // goldens are byte-identical (canonicalized ON-only).
             retire_food_mints: false,
@@ -4627,6 +4693,151 @@ impl SettlementConfig {
         cfg
     }
 
+    /// S22e — expand the lineage roster + the matched demand side PROPORTIONALLY to
+    /// [`ENDOWED_ROSTER_HOUSEHOLDS`] households. The 2-household cultivation base cannot host a
+    /// `PERSIST_COHORT` (4) owner-lineage cohort, so the endowed-capital headline + every matched
+    /// control run on this expanded base. The expansion preserves the colony's economic structure
+    /// so money + mortality still hold:
+    /// - the lineage households are replicated round-robin from the base specs (so the
+    ///   time-preference spread + the WOOD-poor / `starting_food = 0` cold-start character carry
+    ///   over), reaching `ENDOWED_ROSTER_HOUSEHOLDS`;
+    /// - the non-lineage woodcutters (`gatherers`) and SALT-rich buyers (`consumers`) scale by the
+    ///   SAME integer factor (roster ÷ base households), preserving the cultivator:woodcutter:consumer
+    ///   ratio and the S21h survival floor (a per-agent threshold, so it scales automatically);
+    /// - the grain commons and the WOOD node regen/stock/cap scale by that factor, so per-capita
+    ///   food + warmth supply (and thus the cultivated-bread flow) is preserved.
+    ///
+    /// Purely a roster/supply rescale: it touches no gate flag, so applied to the gate-off S22d base
+    /// it yields the EXPANDED S22d base (the matched churn baseline + the precondition colony), and
+    /// the headline simply flips the endowment gate on top of it.
+    fn expanded_endowment_roster(mut self) -> Self {
+        let target = ENDOWED_ROSTER_HOUSEHOLDS;
+        let demo = self
+            .demography
+            .as_mut()
+            .expect("the cultivation base carries a demography overlay");
+        let base = demo.households.clone();
+        let base_len = base.len();
+        assert!(
+            base_len > 0 && target.is_multiple_of(base_len) && target >= base_len,
+            "the expanded roster must be a whole multiple of the base household count"
+        );
+        let factor = (target / base_len) as u16;
+        demo.households = (0..target).map(|i| base[i % base_len].clone()).collect();
+        // Scale the matched non-lineage demand/supply side by the same factor (ratios preserved).
+        self.gatherers = self.gatherers.saturating_mul(factor);
+        self.consumers = self.consumers.saturating_mul(factor);
+        // Scale the grain commons + the WOOD node so per-cultivator food + warmth supply is held
+        // constant under the larger roster (the grain commons regen sets the cultivated-bread flow).
+        let factor32 = u32::from(factor);
+        let grain = self
+            .chain
+            .as_ref()
+            .expect("the cultivation base carries a chain")
+            .content
+            .grain();
+        for node in self.nodes.iter_mut() {
+            if node.good == grain || node.good == WOOD {
+                node.stock = node.stock.saturating_mul(factor32);
+                node.regen = node.regen.saturating_mul(factor32);
+                node.cap = node.cap.saturating_mul(factor32);
+            }
+        }
+        self
+    }
+
+    /// S22e — **the EXPANDED S22d base** (gate OFF): [`Self::frontier_cultivation_capital`] (the
+    /// S22d durable-capital money colony) expanded to [`ENDOWED_ROSTER_HOUSEHOLDS`] lineage
+    /// households. This is BOTH the matched-seed churn baseline AND the precondition colony for the
+    /// S22e suite — the gate-off expanded base must reproduce S22d `NoStickiness` (money promotes,
+    /// mortality coexists, no owner-lineage cohort, churn high). The headline flips the endowment
+    /// gate on top of exactly this roster. Byte-identical to itself with the gate reverted (the gate
+    /// is off here).
+    pub fn frontier_endowed_capital_expanded_base() -> Self {
+        Self::frontier_cultivation_capital().expanded_endowment_roster()
+    }
+
+    /// S22e — **endowed + inherited cultivation capital** (the HEADLINE):
+    /// [`Self::frontier_endowed_capital_expanded_base`] (the expanded S22d money colony) with the
+    /// **only** changes being `endowed_cultivation_capital = true`, a MINORITY
+    /// `endowed_tool_count = ENDOWED_TOOL_COUNT_DEFAULT`, and `cultivation_tool_inheritance = true`.
+    /// A minority of lineage households start with a plow at generation (a conservation-safe initial
+    /// endowment, no earning required), and plows pass to the household heir on death (the existing
+    /// estate routing). Everything else reuses S22d unchanged: the owner-exclusive haul boost, and
+    /// stickiness arising ONLY through the unmodified S22c profit-stay (no exit edit, no fiat "stay"
+    /// flag). The central S22e question: does a persistent owner-cultivator LINEAGE cohort finally
+    /// form — and survive the founder's death (an inherited-tool heir in the sticky cohort) — while
+    /// money + mortality + provenance + conservation survive, and is it a genuinely
+    /// inheritance-stabilized class rather than a static re-pin (`EndowmentOnlyScaffold`) or an owner
+    /// dynasty that starves the market (`InheritedMonopoly`)?
+    ///
+    /// Determinism: `endowed_cultivation_capital` is canonicalized ON-only when behavior-active
+    /// (digest tag 11 + the endowed count + the inheritance switch + the granted household ids), so
+    /// only THIS scenario's digest changes vs the expanded base; with the gate reverted it is
+    /// byte-identical to `frontier_endowed_capital_expanded_base`. The endowment/inheritance-transfer
+    /// diagnostics are runtime-only (never digested).
+    pub fn frontier_endowed_capital() -> Self {
+        let mut cfg = Self::frontier_endowed_capital_expanded_base();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.endowed_cultivation_capital = true;
+            chain.endowed_tool_count = ENDOWED_TOOL_COUNT_DEFAULT;
+            chain.cultivation_tool_inheritance = true;
+        }
+        cfg
+    }
+
+    /// S22e — the **no-inheritance CONTROL** (the falsifying control that isolates whether
+    /// inheritance is load-bearing): [`Self::frontier_endowed_capital`] with
+    /// `cultivation_tool_inheritance = false`, so plows are FORCED to the commons on a holder's
+    /// death even when the rest of the estate goes to the heir. Evaluated over the SAME
+    /// post-founder-death window as the headline: if the headline owner-lineage cohort persists past
+    /// the founders but this one does NOT, inheritance is load-bearing; if the headline only matches
+    /// this within one generation, the headline is `EndowmentOnlyScaffold`.
+    pub fn frontier_endowed_capital_no_inheritance() -> Self {
+        let mut cfg = Self::frontier_endowed_capital();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.cultivation_tool_inheritance = false;
+        }
+        cfg
+    }
+
+    /// S22e — the **no-endowment CONTROL**: [`Self::frontier_endowed_capital`] with
+    /// `endowed_tool_count = 0` (inheritance still on). No household is endowed, so tools must be
+    /// EARNED (the build path) exactly as S22d — expected `EndowmentLeverInert` / `NoStickiness` on
+    /// the expanded base and byte-identical to it at generation. Isolates the endowment as the
+    /// load-bearing lever.
+    pub fn frontier_endowed_capital_no_endowment() -> Self {
+        let mut cfg = Self::frontier_endowed_capital();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.endowed_tool_count = 0;
+        }
+        cfg
+    }
+
+    /// S22e — the **too-many-tools CONTROL**: [`Self::frontier_endowed_capital`] with
+    /// `endowed_tool_count` raised to the whole roster (universal ownership). Ownership is then NOT a
+    /// minority (owner-share > `OWNER_SHARE_MAX`), so the classifier must return `UniversalOwnership`
+    /// (topology, not an occupation), never `LineageStickySuccess`. The outcome-driving end of the
+    /// `endowed_tool_count` axis.
+    pub fn frontier_endowed_capital_too_many_tools() -> Self {
+        let mut cfg = Self::frontier_endowed_capital();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.endowed_tool_count = ENDOWED_ROSTER_HOUSEHOLDS as u16;
+        }
+        cfg
+    }
+
+    /// S22e — the **productivity-only CONTROL** on the expanded base:
+    /// [`Self::frontier_cultivation_capital_productivity_only`] (the S22c profit-stay colony with
+    /// bounded skill on and its haul ceiling raised to the tool's, durable capital + endowment OFF)
+    /// expanded to [`ENDOWED_ROSTER_HOUSEHOLDS`]. Driven with every cultivator's skill pinned to the
+    /// cap, so every cultivating agent draws the SAME boosted haul the plow confers — but with NO
+    /// owned/endowed/inheritable asset. If this colony-wide productivity bump still clears the
+    /// stickiness bars, the headline downgrades to `ProductivityOnly`.
+    pub fn frontier_endowed_capital_productivity_only() -> Self {
+        Self::frontier_cultivation_capital_productivity_only().expanded_endowment_roster()
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).
@@ -5335,6 +5546,28 @@ pub struct Settlement {
     cultivation_tools_built: u64,
     cultivation_tool_wood_consumed: u64,
     cultivation_tools_destroyed: u64,
+    /// S22e: the number of durable cultivation tools (plows) GRANTED to lineage households at
+    /// generation (the conservation-safe INITIAL endowment). `0` off the path. Part of the
+    /// tool-stock invariant `endowed + built − destroyed == stock_total`; included in the initial
+    /// whole-system conservation baseline by virtue of being placed in agent stock at generation
+    /// (before the first `econ_tick`). Read-only, NOT digested (the granted plows live in the
+    /// already-serialized agent stock).
+    endowed_cultivation_tools_total: u64,
+    /// S22e: the lineage household indices actually granted an endowment at generation after the
+    /// deterministic hash selection succeeds. Digested ON-only under the behavior-active gate; also
+    /// exposed as a runtime diagnostic. Empty off the path.
+    endowed_households: Vec<usize>,
+    /// S22e: the founding-member agent ids that were granted an endowed plow (one per selected
+    /// household). Runtime diagnostic only (the granted plows are serialized in agent stock). Empty
+    /// off the path.
+    endowed_member_ids: Vec<AgentId>,
+    /// S22e observability (read-only, NOT digested): the cumulative count of plow units that passed
+    /// to a LIVING household heir via `settle_estate_to_heirs` (a real inheritance transfer), and
+    /// the set of heir ids that received one. The non-vacuity test reads these to confirm a real
+    /// post-founder-death transfer occurred. `0`/empty when the gate forces plows to the commons or
+    /// no plow-holder dies with a living heir.
+    cultivation_tool_inherited_total: u64,
+    cultivation_tool_inheritor_ids: BTreeSet<AgentId>,
     econ_tick: u64,
     last_report: EconTickReport,
     /// The settlement **commons** (G4a real death): the conserved sink that holds a
@@ -5630,6 +5863,13 @@ struct ChainRuntime {
     tool_build_patience: u16,
     cultivation_tool_haul_ceiling: u32,
     cultivation_tool_non_durable: bool,
+    /// S22e: the endowed + inherited cultivation-capital gate + its knobs (see
+    /// [`ChainConfig::endowed_cultivation_capital`]). `false`/defaults for every existing config,
+    /// so no household is endowed, plows keep the existing heir routing, and the run is
+    /// byte-identical.
+    endowed_cultivation_capital: bool,
+    endowed_tool_count: u16,
+    cultivation_tool_inheritance: bool,
     /// S21h.0: the non-lineage woodcutters' consumed-only bread cushion (see
     /// [`ChainConfig::gatherer_food_cushion`]). `0` for every existing config; canonicalized
     /// ON-only (its differing gatherer starting stock already splits the digest).
@@ -7520,6 +7760,9 @@ impl Settlement {
                 tool_build_patience: chain.tool_build_patience,
                 cultivation_tool_haul_ceiling: chain.cultivation_tool_haul_ceiling,
                 cultivation_tool_non_durable: chain.cultivation_tool_non_durable,
+                endowed_cultivation_capital: chain.endowed_cultivation_capital,
+                endowed_tool_count: chain.endowed_tool_count,
+                cultivation_tool_inheritance: chain.cultivation_tool_inheritance,
                 gatherer_food_cushion: chain.gatherer_food_cushion,
                 emergency_hunger_threshold: chain.emergency_hunger_threshold,
                 retire_food_mints: chain.retire_food_mints,
@@ -7545,7 +7788,7 @@ impl Settlement {
             .map(|(slot, colonist)| (colonist.id, slot))
             .collect();
 
-        Self {
+        let mut settlement = Self {
             world,
             society,
             colonists,
@@ -7589,6 +7832,11 @@ impl Settlement {
             cultivation_tools_built: 0,
             cultivation_tool_wood_consumed: 0,
             cultivation_tools_destroyed: 0,
+            endowed_cultivation_tools_total: 0,
+            endowed_households: Vec::new(),
+            endowed_member_ids: Vec::new(),
+            cultivation_tool_inherited_total: 0,
+            cultivation_tool_inheritor_ids: BTreeSet::new(),
             econ_tick: 0,
             last_report: EconTickReport::default(),
             commons_gold: Gold::ZERO,
@@ -7643,7 +7891,80 @@ impl Settlement {
             // G8c-3: a spatial settlement levies no tax (the finance path returns early
             // from `generate`), so the tax overlay is always absent here.
             tax: None,
+        };
+        // S22e: endow a minority of lineage households with a plow at generation (a
+        // conservation-safe INITIAL endowment, no earning required). A no-op off the gate, so
+        // every existing config is byte-identical. Runs after construction so the colonist roster
+        // + econ agents exist; the granted plows land in agent stock before the first `econ_tick`,
+        // so they are part of the tick-0 whole-system baseline and conservation holds every tick.
+        settlement.apply_endowed_cultivation_capital(seed, config);
+        settlement
+    }
+
+    /// S22e: endow a MINORITY of lineage households with one durable cultivation tool (the plow) at
+    /// generation. A no-op unless [`Self::endowed_cultivation_capital_active`] holds (the flag is on
+    /// AND the durable-cultivation-capital path is active), so every existing config is
+    /// byte-identical. The endowment is restricted to LINEAGE households — the only agents
+    /// inheritance can operate on (`heir_for` needs a `household`), the disclosed S22e limitation.
+    ///
+    /// Selection is a DETERMINISTIC hash of `(seed, household_id)` over the eligible household set,
+    /// ranked by hash (NOT lowest-ids, which could privilege a special roster segment), taking the
+    /// first `endowed_tool_count`. Each selected household's FOUNDING member (its first founder, in
+    /// colonist-insertion order) is granted one plow into agent stock. The grant lands BEFORE the
+    /// first `econ_tick`, so it is part of the tick-0 whole-system baseline — a conservation-safe
+    /// INITIAL endowment, no earning required, never a mint. Records the endowed-tool count (the
+    /// §3.5 invariant term), the granted household indices (digested ON-only + a diagnostic), and
+    /// the granted member ids (a diagnostic).
+    fn apply_endowed_cultivation_capital(&mut self, seed: u64, config: &SettlementConfig) {
+        debug_assert_eq!(
+            self.econ_tick, 0,
+            "S22e endowments must be applied before the initial conservation baseline"
+        );
+        if !self.endowed_cultivation_capital_active() {
+            return;
         }
+        let Some(tool) = self.cultivation_tool_good() else {
+            return;
+        };
+        let count = self
+            .chain
+            .as_ref()
+            .map_or(0, |c| usize::from(c.endowed_tool_count));
+        let household_count = config
+            .demography
+            .as_ref()
+            .map_or(0, |demo| demo.households.len());
+        if count == 0 || household_count == 0 {
+            return;
+        }
+        // Rank every lineage household by the deterministic endowment hash and take the first
+        // `count` (clamped to the roster). Re-sort the winners by index so the digested selection +
+        // the grant order are roster-stable.
+        let mut ranked: Vec<usize> = (0..household_count).collect();
+        ranked.sort_by_key(|&h| (endowment_hash(seed, h), h));
+        ranked.truncate(count.min(household_count));
+        ranked.sort_unstable();
+        let mut granted_households = Vec::new();
+        for &household in &ranked {
+            // The household's founding member: its first founder in colonist-insertion order.
+            let Some(founder_id) = self
+                .colonists
+                .iter()
+                .find(|c| c.household == Some(household))
+                .map(|c| c.id)
+            else {
+                continue;
+            };
+            // A conserved, id-addressed stock credit (the same primitive the estate path uses); it
+            // returns false only for a missing agent, in which case nothing is granted or counted.
+            if self.society.credit_stock(founder_id, tool, 1) {
+                self.endowed_cultivation_tools_total =
+                    self.endowed_cultivation_tools_total.saturating_add(1);
+                self.endowed_member_ids.push(founder_id);
+                granted_households.push(household);
+            }
+        }
+        self.endowed_households = granted_households;
     }
 
     /// Generate a G8c-1 **finance** settlement: the Austrian business cycle (or its
@@ -7787,6 +8108,11 @@ impl Settlement {
             cultivation_tools_built: 0,
             cultivation_tool_wood_consumed: 0,
             cultivation_tools_destroyed: 0,
+            endowed_cultivation_tools_total: 0,
+            endowed_households: Vec::new(),
+            endowed_member_ids: Vec::new(),
+            cultivation_tool_inherited_total: 0,
+            cultivation_tool_inheritor_ids: BTreeSet::new(),
             econ_tick: 0,
             last_report: EconTickReport::default(),
             commons_gold: Gold::ZERO,
@@ -9138,13 +9464,31 @@ impl Settlement {
         if let Some(slot) = self.slot_for_id(id) {
             self.mark_colonist_dead(slot);
         }
-        let Some((gold, stock)) = self.collect_estate(id) else {
+        let Some((gold, mut stock)) = self.collect_estate(id) else {
             return false;
         };
         let destination = self.heir_for(id).map(|heir| EstateDestination::Household {
             household: self.colonist_household(id).unwrap_or_default(),
             heir,
         });
+        // S22e: the plow estate-routing SWITCH (the genuinely new primitive). When the
+        // endowed-cultivation-capital gate is active AND inheritance is OFF, FORCE any plows in the
+        // estate to the commons even when the rest of the estate goes to the heir. Implemented as a
+        // single stock-map partition BEFORE placement: the plow units are removed from `stock` here
+        // (the {plows} partition) and placed to the commons once after the heir/commons routing
+        // below, while {everything else} stays in `stock` and follows the existing routing — each
+        // partition placed exactly once, a pure conserved transfer, never a mint. The plow good is
+        // never the tracked bread, so the provenance / acquisition heir/commons split is unaffected.
+        // When inheritance is ON (the default under the gate) or the gate is inactive, `stock` is
+        // untouched and plows follow the existing heir path — goldens byte-identical off the gate.
+        let plow_good = self.cultivation_tool_good();
+        let forced_commons_plows: u64 = if self.endowed_cultivation_capital_active()
+            && !self.cultivation_tool_inheritance_active()
+        {
+            plow_good.map_or(0, |plow| stock.remove(&plow).unwrap_or(0))
+        } else {
+            0
+        };
         // The tracked bread good for BOTH stock-origin ledgers (S16 provenance + S21d.1
         // acquisition) — they classify the same good, so the heir/commons split is computed
         // once whenever either ledger is active.
@@ -9192,6 +9536,15 @@ impl Settlement {
                         bread_placed_with_heir += placed;
                         bread_placed_with_commons += qty - placed;
                     }
+                    // S22e (runtime diagnostic): a plow that lands with a LIVING heir is a real
+                    // inheritance transfer (conserved, never a mint — the tool-stock total is
+                    // unchanged). Record the count + the heir id so the non-vacuity test can confirm
+                    // a post-founder-death plow transfer occurred. Not digested.
+                    if Some(good) == plow_good && placed > 0 {
+                        self.cultivation_tool_inherited_total =
+                            self.cultivation_tool_inherited_total.saturating_add(placed);
+                        self.cultivation_tool_inheritor_ids.insert(heir);
+                    }
                 }
             }
             Some(EstateDestination::Commons) | None => {
@@ -9204,6 +9557,15 @@ impl Settlement {
                         bread_placed_with_commons += qty;
                     }
                 }
+            }
+        }
+        // S22e: place the {plows} partition the inheritance switch forced to the commons (a
+        // conserved transfer — the same sink the heirless commons fallback uses). Empty unless the
+        // gate is active with inheritance OFF, so this is inert (and goldens byte-identical) on
+        // every other path. Placed exactly once, after the {everything else} partition above.
+        if forced_commons_plows > 0 {
+            if let Some(plow) = plow_good {
+                *self.commons_stock.entry(plow).or_insert(0) += forced_commons_plows;
             }
         }
         // S16: route the dead colonist's produced bread with the bread units the estate
@@ -12506,6 +12868,41 @@ impl Settlement {
             && self.durable_cultivation_tool_active()
     }
 
+    /// S22e: whether the **endowed + inherited cultivation-capital** path is active this tick — the
+    /// `endowed_cultivation_capital` flag is on AND the durable-cultivation-capital path is active
+    /// (which already requires S22a entry + S22c profit-stay + the plow content good). When this
+    /// holds, a minority of lineage households were endowed a plow at generation and the
+    /// plow-routing switch governs estate inheritance. Off (every existing config) it is `false`, so
+    /// no household is endowed and the estate routing is byte-identical.
+    fn endowed_cultivation_capital_active(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(|c| c.endowed_cultivation_capital)
+            && self.durable_cultivation_tool_active()
+    }
+
+    /// S22e canonical marker gate. The zero-endowment / inheritance-on configuration is behavior-
+    /// identical to the expanded S22d base: it grants no plows, and plows that are later built keep
+    /// the existing heir route. Omit tag 11 for that inert combination while still marking either
+    /// real endowment (`endowed_tool_count > 0`) or the no-inheritance estate-routing switch.
+    fn endowed_cultivation_capital_digest_active(&self) -> bool {
+        self.endowed_cultivation_capital_active()
+            && self
+                .chain
+                .as_ref()
+                .is_some_and(|c| c.endowed_tool_count > 0 || !c.cultivation_tool_inheritance)
+    }
+
+    /// S22e: whether plows keep the existing heir routing on death (`true`, the default under the
+    /// gate) versus being FORCED to the commons (`false`, the no-inheritance control). Only meaningful
+    /// while [`Self::endowed_cultivation_capital_active`] holds; defaults to the inheriting behavior
+    /// off the path so a non-S22e estate settlement is untouched.
+    fn cultivation_tool_inheritance_active(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_none_or(|c| c.cultivation_tool_inheritance)
+    }
+
     /// S22d: the durable cultivation tool good (the plow), when a cultivation-capital content set
     /// carries one. `None` off the path / for a settlement with no chain — so the owner-haul
     /// boost, the build, and the owner diagnostics are all inert.
@@ -14844,6 +15241,46 @@ impl Settlement {
         self.cultivation_tool_builds.len()
     }
 
+    /// S22e observability: the count of durable cultivation tools (plows) GRANTED to lineage
+    /// households at generation (the conservation-safe INITIAL endowment). `0` off the path. The
+    /// §3.5 tool-stock invariant is `endowed + built − destroyed == stock_total`, asserting
+    /// non-negativity first. Runtime-only; not digested.
+    pub fn endowed_cultivation_tools_total(&self) -> u64 {
+        self.endowed_cultivation_tools_total
+    }
+
+    /// S22e (runtime diagnostic): the lineage household indices actually granted an endowment at
+    /// generation after deterministic hash selection. Empty off the path.
+    pub fn endowed_household_indices(&self) -> &[usize] {
+        &self.endowed_households
+    }
+
+    /// S22e (runtime diagnostic): whether the colonist at generation `index` is an ENDOWED founding
+    /// member (was granted a plow at generation). `false` off the path / for a non-endowed agent.
+    pub fn is_endowed_member(&self, index: usize) -> bool {
+        self.colonists
+            .get(index)
+            .is_some_and(|c| self.endowed_member_ids.contains(&c.id))
+    }
+
+    /// S22e observability: the cumulative count of plow units that passed to a LIVING household heir
+    /// via the estate settlement (a real inheritance transfer). `0` when the no-inheritance switch
+    /// forces plows to the commons, or when no plow-holder dies leaving a living heir. Runtime-only;
+    /// not digested.
+    pub fn cultivation_tool_inherited_total(&self) -> u64 {
+        self.cultivation_tool_inherited_total
+    }
+
+    /// S22e (runtime diagnostic): the set of heir agent ids (as `u64`) that received ≥1 plow via a
+    /// real inheritance transfer, in id order. The non-vacuity test reads these to confirm a
+    /// post-founder-death transfer to a living heir occurred. Empty when none did.
+    pub fn cultivation_tool_inheritor_ids(&self) -> Vec<u64> {
+        self.cultivation_tool_inheritor_ids
+            .iter()
+            .map(|id| id.0)
+            .collect()
+    }
+
     /// S22d (test-only matched-condition harness): grant the colonist at generation `index` one
     /// durable cultivation tool by adding it to the colonist's agent stock. Conservation-safe ONLY
     /// when called BEFORE the first `econ_tick` (the granted unit is then part of the tick-0
@@ -16072,6 +16509,21 @@ impl Settlement {
                     out.extend_from_slice(&build.project.labor_advanced.to_le_bytes());
                 }
             }
+            // S22e: the endowed + inherited cultivation-capital gate seeds a minority of lineage
+            // households with a plow at generation and gates whether plows inherit to the heir or
+            // are FORCED to the commons. Emitted only when the active gate can steer behavior:
+            // either at least one household is endowed, or the inheritance switch forces any later
+            // built plows to the commons. The explicitly inert no-endowment / inheritance-on
+            // control omits the marker so it stays byte-identical to the expanded S22d base.
+            if self.endowed_cultivation_capital_digest_active() {
+                out.push(11);
+                out.extend_from_slice(&chain.endowed_tool_count.to_le_bytes());
+                out.push(u8::from(chain.cultivation_tool_inheritance));
+                out.extend_from_slice(&(self.endowed_households.len() as u32).to_le_bytes());
+                for &household in &self.endowed_households {
+                    out.extend_from_slice(&(household as u32).to_le_bytes());
+                }
+            }
             // The staple mapping steers the next needs/scale phase for *any* chain,
             // role-choice or not, so it is included whenever a chain is active. The
             // G3b no-spread control shares the emergent config's physical state but
@@ -17103,6 +17555,20 @@ fn chain_runtime_durable_cultivation_tool_active(chain: &ChainRuntime) -> bool {
         && chain_runtime_profit_driven_retention_active(chain)
         && chain.content.cultivation_tool().is_some()
 }
+
+/// S22e: the deterministic endowment-selection hash of `(world seed, household id)` — a SplitMix64
+/// finalizer with a dedicated salt, so the endowed households are stable per `(seed, roster)` and
+/// the draw does not collide with the founder-seed / lifespan / starting-age derivations. Ranking
+/// households by this hash (rather than by raw id) keeps the endowed minority from privileging the
+/// low-id roster segment.
+fn endowment_hash(seed: u64, household_id: usize) -> u64 {
+    deterministic_mix64(
+        seed ^ ENDOWMENT_SELECT_SALT ^ (household_id as u64).wrapping_mul(0x9e37_79b9),
+    )
+}
+
+/// S22e: the dedicated salt for [`endowment_hash`] (a distinct constant from the demography salts).
+const ENDOWMENT_SELECT_SALT: u64 = 0x5322_e0ca_b1e5_eed5;
 
 /// S16: money-from-produced-bread is active iff the flag is on AND own-use cultivation is
 /// active (it composes strictly on the S15 path). Off (every existing config) it is

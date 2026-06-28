@@ -4,6 +4,25 @@ Status (spec): SPEC-READY (round-1 8 findings + round-2 2 findings folded in, §
 (S22d landed + the article). Composes on S22d (`durable_cultivation_tool`) → S22c (`profit_driven_retention`)
 → S22a (`endogenous_cultivation_entry`).
 
+Status (landed): IMPLEMENTED — verdict **`NoStickinessDespiteEndowment`** across all five seeds. The
+default-off `endowed_cultivation_capital` gate (endowment at generation by a deterministic hash of
+`(seed, household_id)` + the plow estate-routing switch, digest tag 11, ON-only) lands additive and
+conservation-safe; every existing golden is byte-identical (`goldens_unchanged` across all named suites).
+On the expanded `ROSTER_HOUSEHOLDS = 8` base the gate is **non-vacuous** (an endowed owner out-produces a
+no-tool cultivator ~3×; 640–680 real plow→living-heir inheritance transfers per run, and those heirs
+cultivate; ≥1 owner enters the retention signal) and the precondition holds (the gate-off expanded base
+still promotes SALT, sustains mortality, keeps provenance clean, and shows no owner-lineage cohort with
+high churn). Yet even capital given **up front and inherited** does not retain: churn stays ~1× the matched
+baseline (not the ≤0.5× bar), cultivation share settles ~4%, and **no persistent owner-cultivator LINEAGE
+cohort forms** (cohort `0/8`), while money + mortality + provenance + conservation all survive and the
+§3.5 tool-stock invariant holds every cell. The controls isolate the read cleanly: the no-inheritance and
+productivity-only controls do **not** clear the bars, the too-many-tools control classifies
+`UniversalOwnership` (owner-lineage share → 1.00), no-endowment is `EndowmentLeverInert`, and the
+`endowed_tool_count` axis is outcome-driving (owner-lineage share 0.12 → 1.00). The honest headline: in this
+WOOD-poor mortality regime, durable + endowed + inheritable capital was **not** sufficient to stabilize a
+cultivator lineage — the four-step negative extends to a five-step one. (Engine: `sim/src/settlement.rs`;
+suite: `sim/tests/endowed_inherited_capital.rs`.)
+
 ## 0. One-paragraph summary
 
 The role-topology arc is a clean **four-step negative**: hunger discovers the role (S22a, fluid), accumulated
