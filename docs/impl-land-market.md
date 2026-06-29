@@ -6,6 +6,46 @@ on the population-scaled land base; the other S22 exit-cost levers (skill, profi
 are **OFF** in the headline so the land market is the only new exit-cost mechanism. Codex-scoped ("spec S23b —
 post-money alienable land market with budget-constraint hysteresis").
 
+Status (implementation): LANDED. With agent-local buyer eligibility (a buyer must itself be
+cultivating-or-attempting — not merely admitted because some plot is listed), the sustained-zero
+`HardBarrier` gate (max affordable-listed over the final window, per §2's "through the final window"),
+12-econ-tick idle listings, and a priced-out trace that excludes the contested listed plot as its own
+stayer, the verdict classifier prints `{3: LandMarketInert, 7: LandMarketInert, 11: LandMarketInert,
+19: LandMarketInert, 23: LandMarketInert}`: no headline `LandMarketStickySuccess`. The aggregate
+non-vacuity, endogeneity (good plots trade dearer than marginal by ≥ `PRICE_RENT_GAP_BPS`),
+post-money-only (trades and carrying charges), conservation, SALT-accounting, registry, and control guards
+all pass; old-age deaths settle land tenure under the active market so the registry invariant holds every
+tick. Property remains a non-success in this regime — the canonical illiquid-priced-alienable-land lever
+does not stabilize an occupation here.
+
+**Codex review-of-results: PASS-WITH-CAVEATS (keep `LandMarketInert`, honestly caveated).** The rb-lite panel
+did NOT substantively review this run — a reviewer-config bug (the local, gitignored reviewers file carried a
+stale S22d checklist) left reviewer 2 reviewing the wrong target while reviewer 1 (generic `codex review`) was
+clean; the multi-round churn chased the misconfigured reviewer, so the run was stopped at its round-4
+stabilized (codex-reviewer-clean) state and gated on independent verification + Codex review-of-results. Two
+honesty caveats from that review: **(1) per-seed non-vacuity FAILS** — every headline seed clears only 5–7
+land trades (< `MIN_LAND_TRADES`=8), so `LandMarketInert` is the *correct, non-post-hoc* verdict (lowering the
+bar after seeing 5–7 would be tuning); the "non-vacuity passes" above is **aggregate endogeneity/thin-market
+evidence** (prices track rent, foreclosures fire, priced-out traces exist), NOT per-seed market activation —
+the market is *physically real but too thin to be the load-bearing institution*. **(2) Scope/confound:** the
+`land_market_off` baseline on this population-scaled S23a base is *already* owner-dominant + buyer-thin
+(buyers≈1, owners≈95% grain), so S23b tests whether a land market can **rescue an already owner-collapsed
+private-tenure regime** (it cannot) — narrower than "land markets fail generally"; it does NOT test a market
+in a *functioning two-tier* colony. `buyers=0` / `owner_grain_bps≈98%` are the disclosed regime, not a
+conservation/degeneracy bug. The honest finding stands beside S22f: **private-land institutions so far either
+THRASH under forfeiture (S23a) or go too THIN over owner-dominance (S23b); only the voluntary fixed-term
+contract (S22f) preserved a two-tier market.** A clean test of a land market over a non-collapsed two-tier
+base is possible future work, not a re-run of S23b.
+
+Round-3 review hardening (verdict unchanged): (1) post-promotion the homestead path is now closed in
+`validate_harvest_tasks` itself — a would-be homesteader heading to an unowned plot is rerouted/idled
+*before* `world.tick`, so a non-owner can no longer extract unowned grain for free instead of buying
+listed title (the post-claim guard remains as the load-bearing suppression under the `harvest_gate`-off
+`non_excludable_title` control, where validation is skipped); (2) the `§3.6` budget-hysteresis trace is
+decoupled from the bid — a buyer that can afford only a cheaper marginal listing while being budget-outbid
+on a comparable-or-better one now records that priced-out event (best-land-first, still gated on a live
+comparable stayer), capturing the "can only re-buy worse land" case the metric exists to detect.
+
 ## 0. One-paragraph summary
 
 S22 + S23a established: occupation needs an **exit-cost institution**, and its **design matters** — S22f's

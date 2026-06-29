@@ -221,6 +221,7 @@ const LAND_IDLE_LIMIT_DEFAULT: u16 = 12;
 const LAND_TOTAL_PLOTS_DEFAULT: u16 = 48;
 const LAND_GOOD_PLOTS_DEFAULT: u16 = 4;
 const LAND_MARGINAL_PLOTS_DEFAULT: u16 = LAND_TOTAL_PLOTS_DEFAULT - LAND_GOOD_PLOTS_DEFAULT;
+const LAND_MARKET_TOTAL_PLOTS_DEFAULT: u16 = 28;
 const LAND_GOOD_REGEN: u32 = 64;
 const LAND_GOOD_CAP: u32 = 8_000;
 const LAND_MARGINAL_REGEN_DEFAULT: u32 = 12;
@@ -231,6 +232,16 @@ const LAND_MARGINAL_SPACING: u32 = 6;
 const LAND_GOOD_TO_MARGINAL_GAP: u32 = 4;
 const LAND_LAYOUT_MIN_WIDTH: u16 = 64;
 const LAND_LAYOUT_MARGIN: u32 = 10;
+const LAND_CARRYING_COST_DEFAULT: u64 = 1;
+const LAND_PRICE_CAP_FACTOR_DEFAULT: u64 = 1;
+pub const LAND_CARRYING_PERIOD: u64 = 12;
+pub const LAND_RENT_WINDOW: u64 = 100;
+pub const LAND_MIN_RENT_HISTORY: usize = 8;
+pub const LAND_SALE_HISTORY_WEIGHT_BPS: u64 = 5_000;
+pub const LAND_SALE_HISTORY_K: usize = 3;
+pub const LAND_LIST_IDLE: u16 = 12;
+pub const LAND_FORECLOSE_DISCOUNT_BPS: u64 = 2_000;
+pub const LAND_PRICE_MIN: u64 = 1;
 
 /// S23a viability floors (§2a `VIABLE_MARGINAL`): a grain plot counts as viable, homesteadable
 /// land only when its `regen`/`cap` clear these floors (a plot that yields ~nothing does not
@@ -1301,6 +1312,18 @@ pub struct ChainConfig {
     /// S23a: per-tick regeneration for marginal plots. The viability floor is intentionally below
     /// the default so the robustness sweep can expose the hard-barrier boundary.
     pub land_marginal_regen: u32,
+    /// S23b — **post-money alienable land market** (default `false`, byte-identical when off).
+    /// When `true` AND private land tenure is active, idle forfeiture is disabled from tick 0 and
+    /// the market institution activates only after SALT is the money good. Owned plots can be
+    /// listed, bought, sold, and charged a conserved carrying cost; title remains metadata over the
+    /// finite plot registry.
+    pub land_market: bool,
+    /// S23b: SALT carrying cost per held plot every [`LAND_CARRYING_PERIOD`] econ ticks. Paid into
+    /// the settlement land-fee sink, never redistributed in this slice.
+    pub land_carrying_cost: u64,
+    /// S23b: capitalization slope from realized/quality-prior rent into fundamental land price.
+    /// `0` is the free-rebuy control.
+    pub land_price_cap_factor: u64,
     /// S21d.0 — **retire the food mints** (the open-survival probe; default `false`,
     /// byte-identical when off). When `true`, the two staple-food mint sites are skipped
     /// **independent of `own_labor_subsistence`/forage**: the demographic `food_provision`
@@ -1696,6 +1719,9 @@ impl ChainConfig {
             land_good_plots: LAND_GOOD_PLOTS_DEFAULT,
             land_marginal_plots: LAND_MARGINAL_PLOTS_DEFAULT,
             land_marginal_regen: LAND_MARGINAL_REGEN_DEFAULT,
+            land_market: false,
+            land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
+            land_price_cap_factor: LAND_PRICE_CAP_FACTOR_DEFAULT,
             // S21d.0 off by default: the food mints stay, so every existing config and its
             // goldens are byte-identical (canonicalized ON-only).
             retire_food_mints: false,
@@ -1854,6 +1880,9 @@ impl ChainConfig {
             land_good_plots: LAND_GOOD_PLOTS_DEFAULT,
             land_marginal_plots: LAND_MARGINAL_PLOTS_DEFAULT,
             land_marginal_regen: LAND_MARGINAL_REGEN_DEFAULT,
+            land_market: false,
+            land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
+            land_price_cap_factor: LAND_PRICE_CAP_FACTOR_DEFAULT,
             // S21d.0 off by default: the food mints stay, so every existing config and its
             // goldens are byte-identical (canonicalized ON-only).
             retire_food_mints: false,
@@ -1992,6 +2021,9 @@ impl ChainConfig {
             land_good_plots: LAND_GOOD_PLOTS_DEFAULT,
             land_marginal_plots: LAND_MARGINAL_PLOTS_DEFAULT,
             land_marginal_regen: LAND_MARGINAL_REGEN_DEFAULT,
+            land_market: false,
+            land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
+            land_price_cap_factor: LAND_PRICE_CAP_FACTOR_DEFAULT,
             // S21d.0 off by default: the food mints stay, so every existing config and its
             // goldens are byte-identical (canonicalized ON-only).
             retire_food_mints: false,
@@ -5242,6 +5274,22 @@ impl SettlementConfig {
         cfg
     }
 
+    /// S23b — **post-money alienable land market** (the HEADLINE): S23a's finite,
+    /// owner-exclusive, heterogeneous plot registry over the S22a population-scaled base, with the
+    /// land-market institution enabled. The market disables idle forfeiture from tick 0, but buying,
+    /// selling, carrying costs, and foreclosure listings activate only after SALT promotes.
+    pub fn frontier_land_market() -> Self {
+        let mut cfg = Self::frontier_private_land_tenure();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.land_market = true;
+            chain.land_carrying_cost = LAND_CARRYING_COST_DEFAULT;
+            chain.land_price_cap_factor = LAND_PRICE_CAP_FACTOR_DEFAULT;
+            chain.land_marginal_plots = LAND_MARKET_TOTAL_PLOTS_DEFAULT - chain.land_good_plots;
+            debug_assert!(chain_config_land_market_active(chain));
+        }
+        cfg
+    }
+
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
     /// holding everything else fixed — the only knob the distance→price test
     /// varies. Panics if there is not exactly one node (the experiment's shape).
@@ -6051,6 +6099,20 @@ pub struct Settlement {
     land_lapsed_reentry_worse_total: u64,
     land_lapsed_losses: BTreeMap<AgentId, LandPlotQuality>,
     land_lost_prior_owners: BTreeMap<NodeId, (AgentId, LandLossCause)>,
+    land_market_plots: BTreeMap<NodeId, LandMarketPlotState>,
+    land_market_yield_this_tick: BTreeMap<NodeId, u32>,
+    land_market_sales: Vec<LandSaleRecord>,
+    land_market_trade_count: u64,
+    land_market_pre_promotion_trade_count: u64,
+    land_market_carrying_paid_total: u64,
+    land_market_pre_promotion_charges: u64,
+    land_market_foreclosure_listings_total: u64,
+    land_market_priced_out_total: u64,
+    land_market_lapsed_priced_out_total: u64,
+    land_market_ask_bid_gap_sum: u64,
+    land_market_ask_bid_gap_count: u64,
+    land_market_title_history: BTreeMap<AgentId, LandTitleHistory>,
+    land_fee_pool_salt: Gold,
     econ_tick: u64,
     last_report: EconTickReport,
     /// The settlement **commons** (G4a real death): the conserved sink that holds a
@@ -6371,6 +6433,9 @@ struct ChainRuntime {
     land_good_plots: u16,
     land_marginal_plots: u16,
     land_marginal_regen: u32,
+    land_market: bool,
+    land_carrying_cost: u64,
+    land_price_cap_factor: u64,
     /// S21h.0: the non-lineage woodcutters' consumed-only bread cushion (see
     /// [`ChainConfig::gatherer_food_cushion`]). `0` for every existing config; canonicalized
     /// ON-only (its differing gatherer starting stock already splits the digest).
@@ -6427,6 +6492,77 @@ struct LandPlotQuality {
     cap: u32,
     distance: u32,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LandListingKind {
+    Idle,
+    Foreclosure,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LandListing {
+    ask: u64,
+    kind: LandListingKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LandYieldTick {
+    tick: u64,
+    qty: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct LandMarketPlotState {
+    price: u64,
+    listing: Option<LandListing>,
+    last_sale_price: Option<u64>,
+    last_sale_tick: Option<u64>,
+    yield_history: VecDeque<LandYieldTick>,
+}
+
+impl LandMarketPlotState {
+    fn new(price: u64) -> Self {
+        Self {
+            price,
+            listing: None,
+            last_sale_price: None,
+            last_sale_tick: None,
+            yield_history: VecDeque::new(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LandTitleSource {
+    OriginalClaim,
+    Inherited,
+    Bought,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct LandTitleHistory {
+    ever_owned: bool,
+    ever_sold: bool,
+    current: Option<LandTitleSource>,
+    ever_bought: bool,
+    retained_through_priced_out: bool,
+    foreclosed_out: bool,
+    last_carrying_paid_tick: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LandSaleRecord {
+    tick: u64,
+    node: NodeId,
+    buyer: AgentId,
+    seller: AgentId,
+    price: u64,
+    rent: u64,
+    good_plot: bool,
+    foreclosure: bool,
+}
+
+pub type LandMarketSaleRow = (u64, u32, u64, u64, u64, u64, bool, bool);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct WorkedLandEvent {
@@ -8353,6 +8489,9 @@ impl Settlement {
                 land_good_plots: chain.land_good_plots,
                 land_marginal_plots: chain.land_marginal_plots,
                 land_marginal_regen: chain.land_marginal_regen,
+                land_market: chain.land_market,
+                land_carrying_cost: chain.land_carrying_cost,
+                land_price_cap_factor: chain.land_price_cap_factor,
                 gatherer_food_cushion: chain.gatherer_food_cushion,
                 emergency_hunger_threshold: chain.emergency_hunger_threshold,
                 retire_food_mints: chain.retire_food_mints,
@@ -8444,6 +8583,20 @@ impl Settlement {
             land_lapsed_reentry_worse_total: 0,
             land_lapsed_losses: BTreeMap::new(),
             land_lost_prior_owners: BTreeMap::new(),
+            land_market_plots: BTreeMap::new(),
+            land_market_yield_this_tick: BTreeMap::new(),
+            land_market_sales: Vec::new(),
+            land_market_trade_count: 0,
+            land_market_pre_promotion_trade_count: 0,
+            land_market_carrying_paid_total: 0,
+            land_market_pre_promotion_charges: 0,
+            land_market_foreclosure_listings_total: 0,
+            land_market_priced_out_total: 0,
+            land_market_lapsed_priced_out_total: 0,
+            land_market_ask_bid_gap_sum: 0,
+            land_market_ask_bid_gap_count: 0,
+            land_market_title_history: BTreeMap::new(),
+            land_fee_pool_salt: Gold::ZERO,
             econ_tick: 0,
             last_report: EconTickReport::default(),
             commons_gold: Gold::ZERO,
@@ -8517,6 +8670,7 @@ impl Settlement {
             return;
         };
         self.land_plots.clear();
+        self.land_market_plots.clear();
         for idx in 0..self.world.node_count() {
             let node_id = NodeId(idx as u32);
             if self
@@ -8532,6 +8686,11 @@ impl Settlement {
                         reserved_for: None,
                     },
                 );
+                if self.land_market_active() {
+                    let price = self.land_market_initial_price(node_id);
+                    self.land_market_plots
+                        .insert(node_id, LandMarketPlotState::new(price));
+                }
             }
         }
     }
@@ -8765,6 +8924,20 @@ impl Settlement {
             land_lapsed_reentry_worse_total: 0,
             land_lapsed_losses: BTreeMap::new(),
             land_lost_prior_owners: BTreeMap::new(),
+            land_market_plots: BTreeMap::new(),
+            land_market_yield_this_tick: BTreeMap::new(),
+            land_market_sales: Vec::new(),
+            land_market_trade_count: 0,
+            land_market_pre_promotion_trade_count: 0,
+            land_market_carrying_paid_total: 0,
+            land_market_pre_promotion_charges: 0,
+            land_market_foreclosure_listings_total: 0,
+            land_market_priced_out_total: 0,
+            land_market_lapsed_priced_out_total: 0,
+            land_market_ask_bid_gap_sum: 0,
+            land_market_ask_bid_gap_count: 0,
+            land_market_title_history: BTreeMap::new(),
+            land_fee_pool_salt: Gold::ZERO,
             econ_tick: 0,
             last_report: EconTickReport::default(),
             commons_gold: Gold::ZERO,
@@ -8833,6 +9006,7 @@ impl Settlement {
 
         // ---- 1. FAST: world ticks; track per-colonist deposits via carry deltas.
         let fast = self.run_fast_loop();
+        self.land_market_finalize_rent_tick();
         report.total_gold_after_fast = self.total_gold().0;
         debug_assert_eq!(
             report.total_gold_before_fast, report.total_gold_after_fast,
@@ -9058,12 +9232,10 @@ impl Settlement {
                 .checked_add(bank_credit_issued)
                 .expect("bank credit issued cannot overflow the M3 record");
         }
-        report.total_gold_after_step = self.total_gold().0;
+        let society_gold_after_market = self.society.total_gold();
         if money_good_before.is_none() {
             if let Some(emerged) = self.society.current_money_good() {
-                let minted = self
-                    .society
-                    .total_gold()
+                let minted = society_gold_after_market
                     .0
                     .saturating_sub(society_gold_before.0);
                 report.promoted.insert(emerged, minted);
@@ -9100,6 +9272,13 @@ impl Settlement {
         // not re-counted. No-op off the path.
         let acquisition_consume_cursor = self
             .run_acquisition_market(provenance_barter_trades_start, provenance_spot_trades_start);
+
+        // ---- 5b-bis''. LAND MARKET (S23b): after ordinary food/SALT trades, and only once
+        // SALT has promoted, charge carrying costs and run the deterministic pairwise land sweep.
+        // This preserves the bootstrap and lets the budget-hysteresis test observe agents that spent
+        // SALT on food before trying to re-buy land.
+        self.run_land_market();
+        report.total_gold_after_step = self.total_gold().0;
 
         // ---- 5b-ter. MULTI-GOOD MONEY INSTRUMENTATION (S18): trace this tick's barter
         // trades for the WOOD↔medium leg (the WOOD provenance bound) and the
@@ -10018,6 +10197,10 @@ impl Settlement {
             return own;
         }
 
+        if self.land_market_active() && self.current_money_good() == Some(SALT) {
+            return None;
+        }
+
         self.land_plots
             .iter()
             .filter(|&(&node, record)| {
@@ -10045,6 +10228,13 @@ impl Settlement {
             .collect();
         ids.sort();
 
+        // Post-promotion under the land market the homestead path is closed (§3.2/§3.4): an unowned
+        // plot is no longer free-claimable, only bought. A would-be homesteader heading to an unowned
+        // plot must be rerouted off it BEFORE `world.tick`, else it harvests the grain for free this
+        // tick (the post-claim `continue` in `apply_worked_events` would only suppress the title, not
+        // the extraction) and bypasses the market entry constraint.
+        let homestead_closed = self.land_market_active() && self.current_money_good() == Some(SALT);
+
         let mut invalid = Vec::new();
         let mut targeters: BTreeMap<NodeId, Vec<(AgentId, Task)>> = BTreeMap::new();
         for id in ids {
@@ -10068,7 +10258,13 @@ impl Settlement {
                 self.land_owner_gate_denials_total += 1;
                 invalid.push((id, task));
             } else if record.owner.is_none() && record.reserved_for.is_none() {
-                targeters.entry(node).or_default().push((id, task));
+                if homestead_closed {
+                    // Reroute the would-be homesteader to its own plot if it holds one, else to Idle
+                    // (`private_land_target_for_agent` returns `None` for a post-promotion non-owner).
+                    invalid.push((id, task));
+                } else {
+                    targeters.entry(node).or_default().push((id, task));
+                }
             }
         }
 
@@ -10158,6 +10354,12 @@ impl Settlement {
         }
         for event in events {
             debug_assert!(event.moved > 0);
+            if self.land_market_active() {
+                *self
+                    .land_market_yield_this_tick
+                    .entry(event.node)
+                    .or_insert(0) += event.moved;
+            }
             if let Some(&slot) = self.colonist_slot_by_id.get(&event.agent) {
                 if self.colonists[slot].alive {
                     self.colonists[slot].carried_grain_source = Some(event.node);
@@ -10182,6 +10384,14 @@ impl Settlement {
             {
                 continue;
             }
+            if self.land_market_active() && self.current_money_good() == Some(SALT) {
+                // Post-promotion the homestead claim path is closed. Under the headline
+                // (`harvest_gate` on) `validate_harvest_tasks` already rerouted non-owners off
+                // unowned plots, so this is the defense-in-depth net; under `non_excludable_title`
+                // (gate off) validation is skipped, so this is the load-bearing suppression that
+                // keeps a free harvest from minting post-promotion title.
+                continue;
+            }
 
             let was_non_owner = !self
                 .land_plots
@@ -10201,6 +10411,14 @@ impl Settlement {
                 record.reserved_for = None;
             }
             self.land_claims_total += 1;
+            if self.land_market_active() {
+                let history = self
+                    .land_market_title_history
+                    .entry(event.agent)
+                    .or_default();
+                history.ever_owned = true;
+                history.current = Some(LandTitleSource::OriginalClaim);
+            }
             // Non-vacuity wants the exact mechanic: a plot LOST ON IDLE then re-homesteaded by a
             // DIFFERENT agent. A plot vacated by a heirless death (cause `Death`) is excluded — it
             // is not the loss-on-idle the spec demands the mechanism demonstrate.
@@ -10220,18 +10438,22 @@ impl Settlement {
     }
 
     fn private_land_advance_idle_counters(&mut self, events: &[WorkedLandEvent]) {
-        if !self.private_land_tenure_active()
-            || !self
-                .chain
-                .as_ref()
-                .is_some_and(|chain| chain.forfeit_on_idle)
-        {
+        if !self.private_land_tenure_active() {
+            return;
+        }
+        let land_market = self.land_market_active();
+        let forfeit_on_idle = self
+            .chain
+            .as_ref()
+            .is_some_and(|chain| chain.forfeit_on_idle)
+            && !land_market;
+        if !forfeit_on_idle && !land_market {
             return;
         }
         let Some(limit) = self.chain.as_ref().map(|chain| chain.land_idle_limit) else {
             return;
         };
-        if limit == 0 {
+        if limit == 0 && forfeit_on_idle {
             return;
         }
 
@@ -10278,7 +10500,7 @@ impl Settlement {
                 continue;
             }
             record.idle_counter = record.idle_counter.saturating_add(1);
-            if record.idle_counter >= limit {
+            if forfeit_on_idle && record.idle_counter >= limit {
                 forfeits.push((node, owner));
             }
         }
@@ -10297,6 +10519,635 @@ impl Settlement {
                 self.land_lapsed_losses.insert(owner, quality);
             }
         }
+    }
+
+    fn land_market_initial_price(&self, node: NodeId) -> u64 {
+        let rent = self
+            .private_land_plot_quality(node)
+            .map_or(1, Self::land_quality_prior_rent);
+        self.land_market_price_from_rent(rent)
+    }
+
+    fn land_market_price_from_rent(&self, rent: u64) -> u64 {
+        let factor = self
+            .chain
+            .as_ref()
+            .map_or(LAND_PRICE_CAP_FACTOR_DEFAULT, |chain| {
+                chain.land_price_cap_factor
+            });
+        if factor == 0 {
+            0
+        } else {
+            factor.saturating_mul(rent).max(LAND_PRICE_MIN)
+        }
+    }
+
+    fn land_quality_prior_rent(quality: LandPlotQuality) -> u64 {
+        let cap_weight = (u64::from(quality.cap) / 1_000).max(1);
+        let distance = u64::from(quality.distance).saturating_add(1);
+        u64::from(quality.regen)
+            .saturating_mul(cap_weight)
+            .checked_div(distance)
+            .unwrap_or(0)
+            .max(1)
+    }
+
+    fn land_market_rent_basis(&self, node: NodeId) -> u64 {
+        let prior = self
+            .private_land_plot_quality(node)
+            .map_or(1, Self::land_quality_prior_rent);
+        let Some(state) = self.land_market_plots.get(&node) else {
+            return prior;
+        };
+        let realized_ticks = state
+            .yield_history
+            .iter()
+            .filter(|entry| entry.qty > 0)
+            .count();
+        if realized_ticks < LAND_MIN_RENT_HISTORY {
+            return prior;
+        }
+        let sum: u64 = state
+            .yield_history
+            .iter()
+            .map(|entry| u64::from(entry.qty))
+            .sum();
+        let periods = u64::try_from(state.yield_history.len()).unwrap_or(1).max(1);
+        ((sum + periods / 2) / periods).max(1)
+    }
+
+    fn land_market_base_price(&self, node: NodeId) -> u64 {
+        self.land_market_price_from_rent(self.land_market_rent_basis(node))
+    }
+
+    fn land_market_local_sale_mean(&self, node: NodeId) -> Option<u64> {
+        let origin = self.world.node(node)?.pos;
+        let mut sales: Vec<((u32, u32), u64)> = self
+            .land_market_plots
+            .iter()
+            .filter_map(|(&other_node, state)| {
+                let price = state.last_sale_price?;
+                let pos = self.world.node(other_node)?.pos;
+                let distance = self.world.grid_distance(origin, pos);
+                Some(((distance, other_node.0), price))
+            })
+            .collect();
+        sales.sort_by_key(|(key, _)| *key);
+        let mut sum = 0u64;
+        let mut count = 0u64;
+        for (_, price) in sales.into_iter().take(LAND_SALE_HISTORY_K) {
+            sum = sum.saturating_add(price);
+            count += 1;
+        }
+        (count > 0).then(|| (sum + count / 2) / count)
+    }
+
+    fn land_market_listed_price(&self, node: NodeId) -> u64 {
+        let factor = self
+            .chain
+            .as_ref()
+            .map_or(LAND_PRICE_CAP_FACTOR_DEFAULT, |chain| {
+                chain.land_price_cap_factor
+            });
+        if factor == 0 {
+            return 0;
+        }
+        let base = self.land_market_base_price(node);
+        let blended = if let Some(mean) = self.land_market_local_sale_mean(node) {
+            let base_weight = 10_000u64.saturating_sub(LAND_SALE_HISTORY_WEIGHT_BPS);
+            (base
+                .saturating_mul(base_weight)
+                .saturating_add(mean.saturating_mul(LAND_SALE_HISTORY_WEIGHT_BPS))
+                .saturating_add(5_000))
+                / 10_000
+        } else {
+            base
+        };
+        let upper = LAND_PRICE_MIN.max(base.saturating_mul(4));
+        blended.clamp(LAND_PRICE_MIN, upper)
+    }
+
+    fn land_market_discounted_ask(&self, price: u64) -> u64 {
+        if self
+            .chain
+            .as_ref()
+            .is_some_and(|chain| chain.land_price_cap_factor == 0)
+        {
+            return 0;
+        }
+        let discounted =
+            price.saturating_mul(10_000u64.saturating_sub(LAND_FORECLOSE_DISCOUNT_BPS)) / 10_000;
+        discounted.max(LAND_PRICE_MIN)
+    }
+
+    fn land_market_idle_list_fast_ticks() -> u16 {
+        u16::try_from(u64::from(LAND_LIST_IDLE).saturating_mul(FAST_TICKS_PER_ECON_TICK))
+            .unwrap_or(u16::MAX)
+    }
+
+    fn land_market_finalize_rent_tick(&mut self) {
+        if !self.land_market_active() {
+            self.land_market_yield_this_tick.clear();
+            return;
+        }
+        let nodes: Vec<NodeId> = self.land_plots.keys().copied().collect();
+        for node in nodes {
+            let qty = self.land_market_yield_this_tick.remove(&node).unwrap_or(0);
+            let initial_price = self.land_market_initial_price(node);
+            let state = self
+                .land_market_plots
+                .entry(node)
+                .or_insert_with(|| LandMarketPlotState::new(initial_price));
+            state.yield_history.push_back(LandYieldTick {
+                tick: self.econ_tick,
+                qty,
+            });
+            while state
+                .yield_history
+                .front()
+                .is_some_and(|entry| entry.tick + LAND_RENT_WINDOW <= self.econ_tick)
+            {
+                state.yield_history.pop_front();
+            }
+        }
+        self.land_market_yield_this_tick.clear();
+    }
+
+    fn land_market_free_salt(&self, agent: AgentId) -> Gold {
+        self.society.free_gold_after_all_reserves(agent)
+    }
+
+    fn land_market_debit_fee(&mut self, agent: AgentId, amount: Gold) -> bool {
+        if amount == Gold::ZERO {
+            return true;
+        }
+        if self.land_market_free_salt(agent) < amount {
+            return false;
+        }
+        if let Some(money_system) = self.society.money_system.as_mut() {
+            if money_system.debit_specie(agent, amount).is_err() {
+                return false;
+            }
+            money_system.reconcile_agent_cache(self.society.agents.as_mut_slice());
+        } else if let Some(holder) = self.society.agents.get_mut(agent) {
+            let Some(next) = holder.gold.checked_sub(amount) else {
+                return false;
+            };
+            holder.gold = next;
+        } else {
+            return false;
+        }
+        self.land_fee_pool_salt = self.land_fee_pool_salt.saturating_add(amount);
+        true
+    }
+
+    fn land_market_charge_carrying_costs(&mut self) {
+        if self.econ_tick == 0 || !self.econ_tick.is_multiple_of(LAND_CARRYING_PERIOD) {
+            return;
+        }
+        let cost = Gold(
+            self.chain
+                .as_ref()
+                .map_or(LAND_CARRYING_COST_DEFAULT, |chain| chain.land_carrying_cost),
+        );
+        if cost == Gold::ZERO {
+            return;
+        }
+        let owners: Vec<(NodeId, AgentId)> = self
+            .land_plots
+            .iter()
+            .filter_map(|(&node, record)| record.owner.map(|owner| (node, owner)))
+            .collect();
+        // Defense-in-depth (spec §3.2/§4): the carrying sweep is post-money-gated by
+        // `run_land_market`'s early return, so this loop never runs pre-promotion in practice. If
+        // that gate were ever removed, record each pre-promotion charge here (mirroring the trade
+        // counter in `land_market_match`) so the `pre_money_forbidden` guard catches the regression
+        // instead of asserting a tautology.
+        let post_money = self.current_money_good() == Some(SALT);
+        for (node, owner) in owners {
+            if !post_money {
+                self.land_market_pre_promotion_charges =
+                    self.land_market_pre_promotion_charges.saturating_add(1);
+            }
+            if self.land_market_debit_fee(owner, cost) {
+                self.land_market_carrying_paid_total =
+                    self.land_market_carrying_paid_total.saturating_add(cost.0);
+                let history = self.land_market_title_history.entry(owner).or_default();
+                history.last_carrying_paid_tick = Some(self.econ_tick);
+                if let Some(state) = self.land_market_plots.get_mut(&node) {
+                    if state
+                        .listing
+                        .is_some_and(|listing| listing.kind == LandListingKind::Foreclosure)
+                    {
+                        state.listing = None;
+                    }
+                }
+            } else {
+                let current_price = self.land_market_listed_price(node);
+                let ask = self
+                    .land_market_plots
+                    .get(&node)
+                    .and_then(|state| state.listing)
+                    .filter(|listing| listing.kind == LandListingKind::Foreclosure)
+                    .map_or_else(
+                        || self.land_market_discounted_ask(current_price),
+                        |listing| {
+                            let basis = listing.ask.min(current_price);
+                            self.land_market_discounted_ask(basis)
+                        },
+                    );
+                let state = self
+                    .land_market_plots
+                    .entry(node)
+                    .or_insert_with(|| LandMarketPlotState::new(current_price));
+                state.price = current_price;
+                state.listing = Some(LandListing {
+                    ask,
+                    kind: LandListingKind::Foreclosure,
+                });
+                self.land_market_foreclosure_listings_total = self
+                    .land_market_foreclosure_listings_total
+                    .saturating_add(1);
+            }
+        }
+    }
+
+    fn land_market_prepare_listings(&mut self) {
+        let nodes: Vec<NodeId> = self.land_plots.keys().copied().collect();
+        let idle_list_fast_ticks = Self::land_market_idle_list_fast_ticks();
+        let cost = Gold(
+            self.chain
+                .as_ref()
+                .map_or(LAND_CARRYING_COST_DEFAULT, |chain| chain.land_carrying_cost),
+        );
+        for node in nodes {
+            let owner = self.land_plots.get(&node).and_then(|record| record.owner);
+            let current_price = self.land_market_listed_price(node);
+            self.land_market_plots
+                .entry(node)
+                .or_insert_with(|| LandMarketPlotState::new(current_price))
+                .price = current_price;
+            let Some(owner) = owner else {
+                if let Some(state) = self.land_market_plots.get_mut(&node) {
+                    state.listing = None;
+                }
+                continue;
+            };
+            if !self.private_land_live_agent(owner) {
+                if let Some(state) = self.land_market_plots.get_mut(&node) {
+                    state.listing = None;
+                }
+                continue;
+            }
+            let foreclosure_listing = self
+                .land_market_plots
+                .get(&node)
+                .and_then(|state| state.listing)
+                .is_some_and(|listing| listing.kind == LandListingKind::Foreclosure);
+            if foreclosure_listing
+                && cost > Gold::ZERO
+                && self.land_market_free_salt(owner) >= cost
+                && self.land_market_debit_fee(owner, cost)
+            {
+                self.land_market_carrying_paid_total =
+                    self.land_market_carrying_paid_total.saturating_add(cost.0);
+                let history = self.land_market_title_history.entry(owner).or_default();
+                history.last_carrying_paid_tick = Some(self.econ_tick);
+                if let Some(state) = self.land_market_plots.get_mut(&node) {
+                    state.listing = None;
+                }
+            }
+            let foreclosure_listing = self
+                .land_market_plots
+                .get(&node)
+                .and_then(|state| state.listing)
+                .is_some_and(|listing| listing.kind == LandListingKind::Foreclosure);
+            let Some(state) = self.land_market_plots.get_mut(&node) else {
+                continue;
+            };
+            if foreclosure_listing {
+                continue;
+            }
+            let idle = self
+                .land_plots
+                .get(&node)
+                .is_some_and(|record| record.idle_counter >= idle_list_fast_ticks);
+            if idle {
+                state.listing = Some(LandListing {
+                    ask: current_price,
+                    kind: LandListingKind::Idle,
+                });
+            } else if state
+                .listing
+                .is_some_and(|listing| listing.kind == LandListingKind::Idle)
+            {
+                state.listing = None;
+            }
+        }
+    }
+
+    fn land_market_agent_owns_plot(&self, agent: AgentId) -> bool {
+        self.land_plots
+            .values()
+            .any(|record| record.owner == Some(agent))
+    }
+
+    fn land_market_buyer_eligible(&self, slot: usize) -> bool {
+        let colonist = &self.colonists[slot];
+        if !colonist.alive || self.land_market_agent_owns_plot(colonist.id) {
+            return false;
+        }
+        if !matches!(
+            colonist.vocation,
+            Vocation::Consumer | Vocation::Gatherer | Vocation::Unassigned
+        ) {
+            return false;
+        }
+        if self.world.agent_status(colonist.id).is_none() {
+            return false;
+        }
+        // Eligibility is strictly agent-local "cultivating-or-attempting" (spec §3.4): a buyer must
+        // be working its own plot, have cultivation stock in flight, be under cultivation pressure,
+        // or be hungry enough to enter. It must NOT be admitted merely because some other plot is
+        // listed — a global-listing clause would let any passive Consumer/Gatherer with spare SALT
+        // bid, decoupling the buyer pool / priced-out trace from genuine re-entry pressure.
+        let attempting = colonist.cultivating
+            || colonist.cultivation_stock_pending
+            || colonist.cultivate_pressure > 0
+            || self
+                .chain
+                .as_ref()
+                .is_some_and(|chain| colonist.need.hunger >= chain.cultivate_hunger_in);
+        if !attempting {
+            return false;
+        }
+        self.land_market_free_salt(colonist.id) > Gold::ZERO
+            || self
+                .chain
+                .as_ref()
+                .is_some_and(|chain| chain.land_price_cap_factor == 0)
+    }
+
+    fn private_land_has_comparable_or_better_stayer(
+        &self,
+        agent: AgentId,
+        priced_out_node: NodeId,
+        quality: LandPlotQuality,
+    ) -> Vec<AgentId> {
+        self.land_plots
+            .iter()
+            .filter_map(|(&node, record)| {
+                if node == priced_out_node {
+                    return None;
+                }
+                let owner = record.owner?;
+                if owner == agent || !self.private_land_live_agent(owner) {
+                    return None;
+                }
+                // For the hysteresis trace, "comparable-or-better" is productive land quality.
+                // Distance already enters the plot's rent/price and the buyer's nearest-plot
+                // selection; requiring another plot to be at least as close would make the best
+                // located good plot incomparable by construction and erase real re-buy pressure.
+                self.private_land_plot_quality(node).and_then(|other| {
+                    (other.regen >= quality.regen && other.cap >= quality.cap).then_some(owner)
+                })
+            })
+            .collect()
+    }
+
+    /// Records one budget-hysteresis priced-out event for `agent` against `node`, returning whether
+    /// it counted. It counts only when a live, non-self stayer retains land comparable-or-better than
+    /// `node` (§3.6), so feeding it an incidental marginal miss with no comparable stayer is a no-op.
+    fn land_market_record_priced_out(&mut self, agent: AgentId, node: NodeId) -> bool {
+        let Some(quality) = self.private_land_plot_quality(node) else {
+            return false;
+        };
+        let stayers = self.private_land_has_comparable_or_better_stayer(agent, node, quality);
+        if stayers.is_empty() {
+            return false;
+        }
+        self.land_market_priced_out_total = self.land_market_priced_out_total.saturating_add(1);
+        if self
+            .land_market_title_history
+            .get(&agent)
+            .is_some_and(|history| history.ever_sold)
+        {
+            self.land_market_lapsed_priced_out_total =
+                self.land_market_lapsed_priced_out_total.saturating_add(1);
+        }
+        for stayer in stayers {
+            let history = self.land_market_title_history.entry(stayer).or_default();
+            history.retained_through_priced_out = true;
+        }
+        true
+    }
+
+    fn land_market_match(&mut self) {
+        #[derive(Clone, Copy)]
+        struct LandBid {
+            buyer: AgentId,
+            node: NodeId,
+            bid: u64,
+            reservation: u64,
+            salt: u64,
+        }
+
+        let mut asks: Vec<(u64, NodeId, AgentId, LandListingKind)> = self
+            .land_plots
+            .iter()
+            .filter_map(|(&node, record)| {
+                let owner = record.owner?;
+                let listing = self.land_market_plots.get(&node)?.listing?;
+                Some((listing.ask, node, owner, listing.kind))
+            })
+            .collect();
+        asks.sort_by_key(|&(ask, node, _, _)| (ask, node.0));
+        if asks.is_empty() {
+            return;
+        }
+
+        let listed: Vec<(NodeId, u64)> =
+            asks.iter().map(|&(ask, node, _, _)| (node, ask)).collect();
+        let mut bids = Vec::new();
+        let live = self.live_colonist_slots.clone();
+        for slot in live {
+            if !self.land_market_buyer_eligible(slot) {
+                continue;
+            }
+            let buyer = self.colonists[slot].id;
+            let salt = self.land_market_free_salt(buyer).0;
+            let mut affordable = Vec::new();
+            let mut priced_out_candidates = Vec::new();
+            for &(node, ask) in &listed {
+                let reservation = self.land_market_base_price(node);
+                if reservation < ask {
+                    continue;
+                }
+                let distance = self
+                    .private_land_agent_distance(buyer, node)
+                    .unwrap_or(u32::MAX);
+                let candidate = ((distance, ask, node.0), node, ask, reservation);
+                if salt >= ask {
+                    affordable.push(candidate);
+                } else {
+                    priced_out_candidates.push(candidate);
+                }
+            }
+            affordable.sort_by_key(|(key, _, _, _)| *key);
+            priced_out_candidates.sort_by_key(|(key, _, _, _)| *key);
+
+            // §3.6 budget-hysteresis trace, decoupled from the bid: a buyer that can afford a cheap
+            // marginal listing still bids on it, but if it is ALSO budget-outbid on a comparable-or-
+            // better listed plot (its fundamental reservation clears the ask, its SALT on hand does
+            // not), that is exactly the "can only re-buy worse land" hysteresis the metric must
+            // capture — and recording must NOT be gated on which plot it ends up bidding on. Rank the
+            // out-of-budget listings best-land-first so a marginal miss never masks a comparable one;
+            // `record_priced_out` itself requires a live stayer holding comparable land.
+            let mut priced_out_ranked: Vec<NodeId> = priced_out_candidates
+                .iter()
+                .map(|&(_, node, _, _)| node)
+                .collect();
+            priced_out_ranked.sort_by_key(|&node| {
+                let quality = self.private_land_plot_quality(node);
+                let regen = quality.map_or(0, |q| q.regen);
+                let cap = quality.map_or(0, |q| q.cap);
+                let distance = self
+                    .private_land_agent_distance(buyer, node)
+                    .unwrap_or(u32::MAX);
+                (
+                    std::cmp::Reverse(regen),
+                    std::cmp::Reverse(cap),
+                    distance,
+                    node.0,
+                )
+            });
+            for node in priced_out_ranked {
+                if self.land_market_record_priced_out(buyer, node) {
+                    break;
+                }
+            }
+
+            let selected = affordable
+                .first()
+                .copied()
+                .or_else(|| priced_out_candidates.first().copied());
+            let Some((_, node, ask, reservation)) = selected else {
+                continue;
+            };
+            let bid = salt.min(reservation);
+            if bid < ask {
+                self.land_market_ask_bid_gap_sum = self
+                    .land_market_ask_bid_gap_sum
+                    .saturating_add(ask.saturating_sub(bid));
+                self.land_market_ask_bid_gap_count =
+                    self.land_market_ask_bid_gap_count.saturating_add(1);
+            }
+            bids.push(LandBid {
+                buyer,
+                node,
+                bid,
+                reservation,
+                salt,
+            });
+        }
+
+        let mut bids_by_node: BTreeMap<NodeId, Vec<LandBid>> = BTreeMap::new();
+        for bid in bids {
+            bids_by_node.entry(bid.node).or_default().push(bid);
+        }
+        for bids in bids_by_node.values_mut() {
+            bids.sort_by(|a, b| b.bid.cmp(&a.bid).then(a.buyer.0.cmp(&b.buyer.0)));
+        }
+
+        let mut sold_buyers = BTreeSet::new();
+        let mut sold_nodes = BTreeSet::new();
+        for (ask, node, seller, kind) in asks {
+            if sold_nodes.contains(&node) {
+                continue;
+            }
+            let Some(candidates) = bids_by_node.get(&node) else {
+                continue;
+            };
+            let Some(bid) = candidates
+                .iter()
+                .find(|bid| !sold_buyers.contains(&bid.buyer) && bid.bid >= ask)
+                .copied()
+            else {
+                continue;
+            };
+            if bid.reservation < ask || bid.salt < ask {
+                continue;
+            }
+            let moved = ask == 0 || self.move_money_conserved(bid.buyer, seller, Gold(ask));
+            if !moved {
+                continue;
+            }
+            if let Some(record) = self.land_plots.get_mut(&node) {
+                record.owner = Some(bid.buyer);
+                record.idle_counter = 0;
+                record.reserved_for = None;
+            }
+            let rent = self.land_market_rent_basis(node);
+            if let Some(state) = self.land_market_plots.get_mut(&node) {
+                state.price = ask;
+                state.listing = None;
+                state.last_sale_price = Some(ask);
+                state.last_sale_tick = Some(self.econ_tick);
+            }
+            // `land_lapsed_losses` is the S23a idle-forfeiture reclaim ledger; it is read only on the
+            // homestead-claim path, which is closed post-promotion under the land market, so a market
+            // seller is never "lapsed" in that sense — do not write it here.
+            let quality = self.private_land_plot_quality(node);
+            {
+                let history = self.land_market_title_history.entry(seller).or_default();
+                history.ever_owned = true;
+                history.ever_sold = true;
+                history.current = None;
+                if kind == LandListingKind::Foreclosure {
+                    history.foreclosed_out = true;
+                }
+            }
+            {
+                let history = self.land_market_title_history.entry(bid.buyer).or_default();
+                history.ever_owned = true;
+                history.ever_bought = true;
+                history.current = Some(LandTitleSource::Bought);
+            }
+            let good_plot = quality.is_some_and(|q| q.regen >= LAND_GOOD_REGEN);
+            self.land_market_sales.push(LandSaleRecord {
+                tick: self.econ_tick,
+                node,
+                buyer: bid.buyer,
+                seller,
+                price: ask,
+                rent,
+                good_plot,
+                foreclosure: kind == LandListingKind::Foreclosure,
+            });
+            self.land_market_trade_count = self.land_market_trade_count.saturating_add(1);
+            if self.current_money_good() != Some(SALT) {
+                self.land_market_pre_promotion_trade_count =
+                    self.land_market_pre_promotion_trade_count.saturating_add(1);
+            }
+            sold_buyers.insert(bid.buyer);
+            sold_nodes.insert(node);
+        }
+    }
+
+    fn run_land_market(&mut self) {
+        if !self.land_market_active() {
+            return;
+        }
+        if self.current_money_good() != Some(SALT) {
+            return;
+        }
+        self.land_market_charge_carrying_costs();
+        self.land_market_prepare_listings();
+        self.land_market_match();
+        debug_assert!(
+            self.private_land_registry_invariant_holds(),
+            "land-market sweep must preserve the finite plot registry"
+        );
     }
 
     // ---- the econ-tick phases ------------------------------------------
@@ -10780,6 +11631,9 @@ impl Settlement {
             })
             .collect();
 
+        let land_market = self.land_market_active();
+        let mut inherited_titles = Vec::new();
+        let mut cleared_market_titles = Vec::new();
         let mut lost = Vec::new();
         for (&node, record) in &mut self.land_plots {
             if let Some(owner) = record.owner {
@@ -10787,6 +11641,12 @@ impl Settlement {
                     record.owner = heir;
                     record.idle_counter = 0;
                     record.reserved_for = None;
+                    if land_market {
+                        cleared_market_titles.push(owner);
+                        if let Some(heir) = heir {
+                            inherited_titles.push(heir);
+                        }
+                    }
                     if heir.is_none() {
                         lost.push((node, owner));
                     }
@@ -10799,6 +11659,16 @@ impl Settlement {
                 record.reserved_for = None;
             }
         }
+        for owner in cleared_market_titles {
+            let owner_history = self.land_market_title_history.entry(owner).or_default();
+            owner_history.ever_owned = true;
+            owner_history.current = None;
+        }
+        for heir in inherited_titles {
+            let heir_history = self.land_market_title_history.entry(heir).or_default();
+            heir_history.ever_owned = true;
+            heir_history.current = Some(LandTitleSource::Inherited);
+        }
         for (node, owner) in lost {
             // Tagged `Death` so the by-other reclaim counter never credits a heirless-death vacancy
             // as the idle-loss mechanic. (A dead owner can never re-enter, so its lapsed-quality
@@ -10807,6 +11677,18 @@ impl Settlement {
                 .insert(node, (owner, LandLossCause::Death));
             if let Some(quality) = self.private_land_plot_quality(node) {
                 self.land_lapsed_losses.insert(owner, quality);
+            }
+            // A heirless death zeroes `record.owner`; under the land market the plot's market
+            // listing must be cleared in the same settlement, or the registry invariant (no listing
+            // on an unowned plot) trips before the next sweep clears it. Scope limit: post-promotion
+            // the homestead-claim path is closed and unowned plots are not targeted, so a vacated
+            // plot leaves the tradeable set as dead inventory rather than re-entering the market.
+            // Empirically inert in this regime (inheritance keeps the finite plot set owned), so it
+            // never shrinks supply here; surfaced explicitly rather than silently relied upon.
+            if land_market {
+                if let Some(state) = self.land_market_plots.get_mut(&node) {
+                    state.listing = None;
+                }
             }
         }
         debug_assert!(
@@ -10848,6 +11730,17 @@ impl Settlement {
         }
         let mut deaths = 0;
         for id in dying {
+            // Old-age deaths must settle private land tenure too. Starvation deaths route through
+            // `settle_death`, which calls `transfer_private_land_on_death` (reassign the plot to an
+            // heir, clear a market listing on a heirless death); this estate path settles directly,
+            // so without this an old-age death under the land market would orphan its plot to a dead
+            // owner and break the registry invariant before the next death's scan lazily reclaims it.
+            // Scoped to `land_market_active()`: S23a's idle-forfeiture path tolerates the lazy
+            // cleanup and its `land_plots` records are digested, so changing the reassignment timing
+            // there would shift the byte-identical S23a goldens.
+            if self.land_market_active() {
+                self.transfer_private_land_on_death(id);
+            }
             deaths += u32::from(self.settle_estate_to_heirs(id));
         }
         self.old_age_deaths_total = self.old_age_deaths_total.saturating_add(u64::from(deaths));
@@ -14078,6 +14971,15 @@ impl Settlement {
             .is_some_and(chain_runtime_private_land_tenure_active)
     }
 
+    /// S23b: whether the post-money land-market institution is active as a behavior surface. The
+    /// flag composes strictly on private land tenure; a flag-only config on an older substrate is
+    /// inert and omitted from the digest.
+    fn land_market_active(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(chain_runtime_land_market_active)
+    }
+
     /// S22b: whether **bounded cultivation skill** is active this tick — the
     /// `cultivation_skill` flag is on AND the S22a endogenous-cultivation-entry path is active
     /// (it composes strictly on it). When this holds, the per-agent skill scalar accumulates/
@@ -15682,7 +16584,10 @@ impl Settlement {
     /// byte-identical to G2b/G3 — and including it keeps gold conserved across a
     /// death, when the dead colonist's gold leaves the society for the commons.
     pub fn total_gold(&self) -> Gold {
-        self.society.total_gold().saturating_add(self.commons_gold)
+        self.society
+            .total_gold()
+            .saturating_add(self.commons_gold)
+            .saturating_add(self.land_fee_pool_salt)
     }
 
     /// Whether this settlement runs on the M3 ledger-money [`econ::ledger::MoneySystem`]
@@ -16531,6 +17436,131 @@ impl Settlement {
         owner_total.saturating_mul(10_000) / total
     }
 
+    pub fn land_market_trades_total(&self) -> u64 {
+        self.land_market_trade_count
+    }
+
+    pub fn land_market_pre_promotion_trades_total(&self) -> u64 {
+        self.land_market_pre_promotion_trade_count
+    }
+
+    pub fn land_market_pre_promotion_charges_total(&self) -> u64 {
+        self.land_market_pre_promotion_charges
+    }
+
+    pub fn land_market_fee_pool_salt(&self) -> u64 {
+        self.land_fee_pool_salt.0
+    }
+
+    pub fn land_market_carrying_paid_total(&self) -> u64 {
+        self.land_market_carrying_paid_total
+    }
+
+    pub fn land_market_foreclosure_listings_total(&self) -> u64 {
+        self.land_market_foreclosure_listings_total
+    }
+
+    pub fn land_market_priced_out_total(&self) -> u64 {
+        self.land_market_priced_out_total
+    }
+
+    pub fn land_market_lapsed_priced_out_total(&self) -> u64 {
+        self.land_market_lapsed_priced_out_total
+    }
+
+    pub fn land_market_ask_bid_gap_mean(&self) -> Option<u64> {
+        (self.land_market_ask_bid_gap_count > 0).then(|| {
+            (self.land_market_ask_bid_gap_sum + self.land_market_ask_bid_gap_count / 2)
+                / self.land_market_ask_bid_gap_count
+        })
+    }
+
+    pub fn land_market_sale_rows(&self) -> Vec<LandMarketSaleRow> {
+        self.land_market_sales
+            .iter()
+            .map(|sale| {
+                (
+                    sale.tick,
+                    sale.node.0,
+                    sale.buyer.0,
+                    sale.seller.0,
+                    sale.price,
+                    sale.rent,
+                    sale.good_plot,
+                    sale.foreclosure,
+                )
+            })
+            .collect()
+    }
+
+    pub fn land_market_affordable_listed_plots_for_nonowners(&self) -> usize {
+        if !self.land_market_active() || self.current_money_good() != Some(SALT) {
+            return 0;
+        }
+        let listed: Vec<(NodeId, u64)> = self
+            .land_market_plots
+            .iter()
+            .filter_map(|(&node, state)| state.listing.map(|listing| (node, listing.ask)))
+            .collect();
+        if listed.is_empty() {
+            return 0;
+        }
+        let mut affordable = BTreeSet::new();
+        for &slot in &self.live_colonist_slots {
+            if !self.land_market_buyer_eligible(slot) {
+                continue;
+            }
+            let buyer = self.colonists[slot].id;
+            let salt = self.land_market_free_salt(buyer).0;
+            for &(node, ask) in &listed {
+                if salt >= ask && self.land_market_base_price(node) >= ask {
+                    affordable.insert(node);
+                }
+            }
+        }
+        affordable.len()
+    }
+
+    pub fn land_market_title_share_counts(&self) -> (usize, usize, usize, usize) {
+        let mut original = 0usize;
+        let mut inherited = 0usize;
+        let mut bought = 0usize;
+        for record in self.land_plots.values() {
+            let Some(owner) = record.owner else {
+                continue;
+            };
+            match self
+                .land_market_title_history
+                .get(&owner)
+                .and_then(|history| history.current)
+            {
+                Some(LandTitleSource::OriginalClaim) => original += 1,
+                Some(LandTitleSource::Inherited) => inherited += 1,
+                Some(LandTitleSource::Bought) => bought += 1,
+                None => {}
+            }
+        }
+        let foreclosed = self
+            .land_market_title_history
+            .values()
+            .filter(|history| history.foreclosed_out)
+            .count();
+        (original, inherited, bought, foreclosed)
+    }
+
+    pub fn land_market_agent_market_stabilized(&self, id: u64, final_start: u64) -> bool {
+        let id = AgentId(id);
+        self.land_market_title_history
+            .get(&id)
+            .is_some_and(|history| {
+                history.ever_bought
+                    || history.retained_through_priced_out
+                    || history
+                        .last_carrying_paid_tick
+                        .is_some_and(|tick| tick >= final_start)
+            })
+    }
+
     pub fn private_land_registry_invariant_holds(&self) -> bool {
         if !self.private_land_tenure_active() {
             return true;
@@ -16538,6 +17568,18 @@ impl Settlement {
         let Some(grain) = self.chain.as_ref().map(|chain| chain.content.grain()) else {
             return false;
         };
+        if self.land_market_active() {
+            if self.land_market_plots.len() != self.land_plots.len() {
+                return false;
+            }
+            if !self
+                .land_market_plots
+                .keys()
+                .all(|node| self.land_plots.contains_key(node))
+            {
+                return false;
+            }
+        }
         for (&node, record) in &self.land_plots {
             if !self.world.node(node).is_some_and(|plot| plot.good == grain) {
                 return false;
@@ -16554,7 +17596,18 @@ impl Settlement {
             {
                 return false;
             }
+            if self.land_market_active()
+                && self
+                    .land_market_plots
+                    .get(&node)
+                    .and_then(|state| state.listing)
+                    .is_some()
+                && record.owner.is_none()
+            {
+                return false;
+            }
         }
+        let harvest_gate = self.chain.as_ref().is_some_and(|chain| chain.harvest_gate);
         let mut unowned_target_counts: BTreeMap<NodeId, usize> = BTreeMap::new();
         for &slot in &self.live_colonist_slots {
             let colonist = &self.colonists[slot];
@@ -16574,10 +17627,11 @@ impl Settlement {
             }
             if let Some(task) = self.world.agent_task(colonist.id) {
                 if let Some(node) = Self::private_land_harvest_task_node(task) {
-                    if self
-                        .land_plots
-                        .get(&node)
-                        .is_some_and(|record| record.owner.is_none())
+                    if harvest_gate
+                        && self
+                            .land_plots
+                            .get(&node)
+                            .is_some_and(|record| record.owner.is_none())
                     {
                         *unowned_target_counts.entry(node).or_insert(0) += 1;
                     }
@@ -18145,7 +19199,9 @@ impl Settlement {
                 out.push(13);
                 out.extend_from_slice(&chain.land_idle_limit.to_le_bytes());
                 out.push(u8::from(chain.harvest_gate));
-                out.push(u8::from(chain.forfeit_on_idle));
+                out.push(u8::from(
+                    chain.forfeit_on_idle && !self.land_market_active(),
+                ));
                 out.push(u8::from(chain.reclaim_reserved_for_prior_owner));
                 out.extend_from_slice(&chain.land_good_plots.to_le_bytes());
                 out.extend_from_slice(&chain.land_marginal_plots.to_le_bytes());
@@ -18167,6 +19223,59 @@ impl Settlement {
                             out.extend_from_slice(&owner.0.to_le_bytes());
                         }
                         None => out.push(0),
+                    }
+                }
+            }
+            // S23b: the post-money land market extends S23a's registry with an endogenous-price
+            // state, listings, last-sale anchors, and the non-agent fee sink. Emitted only when the
+            // market composes on active private land tenure; with the flag off every S23a and older
+            // golden keeps the exact byte stream.
+            if self.land_market_active() {
+                out.push(14);
+                out.extend_from_slice(&chain.land_carrying_cost.to_le_bytes());
+                out.extend_from_slice(&chain.land_price_cap_factor.to_le_bytes());
+                out.extend_from_slice(&LAND_CARRYING_PERIOD.to_le_bytes());
+                out.extend_from_slice(&LAND_RENT_WINDOW.to_le_bytes());
+                out.extend_from_slice(&(LAND_MIN_RENT_HISTORY as u32).to_le_bytes());
+                out.extend_from_slice(&LAND_SALE_HISTORY_WEIGHT_BPS.to_le_bytes());
+                out.extend_from_slice(&(LAND_SALE_HISTORY_K as u32).to_le_bytes());
+                out.extend_from_slice(&LAND_LIST_IDLE.to_le_bytes());
+                out.extend_from_slice(&LAND_FORECLOSE_DISCOUNT_BPS.to_le_bytes());
+                out.extend_from_slice(&LAND_PRICE_MIN.to_le_bytes());
+                out.extend_from_slice(&self.land_fee_pool_salt.0.to_le_bytes());
+                out.extend_from_slice(&(self.land_market_plots.len() as u32).to_le_bytes());
+                for (&node, state) in &self.land_market_plots {
+                    out.extend_from_slice(&node.0.to_le_bytes());
+                    out.extend_from_slice(&state.price.to_le_bytes());
+                    match state.listing {
+                        Some(listing) => {
+                            out.push(1);
+                            out.extend_from_slice(&listing.ask.to_le_bytes());
+                            out.push(match listing.kind {
+                                LandListingKind::Idle => 1,
+                                LandListingKind::Foreclosure => 2,
+                            });
+                        }
+                        None => out.push(0),
+                    }
+                    match state.last_sale_price {
+                        Some(price) => {
+                            out.push(1);
+                            out.extend_from_slice(&price.to_le_bytes());
+                        }
+                        None => out.push(0),
+                    }
+                    match state.last_sale_tick {
+                        Some(tick) => {
+                            out.push(1);
+                            out.extend_from_slice(&tick.to_le_bytes());
+                        }
+                        None => out.push(0),
+                    }
+                    out.extend_from_slice(&(state.yield_history.len() as u32).to_le_bytes());
+                    for entry in &state.yield_history {
+                        out.extend_from_slice(&entry.tick.to_le_bytes());
+                        out.extend_from_slice(&entry.qty.to_le_bytes());
                     }
                 }
             }
@@ -19167,6 +20276,10 @@ fn chain_config_private_land_tenure_active(chain: &ChainConfig) -> bool {
     chain.private_land_tenure && chain_config_endogenous_cultivation_entry_active(chain)
 }
 
+fn chain_config_land_market_active(chain: &ChainConfig) -> bool {
+    chain.land_market && chain_config_private_land_tenure_active(chain)
+}
+
 fn config_private_land_tenure_active(config: &SettlementConfig) -> bool {
     config
         .chain
@@ -19224,6 +20337,10 @@ fn chain_runtime_endogenous_cultivation_entry_active(chain: &ChainRuntime) -> bo
 /// preserves the older run byte-for-byte.
 fn chain_runtime_private_land_tenure_active(chain: &ChainRuntime) -> bool {
     chain.private_land_tenure && chain_runtime_endogenous_cultivation_entry_active(chain)
+}
+
+fn chain_runtime_land_market_active(chain: &ChainRuntime) -> bool {
+    chain.land_market && chain_runtime_private_land_tenure_active(chain)
 }
 
 /// S22b: bounded cultivation skill is active iff the flag is on AND the S22a
