@@ -1,6 +1,6 @@
 # impl-42 — S24b: Abandonable commitment-norm adoption (the clean institution-selection test)
 
-Status (spec): REVISED per Codex spec-review round 1 (4 P1 + 3 P2 folded in, §7; Codex confirmed bidirectional generic imitation is the right mechanism + the bounded bar is sound); pending confirmation. Base: master `4bf6277` (S24a landed). **Second slice of the
+Status (spec): SPEC-READY (Codex round 1: 4 P1 + 3 P2; round 2: 1 pin — CHURN_SHARE_VAR=0.01; Codex confirmed the mechanism, reachability [the S22f term IS the hysteresis], and the strict ≥3/5 + zero-drift bar). Base: master `4bf6277` (S24a landed). **Second slice of the
 S24 INSTITUTION-SELECTION arc.** Composes directly on S24a (`commitment_norm_spread`), changing exactly one
 thing: adoption is no longer **sticky** — the norm can be **abandoned**. The clean-positive test S24a named:
 S24a found a working institution *can* spread by generic local imitation but, under *sticky* (never-abandoned)
@@ -108,7 +108,8 @@ institution/profit term in the update rule?
 
 **Pinned thresholds (predeclared consts; do NOT fit):** `ADOPTER_SHARE_MIN = 0.15`, `ADOPTER_SHARE_MAX = 0.6`,
 `MIN_ABANDONMENTS = 8`, `CORE_MARGIN = PERSIST_COHORT (4)`, `CHURN_FLIP_RATE = 0.5` (flips per adopter per
-final-window period), `CHURN_SHARE_VAR` (final-window adopter-share variance bound), reusing the S24a
+final-window period), `CHURN_SHARE_VAR = 0.01` (final-window adopter-share variance bound — i.e. share
+std-dev ≳ 0.1 signals an unsettled/oscillating adoption level), reusing the S24a
 `PERSIST_COHORT`/`PERSIST_FRACTION`/`MIN_BUYER_COHORT`/`MATERIAL_BOUGHT_FLOOR`/`IMITATION_*` consts.
 
 **Ordered classifier (top-down, first-match-wins):** `SeedDies` → `MoneyFailure` →
@@ -238,3 +239,13 @@ Redirect cargo to files; never pipe to head/grep (EPIPE → spurious exit 101).
 - **P2.2 bounded bar kept** — Codex: `[0.15,0.6]` + live buyer tier is sound; no explicit hysteresis added (if
   the bit flips too much that is the `ChurnEquilibrium` finding).
 - **P2.3 process note removed** — §6: the rb-lite/reviewer-reliability note belongs in the run record, not the spec.
+
+### Round 2 (1 pin → SPEC-READY)
+
+- **CHURN_SHARE_VAR pinned = 0.01** (§2): final-window adopter-share variance bound for `ChurnEquilibrium`
+  (share std-dev ≳ 0.1 → unsettled/oscillating).
+- Codex confirmed: (reachability) a persistent core IS compatible with abandonable adoption — the S22f binding
+  term is the hysteresis (mid-term abandonment staged, persistence from fresh renewals at expiry; die-back/churn
+  if committers stop clearing the generic advantage is a real finding, not empty-by-construction); (success bar)
+  KEEP strict — milestone success = **≥3/5 `CleanInstitutionSpread` AND zero `DriftNotSelection`** (2/5 would be
+  a qualified improvement/finding, not the clean positive).
