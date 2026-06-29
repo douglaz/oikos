@@ -1,6 +1,23 @@
 # impl-41 — S24a: Endogenous spread of the commitment institution by local imitation of observed success
 
-Status (spec): SPEC-READY (Codex round 1: 4 P1 + 2 P2; round 2: 2 P1, all folded in §9; Codex pre-approved SPEC-READY after the round-2 fixes; core confirmed non-circular + success window reachable). Base: master `082da6f` (S23b landed). **First slice of the
+Status (impl): LANDED as a QUALIFIED MIXED FINDING. The norm genuinely spreads (seed ~10–15 → ~45–57
+adopters) by generic local imitation (all copy drivers generic, `salt=0`, score-purity guard holds), non-seed
+agents enter real commitments + renew, and a committed core forms — money/mortality/provenance/conservation
+hold every cell. But across `{3,7,11,19,23}` the honest per-seed tally is **3 `UniversalCommitmentRePin`
+(3,7,19 — adoption over-spreads past 0.6 and the fluid buyer tier collapses), 1 `DriftNotSelection` (11 — its
+matched random-imitation run reproduces the core, so the spread is not separable from drift), 1
+`InstitutionSpreadSuccess` (23 — bounded share 0.57, surviving buyers, beats its random null)**. So
+sticky-adoption imitation *can* spread the institution and recreate a core, but cleanly-selected bounded
+spread is the minority; it usually over-spreads or is drift-contaminated. **Codex review-of-results: FAIL as
+originally classified → I patched the classifier (the rb-lite run had died in iteration 1 with the main swept
+and the codex implementer orphaned + hung, so NO review panel ran; gated on independent verification + Codex
+review-of-results instead).** Two test-only fixes folded the Codex P1s honestly: (a) the drift check is now
+**per-seed** (a headline seed whose matched random run also forms a core → `DriftNotSelection`; an aggregate
+all-seeds gate had masked it — seed 11 was a false success); (b) `unprofitable_seed` (commitment_term=1) is
+reported honestly — it still spreads the *bit* via a transient food advantage but forms **no** core, so
+bit-spread alone is not institution selection. The clean positive (non-sticky / abandonable adoption, which
+should make the drift null clean) is deferred to **S24b**. Workspace 97 suites / all goldens byte-identical /
+fmt + clippy clean; suite 12/12. Base: master `082da6f` (S23b landed). **First slice of the
 S24 INSTITUTION-SELECTION arc** — the bridge from "institutions work when the experimenter supplies them" to
 "a working institution can *propagate* under local social selection." Composes directly on S22f
 (`voluntary_cultivation_commitment`, the one lever that stabilized a two-tier occupational core). **The

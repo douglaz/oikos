@@ -214,6 +214,19 @@ const COMMITMENT_ENTRY_FLOOR_DEFAULT: u64 = RETENTION_MATERIAL_FLOOR;
 /// the headline; tests may override `commitment_fiat_pin` when they need a different forced count.
 const COMMITMENT_FIAT_PIN_DEFAULT: u16 = 6;
 
+const COMMITMENT_SEED_SHARE_BPS_DEFAULT: u16 = 1_500;
+const COMMITMENT_NORM_IMITATION_PERIOD_DEFAULT: u64 = 24;
+const COMMITMENT_NORM_IMITATION_WINDOW_DEFAULT: u64 = 48;
+const COMMITMENT_NORM_IMITATION_MARGIN_BPS_DEFAULT: u64 = 1_500;
+const COMMITMENT_NORM_IMITATION_RADIUS_DEFAULT: u16 = 1;
+const COMMITMENT_NORM_IMITATION_MAX_MODELS_DEFAULT: u16 = 8;
+const COMMITMENT_NORM_FOOD_WINDOW_TARGET_DEFAULT: u64 = COMMITMENT_NORM_IMITATION_WINDOW_DEFAULT;
+const COMMITMENT_NORM_SCORE_BPS: u64 = 10_000;
+const COMMITMENT_NORM_ALIVE_WEIGHT: u64 = 2;
+const COMMITMENT_NORM_HUNGER_WEIGHT: u64 = 1;
+const COMMITMENT_NORM_FOOD_WEIGHT: u64 = 1;
+const COMMITMENT_NORM_SALT_WEIGHT: u64 = 1;
+
 /// S23a — the shipped private-land idle-forfeiture clock. A plot reverts only after this many
 /// consecutive fast ticks with no owner engagement (no harvest task, no pending carried grain from
 /// that plot, and no harvest event this tick).
@@ -1287,6 +1300,21 @@ pub struct ChainConfig {
     /// renewals, so the voluntary headline (which has all three) is distinguishable even when both
     /// show low churn. `0` (the headline + every other config) leaves entry purely voluntary.
     pub commitment_fiat_pin: u16,
+    /// S24a — endogenous spread of the S22f commitment norm (default `false`, byte-identical when
+    /// off). When `true` AND the S22f commitment path is active, commitment ENTRY is available only
+    /// to agents carrying `adopts_commitment_norm`; a deterministic minority starts with that bit,
+    /// and non-adopters can copy it from locally observed agents with better generic outcomes.
+    pub commitment_norm_spread: bool,
+    pub commitment_seed_share_bps: u16,
+    pub imitation_period: u64,
+    pub imitation_window: u64,
+    pub imitation_margin_bps: u64,
+    pub imitation_radius: u16,
+    pub imitation_max_models: u16,
+    pub food_window_target: u64,
+    pub no_imitation: bool,
+    pub random_imitation: bool,
+    pub salt_in_score: bool,
     /// S23a — **private land tenure** (default `false`, byte-identical when off). When `true` AND
     /// the S22a endogenous-cultivation-entry path is active, grain nodes become a predeclared finite
     /// set of heterogeneous land plots. A plot is claimed by the first successful homesteading
@@ -1711,6 +1739,17 @@ impl ChainConfig {
             commitment_term: COMMITMENT_TERM_DEFAULT,
             commitment_entry_floor: COMMITMENT_ENTRY_FLOOR_DEFAULT,
             commitment_fiat_pin: 0,
+            commitment_norm_spread: false,
+            commitment_seed_share_bps: COMMITMENT_SEED_SHARE_BPS_DEFAULT,
+            imitation_period: COMMITMENT_NORM_IMITATION_PERIOD_DEFAULT,
+            imitation_window: COMMITMENT_NORM_IMITATION_WINDOW_DEFAULT,
+            imitation_margin_bps: COMMITMENT_NORM_IMITATION_MARGIN_BPS_DEFAULT,
+            imitation_radius: COMMITMENT_NORM_IMITATION_RADIUS_DEFAULT,
+            imitation_max_models: COMMITMENT_NORM_IMITATION_MAX_MODELS_DEFAULT,
+            food_window_target: COMMITMENT_NORM_FOOD_WINDOW_TARGET_DEFAULT,
+            no_imitation: false,
+            random_imitation: false,
+            salt_in_score: false,
             private_land_tenure: false,
             land_idle_limit: LAND_IDLE_LIMIT_DEFAULT,
             harvest_gate: true,
@@ -1872,6 +1911,17 @@ impl ChainConfig {
             commitment_term: COMMITMENT_TERM_DEFAULT,
             commitment_entry_floor: COMMITMENT_ENTRY_FLOOR_DEFAULT,
             commitment_fiat_pin: 0,
+            commitment_norm_spread: false,
+            commitment_seed_share_bps: COMMITMENT_SEED_SHARE_BPS_DEFAULT,
+            imitation_period: COMMITMENT_NORM_IMITATION_PERIOD_DEFAULT,
+            imitation_window: COMMITMENT_NORM_IMITATION_WINDOW_DEFAULT,
+            imitation_margin_bps: COMMITMENT_NORM_IMITATION_MARGIN_BPS_DEFAULT,
+            imitation_radius: COMMITMENT_NORM_IMITATION_RADIUS_DEFAULT,
+            imitation_max_models: COMMITMENT_NORM_IMITATION_MAX_MODELS_DEFAULT,
+            food_window_target: COMMITMENT_NORM_FOOD_WINDOW_TARGET_DEFAULT,
+            no_imitation: false,
+            random_imitation: false,
+            salt_in_score: false,
             private_land_tenure: false,
             land_idle_limit: LAND_IDLE_LIMIT_DEFAULT,
             harvest_gate: true,
@@ -2013,6 +2063,17 @@ impl ChainConfig {
             commitment_term: COMMITMENT_TERM_DEFAULT,
             commitment_entry_floor: COMMITMENT_ENTRY_FLOOR_DEFAULT,
             commitment_fiat_pin: 0,
+            commitment_norm_spread: false,
+            commitment_seed_share_bps: COMMITMENT_SEED_SHARE_BPS_DEFAULT,
+            imitation_period: COMMITMENT_NORM_IMITATION_PERIOD_DEFAULT,
+            imitation_window: COMMITMENT_NORM_IMITATION_WINDOW_DEFAULT,
+            imitation_margin_bps: COMMITMENT_NORM_IMITATION_MARGIN_BPS_DEFAULT,
+            imitation_radius: COMMITMENT_NORM_IMITATION_RADIUS_DEFAULT,
+            imitation_max_models: COMMITMENT_NORM_IMITATION_MAX_MODELS_DEFAULT,
+            food_window_target: COMMITMENT_NORM_FOOD_WINDOW_TARGET_DEFAULT,
+            no_imitation: false,
+            random_imitation: false,
+            salt_in_score: false,
             private_land_tenure: false,
             land_idle_limit: LAND_IDLE_LIMIT_DEFAULT,
             harvest_gate: true,
@@ -5234,6 +5295,24 @@ impl SettlementConfig {
         cfg
     }
 
+    pub fn frontier_commitment_norm_spread() -> Self {
+        let mut cfg = Self::frontier_voluntary_commitment();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.commitment_norm_spread = true;
+            chain.commitment_seed_share_bps = COMMITMENT_SEED_SHARE_BPS_DEFAULT;
+            chain.imitation_period = COMMITMENT_NORM_IMITATION_PERIOD_DEFAULT;
+            chain.imitation_window = COMMITMENT_NORM_IMITATION_WINDOW_DEFAULT;
+            chain.imitation_margin_bps = COMMITMENT_NORM_IMITATION_MARGIN_BPS_DEFAULT;
+            chain.imitation_radius = COMMITMENT_NORM_IMITATION_RADIUS_DEFAULT;
+            chain.imitation_max_models = COMMITMENT_NORM_IMITATION_MAX_MODELS_DEFAULT;
+            chain.food_window_target = COMMITMENT_NORM_FOOD_WINDOW_TARGET_DEFAULT;
+            chain.no_imitation = false;
+            chain.random_imitation = false;
+            chain.salt_in_score = false;
+        }
+        cfg
+    }
+
     /// S22f — the **earned-capital composition variant** (SECONDARY, never required for the headline
     /// verdict): [`Self::frontier_cultivation_capital`] (the S22d durable-capital colony) expanded to
     /// [`ENDOWED_ROSTER_HOUSEHOLDS`] with the voluntary commitment gate on top. Tests whether the
@@ -5673,6 +5752,44 @@ pub struct ProducerCash {
     pub free_gold: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CommitmentNormCopyDriver {
+    Alive,
+    HungerRelief,
+    FoodConsumed,
+    SaltStock,
+    None,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CommitmentNormCopyRow {
+    pub tick: u64,
+    pub copier: u64,
+    pub model: u64,
+    pub driver: CommitmentNormCopyDriver,
+    pub copier_score_bps: u64,
+    pub model_score_bps: u64,
+    pub positive_pre_copy_advantage: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CommitmentNormObservation {
+    tick: u64,
+    hunger: u16,
+    food_consumed: u32,
+    salt_stock: u64,
+    at_market: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CommitmentNormScore {
+    alive_bps: u64,
+    hunger_bps: u64,
+    food_bps: u64,
+    salt_bps: u64,
+    total_bps: u64,
+}
+
 struct Colonist {
     id: AgentId,
     vocation: Vocation,
@@ -5822,6 +5939,9 @@ struct Colonist {
     /// Serialized only under the gate (nested in the cultivation block), so a flag-off colonist block
     /// stays byte-identical. `0` off the voluntary-commitment path / for a never-renewed committer.
     commitment_renewals: u16,
+    adopts_commitment_norm: bool,
+    commitment_norm_seed_adopter: bool,
+    commitment_norm_observations: VecDeque<CommitmentNormObservation>,
     /// S23a private land tenure: the grain plot this colonist is currently hauling from. Set by the
     /// post-world-tick harvest event detector, kept through the GoDeposit trip and transfer retry,
     /// and cleared only after both carried grain and pending grain transfer are gone. It steers idle
@@ -6024,6 +6144,8 @@ pub struct Settlement {
     /// over the run — distinct agents whose commitment ever bound a tick the flag-off run would have
     /// exited (the real exit-override the mandatory non-vacuity test reads). Empty off the path.
     commitment_exit_override_ever: BTreeSet<AgentId>,
+    commitment_norm_copy_events: Vec<CommitmentNormCopyRow>,
+    commitment_norm_imitation_adopters: BTreeSet<AgentId>,
     /// S22d: in-flight per-builder durable-cultivation-tool projects (a
     /// [`ProjectTemplateId::BuildCultivationTool`] each). Each holds a cultivating builder's own
     /// committed WOOD + advancing labor; on completion the plow credits the builder's stock and
@@ -6423,6 +6545,17 @@ struct ChainRuntime {
     commitment_term: u16,
     commitment_entry_floor: u64,
     commitment_fiat_pin: u16,
+    commitment_norm_spread: bool,
+    commitment_seed_share_bps: u16,
+    imitation_period: u64,
+    imitation_window: u64,
+    imitation_margin_bps: u64,
+    imitation_radius: u16,
+    imitation_max_models: u16,
+    food_window_target: u64,
+    no_imitation: bool,
+    random_imitation: bool,
+    salt_in_score: bool,
     /// S23a: private land tenure gate + knobs (see [`ChainConfig`]). All inert unless the gate
     /// composes on S22a endogenous cultivation entry.
     private_land_tenure: bool,
@@ -7936,6 +8069,9 @@ impl Settlement {
                 cultivation_tenure: 0,
                 commitment_remaining: 0,
                 commitment_renewals: 0,
+                adopts_commitment_norm: false,
+                commitment_norm_seed_adopter: false,
+                commitment_norm_observations: VecDeque::new(),
                 carried_grain_source: None,
             });
         }
@@ -8033,6 +8169,9 @@ impl Settlement {
                         cultivation_tenure: 0,
                         commitment_remaining: 0,
                         commitment_renewals: 0,
+                        adopts_commitment_norm: false,
+                        commitment_norm_seed_adopter: false,
+                        commitment_norm_observations: VecDeque::new(),
                         carried_grain_source: None,
                     });
                 }
@@ -8481,6 +8620,17 @@ impl Settlement {
                 commitment_term: chain.commitment_term,
                 commitment_entry_floor: chain.commitment_entry_floor,
                 commitment_fiat_pin: chain.commitment_fiat_pin,
+                commitment_norm_spread: chain.commitment_norm_spread,
+                commitment_seed_share_bps: chain.commitment_seed_share_bps,
+                imitation_period: chain.imitation_period,
+                imitation_window: chain.imitation_window,
+                imitation_margin_bps: chain.imitation_margin_bps,
+                imitation_radius: chain.imitation_radius,
+                imitation_max_models: chain.imitation_max_models,
+                food_window_target: chain.food_window_target,
+                no_imitation: chain.no_imitation,
+                random_imitation: chain.random_imitation,
+                salt_in_score: chain.salt_in_score,
                 private_land_tenure: chain.private_land_tenure,
                 land_idle_limit: chain.land_idle_limit,
                 harvest_gate: chain.harvest_gate,
@@ -8561,6 +8711,8 @@ impl Settlement {
             commitment_below_floor_ever: BTreeSet::new(),
             commitment_exit_override_ids: BTreeSet::new(),
             commitment_exit_override_ever: BTreeSet::new(),
+            commitment_norm_copy_events: Vec::new(),
+            commitment_norm_imitation_adopters: BTreeSet::new(),
             cultivation_tool_builds: Vec::new(),
             next_cultivation_tool_project_id: 0,
             cultivation_tool_producers: BTreeSet::new(),
@@ -8659,6 +8811,7 @@ impl Settlement {
         // so they are part of the tick-0 whole-system baseline and conservation holds every tick.
         settlement.apply_endowed_cultivation_capital(seed, config);
         settlement.init_private_land_tenure();
+        settlement.init_commitment_norm_seed(seed);
         settlement
     }
 
@@ -8692,6 +8845,25 @@ impl Settlement {
                         .insert(node_id, LandMarketPlotState::new(price));
                 }
             }
+        }
+    }
+
+    fn init_commitment_norm_seed(&mut self, seed: u64) {
+        if !self.commitment_norm_spread_active() {
+            return;
+        }
+        let share_bps = self
+            .chain
+            .as_ref()
+            .map_or(0, |chain| chain.commitment_seed_share_bps)
+            .min(COMMITMENT_NORM_SCORE_BPS as u16);
+        if share_bps == 0 {
+            return;
+        }
+        for colonist in &mut self.colonists {
+            let seeded = commitment_norm_seeded(seed, colonist.id, share_bps);
+            colonist.adopts_commitment_norm = seeded;
+            colonist.commitment_norm_seed_adopter = seeded;
         }
     }
 
@@ -8902,6 +9074,8 @@ impl Settlement {
             commitment_below_floor_ever: BTreeSet::new(),
             commitment_exit_override_ids: BTreeSet::new(),
             commitment_exit_override_ever: BTreeSet::new(),
+            commitment_norm_copy_events: Vec::new(),
+            commitment_norm_imitation_adopters: BTreeSet::new(),
             cultivation_tool_builds: Vec::new(),
             next_cultivation_tool_project_id: 0,
             cultivation_tool_producers: BTreeSet::new(),
@@ -9413,6 +9587,7 @@ impl Settlement {
             }
         }
 
+        self.record_commitment_norm_observations();
         self.econ_tick += 1;
         self.last_report = report.clone();
         report
@@ -12000,6 +12175,9 @@ impl Settlement {
                 cultivation_tenure: 0,
                 commitment_remaining: 0,
                 commitment_renewals: 0,
+                adopts_commitment_norm: false,
+                commitment_norm_seed_adopter: false,
+                commitment_norm_observations: VecDeque::new(),
                 carried_grain_source: None,
             });
             let child_slot = self.colonists.len() - 1;
@@ -12612,6 +12790,7 @@ impl Settlement {
         if commitment {
             self.commitment_exit_override_ids.clear();
         }
+        self.run_commitment_norm_imitation();
         let mut fiat_pinned = 0u16;
         let live = self.live_colonist_slots.clone();
         // S22c: snapshot the START-OF-TICK cultivation roster ONCE, before the slot-by-slot loop
@@ -12640,6 +12819,7 @@ impl Settlement {
                 was_stock_pending,
                 has_cultivation_input_in_flight,
                 was_commitment_remaining,
+                adopts_commitment_norm,
             ) = {
                 let colonist = &self.colonists[slot];
                 // The spatial poor with spare labor in an untooled-or-latent role
@@ -12682,6 +12862,7 @@ impl Settlement {
                     cultivate_input
                         .is_some_and(|input| self.cultivation_input_in_flight(colonist.id, input)),
                     colonist.commitment_remaining,
+                    colonist.adopts_commitment_norm,
                 )
             };
             // Hysteresis: start foraging at/above `h_in`, stop below `h_out`, else hold.
@@ -12734,7 +12915,9 @@ impl Settlement {
             // config), so `commitment_binds` is false and `cultivate_now` is exactly `normal_cultivate`.
             let mut commitment_remaining = was_commitment_remaining;
             if commitment {
-                if !eligible {
+                let norm_allows_commitment =
+                    !self.commitment_norm_spread_active() || adopts_commitment_norm;
+                if !eligible || !norm_allows_commitment {
                     // §3.5b: commitment overrides the EXIT, not vocation eligibility. An agent that
                     // left the S22a-eligible set (became an active specialized producer) drops its
                     // binding deterministically — no orphaned commitment on a non-cultivator. (A
@@ -12789,8 +12972,13 @@ impl Settlement {
             // S22f: while the term runs the agent CULTIVATES — the binding overrides the normal
             // hunger/profit exit (the ONE new exit behavior in the arc), gated entirely behind the
             // voluntary, signal-cleared, post-money entry above.
+            let binding_commitment_remaining = if commitment_term <= 1 {
+                0
+            } else {
+                commitment_remaining
+            };
             let commitment_binds =
-                commitment && cultivation && eligible && commitment_remaining > 0;
+                commitment && cultivation && eligible && binding_commitment_remaining > 0;
             let cultivate_now = normal_cultivate || commitment_binds;
             // S22f (runtime-only diagnostic): a real exit-override — bound this tick but the normal
             // S22a/S22c rule would have EXITED. The mandatory non-vacuity test reads this set.
@@ -12829,7 +13017,7 @@ impl Settlement {
             // 0 and `commitment_binds` is false, so this writes 0 (byte-identical, and the field is
             // not serialized off the gate anyway).
             self.colonists[slot].commitment_remaining =
-                commitment_remaining.saturating_sub(u16::from(commitment_binds));
+                binding_commitment_remaining.saturating_sub(u16::from(commitment_binds));
             debug_assert!(
                 !(self.colonists[slot].foraging && self.colonists[slot].cultivating),
                 "a colonist must forage XOR cultivate — never both in one econ tick"
@@ -15034,6 +15222,12 @@ impl Settlement {
             .is_some_and(chain_runtime_voluntary_cultivation_commitment_active)
     }
 
+    fn commitment_norm_spread_active(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(chain_runtime_commitment_norm_spread_active)
+    }
+
     /// S22f: the configured commitment binding length (econ ticks), falling back to the pinned
     /// default for a settlement with no chain. Consulted only while the commitment path is active.
     fn commitment_term(&self) -> u16 {
@@ -15265,6 +15459,301 @@ impl Settlement {
             CommitmentEntrySignal::Clears(cult_sum)
         } else {
             CommitmentEntrySignal::AboveFloorLoses
+        }
+    }
+
+    fn run_commitment_norm_imitation(&mut self) {
+        if !self.commitment_norm_spread_active() {
+            return;
+        }
+        let Some(chain) = self.chain.as_ref() else {
+            return;
+        };
+        let period = chain.imitation_period;
+        let window = chain.imitation_window;
+        let margin = chain.imitation_margin_bps;
+        let radius = chain.imitation_radius;
+        let max_models = chain.imitation_max_models;
+        let food_target = chain.food_window_target;
+        let no_imitation = chain.no_imitation;
+        let random_imitation = chain.random_imitation;
+        let salt_in_score = chain.salt_in_score;
+        if no_imitation || period == 0 || window == 0 || self.econ_tick == 0 {
+            return;
+        }
+        if !self.econ_tick.is_multiple_of(period) {
+            return;
+        }
+
+        let live = self.live_colonist_slots.clone();
+        let exchange_pos = self
+            .world
+            .stockpile(self.exchange)
+            .map(|stockpile| stockpile.pos);
+        let adopters_at_start: BTreeSet<AgentId> = live
+            .iter()
+            .filter_map(|&slot| {
+                let colonist = &self.colonists[slot];
+                (colonist.alive && colonist.adopts_commitment_norm).then_some(colonist.id)
+            })
+            .collect();
+        let mut adoptions: Vec<(usize, CommitmentNormCopyRow)> = Vec::new();
+
+        for &slot in &live {
+            let colonist = &self.colonists[slot];
+            if !colonist.alive || colonist.adopts_commitment_norm {
+                continue;
+            }
+            let Some(own_score) =
+                self.commitment_norm_score(slot, window, food_target, salt_in_score)
+            else {
+                continue;
+            };
+            let models = self.commitment_norm_observation_set(
+                slot,
+                &live,
+                exchange_pos,
+                window,
+                radius,
+                max_models,
+            );
+            if models.is_empty() {
+                continue;
+            }
+            let chosen = if random_imitation {
+                let best = models
+                    .iter()
+                    .filter_map(|&model_slot| {
+                        self.commitment_norm_score(model_slot, window, food_target, salt_in_score)
+                            .map(|score| (model_slot, score))
+                    })
+                    .max_by_key(|&(model_slot, score)| {
+                        (
+                            score.total_bps,
+                            std::cmp::Reverse(self.colonists[model_slot].id.0),
+                        )
+                    })
+                    .filter(|&(_, score)| {
+                        score.total_bps.saturating_sub(own_score.total_bps) >= margin
+                    });
+                let draw = deterministic_mix64(
+                    COMMITMENT_NORM_RANDOM_SALT
+                        ^ self.econ_tick.rotate_left(17)
+                        ^ colonist.id.0.rotate_left(7),
+                );
+                let idx = (draw as usize) % models.len();
+                let model_slot = models[idx];
+                best.filter(|&(best_slot, _)| best_slot == model_slot)
+            } else {
+                models
+                    .iter()
+                    .filter_map(|&model_slot| {
+                        self.commitment_norm_score(model_slot, window, food_target, salt_in_score)
+                            .map(|score| (model_slot, score))
+                    })
+                    .max_by_key(|&(model_slot, score)| {
+                        (
+                            score.total_bps,
+                            std::cmp::Reverse(self.colonists[model_slot].id.0),
+                        )
+                    })
+                    .filter(|&(_, score)| {
+                        score.total_bps.saturating_sub(own_score.total_bps) >= margin
+                    })
+            };
+            let Some((model_slot, model_score)) = chosen else {
+                continue;
+            };
+            let model = &self.colonists[model_slot];
+            if !adopters_at_start.contains(&model.id) {
+                continue;
+            }
+            let driver = commitment_norm_copy_driver(own_score, model_score, salt_in_score);
+            adoptions.push((
+                slot,
+                CommitmentNormCopyRow {
+                    tick: self.econ_tick,
+                    copier: colonist.id.0,
+                    model: model.id.0,
+                    driver,
+                    copier_score_bps: own_score.total_bps,
+                    model_score_bps: model_score.total_bps,
+                    positive_pre_copy_advantage: model_score.total_bps > own_score.total_bps,
+                },
+            ));
+        }
+
+        for (slot, row) in adoptions {
+            let id = self.colonists[slot].id;
+            if !self.colonists[slot].adopts_commitment_norm {
+                self.colonists[slot].adopts_commitment_norm = true;
+                self.commitment_norm_imitation_adopters.insert(id);
+                self.commitment_norm_copy_events.push(row);
+            }
+        }
+    }
+
+    fn commitment_norm_observation_set(
+        &self,
+        slot: usize,
+        live: &[usize],
+        exchange_pos: Option<Pos>,
+        _window: u64,
+        radius: u16,
+        max_models: u16,
+    ) -> Vec<usize> {
+        let own = &self.colonists[slot];
+        let own_pos = self.world.agent_pos(own.id);
+        let mut models: Vec<(u32, u64, usize)> = Vec::new();
+        for &model_slot in live {
+            if model_slot == slot {
+                continue;
+            }
+            let model = &self.colonists[model_slot];
+            if !model.alive {
+                continue;
+            }
+            let model_pos = self.world.agent_pos(model.id);
+            let manhattan = match (own_pos, model_pos) {
+                (Some(a), Some(b)) => a.manhattan(b),
+                _ => u32::MAX,
+            };
+            let within_radius = manhattan <= u32::from(radius);
+            let market_link =
+                exchange_pos.is_some_and(|pos| own_pos == Some(pos) && model_pos == Some(pos));
+            if within_radius || market_link {
+                models.push((manhattan, model.id.0, model_slot));
+            }
+        }
+        models.sort_unstable_by_key(|&(distance, id, _)| (distance, id));
+        models.truncate(usize::from(max_models));
+        models.into_iter().map(|(_, _, slot)| slot).collect()
+    }
+
+    fn commitment_norm_score(
+        &self,
+        slot: usize,
+        window: u64,
+        food_target: u64,
+        include_salt: bool,
+    ) -> Option<CommitmentNormScore> {
+        let colonist = self.colonists.get(slot)?;
+        let window_len = usize::try_from(window).ok()?;
+        if window_len == 0 || colonist.commitment_norm_observations.len() < window_len {
+            return None;
+        }
+        let observations: Vec<CommitmentNormObservation> = colonist
+            .commitment_norm_observations
+            .iter()
+            .rev()
+            .take(window_len)
+            .copied()
+            .collect();
+        if observations.len() < window_len {
+            return None;
+        }
+        let need_max = u64::from(self.dynamics.need_max.max(1));
+        let hunger_sum: u64 = observations.iter().map(|obs| u64::from(obs.hunger)).sum();
+        let mean_hunger_bps = hunger_sum.saturating_mul(COMMITMENT_NORM_SCORE_BPS)
+            / (need_max.saturating_mul(observations.len() as u64));
+        let hunger_bps = COMMITMENT_NORM_SCORE_BPS
+            .saturating_sub(mean_hunger_bps)
+            .min(COMMITMENT_NORM_SCORE_BPS);
+        let food_sum: u64 = observations
+            .iter()
+            .map(|obs| u64::from(obs.food_consumed))
+            .sum();
+        let food_bps = if food_target == 0 {
+            0
+        } else {
+            food_sum
+                .saturating_mul(COMMITMENT_NORM_SCORE_BPS)
+                .checked_div(food_target)
+                .unwrap_or(0)
+                .min(COMMITMENT_NORM_SCORE_BPS)
+        };
+        let salt_bps = if include_salt && food_target > 0 {
+            let salt_sum: u64 = observations.iter().map(|obs| obs.salt_stock).sum();
+            salt_sum
+                .saturating_mul(COMMITMENT_NORM_SCORE_BPS)
+                .checked_div(food_target)
+                .unwrap_or(0)
+                .min(COMMITMENT_NORM_SCORE_BPS)
+        } else {
+            0
+        };
+        let alive_bps = if colonist.alive {
+            COMMITMENT_NORM_SCORE_BPS
+        } else {
+            0
+        };
+        let total_bps = COMMITMENT_NORM_ALIVE_WEIGHT
+            .saturating_mul(alive_bps)
+            .saturating_add(COMMITMENT_NORM_HUNGER_WEIGHT.saturating_mul(hunger_bps))
+            .saturating_add(COMMITMENT_NORM_FOOD_WEIGHT.saturating_mul(food_bps))
+            .saturating_add(COMMITMENT_NORM_SALT_WEIGHT.saturating_mul(salt_bps));
+        Some(CommitmentNormScore {
+            alive_bps,
+            hunger_bps,
+            food_bps,
+            salt_bps,
+            total_bps,
+        })
+    }
+
+    fn record_commitment_norm_observations(&mut self) {
+        if !self.commitment_norm_spread_active() {
+            return;
+        }
+        let window = self
+            .chain
+            .as_ref()
+            .map_or(0, |chain| chain.imitation_window);
+        let Ok(window_len) = usize::try_from(window) else {
+            return;
+        };
+        if window_len == 0 {
+            return;
+        }
+        let mut food_goods = BTreeSet::new();
+        food_goods.insert(self.known.hunger);
+        if let Some(subsistence) = self.known.subsistence {
+            food_goods.insert(subsistence);
+        }
+        let mut consumed_by_agent: BTreeMap<AgentId, u32> = BTreeMap::new();
+        for &(agent, good, qty) in self.society.consumption_log_last_tick() {
+            if food_goods.contains(&good) {
+                let entry = consumed_by_agent.entry(agent).or_insert(0);
+                *entry = entry.saturating_add(qty);
+            }
+        }
+        let exchange_pos = self
+            .world
+            .stockpile(self.exchange)
+            .map(|stockpile| stockpile.pos);
+        let tick = self.econ_tick;
+        for colonist in &mut self.colonists {
+            let salt_stock = self
+                .society
+                .agents
+                .get(colonist.id)
+                .map(|agent| u64::from(agent.stock.get(SALT)))
+                .unwrap_or(0)
+                .saturating_add(self.society.free_gold_after_all_reserves(colonist.id).0);
+            let at_market =
+                exchange_pos.is_some_and(|pos| self.world.agent_pos(colonist.id) == Some(pos));
+            colonist
+                .commitment_norm_observations
+                .push_back(CommitmentNormObservation {
+                    tick,
+                    hunger: colonist.need.hunger,
+                    food_consumed: consumed_by_agent.get(&colonist.id).copied().unwrap_or(0),
+                    salt_stock,
+                    at_market,
+                });
+            while colonist.commitment_norm_observations.len() > window_len {
+                colonist.commitment_norm_observations.pop_front();
+            }
         }
     }
 
@@ -17769,6 +18258,63 @@ impl Settlement {
         self.voluntary_cultivation_commitment_active()
     }
 
+    pub fn commitment_norm_spread_on(&self) -> bool {
+        self.commitment_norm_spread_active()
+    }
+
+    pub fn adopts_commitment_norm_of(&self, index: usize) -> bool {
+        self.colonists
+            .get(index)
+            .is_some_and(|c| c.adopts_commitment_norm)
+    }
+
+    pub fn commitment_norm_seed_adopter_ids(&self) -> Vec<u64> {
+        self.colonists
+            .iter()
+            .filter(|c| c.commitment_norm_seed_adopter)
+            .map(|c| c.id.0)
+            .collect()
+    }
+
+    pub fn commitment_norm_adopter_ids(&self) -> Vec<u64> {
+        self.colonists
+            .iter()
+            .filter(|c| c.adopts_commitment_norm)
+            .map(|c| c.id.0)
+            .collect()
+    }
+
+    pub fn commitment_norm_imitation_adopter_ids(&self) -> Vec<u64> {
+        self.commitment_norm_imitation_adopters
+            .iter()
+            .map(|id| id.0)
+            .collect()
+    }
+
+    pub fn commitment_norm_copy_events(&self) -> Vec<CommitmentNormCopyRow> {
+        self.commitment_norm_copy_events.clone()
+    }
+
+    pub fn commitment_norm_positive_copy_advantages(&self) -> usize {
+        self.commitment_norm_copy_events
+            .iter()
+            .filter(|row| row.positive_pre_copy_advantage)
+            .count()
+    }
+
+    pub fn commitment_norm_score_purity_guard(&self) -> bool {
+        let generic = CommitmentNormScore {
+            alive_bps: COMMITMENT_NORM_SCORE_BPS,
+            hunger_bps: COMMITMENT_NORM_SCORE_BPS / 2,
+            food_bps: COMMITMENT_NORM_SCORE_BPS / 3,
+            salt_bps: 0,
+            total_bps: COMMITMENT_NORM_ALIVE_WEIGHT * COMMITMENT_NORM_SCORE_BPS
+                + COMMITMENT_NORM_HUNGER_WEIGHT * (COMMITMENT_NORM_SCORE_BPS / 2)
+                + COMMITMENT_NORM_FOOD_WEIGHT * (COMMITMENT_NORM_SCORE_BPS / 3),
+        };
+        commitment_norm_copy_driver(generic, generic, false) == CommitmentNormCopyDriver::None
+    }
+
     /// S22c: the chain's `cultivate_hunger_out` threshold — the hysteresis exit below which a
     /// cultivating agent normally leaves (the non-vacuity test reads it to confirm a retained agent
     /// is genuinely past the exit). `0` for a non-chain settlement.
@@ -19279,6 +19825,19 @@ impl Settlement {
                     }
                 }
             }
+            if self.commitment_norm_spread_active() {
+                out.push(15);
+                out.extend_from_slice(&chain.commitment_seed_share_bps.to_le_bytes());
+                out.extend_from_slice(&chain.imitation_period.to_le_bytes());
+                out.extend_from_slice(&chain.imitation_window.to_le_bytes());
+                out.extend_from_slice(&chain.imitation_margin_bps.to_le_bytes());
+                out.extend_from_slice(&chain.imitation_radius.to_le_bytes());
+                out.extend_from_slice(&chain.imitation_max_models.to_le_bytes());
+                out.extend_from_slice(&chain.food_window_target.to_le_bytes());
+                out.push(u8::from(chain.no_imitation));
+                out.push(u8::from(chain.random_imitation));
+                out.push(u8::from(chain.salt_in_score));
+            }
             // The staple mapping steers the next needs/scale phase for *any* chain,
             // role-choice or not, so it is included whenever a chain is active. The
             // G3b no-spread control shares the emergent config's physical state but
@@ -19661,6 +20220,7 @@ impl Settlement {
         // (which implies `cultivation_serialized`, so it nests inside the cultivation block below), so
         // every pre-S22f config keeps its per-colonist layout byte-identical.
         let commitment_serialized = self.voluntary_cultivation_commitment_active();
+        let commitment_norm_serialized = self.commitment_norm_spread_active();
         // S23a: carried grain source steers the next idle-forfeiture pass while a cultivator is
         // hauling or awaiting transfer credit from a plot. Gate it with private land tenure, which
         // implies the cultivation block is active.
@@ -19775,6 +20335,20 @@ impl Settlement {
                 if commitment_serialized {
                     out.extend_from_slice(&colonist.commitment_remaining.to_le_bytes());
                     out.extend_from_slice(&colonist.commitment_renewals.to_le_bytes());
+                }
+                if commitment_norm_serialized {
+                    out.push(u8::from(colonist.adopts_commitment_norm));
+                    out.push(u8::from(colonist.commitment_norm_seed_adopter));
+                    out.extend_from_slice(
+                        &(colonist.commitment_norm_observations.len() as u32).to_le_bytes(),
+                    );
+                    for observation in &colonist.commitment_norm_observations {
+                        out.extend_from_slice(&observation.tick.to_le_bytes());
+                        out.extend_from_slice(&observation.hunger.to_le_bytes());
+                        out.extend_from_slice(&observation.food_consumed.to_le_bytes());
+                        out.extend_from_slice(&observation.salt_stock.to_le_bytes());
+                        out.push(u8::from(observation.at_market));
+                    }
                 }
                 if land_serialized {
                     match colonist.carried_grain_source {
@@ -20384,6 +20958,10 @@ fn chain_runtime_voluntary_cultivation_commitment_active(chain: &ChainRuntime) -
     chain.voluntary_cultivation_commitment && chain_runtime_profit_driven_retention_active(chain)
 }
 
+fn chain_runtime_commitment_norm_spread_active(chain: &ChainRuntime) -> bool {
+    chain.commitment_norm_spread && chain_runtime_voluntary_cultivation_commitment_active(chain)
+}
+
 /// S22e: the deterministic endowment-selection hash of `(world seed, household id)` — a SplitMix64
 /// finalizer with a dedicated salt, so the endowed households are stable per `(seed, roster)` and
 /// the draw does not collide with the founder-seed / lifespan / starting-age derivations. Ranking
@@ -20397,6 +20975,68 @@ fn endowment_hash(seed: u64, household_id: usize) -> u64 {
 
 /// S22e: the dedicated salt for [`endowment_hash`] (a distinct constant from the demography salts).
 const ENDOWMENT_SELECT_SALT: u64 = 0x5322_e0ca_b1e5_eed5;
+const COMMITMENT_NORM_SEED_SALT: u64 = 0x24a0_c011_7a51_5eed;
+const COMMITMENT_NORM_RANDOM_SALT: u64 = 0x24a0_c011_7a51_4a9d;
+
+fn commitment_norm_seeded(seed: u64, id: AgentId, share_bps: u16) -> bool {
+    let draw = deterministic_mix64(
+        seed ^ COMMITMENT_NORM_SEED_SALT ^ id.0.wrapping_mul(0x9e37_79b9_7f4a_7c15),
+    ) % COMMITMENT_NORM_SCORE_BPS;
+    draw < u64::from(share_bps)
+}
+
+fn commitment_norm_copy_driver(
+    copier: CommitmentNormScore,
+    model: CommitmentNormScore,
+    include_salt: bool,
+) -> CommitmentNormCopyDriver {
+    let mut best = (
+        model
+            .alive_bps
+            .saturating_sub(copier.alive_bps)
+            .saturating_mul(COMMITMENT_NORM_ALIVE_WEIGHT),
+        CommitmentNormCopyDriver::Alive,
+    );
+    let hunger = (
+        model
+            .hunger_bps
+            .saturating_sub(copier.hunger_bps)
+            .saturating_mul(COMMITMENT_NORM_HUNGER_WEIGHT),
+        CommitmentNormCopyDriver::HungerRelief,
+    );
+    if hunger.0 > best.0 {
+        best = hunger;
+    }
+    let food = (
+        model
+            .food_bps
+            .saturating_sub(copier.food_bps)
+            .saturating_mul(COMMITMENT_NORM_FOOD_WEIGHT),
+        CommitmentNormCopyDriver::FoodConsumed,
+    );
+    if food.0 > best.0 {
+        best = food;
+    }
+    let salt = (
+        if include_salt {
+            model
+                .salt_bps
+                .saturating_sub(copier.salt_bps)
+                .saturating_mul(COMMITMENT_NORM_SALT_WEIGHT)
+        } else {
+            0
+        },
+        CommitmentNormCopyDriver::SaltStock,
+    );
+    if salt.0 > best.0 {
+        best = salt;
+    }
+    if best.0 == 0 {
+        CommitmentNormCopyDriver::None
+    } else {
+        best.1
+    }
+}
 
 /// S16: money-from-produced-bread is active iff the flag is on AND own-use cultivation is
 /// active (it composes strictly on the S15 path). Off (every existing config) it is
