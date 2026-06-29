@@ -1,11 +1,14 @@
 # impl-41 — S24a: Endogenous spread of the commitment institution by local imitation of observed success
 
-Status (spec): DRAFT — pending Codex spec-review. Base: master `082da6f` (S23b landed). **First slice of the
+Status (spec): REVISED per Codex spec-review round 1 (4 P1 + 2 P2 folded in, §9); pending confirmation. Base: master `082da6f` (S23b landed). **First slice of the
 S24 INSTITUTION-SELECTION arc** — the bridge from "institutions work when the experimenter supplies them" to
 "a working institution can *propagate* under local social selection." Composes directly on S22f
-(`voluntary_cultivation_commitment`, the one lever that stabilized a two-tier occupational core); all other
-S22/S23 levers (skill, profit-stay, capital, endowment, land-tenure, land-market) are **OFF** in the headline.
-Codex-scoped ("spec S24a — endogenous-commitment-norm-spread via local imitation of observed success").
+(`voluntary_cultivation_commitment`, the one lever that stabilized a two-tier occupational core). **The
+headline base is exactly S22f's:** `voluntary_cultivation_commitment = true` AND `profit_driven_retention =
+true` (S22f's commitment entry signal is built from the S22c profit-retention data — `profit_driven_retention`
+is part of the base, NOT off), on the `frontier_profit_retention_expanded()` roster; skill / capital /
+endowment / land-tenure / land-market are **OFF**. Codex-scoped ("spec S24a — endogenous-commitment-norm-spread
+via local imitation of observed success").
 
 ## 0. One-paragraph summary
 
@@ -77,9 +80,10 @@ commitment to everyone — AND is the spread genuinely *selection* (it dies unde
    window, all renewing).
 4. **A surviving fluid non-committed buyer tier remains** — non-adopters/non-committed survive and materially
    buy food (post-money bought ≥ `MATERIAL_BOUGHT_FLOOR`).
-5. **Bounded adoption, NOT a universal re-pin** — adopter share ≤ `ADOPTER_SHARE_MAX` (0.6) OR a live
-   non-adopter buyer tier persists (the institution spreads but does not pin the whole colony =
-   `UniversalCommitmentRePin`).
+5. **Bounded adoption, NOT a universal re-pin (Codex P1.3 — require BOTH).** adopter share ≤
+   `ADOPTER_SHARE_MAX` (0.6) **AND** a live non-adopter/non-committed buyer tier **materially buys** (post-money
+   bought ≥ `MATERIAL_BOUGHT_FLOOR`). If adopter share **exceeds** the cap → `UniversalCommitmentRePin`
+   **even if a few non-adopters remain** (a tiny residual tier does not rescue it).
 6. **Money + mortality + provenance survive** — SALT promotes; `seeded_minted == 0`; bread `SelfProduced`;
    conservation holds every tick.
 7. **The spread is SELECTION, not drift or oracle** — `no_imitation` (seed only) does NOT reproduce the core;
@@ -97,13 +101,17 @@ commitment to everyone — AND is the spread genuinely *selection* (it dies unde
 - `SpreadWithoutOccupation` — the norm spreads materially but no stable committed core forms.
 - `UniversalCommitmentRePin` — adoption goes (near-)universal and collapses the fluid buyer tier (a re-pin of
   S22f-for-all, i.e. effectively the supplied institution, not bounded emergence).
-- `InstitutionSpreadSuccess` — all seven success clauses, not downgraded.
+- `WealthProxySelection` (anti-oracle, Codex P1.2) — the headline (generic, no-SALT) score does NOT produce
+  the spread, but adding SALT/stock to the score DOES — i.e. the result rides a commitment-profit proxy, not a
+  generic survival observable. Not a clean `InstitutionSpreadSuccess`.
+- `InstitutionSpreadSuccess` — all seven success clauses, not downgraded, on the generic no-SALT score.
 
 **Ordered classifier (top-down, first-match-wins):** `SeedDies` → `MoneyFailure` → `ConservationBroken`/
 `extinct`/`Cull` → `SeedOnlyNoSpread` → `UniversalCommitmentRePin` → `DriftNotSelection` →
-`SpreadWithoutOccupation` → **then the explicit final gate:** `if ALL SEVEN success clauses pass
-{ InstitutionSpreadSuccess } else { SpreadWithoutOccupation }`. Predeclare every threshold as a `const`; do
-NOT fit.
+`SpreadWithoutOccupation` → **then the explicit final gate:** `if ALL SEVEN success clauses pass on the generic
+no-SALT headline score { InstitutionSpreadSuccess } else { SpreadWithoutOccupation }`. (`WealthProxySelection`
+is decided by the `salt_in_score` sensitivity: it labels a headline that FAILS but whose SALT-variant SUCCEEDS
+— reported alongside, never upgraded to success.) Predeclare every threshold as a `const`; do NOT fit.
 
 ## 3. Engine design (additive, default-off, conservation-safe)
 
@@ -127,36 +135,54 @@ NOT fit.
    Seed adopters are tracked (a `seed_adopter` set) so the test can separate seed from non-seed adoption. The
    `no_seed` control sets the seed share to 0.
 
-4. **Spread = local imitation of observed success (THE anti-smuggling crux, Codex).** Every `IMITATION_PERIOD`,
-   each **non-adopter** agent forms an **observation set** of nearby/observable agents (spatial neighbours
-   within an existing observation radius / co-located at market — reuse existing spatial adjacency; pin the
-   neighbourhood rule). It computes a **generic observed-success score** for itself and each observed agent
-   over `IMITATION_WINDOW` — a composite of **generic survival/welfare observables ONLY**:
-   `alive` + low recent hunger + recently consumed food + SALT-or-stock position. **The score MUST NOT
-   reference** institution identity (whether the model is a committer/adopter), commitment profitability, or
-   any "would this institution help" term — it is the same score every agent could compute about any neighbour
-   regardless of institutions. If the best observed neighbour's score exceeds the agent's own by ≥
-   `IMITATION_MARGIN_BPS` over the window, the agent **copies that neighbour's `adopts_commitment_norm` bit**
-   (adopts iff the model is an adopter). The milestone **records which observable component was largest in the
-   copied model's advantage** (the "copy driver" diagnostic) to prove the driver is generic. Adoption is
-   sticky (once adopted, kept) for this slice; a later slice may add abandonment.
+4. **Spread = local imitation of observed success (THE anti-smuggling crux, Codex; score + neighbourhood now
+   PINNED).** Every `IMITATION_PERIOD`, each **non-adopter** agent forms a **deterministic observation set**:
+   all agents within `IMITATION_RADIUS` (default = the existing spatial observation radius; pin the constant)
+   by Manhattan distance, PLUS agents co-located at the market this window; deduplicated; capped at
+   `IMITATION_MAX_MODELS` (default 8) nearest by `(manhattan, agent_id)`; ties broken by `agent_id`. It
+   computes a **generic observed-success score** for itself and each observed agent over `IMITATION_WINDOW`.
+   **PINNED HEADLINE SCORE (conservative, Codex P1.2):** `score = w_alive·alive + w_hunger·hunger_relief +
+   w_food·recent_food_consumed`, with `hunger_relief = 1 − clamp(mean_hunger_over_window)` and
+   `recent_food_consumed` = units of food eaten over the window, fixed weights `w_alive=2, w_hunger=1,
+   w_food=1` (declared consts). **SALT/stock is NOT in the headline score** (it is a commitment-profit proxy —
+   a leak risk); it is reported only as a **sensitivity** (a `salt_in_score` variant): if SUCCESS appears ONLY
+   with SALT in the score, classify `WealthProxySelection`, not `InstitutionSpreadSuccess`. **The score MUST
+   NOT reference** institution identity (committer/adopter), commitment state/profitability, or any "would this
+   institution help" term — enforced by the score-purity guard (§4). If the best observed neighbour's score
+   exceeds the agent's own by ≥ `IMITATION_MARGIN_BPS` over the window, the agent **copies that neighbour's
+   `adopts_commitment_norm` bit** (adopts iff the model is an adopter). The milestone records the **copy-driver**
+   (which generic component was largest in the copied model's advantage) to prove the driver is generic.
+   Adoption is **sticky** (kept once adopted) for this slice; abandonment is a later slice.
 
-5. **Anti-drift + anti-oracle structure.** `random_imitation` (control): same period/cadence/rate of adoption
-   events, but the copied model is chosen **at random** among observed neighbours (outcome-blind) — this must
-   NOT reliably reproduce the core (else the spread is drift). The generic-observable score + the copy-driver
-   diagnostic + `random_imitation` together establish the spread is *outcome-driven selection*, not a hidden
-   "prefer commitment" rule.
+5. **Anti-drift + anti-oracle structure (null fixed, Codex P1.4).** `random_imitation` (control): **same
+   `IMITATION_PERIOD`, same observation-set rule, same `commitment_seed_share`, same opportunity checks** —
+   but the copied model is chosen **uniformly at random** among the observed set (outcome-blind), and **the
+   adoption RATE is left endogenous** (do NOT force it to match the headline rate — matching would leak
+   headline-outcome information into the null). It must NOT reproduce the committed **core** (the classifier
+   checks the CORE + two-tier outcome under random, not merely whether the *bit* spreads — sticky random
+   copying can ratchet the bit toward universal by accumulation, so bit-spread alone is not the test).
+   `DriftNotSelection` fires if random imitation produces spread **and** a core comparable to the headline.
+   The generic-observable score + the copy-driver diagnostic + the adopter-advantage diagnostic (§7) +
+   `random_imitation` + `unprofitable_seed` together establish the spread is *outcome-driven selection*, not a
+   hidden "prefer commitment" rule.
 
-6. **Everything else is S22f/base unchanged** — the commitment mechanism, the hunger-gated cultivate
+6. **Adopter-advantage diagnostic (anti-oracle, Codex P2.5).** Record, per copy event, whether the copied
+   model had a **positive generic-score advantage** over the copier in the **pre-copy window** — i.e. spread
+   tracks an *actual realized advantage*, and that advantage is generic (not institution-labelled). The
+   headline must show copied adopters held a positive pre-copy advantage; `unprofitable_seed` must **remove
+   both the advantage AND the spread** (the cleanest selection-not-oracle evidence: no advantage ⇒ no spread).
+
+7. **Everything else is S22f/base unchanged** — the commitment mechanism, the hunger-gated cultivate
    entry/exit for non-committed agents, money promotion, mortality, conservation. NO fiat "adopt commitment",
    NO "commitment is good" term anywhere, NO `Vocation` mutation. Per-agent `adopts_commitment_norm` +
    imitation bookkeeping serialized ON-only under tag 15.
 
-7. **Diagnostics (runtime-only):** seed count + final adopter count (+ non-seed adopters); adoption-over-time
+8. **Diagnostics (runtime-only):** seed count + final adopter count (+ non-seed adopters); adoption-over-time
    curve; non-seed commitments entered + renewed; the committed core (S22f metrics) + adopter∩core; the
-   **copy-driver** breakdown (which generic observable drove each copy); fluid non-adopter buyer cohort +
-   post-money bought; adopter share (bounded vs universal); spread vs the `no_imitation`/`random_imitation`
-   controls; money promotion + mortality + provenance + conservation.
+   **copy-driver** breakdown (which generic observable drove each copy) + the **adopter-advantage** trace (§7);
+   fluid non-adopter buyer cohort + post-money bought; adopter share (bounded vs universal); spread vs the
+   `no_imitation`/`random_imitation`/`unprofitable_seed` controls; money promotion + mortality + provenance +
+   conservation.
 
 ## 4. The new suite `sim/tests/commitment_norm_spread.rs`
 
@@ -166,21 +192,28 @@ NOT fit.
   GENERIC observable** drove copying (not an institution-specific score) — assert the score function never
   reads adopter/committer identity.
 - **The ordered classifier (§2)**, printed `--nocapture`; verdict prints + deciding metrics; does NOT assert SUCCESS.
-- **Scenario:** `frontier_commitment_norm_spread` (HEADLINE) = the S22f base (voluntary commitment on; skill/
-  profit/capital/endowment/land OFF) + `commitment_norm_spread = true` + a minority seed + the imitation
-  spread. Matched references: `global_commitment_on` (= S22f, commitment for all, the SUPPLIED positive
-  control) and `no_imitation` (seed only, no spread = the floor baseline).
+- **Scenario:** `frontier_commitment_norm_spread` (HEADLINE) = the S22f base (`voluntary_cultivation_commitment
+  = true`, `profit_driven_retention = true`, `frontier_profit_retention_expanded()` roster; skill/capital/
+  endowment/land OFF) + `commitment_norm_spread = true` + a minority seed + the imitation spread on the
+  **generic no-SALT score**. Matched references: `global_commitment_on` (= S22f, commitment for all, the
+  SUPPLIED positive control) and `no_imitation` (seed only, no spread = the floor baseline).
 - **Controls (each a test; one variable each):**
   - **global_commitment_on** — S22f with commitment universal; the supplied-institution positive control
     (classified as supplied, NOT emergence — sanity that the core CAN form).
   - **no_imitation** — seeded adopters only, spread disabled: tests that imitation is load-bearing (no core
     from the seed alone).
-  - **random_imitation** — same adoption cadence/rate, model chosen at RANDOM (outcome-blind): must NOT
-    reliably reproduce the core (separates selection from drift) ⇒ else `DriftNotSelection`.
+  - **random_imitation** — same `IMITATION_PERIOD`, same observation-set rule, same `commitment_seed_share`,
+    same opportunity checks, but the model is chosen UNIFORMLY AT RANDOM (outcome-blind) and the **adoption
+    rate is left ENDOGENOUS** (NOT forced to match the headline — matching would leak headline outcome into the
+    null, Codex P1.4): must NOT reproduce the committed CORE (the bit may still ratchet under sticky random
+    copying; the test checks the CORE, not bit-spread) ⇒ else `DriftNotSelection`.
   - **no_seed** — seed share 0: the norm must NOT appear (no spontaneous innovation in this slice).
-  - **unprofitable_seed** — seed placed where commitment does NOT visibly outperform (e.g. a regime/topology
-    with no realized-return advantage to committing): the norm must NOT spread (the driver really is observed
-    success).
+  - **unprofitable_seed** — seed placed where commitment does NOT visibly outperform (a regime/topology with no
+    realized-return advantage to committing): the adopter-advantage diagnostic (§3.6) must show **no pre-copy
+    advantage AND no spread** (the cleanest selection-not-oracle evidence).
+  - **salt_in_score** (SENSITIVITY, Codex P1.2) — adds SALT/stock to the score; reported, not the headline. If
+    SUCCESS appears here but NOT on the generic no-SALT headline → `WealthProxySelection` (the result rode a
+    commitment-profit proxy), never upgraded to `InstitutionSpreadSuccess`.
 - **HARD GUARDS every run + cell:** conservation every tick; `bread_minted_max == 0`; provenance
   clean-or-disqualified; `!extinct`; money promotes (SALT); the adoption invariant (adopter set only grows by
   imitation/seed, never by fiat; seed deterministic; non-adopters cannot commit); **the score-function purity
@@ -216,3 +249,23 @@ Redirect cargo to files; never pipe to head/grep (EPIPE → spurious exit 101).
 - **Bounded to this WOOD-poor, mortality-on base** + this imitation rule; like prior milestones expect possible
   band-qualification — report the seed-share / margin windows where it holds.
 - Follow repo conventions; NEVER add Claude/AI/assistant references in code, comments, or committed text.
+
+## 9. Codex spec-review resolutions (round 1)
+
+- **P1.1 base composition** — §1/§4: the headline base is S22f's actual base — `voluntary_cultivation_commitment
+  = true` AND `profit_driven_retention = true` (the commitment entry signal is built from S22c profit-retention
+  data), `frontier_profit_retention_expanded()` roster; profit-stay is NOT off.
+- **P1.2 score formula pinned + WealthProxySelection** — §3.4: `score = 2·alive + 1·hunger_relief +
+  1·recent_food_consumed` (fixed consts); **SALT/stock NOT in the headline score** (commitment-profit proxy),
+  only a `salt_in_score` sensitivity; if success appears only with SALT → `WealthProxySelection` (new finding
+  mode), never upgraded.
+- **P1.3 boundedness requires BOTH** — §2.5: adopter share ≤ `ADOPTER_SHARE_MAX` AND a live non-adopter buyer
+  tier materially buys; share over cap → `UniversalCommitmentRePin` even with a residual tier.
+- **P1.4 random_imitation null fixed** — §3.5/§4: same period/observation-set/seed-share/opportunity-checks,
+  model chosen uniformly at random, **adoption rate ENDOGENOUS** (not forced to match headline); classify
+  `DriftNotSelection` only if random reproduces the CORE (not merely bit-spread).
+- **P2.5 adopter-advantage diagnostic** — §3.6: per-copy pre-window generic-score advantage recorded; headline
+  must show copied adopters held a positive pre-copy advantage; `unprofitable_seed` removes advantage AND
+  spread.
+- **P2.6 neighbourhood rule pinned** — §3.4: observation set = within `IMITATION_RADIUS` (Manhattan) + market
+  co-located, deduped, capped at `IMITATION_MAX_MODELS`=8 nearest by `(manhattan, agent_id)`, ties by `agent_id`.
