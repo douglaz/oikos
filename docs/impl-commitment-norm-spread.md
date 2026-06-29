@@ -1,6 +1,6 @@
 # impl-41 — S24a: Endogenous spread of the commitment institution by local imitation of observed success
 
-Status (spec): REVISED per Codex spec-review round 1 (4 P1 + 2 P2 folded in, §9); pending confirmation. Base: master `082da6f` (S23b landed). **First slice of the
+Status (spec): SPEC-READY (Codex round 1: 4 P1 + 2 P2; round 2: 2 P1, all folded in §9; Codex pre-approved SPEC-READY after the round-2 fixes; core confirmed non-circular + success window reachable). Base: master `082da6f` (S23b landed). **First slice of the
 S24 INSTITUTION-SELECTION arc** — the bridge from "institutions work when the experimenter supplies them" to
 "a working institution can *propagate* under local social selection." Composes directly on S22f
 (`voluntary_cultivation_commitment`, the one lever that stabilized a two-tier occupational core). **The
@@ -141,10 +141,14 @@ is decided by the `salt_in_score` sensitivity: it labels a headline that FAILS b
    by Manhattan distance, PLUS agents co-located at the market this window; deduplicated; capped at
    `IMITATION_MAX_MODELS` (default 8) nearest by `(manhattan, agent_id)`; ties broken by `agent_id`. It
    computes a **generic observed-success score** for itself and each observed agent over `IMITATION_WINDOW`.
-   **PINNED HEADLINE SCORE (conservative, Codex P1.2):** `score = w_alive·alive + w_hunger·hunger_relief +
-   w_food·recent_food_consumed`, with `hunger_relief = 1 − clamp(mean_hunger_over_window)` and
-   `recent_food_consumed` = units of food eaten over the window, fixed weights `w_alive=2, w_hunger=1,
-   w_food=1` (declared consts). **SALT/stock is NOT in the headline score** (it is a commitment-profit proxy —
+   **PINNED HEADLINE SCORE (conservative + NORMALIZED, Codex round-2 P1):** each component is normalized to
+   `[0,1]` (expressed in integer bps `[0,10000]` for determinism), so the fixed weights are meaningful:
+   - `alive_score = 1` if the agent is alive at the end of the window (else `0`);
+   - `hunger_relief = (need_max − mean_hunger_over_window) / need_max` (clamped to `[0,1]`);
+   - `food_score = min(1, food_consumed_over_window / FOOD_WINDOW_TARGET)` (a declared const cap, NOT raw
+     units — raw units over a 48-tick window would dominate and void the weights);
+   - `score_bps = 2·alive_score + hunger_relief + food_score` on the fixed integer bps scale (max 4·10000),
+     weights `w_alive=2, w_hunger=1, w_food=1` (declared consts). **SALT/stock is NOT in the headline score** (it is a commitment-profit proxy —
    a leak risk); it is reported only as a **sensitivity** (a `salt_in_score` variant): if SUCCESS appears ONLY
    with SALT in the score, classify `WealthProxySelection`, not `InstitutionSpreadSuccess`. **The score MUST
    NOT reference** institution identity (committer/adopter), commitment state/profitability, or any "would this
@@ -208,9 +212,13 @@ is decided by the `salt_in_score` sensitivity: it labels a headline that FAILS b
     null, Codex P1.4): must NOT reproduce the committed CORE (the bit may still ratchet under sticky random
     copying; the test checks the CORE, not bit-spread) ⇒ else `DriftNotSelection`.
   - **no_seed** — seed share 0: the norm must NOT appear (no spontaneous innovation in this slice).
-  - **unprofitable_seed** — seed placed where commitment does NOT visibly outperform (a regime/topology with no
-    realized-return advantage to committing): the adopter-advantage diagnostic (§3.6) must show **no pre-copy
-    advantage AND no spread** (the cleanest selection-not-oracle evidence).
+  - **unprofitable_seed** (PINNED, Codex round-2 P1) — the institution is granted to the seed but made
+    **non-advantageous** by setting `commitment_term = 1` (a non-binding term: an adopter can commit but the
+    commitment confers no stickiness benefit — exactly S22f's `nonbinding_term` / `TermTooShortFinding` shape).
+    Money still promotes; the norm bit still exists and could spread. What it proves: with **no realized
+    commitment advantage**, the adopter-advantage diagnostic (§3.6) shows **no pre-copy generic advantage AND
+    no spread** → the spread really tracks an *advantage*, not the mere presence of the norm (selection, not
+    oracle).
   - **salt_in_score** (SENSITIVITY, Codex P1.2) — adds SALT/stock to the score; reported, not the headline. If
     SUCCESS appears here but NOT on the generic no-SALT headline → `WealthProxySelection` (the result rode a
     commitment-profit proxy), never upgraded to `InstitutionSpreadSuccess`.
@@ -269,3 +277,17 @@ Redirect cargo to files; never pipe to head/grep (EPIPE → spurious exit 101).
   spread.
 - **P2.6 neighbourhood rule pinned** — §3.4: observation set = within `IMITATION_RADIUS` (Manhattan) + market
   co-located, deduped, capped at `IMITATION_MAX_MODELS`=8 nearest by `(manhattan, agent_id)`, ties by `agent_id`.
+
+### Round 2 (2 P1 → SPEC-READY)
+
+- **P1 score units normalized** — §3.4: each component normalized to [0,1] (integer bps) so weights are
+  meaningful — `alive_score` 0/1, `hunger_relief = (need_max − mean_hunger)/need_max`, `food_score =
+  min(1, food_consumed / FOOD_WINDOW_TARGET)`; `score_bps = 2·alive + hunger_relief + food_score` (raw food
+  units would dominate the 48-tick window and void the weights).
+- **P1 unprofitable_seed pinned** — §4: the institution is granted but non-advantageous via `commitment_term =
+  1` (non-binding, S22f's TermTooShortFinding shape); money still promotes; proves spread tracks a real
+  advantage (no advantage ⇒ no spread), not the mere presence of the norm.
+- Codex confirmed: the no-SALT score is non-circular (may yield `SeedOnlyNoSpread` if committers/buyers look
+  alike — a real finding, not an empty spec); bounded spread is reachable (universal ⇒ `UniversalCommitmentRePin`,
+  correct); copying better-off committers is not circular as long as the score reads no institution/profit
+  fields and the controls are strong (they are).
