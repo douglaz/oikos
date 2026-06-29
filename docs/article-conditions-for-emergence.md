@@ -451,11 +451,18 @@ We state the scaffolds plainly; a hostile reader should attack these first.
   load-bearing or whether the contract remains the real stabilizer (with a commitment-off control to rule out
   the market merely inheriting the thin/collapsed regime). Deferred, because attribution is messy when the
   contract is already solving the exit problem.
-- **Endogenous institution selection — the natural next frontier.** The study has shown that *specific*
-  hand-designed institutions make or break emergence (which exchange rule, which exit-cost institution). The
-  next question is not another hand-designed institution but whether agents or populations can **select among
-  institutions** based on their own survival and trade outcomes — i.e. whether the institutional layer that
-  the experimenter has so far supplied can itself emerge.
+- **Endogenous institution selection — the natural next frontier, now opened.** The study has shown that
+  *specific* hand-designed institutions make or break emergence (which exchange rule, which exit-cost
+  institution). The next question is not another hand-designed institution but whether agents or populations
+  can **select among institutions** based on their own survival and trade outcomes — i.e. whether the
+  institutional layer the experimenter has so far supplied can itself emerge. A first slice (S24a) gives a
+  *mixed* answer: gating S22f's commitment behind an adopted-norm bit and letting it **spread by generic local
+  imitation of observed success** (a generic survival score, never institution identity, with a score-purity
+  invariant and an outcome-blind random-imitation null) does propagate the institution and recreate a core —
+  but under *sticky* adoption it usually over-spreads to a re-pin or cannot be separated from drift, with only
+  a minority of seeds showing clean, bounded, selection-driven spread. The clean test — **non-sticky /
+  abandonable adoption**, which should let adoption settle below saturation and make the drift null clean — and
+  then genuine *choice among* competing institutions are the open slices.
 
 ---
 
