@@ -1,6 +1,6 @@
 # impl-42 — S24b: Abandonable commitment-norm adoption (the clean institution-selection test)
 
-Status (spec): DRAFT — pending Codex spec-review. Base: master `4bf6277` (S24a landed). **Second slice of the
+Status (spec): REVISED per Codex spec-review round 1 (4 P1 + 3 P2 folded in, §7; Codex confirmed bidirectional generic imitation is the right mechanism + the bounded bar is sound); pending confirmation. Base: master `4bf6277` (S24a landed). **Second slice of the
 S24 INSTITUTION-SELECTION arc.** Composes directly on S24a (`commitment_norm_spread`), changing exactly one
 thing: adoption is no longer **sticky** — the norm can be **abandoned**. The clean-positive test S24a named:
 S24a found a working institution *can* spread by generic local imitation but, under *sticky* (never-abandoned)
@@ -18,9 +18,10 @@ monotonically toward universal, so the random null *also* reaches the core (drif
 selection on several seeds), and the genuine signal over-spreads to a re-pin. S24b removes the confound by
 making imitation **bidirectional / abandonable**: each imitation step copies the norm bit of whichever
 observed neighbour is doing better on the *same generic survival score* — **adopter or non-adopter** — so an
-agent that adopted but is *not* better off (or observes a better-off non-adopter) **drops** the norm. Under a
-true outcome-blind null this is now a **random walk, not a ratchet** (random copying no longer drifts to
-universal), so `random_imitation` should fail to reach the core; and the genuine signal should **settle at the
+agent that adopted but is *not* better off (or observes a better-off non-adopter) **drops** the norm.
+Bidirectional copying removes S24a's monotonic ratchet, so the *hypothesis* (tested by the `random_imitation`
+null, NOT assumed — finite stochastic copying can still fixate) is that an outcome-blind null behaves like a
+random walk rather than a ratchet and fails to reach the core, while the genuine signal **settles at the
 adoption level the real outcome-advantage supports** rather than over-spreading. The hypothesis (the arc's
 potential first *clean* institution-selection positive): with abandonable adoption, **bounded
 selection-driven spread that recreates the S22f core becomes the MAJORITY of seeds, the random null is clean
@@ -75,9 +76,13 @@ institution/profit term in the update rule?
    (≥ `PERSIST_COHORT` ids cultivating ≥ `PERSIST_FRACTION` of the final window, all renewing).
 3. **A surviving fluid non-adopter buyer tier materially buys** (post-money bought ≥ `MATERIAL_BOUGHT_FLOOR`,
    `final_buyer_cohort ≥ MIN_BUYER_COHORT`).
-4. **PER-SEED clean selection** — this seed's matched `random_imitation` (now also abandonable/blind) does
-   **NOT** reach the core, AND `no_imitation` does not; spread is driven by ≥1 generic copy with positive
-   pre-copy advantage; score-purity holds; SALT contributes zero copies.
+4. **PER-SEED clean selection with a MARGIN (Codex P1.2)** — the headline must **beat its matched
+   `random_imitation` seed by a predeclared margin**, not merely "random forms no core" (finite blind
+   bidirectional copying can transiently concentrate): require `headline.core ≥ random.core + CORE_MARGIN`
+   (`CORE_MARGIN = PERSIST_COHORT`, i.e. the headline core at least a full cohort above the matched random) AND
+   the matched random does **NOT** itself satisfy the full bounded two-tier success (clauses 1–3); AND
+   `no_imitation` forms no core; AND spread is driven by ≥1 generic copy with positive pre-copy advantage;
+   score-purity holds; SALT contributes zero copies.
 5. **Abandonment actually happens** — ≥ `MIN_ABANDONMENTS` norm-drop events occur (the bit is genuinely
    non-sticky, not sticky-by-another-name), and the random null's adoption does **not** ratchet to saturation
    (its final share ≤ the headline's, ideally near the seed level).
@@ -88,16 +93,23 @@ institution/profit term in the update rule?
 
 **Finding modes (pre-named; first-class; verdict prints, does NOT assert SUCCESS):**
 - `SeedDies` / `MoneyFailure` / `ConservationBroken` / `extinct` / `Cull` — precondition / integrity failures.
-- `NormDiesBack` — abandonment overshoots: the norm collapses back to (near) seed-only, no core
+- `NormDiesBack` — abandonment overshoots: final adopter share < `ADOPTER_SHARE_MIN` (0.15) AND no core
   (over-correction; the opposite of S24a's over-spread).
-- `ChurnEquilibrium` — adoption oscillates without a persistent core (the bit flips too readily; abandonment
-  too aggressive / margin too small).
-- `DriftNotSelection` — the abandonable `random_imitation` null *still* reaches the core on this seed (drift
-  not removed) — the S24b hypothesis FAILS for that seed.
+- `ChurnEquilibrium` — the bit flips too readily: the per-agent adopt↔abandon **flip rate** over the final
+  window ≥ `CHURN_FLIP_RATE` (flips per adopter-period ≥ 0.5) OR final-window adopter-share variance ≥
+  `CHURN_SHARE_VAR` — AND no persistent core.
+- `DriftNotSelection` — the headline does NOT beat its matched `random_imitation` seed by `CORE_MARGIN`
+  (`= PERSIST_COHORT`), i.e. the abandonable blind null reaches a comparable core on this seed (drift not
+  removed) — the S24b hypothesis FAILS for that seed.
 - `UniversalCommitmentRePin` — adoption still saturates past `ADOPTER_SHARE_MAX` and the buyer tier collapses
   (abandonment didn't bound it).
 - `SpreadWithoutOccupation` — bounded spread but no stable core.
 - `CleanInstitutionSpread` — all seven success clauses (the clean positive).
+
+**Pinned thresholds (predeclared consts; do NOT fit):** `ADOPTER_SHARE_MIN = 0.15`, `ADOPTER_SHARE_MAX = 0.6`,
+`MIN_ABANDONMENTS = 8`, `CORE_MARGIN = PERSIST_COHORT (4)`, `CHURN_FLIP_RATE = 0.5` (flips per adopter per
+final-window period), `CHURN_SHARE_VAR` (final-window adopter-share variance bound), reusing the S24a
+`PERSIST_COHORT`/`PERSIST_FRACTION`/`MIN_BUYER_COHORT`/`MATERIAL_BOUGHT_FLOOR`/`IMITATION_*` consts.
 
 **Ordered classifier (top-down, first-match-wins):** `SeedDies` → `MoneyFailure` →
 `ConservationBroken`/`extinct`/`Cull` → `NormDiesBack` → `UniversalCommitmentRePin` → `DriftNotSelection` →
@@ -119,12 +131,20 @@ threshold as a `const`; do NOT fit.
 2. **The one change — bidirectional / abandonable update (§1 design).** When `abandonable_norm_active()`, the
    per-`IMITATION_PERIOD` update applies to **every** agent (not only non-adopters): an agent forms the same
    deterministic generic-scored observation set as S24a, finds the best-scoring observed neighbour, and if that
-   neighbour beats it by ≥ `IMITATION_MARGIN_BPS`, **copies that neighbour's `adopts_commitment_norm` bit**
-   — which may set it true (adopt) **or false (abandon)**. An agent currently in an active S22f commitment
-   that abandons the norm: the abandonment takes effect at the next commitment **decision point** (it does not
-   break a binding term mid-commitment — it declines to renew / cannot re-commit once the term expires),
-   keeping the S22f exit-override semantics intact; record an abandonment event. No institution/profit term
-   enters the update (the score is the S24a generic score; score-purity invariant unchanged).
+   neighbour beats it by ≥ `IMITATION_MARGIN_BPS`, it **copies that neighbour's `adopts_commitment_norm` bit**
+   — which may set it true (adopt) **or false (abandon)**.
+   **Pinned abandonment-timing state (Codex P1.1).** Add a digested ON-only per-agent `next_norm_bit:
+   Option<bool>` (the pending copy result). Apply rule:
+   - if the agent is **not** in a binding S22f term, the copied bit is applied **immediately** to
+     `adopts_commitment_norm` (and `next_norm_bit` cleared);
+   - if the agent **is** in a binding term, the copy is **staged** in `next_norm_bit` — the active
+     `adopts_commitment_norm` stays **true** for the remainder of the term (no mid-term break; S22f
+     exit-override semantics intact), and the staged bit is applied **at term expiry, BEFORE the renewal
+     decision** (so an abandon means it does not renew and cannot re-commit until it re-adopts).
+   - An **abandonment event is counted only when the applied bit actually changes** `true → false` (likewise
+     an adoption only on `false → true`); re-copying the same value is not a flip.
+   No institution/profit term enters the update (the score is the S24a generic score; score-purity invariant
+   unchanged).
 
 3. **Why this removes the ratchet (the testable mechanism).** Under an outcome-blind null (random model
    choice), bidirectional copying has zero expected drift (a random walk), so `random_imitation` should NOT
@@ -156,9 +176,12 @@ threshold as a `const`; do NOT fit.
   - **sticky_reference** (`abandonable_norm = false`) = S24a (the mixed 3 RePin / 1 Drift / 1 Success), to
     show abandonment changes the outcome.
   - **no_imitation** — seed only: no spread, no core (imitation load-bearing).
-  - **random_imitation** — abandonable + outcome-blind model choice, endogenous rate: must NOT reach the core
-    on any seed AND must NOT ratchet to saturation (the abandonment makes the null a clean random walk) ⇒ a
-    seed where it reaches the core is `DriftNotSelection`.
+  - **random_imitation** (PINNED mechanics, Codex P1.3) — same `IMITATION_PERIOD`, same observation set, same
+    opportunity cadence, same abandonable bidirectional update, but the model is sampled **uniformly at random
+    among the observed set ignoring score AND institution** (outcome-blind), then its bit is copied; the
+    induced adoption rate is left ENDOGENOUS and **reported**. The clean-null claim (a *tested* hypothesis, not
+    a guarantee): the headline must beat its **matched** random seed by `CORE_MARGIN` and random must not
+    satisfy the bounded two-tier success; a seed where it does not is `DriftNotSelection`.
   - **no_seed** — share 0: norm never appears.
   - **tiny_margin** (`IMITATION_MARGIN_BPS` → small) — predict `ChurnEquilibrium` (the bit flips too readily,
     no persistent core): a sensitivity that the margin governs stability.
@@ -195,7 +218,23 @@ Redirect cargo to files; never pipe to head/grep (EPIPE → spurious exit 101).
 - **The anti-drift claim is the load-bearing one** — the random-null-no-ratchet + per-seed no-core + the
   abandonment-count are what distinguish this from S24a; report them prominently.
 - **Bounded to this base + this imitation rule**; expect possible band-qualification (the margin window).
-- The rb-lite panel on this shared box is unreliable (swept mains, orphaned implementers, S24a's dead run) —
-  the gate is independent verification + Codex review-of-results; verify the landed diff + classifier by
-  reading, write a FRESH reviewers file, never trust a panel "clean".
 - Follow repo conventions; NEVER add Claude/AI/assistant references in code, comments, or committed text.
+
+## 7. Codex spec-review resolutions (round 1)
+
+- **P1.1 abandonment timing pinned** — §3.2: digested ON-only `next_norm_bit: Option<bool>`; not-in-term →
+  apply immediately; in a binding term → stage, keep norm true to expiry, apply BEFORE the renewal decision;
+  count a flip only when the applied bit actually changes.
+- **P1.2 per-seed random MARGIN** — §2.4/§2-modes: headline must beat its matched random seed by `CORE_MARGIN =
+  PERSIST_COHORT` AND random must not satisfy the bounded two-tier success (finite blind copying can transiently
+  concentrate; "random forms no core" alone is too weak) → else `DriftNotSelection`.
+- **P1.3 random_imitation mechanics pinned** — §4: same period/observation/cadence/abandonable update, model
+  sampled UNIFORMLY ignoring score AND institution, bit copied, induced rate reported.
+- **P1.4 exact predicate constants** — §2: `NormDiesBack` (final share < `ADOPTER_SHARE_MIN`=0.15 + no core),
+  `ChurnEquilibrium` (flip-rate ≥ `CHURN_FLIP_RATE`=0.5 or final-window share-variance ≥ `CHURN_SHARE_VAR`, +
+  no core), `MIN_ABANDONMENTS`=8, `CORE_MARGIN`=PERSIST_COHORT.
+- **P2.1 softened "random walk"** — §1/§3: stated as a *tested null/hypothesis* (finite stochastic copying can
+  fixate), not a mechanical guarantee.
+- **P2.2 bounded bar kept** — Codex: `[0.15,0.6]` + live buyer tier is sound; no explicit hysteresis added (if
+  the bit flips too much that is the `ChurnEquilibrium` finding).
+- **P2.3 process note removed** — §6: the rb-lite/reviewer-reliability note belongs in the run record, not the spec.
