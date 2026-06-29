@@ -1,6 +1,6 @@
 # impl-40 — S23b: Post-Money Alienable Land Market (does illiquid priced land + budget hysteresis stabilize an occupation?)
 
-Status (spec): REVISED per Codex spec-review round 1 (5 P1 + 3 P2 folded in, §7); pending confirmation. Base: master `be2febb` (S23a landed). Second slice of the
+Status (spec): SPEC-READY (Codex spec-review round 1: 5 P1 + 3 P2; round 2: 3 P1 + 1 P2, all folded in §7; Codex pre-approved SPEC-READY after the round-2 fixes). Base: master `be2febb` (S23a landed). Second slice of the
 **S23 private-property arc**. Composes on S23a (`private_land_tenure`) → S22a (`endogenous_cultivation_entry`)
 on the population-scaled land base; the other S22 exit-cost levers (skill, profit-stay, capital, commitment)
 are **OFF** in the headline so the land market is the only new exit-cost mechanism. Codex-scoped ("spec S23b —
@@ -144,28 +144,40 @@ rank relationship (good-plot mean price > marginal-plot mean price by ≥ `PRICE
    then switch to realized rent. `base_price(plot) = land_price_cap_factor × rent(plot)`. The **listed price**
    blends in **local sale history**: `price = round((1 − w)·base_price + w·mean_last_sale(nearest
    LAND_SALE_HISTORY_K plots))` with `w = LAND_SALE_HISTORY_WEIGHT` (0 if no local sales yet), clamped to
-   `[LAND_PRICE_MIN, base_price × 4]`. Good (high-regen) plots therefore price strictly dearer than marginal
+   `[LAND_PRICE_MIN, max(LAND_PRICE_MIN, base_price × 4)]` (Codex round-2 P2: the upper bound never falls below
+   the floor even if realized rent → 0; the quality prior also floors the rent basis so a productive plot never
+   prices at zero). Good (high-regen) plots therefore price strictly dearer than marginal
    ones and the price **level scales with realized productivity** — `land_price_cap_factor` is a slope, not a
    level. **Anti-tuning bar:** a SUCCESS must hold at the shipped `land_price_cap_factor` AND ≥1 adjacent
    swept value; if it holds at only one cap value → `TunedPriceDiagnostic`, not a headline success.
 
 4. **Deterministic listing / bidding / matching (Codex P1.2 + P2.3 — the institution).**
-   - **List (seller):** an owner lists its plot (ask = its `price`) iff post-money AND (it has not worked the
-     plot for `LAND_LIST_IDLE` ticks **or** it cannot pay this period's carrying cost). At most one live ask
-     per plot; one owner per plot.
+   - **List (seller) + lifecycle (Codex round-2 P1.2):** an owner lists its plot (ask = its `price`) iff
+     post-money AND (idle: it has not worked the plot for `LAND_LIST_IDLE` ticks **or** arrears: it could not
+     pay this period's carrying cost). At most one live ask per plot; one owner per plot. **Lifecycle:** an
+     *idle* listing is **recomputed each market sweep and cancels** once the owner works the plot/pays normally
+     again; an *arrears/foreclosure* listing **persists until it sells or the arrears are paid**; a listed
+     owner **may keep harvesting** its plot, but **a cleared sale always transfers title** (selling wins over
+     holding).
    - **Bid (buyer):** an eligible buyer is a **non-owner, S22a-eligible, alive, post-money** agent that is
-     cultivating-or-attempting and holds SALT; it bids on the **nearest** listed plot whose `price ≤ its SALT`,
-     `bid = min(SALT, land_price_cap_factor × its_expected_rent(plot))`. One live bid per agent; an agent that
-     already owns a plot does not bid (one-plot-per-agent).
+     cultivating-or-attempting and holds SALT; it bids on the **nearest** listed plot it can afford. Its
+     **reservation = the plot's fundamental value `land_price_cap_factor × rent(plot)`** — the SAME
+     rent/quality-prior basis as the ask's `base_price`, **ignoring the sale-history premium** (so a buyer pays
+     up to fundamental value but not a bubbly sale-history markup); `bid = min(SALT, reservation)`. It clears
+     iff `bid ≥ ask` (the listed price); affordable fundamental-value plots therefore clear, while a listed
+     price inflated by sale history above fundamental does not (no systematic `LandMarketInert`, no instant
+     flips). One live bid per agent; an agent that already owns a plot does not bid (one-plot-per-agent). The
+     ask-vs-bid gap is reported.
    - **Match:** a single **deterministic sorted global sweep** (by `(plot price, plot node_id)`, then bidders
      by `(−bid, agent_id)`), **pairwise** (one buyer ↔ one seller ↔ one plot), clearing when `bid ≥ ask` at
      the **ask** price. SALT transfers buyer→seller; title transfers seller→buyer. NO multilateral/ring
      clearing. Reservations recomputed each sweep (no extra digest surface).
 
-5. **Carrying cost + foreclosure as CONSERVED transfers (Codex P1.4 + P1.5).** Each `LAND_CARRYING_PERIOD`,
-   every plot owner pays `land_carrying_cost` SALT into an explicit conserved **`land_fee_pool`** account
-   (NOT a burn/mint; included in the SALT-accounting invariant; the pool may be redistributed to the commons/
-   exchange per the existing fee-handling, documented). Payment ordering: charged before the market sweep. An
+5. **Carrying cost + foreclosure as CONSERVED transfers (Codex P1.4 + P1.5; round-2 P1.3).** Each
+   `LAND_CARRYING_PERIOD`, every plot owner pays `land_carrying_cost` SALT into an explicit non-agent
+   settlement account **`land_fee_pool_salt`** — a conserved **sink**, digested ON-only, included in the
+   SALT-accounting invariant, and **NOT spendable or redistributed in S23b** (any redistribution is deferred to
+   a later milestone so it cannot change behaviour here). Payment ordering: charged before the market sweep. An
    owner that **cannot pay** auto-lists at a **foreclosure discount** (`price × (1 − LAND_FORECLOSE_DISCOUNT_BPS)`)
    but **keeps title and may keep harvesting** until a buyer clears; **if no buyer clears, the plot stays with
    the owner, listed, re-priced down each period to `LAND_PRICE_MIN`** — it is **never** silently converted to
@@ -280,3 +292,19 @@ Redirect cargo to files; never pipe to head/grep (EPIPE → spurious exit 101).
   breakdown `{original-claim, inherited, bought, foreclosed-out}` reported.
 - **P2.3 pairwise vs central matcher** — §3.4: a single deterministic sorted global sweep, strictly pairwise,
   no multilateral/ring clearing.
+
+### Round 2 (3 P1 + 1 P2 → SPEC-READY)
+
+- **P1.1 buyer bid formula** — §3.4: buyer reservation = the plot's FUNDAMENTAL `cap_factor × rent(plot)`
+  (same rent/quality-prior basis as the ask's base_price, IGNORING the sale-history premium); `bid =
+  min(SALT, reservation)`, clears iff `bid ≥ ask`. Affordable fundamental-value plots clear; bubbly
+  above-fundamental asks don't — no systematic LandMarketInert, no instant flips. Ask-vs-bid gap reported.
+- **P1.2 listing lifecycle** — §3.4: idle listings recompute each sweep + cancel when the owner works/pays
+  again; arrears/foreclosure listings persist until sold or arrears paid; listed owners may keep harvesting,
+  but a cleared sale always transfers title.
+- **P1.3 land_fee_pool destination** — §3.5: `land_fee_pool_salt` is an explicit non-agent conserved SINK,
+  digested ON-only, NOT spendable/redistributed in S23b.
+- **P2 price clamp edge** — §3.3: upper bound `max(LAND_PRICE_MIN, base_price × 4)` so it never falls below
+  the floor; quality prior floors the rent basis.
+- Codex confirmed: post-money gate clean; budget hysteresis is a valid empirical hypothesis (LiquidChurn is a
+  legitimate possible finding, not a spec failure); title-retained foreclosure avoids relabeled forfeiture.
