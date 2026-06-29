@@ -2,7 +2,7 @@
 
 ### A praxeologic agent-based study under a no-smuggling, conservation, and adversarial-review discipline
 
-*Working paper distilled from the OIKOS experimental record (milestones S5–S22f). Companion to the
+*Working paper distilled from the OIKOS experimental record (milestones S5–S23b). Companion to the
 running report `report-emergence-and-its-limits.md`, which carries the per-milestone detail.*
 
 ---
@@ -38,8 +38,14 @@ core with a working **two-tier** division of labor (a stable committed core plus
 side), genuinely voluntary rather than a re-imposed pin. By the predeclared aggregate-churn criterion this
 still classifies as no-stickiness — the colony-wide churn does not fall, *because* the fluid tier keeps
 churning around the stable core — so the honest statement is that an exit-overriding institution stabilizes
-an occupational **core**, not the whole colony. We report all of these as **model findings, not theorems**,
-and disclose the configured scaffolds that remain.
+an occupational **core**, not the whole colony. A third strand tests the obvious counter-hypothesis — that
+the canonical real-world exit cost is **private property in land**, not a contract — and finds it does
+**not** rescue occupation: a *use-it-or-lose-it* tenure rule makes the exit cost itself churn (entry thrashes
+at roughly ten times the commons baseline), and a post-money *alienable land market* with a genuinely
+endogenous, rent-tracking price goes **thin** over the owner-dominance that private tenure produces, never
+forming an owner-cultivator class; what stabilized an occupation here was contract, not property — the
+design of the exit-cost institution decides the outcome. We report all of these as **model findings, not
+theorems**, and disclose the configured scaffolds that remain.
 
 ---
 
@@ -311,17 +317,65 @@ core-formation but not colony-wide stabilization — a decomposition, not a sing
 
 ---
 
-## 7. Discussion
+## 7. Private property in land does not rescue occupation
+
+S22f stabilized an occupational core by making the *exit* costly through a voluntary contract. That raises
+the obvious counter-hypothesis: the canonical real-world exit cost is not a contract but **private property
+in land** — scarce, excludable, owned, costly to re-acquire once given up. The whole division-of-labor arc
+above ran on a world where the means of production is a *commons* (a resource node has no owner; a lapsed
+cultivator re-enters for free). The S23 arc switches on the missing precondition and asks whether private
+land is the exit cost that produces a class. Two institutional designs were tested, and both fail — in
+opposite ways.
+
+**Forfeiture (S23a) *thrashes*.** When grain plots are excludable, heterogeneous (good-near, poor-far),
+claimed by homesteading labor, harvested owner-only, **lost if left idle**, and inherited — with a *spatial*
+re-entry penalty (abandon your good central plot and a nearer agent takes it; you can only re-homestead far,
+poor land) — occupation does not stabilize; it churns *harder*. Plots are claimed, lost-on-idle, and
+reclaimed by another in rapid succession, so per-cultivator churn runs about **ten times** the commons
+baseline, owners take 75–80% of grain, and no stable cohort forms. (A first run returned a clean *hard
+barrier* to entry; review caught it as a capacity artifact — far fewer plots than agents, with total land
+never swept — and a population-scaled land axis made the barrier vanish, leaving the thrash as the real
+finding.) Making the exit costly is necessary but not sufficient: an *involuntary forfeiture* rule makes the
+cost itself churn.
+
+**An alienable market (S23b) goes *thin*.** The gentler, more authentic institution is illiquid land priced
+*after* money exists. Post-promotion, plots become assets bought and sold for SALT at an **endogenous**
+price — capitalized from each plot's realized yield (good plots trade ~86 SALT against marginal plots' ~1),
+never a hardcoded constant — with a carrying cost, sale-or-foreclosure instead of forfeiture, and a budget
+hysteresis (a lapsed farmer who sold its land and spent the proceeds is priced out of re-buying). The price
+machinery works and conserves, but the market is **too thin to be load-bearing**: only a handful of title
+trades clear, churn does not fall, and no owner-cultivator cohort forms. The honest caveat sharpens the
+result: the no-market baseline on this base is *already* owner-dominant and buyer-thin — because S23a's
+private tenure has *already collapsed the buyer side* — so the market is being asked to rescue a regime that
+private property has already hollowed out, and it cannot.
+
+**The pattern.** Across both designs, **private property in land does not rescue occupational formation, and
+it collapses the buyer economy that a functioning division of labor needs** — forfeiture by thrashing entry,
+the market by going thin over the owner-dominance that private tenure produces. This is the same lesson as
+the division-of-labor arc, seen from the property side: *the design of the exit-cost institution decides the
+outcome.* A voluntary contract (S22f) made leaving costly in a way that bound without churning, and a
+two-tier market survived; the two property institutions made leaving costly in ways that either churn
+(forfeiture) or hollow out the demand side (market). What stabilized an occupation here was contract, not
+property.
+
+---
+
+## 8. Discussion
 
 The two arcs are mirror images under the same discipline. For **money**, we found a set of conditions and
 *met* them, and emergence followed — but only inside a disclosed envelope, and partly by repairing a
 self-imposed institutional constraint. For **occupation**, we probed five exit-preserving sufficiency
 mechanisms and *falsified* each — the consistent shape of the failures naming the missing condition (an
 exit-overriding institution) — then supplied that institution (S22f) and got the arc's first stable
-occupational core, though not colony-wide stabilization.
-In both cases the value is the decomposition: the model converts vague claims ("money emerges,"
-"specialization emerges") into a graded ledger of *which* conditions are necessary and how robust each
-is.
+occupational core, though not colony-wide stabilization. A third strand then tested whether **private
+property in land** — the canonical real-world exit cost — could substitute for the contract, and found it
+could not: forfeiture tenure thrashes, an alienable market thins out, and both collapse the buyer economy a
+division of labor needs. The unifying lesson across the occupation and property strands is that *the design
+of the exit-cost institution decides the outcome* — making leaving costly is necessary but not sufficient;
+the cost must bind without itself churning or hollowing out demand, which here only a voluntary contract did.
+In all cases the value is the decomposition: the model converts vague claims ("money emerges,"
+"specialization emerges," "property creates a propertied class") into a graded ledger of *which* conditions
+are necessary and how robust each is.
 
 Two things make the negatives credible rather than mere absences. First, every lever was held to a
 **non-vacuity** standard: we proved the mechanism materially changed agent behavior (skill raised haul,
@@ -340,7 +394,7 @@ results.
 
 ---
 
-## 8. Limitations and threats to validity
+## 9. Limitations and threats to validity
 
 We state the scaffolds plainly; a hostile reader should attack these first.
 
@@ -374,7 +428,7 @@ We state the scaffolds plainly; a hostile reader should attack these first.
 
 ---
 
-## 9. Future work
+## 10. Future work
 
 - **Why the committed core does not spread colony-wide.** S22f's exit-overriding institution stabilizes an
   occupational *core* but leaves a churning fluid majority, so aggregate churn stays high. The live question
@@ -391,10 +445,21 @@ We state the scaffolds plainly; a hostile reader should attack these first.
   core, and a check on whether they avoid the commitment+capital monopolization/cull regime S22f surfaced.
 - **Endogenizing the remaining money scaffolds** — the two-lane clearing institution and the SALT
   direct-use anchor — and broadening the open-colony robustness beyond the WOOD-load-bearing envelope.
+- **An alienable land market over a deliberately *non-collapsed* two-tier base** — S23b was confounded by
+  testing a market on top of S23a's already owner-collapsed tenure; the clean version starts from S22f's
+  two-tier-preserving contract and adds the market, asking whether land ownership becomes *independently*
+  load-bearing or whether the contract remains the real stabilizer (with a commitment-off control to rule out
+  the market merely inheriting the thin/collapsed regime). Deferred, because attribution is messy when the
+  contract is already solving the exit problem.
+- **Endogenous institution selection — the natural next frontier.** The study has shown that *specific*
+  hand-designed institutions make or break emergence (which exchange rule, which exit-cost institution). The
+  next question is not another hand-designed institution but whether agents or populations can **select among
+  institutions** based on their own survival and trade outcomes — i.e. whether the institutional layer that
+  the experimenter has so far supplied can itself emerge.
 
 ---
 
-## 10. Conclusion
+## 11. Conclusion
 
 OIKOS turns two slogans into ledgers. Mengerian money in this model did **not** emerge from direct demand,
 produced supply, or multi-good trade alone; it emerged only when a direct-use eligibility floor, medium-
@@ -407,7 +472,11 @@ or ownership. Only the sixth lever, which **overrides the exit** by voluntary fi
 the result: a stable, renewing, minority committed cultivator *core* and a two-tier market form — the arc's
 first stable occupation — though colony-wide churn stays high because the fluid tier persists, so by the
 predeclared bar it remains a classified negative with a real positive sub-result. Occupation here needs an
-institution that changes the *exit*, and even then stabilizes a core, not the whole colony. Across both arcs
+institution that changes the *exit*, and even then stabilizes a core, not the whole colony. And the obvious
+substitute for the contract — **private property in land** — does not rescue occupation in either form
+tested: a forfeiture rule makes the exit cost churn, an alienable market thins out over owner-dominance, and
+both collapse the buyer economy a division of labor needs; what stabilized an occupation here was contract,
+not property, because the *design* of the exit-cost institution decides the outcome. Across all three arcs
 the method is the message: emergence claims in an ABM become trustworthy when the substrate conserves, the
 runs are deterministic and regression-pinned, parameters are swept rather than searched, an independent
 model audits design and result, and both the precisely-bounded "no" and the carefully-qualified "partial
@@ -444,3 +513,5 @@ yes" are treated as real findings.
 | S22d | Durable role-specific capital | finding: even sunk owned capital → dominant few, not a class (chicken-and-egg) |
 | S22e | Endowed + inherited capital | finding: even capital given up front + inherited → owners rotate, no lineage cohort (the *exit* binds, not provenance) |
 | S22f | Voluntary fixed-term commitment | the turn: an exit-overriding voluntary contract forms a persistent, renewing, minority committed **core** + a two-tier market (first stable occupation); formal verdict still no-stickiness (colony-wide churn unchanged), not a re-pin |
+| S23a | Private land tenure (forfeiture) | finding: use-it-or-lose-it land *thrashes* (churn ~10× commons, no cohort); the exit cost itself churns. (A first run's hard-barrier was a capacity artifact, caught in review) |
+| S23b | Post-money alienable land market | finding: genuinely endogenous rent-tracking price, but the market goes *thin* (few trades, churn unchanged, no owner-cultivator cohort) over S23a's already owner-collapsed base; property does not rescue occupation, contract does |
