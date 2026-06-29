@@ -102,7 +102,7 @@ pub use settlement::{
     EconTickReport, EntrantClassSale, EstateDestination, ForageCommons, LineageStats, NodeSpec,
     OrderStat, ProducerCash, ProducerRole, Settlement, SettlementConfig, TaxLevy, TaxPolicy,
     TenderBench, TenderPolicy, TraderEndowment, Vocation, ECON_TICKS_PER_YEAR,
-    FAST_TICKS_PER_ECON_TICK,
+    FAST_TICKS_PER_ECON_TICK, LAND_VIABLE_CAP_FLOOR, LAND_VIABLE_REGEN_FLOOR,
 };
 
 /// Read-only re-exports of the `econ`/`life` types that make up the settlement's

@@ -214,6 +214,28 @@ const COMMITMENT_ENTRY_FLOOR_DEFAULT: u64 = RETENTION_MATERIAL_FLOOR;
 /// the headline; tests may override `commitment_fiat_pin` when they need a different forced count.
 const COMMITMENT_FIAT_PIN_DEFAULT: u16 = 6;
 
+/// S23a — the shipped private-land idle-forfeiture clock. A plot reverts only after this many
+/// consecutive fast ticks with no owner engagement (no harvest task, no pending carried grain from
+/// that plot, and no harvest event this tick).
+const LAND_IDLE_LIMIT_DEFAULT: u16 = 12;
+const LAND_GOOD_PLOTS_DEFAULT: u16 = 4;
+const LAND_MARGINAL_PLOTS_DEFAULT: u16 = 8;
+const LAND_GOOD_REGEN: u32 = 64;
+const LAND_GOOD_CAP: u32 = 8_000;
+const LAND_MARGINAL_REGEN_DEFAULT: u32 = 12;
+const LAND_MARGINAL_CAP: u32 = 1_000;
+const LAND_GOOD_START_X: u16 = 2;
+const LAND_MARGINAL_XS: [u16; LAND_MARGINAL_PLOTS_DEFAULT as usize] =
+    [12, 18, 24, 30, 36, 42, 48, 54];
+
+/// S23a viability floors (§2a `VIABLE_MARGINAL`): a grain plot counts as viable, homesteadable
+/// land only when its `regen`/`cap` clear these floors (a plot that yields ~nothing does not
+/// count). Re-exported so the acceptance suite shares the same numbers and they cannot drift.
+/// Deliberately floor-based — an unowned good plot is *also* viable land, so this does NOT pin
+/// to the marginal-cap literal (which a future cap sweep would otherwise break).
+pub const LAND_VIABLE_REGEN_FLOOR: u32 = 8;
+pub const LAND_VIABLE_CAP_FLOOR: u32 = 256;
+
 /// Econ ticks per settlement "year" — the horizon unit the smoke test counts in.
 /// A placeholder cadence, not a balance figure.
 pub const ECON_TICKS_PER_YEAR: u64 = 12;
@@ -1218,6 +1240,31 @@ pub struct ChainConfig {
     /// renewals, so the voluntary headline (which has all three) is distinguishable even when both
     /// show low churn. `0` (the headline + every other config) leaves entry purely voluntary.
     pub commitment_fiat_pin: u16,
+    /// S23a — **private land tenure** (default `false`, byte-identical when off). When `true` AND
+    /// the S22a endogenous-cultivation-entry path is active, grain nodes become a predeclared finite
+    /// set of heterogeneous land plots. A plot is claimed by the first successful homesteading
+    /// harvest, harvests are owner-exclusive under [`Self::harvest_gate`], and an owner loses the
+    /// plot after [`Self::land_idle_limit`] consecutive fast ticks with no engagement. The grain
+    /// stock itself remains conserved; ownership is metadata over resource nodes.
+    pub private_land_tenure: bool,
+    /// S23a: consecutive unengaged fast ticks before an owned plot reverts to unowned. Consulted
+    /// only while private land tenure is active and [`Self::forfeit_on_idle`] is true.
+    pub land_idle_limit: u16,
+    /// S23a: whether harvest access is owner-exclusive. `false` is the non-excludable-deed control:
+    /// ownership can be recorded, but non-owners are not blocked or rerouted.
+    pub harvest_gate: bool,
+    /// S23a: whether idle ownership reverts to unowned. `false` is the no-forfeit control.
+    pub forfeit_on_idle: bool,
+    /// S23a: whether a reverted plot is reserved for its prior owner at no spatial cost. `true` is
+    /// the free-reclaim control.
+    pub reclaim_reserved_for_prior_owner: bool,
+    /// S23a: count of near, high-yield good plots in the predeclared layout.
+    pub land_good_plots: u16,
+    /// S23a: count of farther marginal plots in the predeclared layout.
+    pub land_marginal_plots: u16,
+    /// S23a: per-tick regeneration for marginal plots. The viability floor is intentionally below
+    /// the default so the robustness sweep can expose the hard-barrier boundary.
+    pub land_marginal_regen: u32,
     /// S21d.0 — **retire the food mints** (the open-survival probe; default `false`,
     /// byte-identical when off). When `true`, the two staple-food mint sites are skipped
     /// **independent of `own_labor_subsistence`/forage**: the demographic `food_provision`
@@ -1605,6 +1652,14 @@ impl ChainConfig {
             commitment_term: COMMITMENT_TERM_DEFAULT,
             commitment_entry_floor: COMMITMENT_ENTRY_FLOOR_DEFAULT,
             commitment_fiat_pin: 0,
+            private_land_tenure: false,
+            land_idle_limit: LAND_IDLE_LIMIT_DEFAULT,
+            harvest_gate: true,
+            forfeit_on_idle: true,
+            reclaim_reserved_for_prior_owner: false,
+            land_good_plots: LAND_GOOD_PLOTS_DEFAULT,
+            land_marginal_plots: LAND_MARGINAL_PLOTS_DEFAULT,
+            land_marginal_regen: LAND_MARGINAL_REGEN_DEFAULT,
             // S21d.0 off by default: the food mints stay, so every existing config and its
             // goldens are byte-identical (canonicalized ON-only).
             retire_food_mints: false,
@@ -1755,6 +1810,14 @@ impl ChainConfig {
             commitment_term: COMMITMENT_TERM_DEFAULT,
             commitment_entry_floor: COMMITMENT_ENTRY_FLOOR_DEFAULT,
             commitment_fiat_pin: 0,
+            private_land_tenure: false,
+            land_idle_limit: LAND_IDLE_LIMIT_DEFAULT,
+            harvest_gate: true,
+            forfeit_on_idle: true,
+            reclaim_reserved_for_prior_owner: false,
+            land_good_plots: LAND_GOOD_PLOTS_DEFAULT,
+            land_marginal_plots: LAND_MARGINAL_PLOTS_DEFAULT,
+            land_marginal_regen: LAND_MARGINAL_REGEN_DEFAULT,
             // S21d.0 off by default: the food mints stay, so every existing config and its
             // goldens are byte-identical (canonicalized ON-only).
             retire_food_mints: false,
@@ -1885,6 +1948,14 @@ impl ChainConfig {
             commitment_term: COMMITMENT_TERM_DEFAULT,
             commitment_entry_floor: COMMITMENT_ENTRY_FLOOR_DEFAULT,
             commitment_fiat_pin: 0,
+            private_land_tenure: false,
+            land_idle_limit: LAND_IDLE_LIMIT_DEFAULT,
+            harvest_gate: true,
+            forfeit_on_idle: true,
+            reclaim_reserved_for_prior_owner: false,
+            land_good_plots: LAND_GOOD_PLOTS_DEFAULT,
+            land_marginal_plots: LAND_MARGINAL_PLOTS_DEFAULT,
+            land_marginal_regen: LAND_MARGINAL_REGEN_DEFAULT,
             // S21d.0 off by default: the food mints stay, so every existing config and its
             // goldens are byte-identical (canonicalized ON-only).
             retire_food_mints: false,
@@ -4829,6 +4900,90 @@ impl SettlementConfig {
         self
     }
 
+    fn with_private_land_layout(&self) -> Self {
+        let mut cfg = self.clone();
+        cfg.apply_private_land_layout();
+        cfg
+    }
+
+    fn apply_private_land_layout(&mut self) {
+        let Some(chain) = self.chain.as_ref() else {
+            return;
+        };
+        let grain = chain.content.grain();
+        self.width = 64;
+        self.height = 1;
+        self.exchange = Pos::new(0, 0);
+
+        let mut used_x = BTreeSet::new();
+        used_x.insert(0u16);
+        let place_x = |preferred: u16, used_x: &mut BTreeSet<u16>| -> u16 {
+            if preferred < 64 && !used_x.contains(&preferred) {
+                used_x.insert(preferred);
+                return preferred;
+            }
+            for x in 1..64u16 {
+                if !used_x.contains(&x) {
+                    used_x.insert(x);
+                    return x;
+                }
+            }
+            panic!("private land layout requires fewer than 64 occupied x positions");
+        };
+
+        // Good plots are placed first at the near `x ∈ {2, 3, …}` band, then marginal plots at
+        // their predeclared far xs (repacked by `place_x` if a slot is taken). NOTE: the
+        // `abundant_good_land` control (`land_good_plots = 16`) makes the good band overrun the
+        // marginal preferred xs ({12, 18, …}), so `place_x` repacks the displaced marginal plots
+        // into the first free low xs (even `x = 1`). The exact geometry is then unintended, but the
+        // control only needs good land to be non-scarce — which holds — so this is acceptable.
+        let mut nodes = Vec::new();
+        for i in 0..chain.land_good_plots {
+            let x = place_x(LAND_GOOD_START_X.saturating_add(i), &mut used_x);
+            nodes.push(NodeSpec {
+                good: grain,
+                pos: Pos::new(x, 0),
+                stock: LAND_GOOD_CAP,
+                regen: LAND_GOOD_REGEN,
+                cap: LAND_GOOD_CAP,
+            });
+        }
+        for i in 0..chain.land_marginal_plots {
+            let preferred = LAND_MARGINAL_XS
+                .get(usize::from(i))
+                .copied()
+                .unwrap_or_else(|| {
+                    LAND_MARGINAL_XS[LAND_MARGINAL_XS.len() - 1]
+                        .saturating_add(6u16.saturating_mul(i + 1 - LAND_MARGINAL_PLOTS_DEFAULT))
+                });
+            let x = place_x(preferred, &mut used_x);
+            nodes.push(NodeSpec {
+                good: grain,
+                pos: Pos::new(x, 0),
+                stock: LAND_MARGINAL_CAP,
+                regen: chain.land_marginal_regen,
+                cap: LAND_MARGINAL_CAP,
+            });
+        }
+
+        for original in self.nodes.iter().copied().filter(|node| node.good != grain) {
+            let x = if original.pos.y == 0
+                && original.pos.x < 64
+                && !used_x.contains(&original.pos.x)
+            {
+                used_x.insert(original.pos.x);
+                original.pos.x
+            } else {
+                place_x(original.pos.x.min(63), &mut used_x)
+            };
+            nodes.push(NodeSpec {
+                pos: Pos::new(x, 0),
+                ..original
+            });
+        }
+        self.nodes = nodes;
+    }
+
     /// S22e — **the EXPANDED S22d base** (gate OFF): [`Self::frontier_cultivation_capital`] (the
     /// S22d durable-capital money colony) expanded to [`ENDOWED_ROSTER_HOUSEHOLDS`] lineage
     /// households. This is BOTH the matched-seed churn baseline AND the precondition colony for the
@@ -5032,6 +5187,27 @@ impl SettlementConfig {
     /// ENDOWED capital; reported separately so the headline must succeed/fail WITHOUT any capital.
     pub fn frontier_voluntary_commitment_endowed_capital() -> Self {
         Self::frontier_endowed_capital().with_voluntary_commitment()
+    }
+
+    /// S23a — **private land tenure** (the HEADLINE): [`Self::frontier_endogenous_cultivation`]
+    /// expanded to the eight-household base, with the only new exit-cost mechanism being scarce,
+    /// losable, owner-exclusive grain land. Good-near plots and poor-far marginal plots replace the
+    /// grain commons at generation; claim is by first successful homesteading harvest, loss is by
+    /// idle forfeiture, and inheritance follows the household heir. S22b-f exit/capital/commitment
+    /// levers remain OFF in this headline.
+    pub fn frontier_private_land_tenure() -> Self {
+        let mut cfg = Self::frontier_endogenous_cultivation().expanded_endowment_roster();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.private_land_tenure = true;
+            chain.land_idle_limit = LAND_IDLE_LIMIT_DEFAULT;
+            chain.harvest_gate = true;
+            chain.forfeit_on_idle = true;
+            chain.reclaim_reserved_for_prior_owner = false;
+            chain.land_good_plots = LAND_GOOD_PLOTS_DEFAULT;
+            chain.land_marginal_plots = LAND_MARGINAL_PLOTS_DEFAULT;
+            chain.land_marginal_regen = LAND_MARGINAL_REGEN_DEFAULT;
+        }
+        cfg
     }
 
     /// Place the (single) FOOD node `distance` tiles east of the exchange,
@@ -5566,6 +5742,11 @@ struct Colonist {
     /// Serialized only under the gate (nested in the cultivation block), so a flag-off colonist block
     /// stays byte-identical. `0` off the voluntary-commitment path / for a never-renewed committer.
     commitment_renewals: u16,
+    /// S23a private land tenure: the grain plot this colonist is currently hauling from. Set by the
+    /// post-world-tick harvest event detector, kept through the GoDeposit trip and transfer retry,
+    /// and cleared only after both carried grain and pending grain transfer are gone. It steers idle
+    /// forfeiture, so it is serialized ON-only with the private-land gate.
+    carried_grain_source: Option<NodeId>,
 }
 
 /// A settlement of generated colonists driven over a real `world` + `econ`.
@@ -5810,6 +5991,34 @@ pub struct Settlement {
     /// no plow-holder dies with a living heir.
     cultivation_tool_inherited_total: u64,
     cultivation_tool_inheritor_ids: BTreeSet<AgentId>,
+    /// S23a: finite private-land registry, keyed by grain resource-node id. Ownership is metadata:
+    /// the node stock remains in the world conservation ledger. The registry steers harvest gating
+    /// and idle forfeiture, so it is serialized ON-only under private land tenure.
+    land_plots: BTreeMap<NodeId, LandPlotRecord>,
+    /// S23a runtime-only diagnostics used by the acceptance classifier and trace surface.
+    land_claims_total: u64,
+    land_idle_losses_total: u64,
+    /// Every rerouted harvest task (owner-gate denials AND single-targeter stampede losers) — a
+    /// throughput diagnostic only.
+    land_harvest_denials_total: u64,
+    /// The subset of the above that is a reroute off a plot already HELD by another live owner (or
+    /// reserved for one), rather than a single-targeter stampede loser on unowned land. NOTE: this
+    /// is ~always 0 by design — §3.5(b)'s reservation + §3.7 targeting (non-owners only ever target
+    /// *unowned* plots) resolve all contention while a plot is still unowned, so an agent never ends
+    /// up holding a task pointed at an owned-by-other plot. Kept as a diagnostic; the load-bearing
+    /// gate proof is [`Self::land_nonowner_harvest_of_owned_total`].
+    land_owner_gate_denials_total: u64,
+    /// Harvest events where a non-owner pulled grain from a plot HELD by another. Under the headline
+    /// (`harvest_gate` on) this is 0 — the pre-`world.tick` validation reroutes non-owners off owned
+    /// plots, so harvest is owner-exclusive. Under the `non_excludable_deed` control it is > 0. The
+    /// pair (headline == 0, control > 0) is the §4 non-vacuity proof that ownership actually gates
+    /// harvest, not merely records title.
+    land_nonowner_harvest_of_owned_total: u64,
+    land_reclaims_by_other_total: u64,
+    land_marginal_nonowner_claims_total: u64,
+    land_lapsed_reentry_worse_total: u64,
+    land_lapsed_losses: BTreeMap<AgentId, LandPlotQuality>,
+    land_lost_prior_owners: BTreeMap<NodeId, (AgentId, LandLossCause)>,
     econ_tick: u64,
     last_report: EconTickReport,
     /// The settlement **commons** (G4a real death): the conserved sink that holds a
@@ -6120,6 +6329,16 @@ struct ChainRuntime {
     commitment_term: u16,
     commitment_entry_floor: u64,
     commitment_fiat_pin: u16,
+    /// S23a: private land tenure gate + knobs (see [`ChainConfig`]). All inert unless the gate
+    /// composes on S22a endogenous cultivation entry.
+    private_land_tenure: bool,
+    land_idle_limit: u16,
+    harvest_gate: bool,
+    forfeit_on_idle: bool,
+    reclaim_reserved_for_prior_owner: bool,
+    land_good_plots: u16,
+    land_marginal_plots: u16,
+    land_marginal_regen: u32,
     /// S21h.0: the non-lineage woodcutters' consumed-only bread cushion (see
     /// [`ChainConfig::gatherer_food_cushion`]). `0` for every existing config; canonicalized
     /// ON-only (its differing gatherer starting stock already splits the digest).
@@ -6161,6 +6380,37 @@ struct ChainRuntime {
     tool_build_wood: u32,
     tool_build_labor: u32,
     capital_build_hunger_max: u16,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LandPlotRecord {
+    owner: Option<AgentId>,
+    idle_counter: u16,
+    reserved_for: Option<AgentId>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LandPlotQuality {
+    regen: u32,
+    cap: u32,
+    distance: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WorkedLandEvent {
+    agent: AgentId,
+    node: NodeId,
+    moved: u32,
+}
+
+/// S23a: why a plot last reverted to unowned. Kept on the runtime-only `land_lost_prior_owners`
+/// trail so the non-vacuity reclaim counter can demand the spec's exact mechanic — a plot
+/// *idle-lost* and then re-claimed by a different agent — rather than conflating it with a plot
+/// vacated by a heirless death.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LandLossCause {
+    Idle,
+    Death,
 }
 
 /// S7.2: one in-flight per-builder capital project (a BuildMill / BuildOven). The
@@ -6994,6 +7244,13 @@ impl Settlement {
         if config.cycle.is_some() || config.tender_bench.is_some() || config.tax.is_some() {
             return Self::generate_finance(seed, config);
         }
+        let effective_config;
+        let config = if config_private_land_tenure_active(config) {
+            effective_config = config.with_private_land_layout();
+            &effective_config
+        } else {
+            config
+        };
         assert!(
             config.gatherers == 0 || !config.nodes.is_empty(),
             "a config with gatherers must define at least one resource node to harvest"
@@ -7511,6 +7768,7 @@ impl Settlement {
                 cultivation_tenure: 0,
                 commitment_remaining: 0,
                 commitment_renewals: 0,
+                carried_grain_source: None,
             });
         }
 
@@ -7607,6 +7865,7 @@ impl Settlement {
                         cultivation_tenure: 0,
                         commitment_remaining: 0,
                         commitment_renewals: 0,
+                        carried_grain_source: None,
                     });
                 }
             }
@@ -7989,6 +8248,20 @@ impl Settlement {
                     || u64::from(chain.tool_build_labor) < max_savings_ladder_horizon(),
                 "per-agent capital requires tool_build_labor below the deepest savings horizon"
             );
+            if chain_config_private_land_tenure_active(chain) {
+                assert!(
+                    chain.land_idle_limit > 0,
+                    "private land tenure requires a positive land_idle_limit"
+                );
+                assert!(
+                    chain.land_good_plots > 0 || chain.land_marginal_plots > 0,
+                    "private land tenure requires at least one grain plot"
+                );
+                assert!(
+                    u32::from(chain.land_good_plots) + u32::from(chain.land_marginal_plots) < 64,
+                    "private land tenure layout must fit in the 64-wide strip"
+                );
+            }
             ChainRuntime {
                 content: chain.content.clone(),
                 throughput: chain.throughput,
@@ -8039,6 +8312,14 @@ impl Settlement {
                 commitment_term: chain.commitment_term,
                 commitment_entry_floor: chain.commitment_entry_floor,
                 commitment_fiat_pin: chain.commitment_fiat_pin,
+                private_land_tenure: chain.private_land_tenure,
+                land_idle_limit: chain.land_idle_limit,
+                harvest_gate: chain.harvest_gate,
+                forfeit_on_idle: chain.forfeit_on_idle,
+                reclaim_reserved_for_prior_owner: chain.reclaim_reserved_for_prior_owner,
+                land_good_plots: chain.land_good_plots,
+                land_marginal_plots: chain.land_marginal_plots,
+                land_marginal_regen: chain.land_marginal_regen,
                 gatherer_food_cushion: chain.gatherer_food_cushion,
                 emergency_hunger_threshold: chain.emergency_hunger_threshold,
                 retire_food_mints: chain.retire_food_mints,
@@ -8119,6 +8400,17 @@ impl Settlement {
             endowed_member_ids: Vec::new(),
             cultivation_tool_inherited_total: 0,
             cultivation_tool_inheritor_ids: BTreeSet::new(),
+            land_plots: BTreeMap::new(),
+            land_claims_total: 0,
+            land_idle_losses_total: 0,
+            land_harvest_denials_total: 0,
+            land_owner_gate_denials_total: 0,
+            land_nonowner_harvest_of_owned_total: 0,
+            land_reclaims_by_other_total: 0,
+            land_marginal_nonowner_claims_total: 0,
+            land_lapsed_reentry_worse_total: 0,
+            land_lapsed_losses: BTreeMap::new(),
+            land_lost_prior_owners: BTreeMap::new(),
             econ_tick: 0,
             last_report: EconTickReport::default(),
             commons_gold: Gold::ZERO,
@@ -8180,7 +8472,35 @@ impl Settlement {
         // + econ agents exist; the granted plows land in agent stock before the first `econ_tick`,
         // so they are part of the tick-0 whole-system baseline and conservation holds every tick.
         settlement.apply_endowed_cultivation_capital(seed, config);
+        settlement.init_private_land_tenure();
         settlement
+    }
+
+    fn init_private_land_tenure(&mut self) {
+        if !self.private_land_tenure_active() {
+            return;
+        }
+        let Some(grain) = self.chain.as_ref().map(|chain| chain.content.grain()) else {
+            return;
+        };
+        self.land_plots.clear();
+        for idx in 0..self.world.node_count() {
+            let node_id = NodeId(idx as u32);
+            if self
+                .world
+                .node(node_id)
+                .is_some_and(|node| node.good == grain)
+            {
+                self.land_plots.insert(
+                    node_id,
+                    LandPlotRecord {
+                        owner: None,
+                        idle_counter: 0,
+                        reserved_for: None,
+                    },
+                );
+            }
+        }
     }
 
     /// S22e: endow a MINORITY of lineage households with one durable cultivation tool (the plow) at
@@ -8401,6 +8721,17 @@ impl Settlement {
             endowed_member_ids: Vec::new(),
             cultivation_tool_inherited_total: 0,
             cultivation_tool_inheritor_ids: BTreeSet::new(),
+            land_plots: BTreeMap::new(),
+            land_claims_total: 0,
+            land_idle_losses_total: 0,
+            land_harvest_denials_total: 0,
+            land_owner_gate_denials_total: 0,
+            land_nonowner_harvest_of_owned_total: 0,
+            land_reclaims_by_other_total: 0,
+            land_marginal_nonowner_claims_total: 0,
+            land_lapsed_reentry_worse_total: 0,
+            land_lapsed_losses: BTreeMap::new(),
+            land_lost_prior_owners: BTreeMap::new(),
             econ_tick: 0,
             last_report: EconTickReport::default(),
             commons_gold: Gold::ZERO,
@@ -8494,7 +8825,10 @@ impl Settlement {
         // Runtime-only (never digested), so extending the gate touches no golden: maintained on
         // the active cultivation-skill path OR (S22c) the profit-driven-retention path, whose
         // skill-OFF headline still needs the per-agent grain-share monopolization probe.
-        if self.cultivation_skill_active() || self.profit_driven_retention_active() {
+        if self.cultivation_skill_active()
+            || self.profit_driven_retention_active()
+            || self.private_land_tenure_active()
+        {
             if let Some(grain) = self.cultivation_input_good() {
                 for (&(id, good), &qty) in &fast.deposited {
                     if good == grain {
@@ -8505,6 +8839,7 @@ impl Settlement {
         }
         self.record_pending_deposits(fast.deposited);
         report.transferred = self.transfer_pending_deposits();
+        self.refresh_private_land_carried_sources();
         // S18: accumulate the WOOD relocated node→econ this tick — the provenance bound for
         // traded WOOD (with every WOOD buffer + the mint zeroed, all WOOD enters here). A
         // no-op off the multi-good path; the counter is runtime-only (not digested).
@@ -9202,6 +9537,8 @@ impl Settlement {
 
         for _ in 0..FAST_TICKS_PER_ECON_TICK {
             self.assign_idle_gatherer_tasks();
+            self.private_land_validate_harvest_tasks();
+            let land_harvest_before = self.private_land_harvest_snapshot();
             if detect_forage {
                 let foraging_before: Vec<AgentId> = self
                     .live_colonist_slots
@@ -9221,6 +9558,9 @@ impl Settlement {
             } else {
                 self.world.tick();
             }
+            let worked_land = self.private_land_worked_events(&land_harvest_before);
+            self.private_land_apply_worked_events(&worked_land);
+            self.private_land_advance_idle_counters(&worked_land);
             for &slot in &self.live_colonist_slots {
                 let colonist = &self.colonists[slot];
                 if !Self::carry_is_forage_attributed(colonist)
@@ -9332,6 +9672,31 @@ impl Settlement {
         transferred
     }
 
+    fn refresh_private_land_carried_sources(&mut self) {
+        if !self.private_land_tenure_active() {
+            return;
+        }
+        let Some(grain) = self.chain.as_ref().map(|chain| chain.content.grain()) else {
+            return;
+        };
+        for &slot in &self.live_colonist_slots {
+            let id = self.colonists[slot].id;
+            if self.colonists[slot].carried_grain_source.is_none() {
+                continue;
+            }
+            let carry_empty = self.world.agent_carry(id, grain) == 0;
+            let pending_empty = self
+                .pending_deposits
+                .get(&(id, grain))
+                .copied()
+                .unwrap_or(0)
+                == 0;
+            if carry_empty && pending_empty {
+                self.colonists[slot].carried_grain_source = None;
+            }
+        }
+    }
+
     #[cfg(debug_assertions)]
     fn debug_assert_pending_matches_exchange(&self) {
         for &good in &self.goods {
@@ -9420,6 +9785,8 @@ impl Settlement {
         // it, so per-capita yield falls), then deposits — the real haul cycle. In the
         // S12 marker mode it forages (relocating nothing) and is credited a fixed yield.
         let commons = self.forage_commons_active();
+        let land_active = self.private_land_tenure_active();
+        let no_reserved_land = BTreeSet::new();
         for &slot in &self.live_colonist_slots {
             let colonist = &self.colonists[slot];
             let id = colonist.id;
@@ -9430,6 +9797,20 @@ impl Settlement {
             // `foraging`). Deposit any carry first (incl. FORAGE from a just-ended forage
             // spell), then GoHarvest the grain node so the cultivation phase has grain.
             if colonist.cultivating {
+                // S23a: under private land tenure the harvest target may resolve to `None` (the
+                // owned plot is depleted/reverted and no claimable plot has stock this tick). Deposit
+                // any carry FIRST, before the target lookup, so a `None` target can never strand the
+                // carry — which would also pin `carried_grain_source` and keep an idle plot alive.
+                // Gated on `land_active`, so every commons config keeps its byte-identical behaviour.
+                if land_active && self.world.agent_carry_total(id) > 0 {
+                    self.world.assign_task(id, Task::GoDeposit(self.exchange));
+                    continue;
+                }
+                let grain_node = if land_active {
+                    self.private_land_target_for_agent(id, &no_reserved_land)
+                } else {
+                    grain_node
+                };
                 if let Some(grain_node) = grain_node {
                     let task = if self.world.agent_carry_total(id) > 0 {
                         Task::GoDeposit(self.exchange)
@@ -9500,6 +9881,388 @@ impl Settlement {
                 Task::GoHarvest(node, self.carry_cap)
             };
             self.world.assign_task(id, task);
+        }
+    }
+
+    fn private_land_harvest_task_node(task: Task) -> Option<NodeId> {
+        match task {
+            Task::GoHarvest(node, _) | Task::GoHarvestWithRoom(node, _, _) => Some(node),
+            _ => None,
+        }
+    }
+
+    fn private_land_task_with_node(task: Task, node: NodeId) -> Task {
+        match task {
+            Task::GoHarvest(_, want) => Task::GoHarvest(node, want),
+            Task::GoHarvestWithRoom(_, want, room) => Task::GoHarvestWithRoom(node, want, room),
+            other => other,
+        }
+    }
+
+    fn private_land_plot_has_stock(&self, node: NodeId) -> bool {
+        self.world
+            .node(node)
+            .is_some_and(|plot| plot.stock > 0 && self.land_plots.contains_key(&node))
+    }
+
+    fn private_land_agent_distance(&self, agent: AgentId, node: NodeId) -> Option<u32> {
+        let from = self.world.agent_pos(agent)?;
+        let to = self.world.node(node)?.pos;
+        Some(self.world.grid_distance(from, to))
+    }
+
+    fn private_land_plot_quality(&self, node: NodeId) -> Option<LandPlotQuality> {
+        let plot = self.world.node(node)?;
+        let exchange = self.world.stockpile(self.exchange)?.pos;
+        Some(LandPlotQuality {
+            regen: plot.regen_per_tick,
+            cap: plot.cap,
+            distance: self.world.grid_distance(exchange, plot.pos),
+        })
+    }
+
+    fn private_land_viable_marginal_node(&self, node: NodeId) -> bool {
+        // §2a is a pure floor test (unowned + reachable + regen/cap ≥ floors). It is NOT pinned to
+        // the marginal-cap literal: a future cap sweep must keep working, and an unowned good plot
+        // legitimately counts as viable homesteadable land too. The shared consts can't drift.
+        self.private_land_plot_quality(node).is_some_and(|quality| {
+            quality.regen >= LAND_VIABLE_REGEN_FLOOR && quality.cap >= LAND_VIABLE_CAP_FLOOR
+        })
+    }
+
+    fn private_land_has_better_stayer(&self, agent: AgentId, quality: LandPlotQuality) -> bool {
+        self.land_plots.iter().any(|(&node, record)| {
+            record.owner.is_some_and(|owner| owner != agent)
+                && self.private_land_plot_quality(node).is_some_and(|other| {
+                    other.regen > quality.regen
+                        || other.cap > quality.cap
+                        || other.distance < quality.distance
+                })
+        })
+    }
+
+    fn private_land_live_agent(&self, agent: AgentId) -> bool {
+        self.colonist_slot_by_id
+            .get(&agent)
+            .is_some_and(|&slot| self.colonists[slot].alive)
+    }
+
+    fn private_land_target_for_agent(
+        &self,
+        agent: AgentId,
+        reserved_unowned: &BTreeSet<NodeId>,
+    ) -> Option<NodeId> {
+        if !self.private_land_tenure_active() {
+            return self.grain_node();
+        }
+        let harvest_gate = self.chain.as_ref().is_some_and(|chain| chain.harvest_gate);
+        let rank = |this: &Self, node: NodeId| {
+            this.private_land_agent_distance(agent, node)
+                .map(|distance| (distance, node.0))
+        };
+        if !harvest_gate {
+            return self
+                .land_plots
+                .keys()
+                .copied()
+                .filter(|&node| self.private_land_plot_has_stock(node))
+                .filter_map(|node| rank(self, node).map(|key| (key, node)))
+                .min_by_key(|(key, _)| *key)
+                .map(|(_, node)| node);
+        }
+
+        let own = self
+            .land_plots
+            .iter()
+            .filter(|&(&node, record)| {
+                self.private_land_plot_has_stock(node)
+                    && (record.owner == Some(agent) || record.reserved_for == Some(agent))
+            })
+            .filter_map(|(&node, _)| rank(self, node).map(|key| (key, node)))
+            .min_by_key(|(key, _)| *key)
+            .map(|(_, node)| node);
+        if own.is_some() {
+            return own;
+        }
+
+        self.land_plots
+            .iter()
+            .filter(|&(&node, record)| {
+                self.private_land_plot_has_stock(node)
+                    && record.owner.is_none()
+                    && record.reserved_for.is_none()
+                    && !reserved_unowned.contains(&node)
+            })
+            .filter_map(|(&node, _)| rank(self, node).map(|key| (key, node)))
+            .min_by_key(|(key, _)| *key)
+            .map(|(_, node)| node)
+    }
+
+    fn private_land_validate_harvest_tasks(&mut self) {
+        if !self.private_land_tenure_active()
+            || !self.chain.as_ref().is_some_and(|chain| chain.harvest_gate)
+        {
+            return;
+        }
+
+        let mut ids: Vec<AgentId> = self
+            .live_colonist_slots
+            .iter()
+            .map(|&slot| self.colonists[slot].id)
+            .collect();
+        ids.sort();
+
+        let mut invalid = Vec::new();
+        let mut targeters: BTreeMap<NodeId, Vec<(AgentId, Task)>> = BTreeMap::new();
+        for id in ids {
+            let Some(task) = self.world.agent_task(id) else {
+                continue;
+            };
+            let Some(node) = Self::private_land_harvest_task_node(task) else {
+                continue;
+            };
+            let Some(record) = self.land_plots.get(&node).copied() else {
+                continue;
+            };
+            let owned_by_other_live = record
+                .owner
+                .is_some_and(|owner| owner != id && self.private_land_live_agent(owner));
+            let reserved_by_other = record.reserved_for.is_some_and(|owner| owner != id);
+            if owned_by_other_live || reserved_by_other {
+                // A true exclusion: this agent is denied a plot held/reserved by another live owner.
+                // Counted separately from the stampede reroutes below so §4 non-vacuity can require
+                // ownership to actually gate harvest, not merely thin out unowned-plot contenders.
+                self.land_owner_gate_denials_total += 1;
+                invalid.push((id, task));
+            } else if record.owner.is_none() && record.reserved_for.is_none() {
+                targeters.entry(node).or_default().push((id, task));
+            }
+        }
+
+        let mut reserved = BTreeSet::new();
+        let mut reroute = invalid;
+        for (node, mut contenders) in targeters {
+            contenders.sort_by_key(|(id, _)| {
+                (
+                    self.private_land_agent_distance(*id, node)
+                        .unwrap_or(u32::MAX),
+                    id.0,
+                )
+            });
+            if !contenders.is_empty() {
+                reserved.insert(node);
+            }
+            for (id, task) in contenders.into_iter().skip(1) {
+                reroute.push((id, task));
+            }
+        }
+
+        reroute.sort_by_key(|(id, _)| id.0);
+        for (id, task) in reroute {
+            self.land_harvest_denials_total += 1;
+            if let Some(node) = self.private_land_target_for_agent(id, &reserved) {
+                if self
+                    .land_plots
+                    .get(&node)
+                    .is_some_and(|record| record.owner.is_none())
+                {
+                    reserved.insert(node);
+                }
+                self.world
+                    .assign_task(id, Self::private_land_task_with_node(task, node));
+            } else {
+                self.world.assign_task(id, Task::Idle);
+            }
+        }
+    }
+
+    fn private_land_harvest_snapshot(&self) -> Vec<(AgentId, Task, u32)> {
+        if !self.private_land_tenure_active() {
+            return Vec::new();
+        }
+        let Some(grain) = self.chain.as_ref().map(|chain| chain.content.grain()) else {
+            return Vec::new();
+        };
+        self.live_colonist_slots
+            .iter()
+            .filter_map(|&slot| {
+                let id = self.colonists[slot].id;
+                let task = self.world.agent_task(id)?;
+                let node = Self::private_land_harvest_task_node(task)?;
+                self.land_plots.contains_key(&node).then_some((
+                    id,
+                    task,
+                    self.world.agent_carry(id, grain),
+                ))
+            })
+            .collect()
+    }
+
+    fn private_land_worked_events(&self, before: &[(AgentId, Task, u32)]) -> Vec<WorkedLandEvent> {
+        if before.is_empty() {
+            return Vec::new();
+        }
+        let Some(grain) = self.chain.as_ref().map(|chain| chain.content.grain()) else {
+            return Vec::new();
+        };
+        before
+            .iter()
+            .filter_map(|&(agent, task, prev_carry)| {
+                let node = Self::private_land_harvest_task_node(task)?;
+                let now = self.world.agent_carry(agent, grain);
+                (now > prev_carry).then_some(WorkedLandEvent {
+                    agent,
+                    node,
+                    moved: now - prev_carry,
+                })
+            })
+            .collect()
+    }
+
+    fn private_land_apply_worked_events(&mut self, events: &[WorkedLandEvent]) {
+        if events.is_empty() || !self.private_land_tenure_active() {
+            return;
+        }
+        for event in events {
+            debug_assert!(event.moved > 0);
+            if let Some(&slot) = self.colonist_slot_by_id.get(&event.agent) {
+                if self.colonists[slot].alive {
+                    self.colonists[slot].carried_grain_source = Some(event.node);
+                }
+            }
+            let Some(record) = self.land_plots.get(&event.node).copied() else {
+                continue;
+            };
+            if let Some(owner) = record.owner {
+                if owner != event.agent {
+                    // A non-owner pulled grain from a plot HELD by another. Impossible under the
+                    // headline (validation reroutes non-owners off owned plots before world.tick);
+                    // > 0 only when `harvest_gate` is off — the load-bearing proof the gate bites.
+                    self.land_nonowner_harvest_of_owned_total += 1;
+                }
+                // Already owned (by this agent or another) — no (re)claim.
+                continue;
+            }
+            if record
+                .reserved_for
+                .is_some_and(|reserved| reserved != event.agent)
+            {
+                continue;
+            }
+
+            let was_non_owner = !self
+                .land_plots
+                .values()
+                .any(|record| record.owner == Some(event.agent));
+            let viable_marginal = self.private_land_viable_marginal_node(event.node);
+            let quality = self.private_land_plot_quality(event.node);
+            let lapsed_reentry_worse = quality.is_some_and(|q| {
+                self.land_lapsed_losses.contains_key(&event.agent)
+                    && self.private_land_has_better_stayer(event.agent, q)
+            });
+            let prior_lost = self.land_lost_prior_owners.remove(&event.node);
+
+            if let Some(record) = self.land_plots.get_mut(&event.node) {
+                record.owner = Some(event.agent);
+                record.idle_counter = 0;
+                record.reserved_for = None;
+            }
+            self.land_claims_total += 1;
+            // Non-vacuity wants the exact mechanic: a plot LOST ON IDLE then re-homesteaded by a
+            // DIFFERENT agent. A plot vacated by a heirless death (cause `Death`) is excluded — it
+            // is not the loss-on-idle the spec demands the mechanism demonstrate.
+            if let Some((prior, LandLossCause::Idle)) = prior_lost {
+                if prior != event.agent {
+                    self.land_reclaims_by_other_total += 1;
+                }
+            }
+            if was_non_owner && viable_marginal {
+                self.land_marginal_nonowner_claims_total += 1;
+            }
+            if lapsed_reentry_worse {
+                self.land_lapsed_reentry_worse_total += 1;
+                self.land_lapsed_losses.remove(&event.agent);
+            }
+        }
+    }
+
+    fn private_land_advance_idle_counters(&mut self, events: &[WorkedLandEvent]) {
+        if !self.private_land_tenure_active()
+            || !self
+                .chain
+                .as_ref()
+                .is_some_and(|chain| chain.forfeit_on_idle)
+        {
+            return;
+        }
+        let Some(limit) = self.chain.as_ref().map(|chain| chain.land_idle_limit) else {
+            return;
+        };
+        if limit == 0 {
+            return;
+        }
+
+        // Engagement is tracked per (node, agent): a plot's idle clock resets only when its OWN
+        // owner engages it. Under the `non_excludable_deed` control (harvest_gate = false) a
+        // non-owner may harvest/carry-from/target an owned plot, but that is NOT the owner tending
+        // their tenure, so it must not keep an absentee owner's plot alive (the forfeiture rule is
+        // owner engagement). Under the headline (harvest_gate on) non-owners are rerouted off owned
+        // plots, so only the owner ever appears here and this is behaviour-identical.
+        let mut engaged_by: BTreeMap<NodeId, BTreeSet<AgentId>> = BTreeMap::new();
+        for event in events {
+            engaged_by
+                .entry(event.node)
+                .or_default()
+                .insert(event.agent);
+        }
+        for &slot in &self.live_colonist_slots {
+            let colonist = &self.colonists[slot];
+            if let Some(node) = colonist.carried_grain_source {
+                engaged_by.entry(node).or_default().insert(colonist.id);
+            }
+            if let Some(task) = self.world.agent_task(colonist.id) {
+                if let Some(node) = Self::private_land_harvest_task_node(task) {
+                    engaged_by.entry(node).or_default().insert(colonist.id);
+                }
+            }
+        }
+
+        let reclaim_reserved = self
+            .chain
+            .as_ref()
+            .is_some_and(|chain| chain.reclaim_reserved_for_prior_owner);
+        let mut forfeits = Vec::new();
+        for (&node, record) in &mut self.land_plots {
+            let Some(owner) = record.owner else {
+                record.idle_counter = 0;
+                continue;
+            };
+            let owner_engaged = engaged_by
+                .get(&node)
+                .is_some_and(|agents| agents.contains(&owner));
+            if owner_engaged {
+                record.idle_counter = 0;
+                continue;
+            }
+            record.idle_counter = record.idle_counter.saturating_add(1);
+            if record.idle_counter >= limit {
+                forfeits.push((node, owner));
+            }
+        }
+
+        for (node, owner) in forfeits {
+            let quality = self.private_land_plot_quality(node);
+            if let Some(record) = self.land_plots.get_mut(&node) {
+                record.owner = None;
+                record.idle_counter = 0;
+                record.reserved_for = reclaim_reserved.then_some(owner);
+            }
+            self.land_idle_losses_total += 1;
+            self.land_lost_prior_owners
+                .insert(node, (owner, LandLossCause::Idle));
+            if let Some(quality) = quality {
+                self.land_lapsed_losses.insert(owner, quality);
+            }
         }
     }
 
@@ -9617,6 +10380,7 @@ impl Settlement {
     /// The dispatch keeps the no-demography path structurally unchanged, so the G4a
     /// suite and the conformance goldens are byte-identical.
     fn settle_death(&mut self, id: AgentId) -> bool {
+        self.transfer_private_land_on_death(id);
         if self.demography.is_some() {
             self.settle_estate_to_heirs(id)
         } else {
@@ -9949,6 +10713,75 @@ impl Settlement {
             .find(|&heir| self.society.agents.get(heir).is_some())
     }
 
+    fn private_land_heir_eligible(&self, heir: AgentId) -> bool {
+        let Some(slot) = self.slot_for_id(heir) else {
+            return false;
+        };
+        let colonist = &self.colonists[slot];
+        colonist.alive
+            && self.world.agent_status(heir).is_some()
+            && matches!(
+                colonist.vocation,
+                Vocation::Consumer | Vocation::Gatherer | Vocation::Unassigned
+            )
+    }
+
+    fn transfer_private_land_on_death(&mut self, dead: AgentId) {
+        if !self.private_land_tenure_active() {
+            return;
+        }
+        let mut dead_owners: BTreeSet<AgentId> = self
+            .land_plots
+            .values()
+            .filter_map(|record| record.owner)
+            .filter(|&owner| !self.private_land_live_agent(owner))
+            .collect();
+        dead_owners.insert(dead);
+        let heirs: BTreeMap<AgentId, Option<AgentId>> = dead_owners
+            .iter()
+            .map(|&owner| {
+                let heir = self
+                    .heir_for(owner)
+                    .filter(|&candidate| self.private_land_heir_eligible(candidate));
+                (owner, heir)
+            })
+            .collect();
+
+        let mut lost = Vec::new();
+        for (&node, record) in &mut self.land_plots {
+            if let Some(owner) = record.owner {
+                if let Some(&heir) = heirs.get(&owner) {
+                    record.owner = heir;
+                    record.idle_counter = 0;
+                    record.reserved_for = None;
+                    if heir.is_none() {
+                        lost.push((node, owner));
+                    }
+                }
+            }
+            if record
+                .reserved_for
+                .is_some_and(|owner| heirs.contains_key(&owner))
+            {
+                record.reserved_for = None;
+            }
+        }
+        for (node, owner) in lost {
+            // Tagged `Death` so the by-other reclaim counter never credits a heirless-death vacancy
+            // as the idle-loss mechanic. (A dead owner can never re-enter, so its lapsed-quality
+            // entry is inert — but it keeps the hysteresis trace's loss-set complete.)
+            self.land_lost_prior_owners
+                .insert(node, (owner, LandLossCause::Death));
+            if let Some(quality) = self.private_land_plot_quality(node) {
+                self.land_lapsed_losses.insert(owner, quality);
+            }
+        }
+        debug_assert!(
+            self.private_land_registry_invariant_holds(),
+            "private land registry must not retain a dead owner after death settlement"
+        );
+    }
+
     /// AGING + OLD-AGE DEATH (G4b): advance each living householder's age by one econ
     /// tick and remove any that reach their deterministic `lifespan` via the G4a
     /// removal path, settling the estate to a household heir. Returns the old-age
@@ -10241,6 +11074,7 @@ impl Settlement {
                 cultivation_tenure: 0,
                 commitment_remaining: 0,
                 commitment_renewals: 0,
+                carried_grain_source: None,
             });
             let child_slot = self.colonists.len() - 1;
             self.live_colonist_slots.push(child_slot);
@@ -13203,6 +14037,14 @@ impl Settlement {
             .is_some_and(chain_runtime_endogenous_cultivation_entry_active)
     }
 
+    /// S23a: whether private land tenure is active this tick. It composes strictly on S22a
+    /// endogenous cultivation entry, so flag-only misconfigurations on older substrates are inert.
+    fn private_land_tenure_active(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(chain_runtime_private_land_tenure_active)
+    }
+
     /// S22b: whether **bounded cultivation skill** is active this tick — the
     /// `cultivation_skill` flag is on AND the S22a endogenous-cultivation-entry path is active
     /// (it composes strictly on it). When this holds, the per-agent skill scalar accumulates/
@@ -14544,6 +15386,7 @@ impl Settlement {
         // committer's binding so no orphaned commitment lingers in the digest on a non-living agent.
         // `0` for every non-commitment colonist, so this is byte-identical off the path.
         self.colonists[slot].commitment_remaining = 0;
+        self.colonists[slot].carried_grain_source = None;
         if let Ok(index) = self.live_colonist_slots.binary_search(&slot) {
             self.live_colonist_slots.remove(index);
         }
@@ -15551,6 +16394,160 @@ impl Settlement {
                 .copied()
                 .unwrap_or(0)
         })
+    }
+
+    pub fn private_land_plot_count(&self) -> usize {
+        self.land_plots.len()
+    }
+
+    pub fn private_land_claims_total(&self) -> u64 {
+        self.land_claims_total
+    }
+
+    pub fn private_land_idle_losses_total(&self) -> u64 {
+        self.land_idle_losses_total
+    }
+
+    pub fn private_land_harvest_denials_total(&self) -> u64 {
+        self.land_harvest_denials_total
+    }
+
+    /// Reroutes off a plot already HELD by another (vs stampede losers on unowned land). ~Always 0
+    /// by design (see the field doc): contention is resolved while plots are still unowned. Kept as
+    /// a diagnostic; [`Self::private_land_nonowner_harvest_of_owned_total`] is the gate proof.
+    pub fn private_land_owner_gate_denials_total(&self) -> u64 {
+        self.land_owner_gate_denials_total
+    }
+
+    /// Harvests of a HELD plot by a non-owner. Zero under the headline (owner-exclusive harvest
+    /// holds) and positive only under the `non_excludable_deed` control. The §4 non-vacuity gate
+    /// reads this pair to prove ownership actually gates harvest rather than merely recording title.
+    pub fn private_land_nonowner_harvest_of_owned_total(&self) -> u64 {
+        self.land_nonowner_harvest_of_owned_total
+    }
+
+    pub fn private_land_reclaims_by_other_total(&self) -> u64 {
+        self.land_reclaims_by_other_total
+    }
+
+    pub fn private_land_marginal_nonowner_claims_total(&self) -> u64 {
+        self.land_marginal_nonowner_claims_total
+    }
+
+    pub fn private_land_lapsed_reentry_worse_total(&self) -> u64 {
+        self.land_lapsed_reentry_worse_total
+    }
+
+    pub fn private_land_owner_ids(&self) -> Vec<u64> {
+        self.land_plots
+            .values()
+            .filter_map(|record| record.owner.map(|owner| owner.0))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    pub fn private_land_viable_marginal_plots(&self) -> usize {
+        self.land_plots
+            .iter()
+            .filter(|&(&node, record)| {
+                record.owner.is_none()
+                    && record.reserved_for.is_none()
+                    && self.private_land_viable_marginal_node(node)
+            })
+            .count()
+    }
+
+    pub fn private_land_plot_summaries(&self) -> Vec<(u32, Option<u64>, u16, u32, u32, u32)> {
+        self.land_plots
+            .iter()
+            .filter_map(|(&node, record)| {
+                let quality = self.private_land_plot_quality(node)?;
+                Some((
+                    node.0,
+                    record.owner.map(|owner| owner.0),
+                    record.idle_counter,
+                    quality.regen,
+                    quality.cap,
+                    quality.distance,
+                ))
+            })
+            .collect()
+    }
+
+    pub fn private_land_owner_grain_share_bps(&self) -> u64 {
+        let owners: BTreeSet<AgentId> = self
+            .land_plots
+            .values()
+            .filter_map(|record| record.owner)
+            .collect();
+        let total: u64 = self.cultivation_grain_harvested.values().copied().sum();
+        if total == 0 {
+            return 0;
+        }
+        let owner_total: u64 = self
+            .cultivation_grain_harvested
+            .iter()
+            .filter(|(agent, _)| owners.contains(agent))
+            .map(|(_, qty)| *qty)
+            .sum();
+        owner_total.saturating_mul(10_000) / total
+    }
+
+    pub fn private_land_registry_invariant_holds(&self) -> bool {
+        if !self.private_land_tenure_active() {
+            return true;
+        }
+        let Some(grain) = self.chain.as_ref().map(|chain| chain.content.grain()) else {
+            return false;
+        };
+        for (&node, record) in &self.land_plots {
+            if !self.world.node(node).is_some_and(|plot| plot.good == grain) {
+                return false;
+            }
+            if record
+                .owner
+                .is_some_and(|owner| !self.private_land_live_agent(owner))
+            {
+                return false;
+            }
+            if record
+                .reserved_for
+                .is_some_and(|owner| !self.private_land_live_agent(owner))
+            {
+                return false;
+            }
+        }
+        let mut unowned_target_counts: BTreeMap<NodeId, usize> = BTreeMap::new();
+        for &slot in &self.live_colonist_slots {
+            let colonist = &self.colonists[slot];
+            if let Some(source) = colonist.carried_grain_source {
+                if !self.land_plots.contains_key(&source) {
+                    return false;
+                }
+                let carry = self.world.agent_carry(colonist.id, grain);
+                let pending = self
+                    .pending_deposits
+                    .get(&(colonist.id, grain))
+                    .copied()
+                    .unwrap_or(0);
+                if carry == 0 && pending == 0 {
+                    return false;
+                }
+            }
+            if let Some(task) = self.world.agent_task(colonist.id) {
+                if let Some(node) = Self::private_land_harvest_task_node(task) {
+                    if self
+                        .land_plots
+                        .get(&node)
+                        .is_some_and(|record| record.owner.is_none())
+                    {
+                        *unowned_target_counts.entry(node).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+        unowned_target_counts.values().all(|&count| count <= 1)
     }
 
     /// S22c: the colonist at generation `index`'s windowed realized cultivation-sale proceeds (the
@@ -17101,6 +18098,41 @@ impl Settlement {
                 out.extend_from_slice(&chain.commitment_entry_floor.to_le_bytes());
                 out.extend_from_slice(&chain.commitment_fiat_pin.to_le_bytes());
             }
+            // S23a: private land tenure changes the grain-harvest target set and access rights —
+            // a future-behaviour change for every cultivating agent. Emitted only when active
+            // (the same gated-block discipline as S16/S18/S21/S22a-f above) with the next free tag
+            // (`13`), the land knobs/layout, and the plot registry (owner + idle clock +
+            // reclaim reservation) that steers the next validation/forfeiture pass. Per-agent
+            // carried grain source is serialized in the colonist block below.
+            if self.private_land_tenure_active() {
+                out.push(13);
+                out.extend_from_slice(&chain.land_idle_limit.to_le_bytes());
+                out.push(u8::from(chain.harvest_gate));
+                out.push(u8::from(chain.forfeit_on_idle));
+                out.push(u8::from(chain.reclaim_reserved_for_prior_owner));
+                out.extend_from_slice(&chain.land_good_plots.to_le_bytes());
+                out.extend_from_slice(&chain.land_marginal_plots.to_le_bytes());
+                out.extend_from_slice(&chain.land_marginal_regen.to_le_bytes());
+                out.extend_from_slice(&(self.land_plots.len() as u32).to_le_bytes());
+                for (&node, record) in &self.land_plots {
+                    out.extend_from_slice(&node.0.to_le_bytes());
+                    match record.owner {
+                        Some(owner) => {
+                            out.push(1);
+                            out.extend_from_slice(&owner.0.to_le_bytes());
+                        }
+                        None => out.push(0),
+                    }
+                    out.extend_from_slice(&record.idle_counter.to_le_bytes());
+                    match record.reserved_for {
+                        Some(owner) => {
+                            out.push(1);
+                            out.extend_from_slice(&owner.0.to_le_bytes());
+                        }
+                        None => out.push(0),
+                    }
+                }
+            }
             // The staple mapping steers the next needs/scale phase for *any* chain,
             // role-choice or not, so it is included whenever a chain is active. The
             // G3b no-spread control shares the emergent config's physical state but
@@ -17483,6 +18515,10 @@ impl Settlement {
         // (which implies `cultivation_serialized`, so it nests inside the cultivation block below), so
         // every pre-S22f config keeps its per-colonist layout byte-identical.
         let commitment_serialized = self.voluntary_cultivation_commitment_active();
+        // S23a: carried grain source steers the next idle-forfeiture pass while a cultivator is
+        // hauling or awaiting transfer credit from a plot. Gate it with private land tenure, which
+        // implies the cultivation block is active.
+        let land_serialized = self.private_land_tenure_active();
         out.extend_from_slice(&(self.colonists.len() as u32).to_le_bytes());
         for colonist in &self.colonists {
             out.extend_from_slice(&colonist.id.0.to_le_bytes());
@@ -17593,6 +18629,15 @@ impl Settlement {
                 if commitment_serialized {
                     out.extend_from_slice(&colonist.commitment_remaining.to_le_bytes());
                     out.extend_from_slice(&colonist.commitment_renewals.to_le_bytes());
+                }
+                if land_serialized {
+                    match colonist.carried_grain_source {
+                        Some(node) => {
+                            out.push(1);
+                            out.extend_from_slice(&node.0.to_le_bytes());
+                        }
+                        None => out.push(0),
+                    }
                 }
             }
             if role_choice_active {
@@ -18073,6 +19118,25 @@ fn chain_config_own_use_cultivation_active(chain: &ChainConfig) -> bool {
         ) || chain.household_barter_cultivation)
 }
 
+fn chain_config_cultivation_sells_surplus_active(chain: &ChainConfig) -> bool {
+    chain.cultivation_sells_surplus && chain_config_own_use_cultivation_active(chain)
+}
+
+fn chain_config_endogenous_cultivation_entry_active(chain: &ChainConfig) -> bool {
+    chain.endogenous_cultivation_entry && chain_config_cultivation_sells_surplus_active(chain)
+}
+
+fn chain_config_private_land_tenure_active(chain: &ChainConfig) -> bool {
+    chain.private_land_tenure && chain_config_endogenous_cultivation_entry_active(chain)
+}
+
+fn config_private_land_tenure_active(config: &SettlementConfig) -> bool {
+    config
+        .chain
+        .as_ref()
+        .is_some_and(chain_config_private_land_tenure_active)
+}
+
 fn chain_runtime_own_labor_subsistence_can_run(chain: &ChainRuntime) -> bool {
     own_labor_subsistence_fields_active(
         chain.own_labor_subsistence,
@@ -18116,6 +19180,13 @@ fn chain_runtime_household_barter_cultivation_active(chain: &ChainRuntime) -> bo
 /// the eligibility relaxation never engages and the run is byte-identical.
 fn chain_runtime_endogenous_cultivation_entry_active(chain: &ChainRuntime) -> bool {
     chain.endogenous_cultivation_entry && chain_runtime_cultivation_sells_surplus_active(chain)
+}
+
+/// S23a: private land tenure is active iff the gate is on AND S22a endogenous cultivation
+/// entry is active. A manually toggled flag on an older substrate is inert and therefore
+/// preserves the older run byte-for-byte.
+fn chain_runtime_private_land_tenure_active(chain: &ChainRuntime) -> bool {
+    chain.private_land_tenure && chain_runtime_endogenous_cultivation_entry_active(chain)
 }
 
 /// S22b: bounded cultivation skill is active iff the flag is on AND the S22a
