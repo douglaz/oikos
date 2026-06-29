@@ -6,39 +6,55 @@ expanded `ROSTER_HOUSEHOLDS = 8` base; the other S22 exit-cost levers (skill, pr
 commitment) are **OFF** in the headline so land tenure is the only new exit-cost mechanism. Scoped by Codex
 ("Spec S23a as ResourceNode-owned spatial homesteading tenure …").
 
-**Status (impl): TAKE-1 = CAPACITY-CONFOUNDED DIAGNOSTIC — NOT merged, NOT the terminal S23a result.** The
-implementation is sound and landed on `feat/private-land-tenure-impl` (engine guards hold every run/cell —
-grain conserves, `bread_minted_max == 0`, registry invariant holds, provenance clean, no extinction; money
-survives; controls separate: property_off/non_excludable_deed/free_reclaim/no_forfeit → `TenureLeverInert`;
-suite 7/7; OFF the gate goldens byte-identical), and the two review semantic fixes landed (deposit carry
-before resolving the next land target; only the plot's OWN owner resets its idle clock). **But the verdict
-(`HardBarrier` across seeds {1,2,3} + the 36-cell sweep) is CONFOUNDED and must not be read as the S23a
-finding.** Every cell has `viable_marginal_min_final == 0` — open entry *never existed in the tested design
-space*: the colony has ~48 living agents but only ~12–24 total plots (`GOOD 2–6 + MARGINAL 8`), and the
-sweep varied `GOOD_PLOTS`/idle/gradient **but never the total/marginal land count**, so `HardBarrier` is
-nearly *forced by construction* (plots ≪ agents ⇒ entry cannot stay open) rather than an economic result.
-Land tenure also *induced far more agents to grab+hold land* than the spec's "~few simultaneous cultivators"
-premise assumed (owners 17–29% of ever-cultivators; claims 32–516), so 48 agents thrash over ~12 plots →
-title churn + mass denial + churn 4.9–29.6/cap vs commons ≈2.6. **What take-1 honestly shows:** a real
-*mechanism* signal — owner-exclusive **use-it-or-lose-it** tenure under heavy contention/scarcity produces
-title thrash and exclusion, not occupation — but it does NOT answer the intended S23a question (can scarce
-losable land yield bounded owner stickiness *with open marginal entry*), because the capacity that actually
-bound was never swept. (Codex review-of-results: "do not merge as terminal S23a; treat as a severe-scarcity
-HardBarrier diagnostic; re-run with a total-land axis.")
+**Status (impl): TAKE-2 LANDED (terminal S23a) — capacity confound removed; headline verdict
+`NoStickinessDespiteLand`, not `HardBarrier`, not SUCCESS.** The existing private-land engine remains unchanged
+in substance (plot registry, claim/harvest gate/idle forfeiture/inheritance, pre-`world.tick` single-targeter
+reservation, `carried_grain_source`, deterministic targeting, ordered classifier, controls, digest tag 13,
+hard guards). TAKE-2 changed only the experiment space: the default headline runs on a population-scaled land
+base (`total=48`, `good=4`, `marginal=44`), marginal plots are generated outward for any count, the 1-D strip
+width scales to the farthest plot, and the headline seed spine is `{3, 7, 11, 19, 23}`. **A Codex
+review-of-results P1 fix then corrected a verdict mislabel** (the classifier had routed "churn did not drop"
+to `CommonsEquivalent`, which by definition means "title is inert / behaves like commons" — but a cell with
+churn ~10× the commons baseline and owner share ~0.80 is exclusion biting *hard*, the opposite of inert). The
+classifier now reserves `CommonsEquivalent` for a genuine-inertness predicate (churn ≈ commons baseline AND
+owner share low) and routes the churn-didn't-drop case to `NoStickinessDespiteLand`; the suite is deterministic
+so the relabel needed only a re-run (no engine change).
 
-**TAKE-2 PLAN (the real S23a; Codex-scoped).** Re-run with a **total-land / marginal-plot-count axis scaled
-to the live population** so open entry is *possible* and the artifact separates from the mechanism:
-- Add a total-plots axis ≈ `{0.25×, 0.5×, 1×, 2×}` of living agents (e.g. total plots `{12, 24, 48, 96}`),
-  keeping `GOOD_PLOTS ∈ {2, 4, 6, 16}` as the scarce-good-land axis; **scale the 1-D grid width with the plot
-  count** so large-land cells aren't accidentally impossible (the strip full).
-- Headline seeds = the **arc spine `{3, 7, 11, 19, 23}`** (take-1's `{1,2,3}` is fine only as a quick
-  diagnostic); 3-seed cross-cells acceptable for the big maps if runtime is high.
-- Keep `viable_marginal_min_final` + observed non-owner marginal claim+production as hard classifier inputs.
-  This separates: **too-few-plots artifact** (HardBarrier vanishes once total plots scale) / **real
-  over-exclusion** (HardBarrier persists even with viable margin ≈1–2× population) / **success window**
-  (bounded owners + surviving buyers + persistent cohort) / **open-but-monopoly** (margin exists, owners still
-  damage buyers). If HardBarrier persists with adequate land, *then* the use-it-or-lose-it forfeiture is the
-  finding and the tenure model should be redesigned (S23a').
+**TAKE-2 landed verdict map (corrected).** On the headline cell (`total=48`, `good=4`, `idle=12`, marginal
+regen `12`, 300-tick acceptance horizon, 200-tick final window), all five headline seeds classify
+**`NoStickinessDespiteLand`**: `{3, 7, 11, 19, 23} → NoStickinessDespiteLand`. Open entry is no longer
+impossible by construction — `viable_marginal_min_final` is `6–7`, observed marginal non-owner claims occur,
+buyers survive (`10–13`) and buy materially (`769–830`), money promotes, provenance/conservation/registry
+guards hold, and the mechanism is non-vacuous (`claims=137–141`, `idle_losses=95–102`,
+`reclaims_by_other=85–91`). But it is **emphatically not sticky and not inert**: churn *explodes* to
+`26.6–27.2` per ever-cultivator vs the matched non-excludable commons baseline `2.61–2.64` (~10×), owner share
+is high (`0.75–0.80`), and `persist_owner` ≈ 21 ids churn through ownership without a stable bounded-minority
+cohort. The honest reading: owner-exclusive **use-it-or-lose-it forfeiture under contention THRASHES** —
+plots are claimed → lost-on-idle → reclaimed-by-another in rapid succession — which *raises* churn far above
+the commons rather than stabilizing an occupation.
+
+**Capacity-axis map (confound resolution).** The diagnostic grid covers total plots `{12, 24, 48, 96}`, good
+plots `{2, 4, 6, 16}` (skipping the invalid `total=12, good=16`), idle `{6, 12, 24, 48}`, marginal regen
+`{6, 12, 24}`; the wide map is pathfinding-heavy, so the always-on suite prints a seed-3, 20-tick diagnostic
+grid while the headline/controls use the 300-tick horizon (the 20-tick grid is a DIAGNOSTIC for the
+confound-resolution claim, not a robustness claim — the 5-seed/300-tick headline carries the verdict). Counts
+by total (post-relabel): `12 → HardBarrier/TenureLeverInert`; `24 → HardBarrier/TenureLeverInert`;
+`48 → NoStickinessDespiteLand (the former CommonsEquivalent cells) + some HardBarrier (poorest land) + Inert +
+2 LandMonopolyCull`; `96 → NoStickinessDespiteLand + HardBarrier (only at marginal regen 6, at/below the
+viability floor)`. **The key separation: `HardBarrier` vanishes in adequate-land cells once viable marginal
+plots exist (regen 12/24 at total 48/96), confirming the TAKE-1 HardBarrier was a too-few/too-poor-plots
+ARTIFACT.** No success window appears anywhere. Controls on the population-scaled base do not reproduce
+stickiness (`property_off`/`non_excludable_deed`/`free_reclaim`/`no_forfeit` → `TenureLeverInert`;
+`abundant_good_land` → `NoStickinessDespiteLand`).
+
+**Honest S23a finding (Codex review-of-results: PASS after the relabel).** With the capacity confound removed,
+**private land tenure as an owner-exclusive use-it-or-lose-it spatial mechanism does NOT stabilize occupation
+— even with adequate land and open entry it THRASHES** (rapid claim/forfeit/reclaim, churn ~10× commons, no
+persistent owner cohort). This contrasts cleanly with S22f: a *binding voluntary fixed-term commitment*
+stabilized a core, whereas this *involuntary forfeiture* property rule destabilizes. Lesson: the
+exit-cost INSTITUTION'S DESIGN matters — a voluntary fixed term locks in; use-it-or-lose-it land thrashes. A
+different tenure model (e.g. non-forfeiting title, or a money land-market capitalizing rent) is deferred to a
+separate milestone (S23b).
 
 ## 0. One-paragraph summary
 

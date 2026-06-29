@@ -218,15 +218,19 @@ const COMMITMENT_FIAT_PIN_DEFAULT: u16 = 6;
 /// consecutive fast ticks with no owner engagement (no harvest task, no pending carried grain from
 /// that plot, and no harvest event this tick).
 const LAND_IDLE_LIMIT_DEFAULT: u16 = 12;
+const LAND_TOTAL_PLOTS_DEFAULT: u16 = 48;
 const LAND_GOOD_PLOTS_DEFAULT: u16 = 4;
-const LAND_MARGINAL_PLOTS_DEFAULT: u16 = 8;
+const LAND_MARGINAL_PLOTS_DEFAULT: u16 = LAND_TOTAL_PLOTS_DEFAULT - LAND_GOOD_PLOTS_DEFAULT;
 const LAND_GOOD_REGEN: u32 = 64;
 const LAND_GOOD_CAP: u32 = 8_000;
 const LAND_MARGINAL_REGEN_DEFAULT: u32 = 12;
 const LAND_MARGINAL_CAP: u32 = 1_000;
 const LAND_GOOD_START_X: u16 = 2;
-const LAND_MARGINAL_XS: [u16; LAND_MARGINAL_PLOTS_DEFAULT as usize] =
-    [12, 18, 24, 30, 36, 42, 48, 54];
+const LAND_MARGINAL_START_X: u32 = 12;
+const LAND_MARGINAL_SPACING: u32 = 6;
+const LAND_GOOD_TO_MARGINAL_GAP: u32 = 4;
+const LAND_LAYOUT_MIN_WIDTH: u16 = 64;
+const LAND_LAYOUT_MARGIN: u32 = 10;
 
 /// S23a viability floors (§2a `VIABLE_MARGINAL`): a grain plot counts as viable, homesteadable
 /// land only when its `regen`/`cap` clear these floors (a plot that yields ~nothing does not
@@ -235,6 +239,38 @@ const LAND_MARGINAL_XS: [u16; LAND_MARGINAL_PLOTS_DEFAULT as usize] =
 /// to the marginal-cap literal (which a future cap sweep would otherwise break).
 pub const LAND_VIABLE_REGEN_FLOOR: u32 = 8;
 pub const LAND_VIABLE_CAP_FLOOR: u32 = 256;
+
+fn private_land_marginal_start_x(good_plots: u16) -> u32 {
+    let after_good =
+        u32::from(LAND_GOOD_START_X) + u32::from(good_plots) + LAND_GOOD_TO_MARGINAL_GAP;
+    LAND_MARGINAL_START_X.max(after_good)
+}
+
+fn private_land_marginal_x(good_plots: u16, marginal_index: u16) -> Option<u16> {
+    let x = private_land_marginal_start_x(good_plots)
+        .checked_add(LAND_MARGINAL_SPACING.checked_mul(u32::from(marginal_index))?)?;
+    u16::try_from(x).ok()
+}
+
+fn private_land_layout_width(good_plots: u16, marginal_plots: u16) -> Option<u16> {
+    let last_good_x = if good_plots > 0 {
+        u32::from(LAND_GOOD_START_X) + u32::from(good_plots) - 1
+    } else {
+        0
+    };
+    let last_marginal_x = if marginal_plots > 0 {
+        u32::from(private_land_marginal_x(good_plots, marginal_plots - 1)?)
+    } else {
+        0
+    };
+    let farthest_plot_x = last_good_x.max(last_marginal_x);
+    let width = u32::from(LAND_LAYOUT_MIN_WIDTH).max(
+        farthest_plot_x
+            .checked_add(LAND_LAYOUT_MARGIN)?
+            .checked_add(1)?,
+    );
+    u16::try_from(width).ok()
+}
 
 /// Econ ticks per settlement "year" — the horizon unit the smoke test counts in.
 /// A placeholder cadence, not a balance figure.
@@ -4911,35 +4947,36 @@ impl SettlementConfig {
             return;
         };
         let grain = chain.content.grain();
-        self.width = 64;
+        self.width = private_land_layout_width(chain.land_good_plots, chain.land_marginal_plots)
+            .expect("private land layout exceeds the maximum grid width");
         self.height = 1;
         self.exchange = Pos::new(0, 0);
 
         let mut used_x = BTreeSet::new();
         used_x.insert(0u16);
+        let width = self.width;
         let place_x = |preferred: u16, used_x: &mut BTreeSet<u16>| -> u16 {
-            if preferred < 64 && !used_x.contains(&preferred) {
+            if preferred < width && !used_x.contains(&preferred) {
                 used_x.insert(preferred);
                 return preferred;
             }
-            for x in 1..64u16 {
+            for x in 1..width {
                 if !used_x.contains(&x) {
                     used_x.insert(x);
                     return x;
                 }
             }
-            panic!("private land layout requires fewer than 64 occupied x positions");
+            panic!("private land layout requires fewer occupied x positions than grid tiles");
         };
 
-        // Good plots are placed first at the near `x ∈ {2, 3, …}` band, then marginal plots at
-        // their predeclared far xs (repacked by `place_x` if a slot is taken). NOTE: the
-        // `abundant_good_land` control (`land_good_plots = 16`) makes the good band overrun the
-        // marginal preferred xs ({12, 18, …}), so `place_x` repacks the displaced marginal plots
-        // into the first free low xs (even `x = 1`). The exact geometry is then unintended, but the
-        // control only needs good land to be non-scarce — which holds — so this is acceptable.
+        // Good plots occupy the near band; marginal plots are generated outward at fixed spacing.
+        // The grid width above is derived from the farthest generated plot plus a margin, so large
+        // land-count cells remain actual open-entry tests rather than strip-cap artifacts.
         let mut nodes = Vec::new();
         for i in 0..chain.land_good_plots {
-            let x = place_x(LAND_GOOD_START_X.saturating_add(i), &mut used_x);
+            let preferred = u16::try_from(u32::from(LAND_GOOD_START_X) + u32::from(i))
+                .expect("private land good plot exceeds the maximum grid width");
+            let x = place_x(preferred, &mut used_x);
             nodes.push(NodeSpec {
                 good: grain,
                 pos: Pos::new(x, 0),
@@ -4949,13 +4986,8 @@ impl SettlementConfig {
             });
         }
         for i in 0..chain.land_marginal_plots {
-            let preferred = LAND_MARGINAL_XS
-                .get(usize::from(i))
-                .copied()
-                .unwrap_or_else(|| {
-                    LAND_MARGINAL_XS[LAND_MARGINAL_XS.len() - 1]
-                        .saturating_add(6u16.saturating_mul(i + 1 - LAND_MARGINAL_PLOTS_DEFAULT))
-                });
+            let preferred = private_land_marginal_x(chain.land_good_plots, i)
+                .expect("private land marginal plot exceeds the maximum grid width");
             let x = place_x(preferred, &mut used_x);
             nodes.push(NodeSpec {
                 good: grain,
@@ -4968,13 +5000,13 @@ impl SettlementConfig {
 
         for original in self.nodes.iter().copied().filter(|node| node.good != grain) {
             let x = if original.pos.y == 0
-                && original.pos.x < 64
+                && original.pos.x < width
                 && !used_x.contains(&original.pos.x)
             {
                 used_x.insert(original.pos.x);
                 original.pos.x
             } else {
-                place_x(original.pos.x.min(63), &mut used_x)
+                place_x(original.pos.x.min(width.saturating_sub(1)), &mut used_x)
             };
             nodes.push(NodeSpec {
                 pos: Pos::new(x, 0),
@@ -8258,8 +8290,9 @@ impl Settlement {
                     "private land tenure requires at least one grain plot"
                 );
                 assert!(
-                    u32::from(chain.land_good_plots) + u32::from(chain.land_marginal_plots) < 64,
-                    "private land tenure layout must fit in the 64-wide strip"
+                    private_land_layout_width(chain.land_good_plots, chain.land_marginal_plots)
+                        .is_some(),
+                    "private land tenure layout must fit in the generated 1-D strip"
                 );
             }
             ChainRuntime {
@@ -16398,6 +16431,10 @@ impl Settlement {
 
     pub fn private_land_plot_count(&self) -> usize {
         self.land_plots.len()
+    }
+
+    pub fn private_land_grid_width(&self) -> u16 {
+        self.world.grid().width()
     }
 
     pub fn private_land_claims_total(&self) -> u64 {
