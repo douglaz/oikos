@@ -1,6 +1,6 @@
 # impl-40 — S23b: Post-Money Alienable Land Market (does illiquid priced land + budget hysteresis stabilize an occupation?)
 
-Status (spec): DRAFT — pending Codex spec-review. Base: master `be2febb` (S23a landed). Second slice of the
+Status (spec): REVISED per Codex spec-review round 1 (5 P1 + 3 P2 folded in, §7); pending confirmation. Base: master `be2febb` (S23a landed). Second slice of the
 **S23 private-property arc**. Composes on S23a (`private_land_tenure`) → S22a (`endogenous_cultivation_entry`)
 on the population-scaled land base; the other S22 exit-cost levers (skill, profit-stay, capital, commitment)
 are **OFF** in the headline so the land market is the only new exit-cost mechanism. Codex-scoped ("spec S23b —
@@ -70,8 +70,11 @@ illiquid-priced-scarce-alienable land (controls), not a fiat pin or a tuned pric
    prices that **track realized plot rent** (good plots trade dearer than marginal; price is not a constant),
    and ≥1 lapsed seller is later **priced out** of re-buying comparable land (the budget-hysteresis trace).
 3. **Churn falls materially** — per-ever-cultivating churn ≤ `CHURN_DROP` (0.5) × the matched baseline.
-4. **A persistent owner-cultivator cohort forms** — ≥ `PERSIST_COHORT` (4) distinct ids cultivate ≥
-   `PERSIST_FRACTION` (0.5) of the final window **and are the plot-owners**.
+4. **A persistent, MARKET-stabilized owner-cultivator cohort forms** — ≥ `PERSIST_COHORT` (4) distinct ids
+   cultivate ≥ `PERSIST_FRACTION` (0.5) of the final window **and are the plot-owners**, **and each has
+   market-relevant title history** (bought its plot, or retained it through priced-out re-entry pressure, or
+   paid carrying costs through the final window — NOT merely an original homesteader/heir sitting on title;
+   §3.7). The title-share breakdown `{original-claim, inherited, bought, foreclosed-out}` is reported.
 5. **Bounded MINORITY ownership, open market** — owner share ≤ `OWNER_SHARE_MAX` (0.6); the market is liquid
    enough that non-owners *can* buy (trades occur) but illiquid/expensive enough that re-entry binds. Neither
    universal ownership (`HardBarrier`) nor a frictionless flip market (`LiquidChurn`).
@@ -80,76 +83,121 @@ illiquid-priced-scarce-alienable land (controls), not a fiat pin or a tuned pric
 7. **Money survives** — SALT remains money; food materially bought after promotion.
 8. **Provenance clean** — sold/pre-promotion bread is `SelfProduced`; `seeded_minted == 0`. SALT paid for
    land is a transfer between agents (no mint); conservation + the plot-registry + SALT accounting hold.
-9. **NOT downgraded by the controls (§4)** — free-rebuy/zero-price, non-excludable-title, no-carrying-cost,
-   land-market-off, pre-money-forbidden each fail to reproduce the stickiness; the price-cap sensitivity shows
-   the result is not a tuned price constant.
+9. **NOT downgraded by the controls (§4)** — free-rebuy/zero-price, non-excludable-title, abundant-good-land,
+   land-market-off, pre-money-forbidden each fail to reproduce the stickiness; the price-cap sensitivity holds
+   at ≥1 adjacent cap value (not a tuned constant → not `TunedPriceDiagnostic`). (no-carrying-cost is a
+   reported sensitivity, not a gate.)
 
 **Finding modes (pre-named; first-class; verdict prints, does NOT assert SUCCESS):**
 - `LandMarketInert` (precondition fail) — titles trade rarely / prices don't bind behaviour (no real market).
 - `MoneyFailureFromLandMarket` — the land-market machinery disrupts the money bootstrap; SALT fails/demonetizes.
 - `ConservationBroken` / `extinct` — any conservation / registry / SALT-accounting break, or colony death.
-- `LiquidChurn` — land trades frequently but no persistent cohort forms (the market is *too* liquid; re-entry
-  doesn't bind — budget hysteresis absent).
-- `LandMonopolyCull` — owners concentrate land (owner grain/land share ≥ `MONO_SHARE` = 0.75) AND the buyer
-  cohort collapses.
-- `HardBarrier` — re-entry becomes impossible for too many agents (no affordable land; near-universal owner
-  share or a closed market).
-- `NoStickinessDespiteLandMarket` — the market bites (trades, prices track rent, some hysteresis) but churn
-  stays > the bar AND no persistent owner cohort.
-- `LandMarketStickySuccess` — all nine success clauses, not downgraded.
+- `LiquidChurn` — `land_trades ≥ LIQUID_CHURN_TRADES` (high turnover) AND churn > `CHURN_DROP × baseline`
+  AND no persistent cohort (the market is *too* liquid; re-entry doesn't bind — budget hysteresis absent).
+- `LandMonopolyCull` — owner land/grain share ≥ `MONO_SHARE` (0.75) AND the buyer cohort collapses
+  (`final_buyer_cohort < MIN_BUYER_COHORT` / post-promo bought < `MATERIAL_BOUGHT_FLOOR`).
+- `HardBarrier` — re-entry impossible for non-owners: `affordable_listed_plots_for_nonowners == 0` through the
+  final window (no plot any eligible non-owner can afford), OR owner share → universal — and the buyer cohort
+  cannot access land at all.
+- `NoStickinessDespiteLandMarket` — the market bites (trades clear, prices track rent, some priced-out
+  hysteresis) but churn stays > the bar AND no persistent market-stabilized cohort.
+- `TunedPriceDiagnostic` — SUCCESS-like at exactly one `land_price_cap_factor` but not at any adjacent swept
+  value (the result is a tuned price constant, not a robust finding). Never a headline success.
+- `LandMarketStickySuccess` — all nine success clauses, not downgraded, and robust across ≥1 adjacent cap value.
+
+**Pinned thresholds (predeclared consts; do NOT fit):** `MIN_LAND_TRADES = 8` (post-promotion, for
+non-vacuity), `LIQUID_CHURN_TRADES = 200`, `MONO_SHARE = 0.75` (bps 7500), `OWNER_SHARE_MAX = 0.6`,
+`MIN_BUYER_COHORT = 2`, `MATERIAL_BOUGHT_FLOOR` (shared), price↔rent endogeneity = a **strictly positive**
+rank relationship (good-plot mean price > marginal-plot mean price by ≥ `PRICE_RENT_GAP_BPS = 2000`), and
+`priced_out` per §3.6.
 
 **Ordered classifier (top-down, first-match-wins):** `LandMarketInert` → `MoneyFailureFromLandMarket` →
-`ConservationBroken`/`extinct` → `HardBarrier` → `LandMonopolyCull` → `LiquidChurn` → **then the explicit
-final gate:** `if ALL NINE success clauses pass { LandMarketStickySuccess } else
+`ConservationBroken`/`extinct` → `HardBarrier` → `LandMonopolyCull` → `LiquidChurn` → `TunedPriceDiagnostic`
+→ **then the explicit final gate:** `if ALL NINE success clauses pass { LandMarketStickySuccess } else
 { NoStickinessDespiteLandMarket }`. Predeclare every threshold as a `const`; do NOT fit.
 
 ## 3. Engine design (additive, default-off, conservation-safe)
 
-1. **NEW default-off flag** `ChainConfig::land_market: bool` + fields: `land_carrying_cost` (per-period SALT
-   maintenance/tax on a held plot), `land_price_cap_factor` (the capitalization factor turning realized rent
-   into a price — a discount-rate analogue, NOT a price level), and the control toggles (§4). Helper
-   `land_market_active(&self)` = flag on AND `private_land_tenure_active()`. Canonicalize ON-only with the
-   **next free flag-digest tag (14** unless master advanced) + these fields + the per-agent/per-plot market
-   state that steers behaviour. Off ⇒ byte-identical.
+1. **NEW default-off flag** `ChainConfig::land_market: bool` + pinned fields/consts:
+   `land_carrying_cost: u64` (SALT per `LAND_CARRYING_PERIOD` econ ticks on a held plot), `LAND_CARRYING_PERIOD`
+   (default 12), `land_price_cap_factor: u64` (rent→price capitalization, a discount-rate analogue), the rent
+   window `LAND_RENT_WINDOW` (default `ROLLING_WINDOW`=100), `LAND_MIN_RENT_HISTORY` (default 8 ticks of
+   realized yield before realized rent replaces the quality prior), `LAND_SALE_HISTORY_WEIGHT` (default 0.5),
+   `LAND_SALE_HISTORY_K` (nearest-K plots for the local blend, default 3), `LAND_LIST_IDLE` (idle econ ticks
+   before an owner auto-lists, default `LAND_CARRYING_PERIOD`), `LAND_FORECLOSE_DISCOUNT_BPS` (default 2000),
+   `LAND_PRICE_MIN`=1, plus the control toggles (§4). Helper `land_market_active(&self)` = flag on AND
+   `private_land_tenure_active()`. Canonicalize ON-only with the **next free flag-digest tag (14** unless master
+   advanced) + these fields + the per-plot market state (price, listing, last-sale) + per-agent SALT that steers
+   behaviour. Off ⇒ byte-identical.
 
-2. **Post-promotion activation gate (Codex — bootstrap-safe).** The land market is INERT until
-   `current_money_good() == Some(SALT)`. Pre-money: S23a homesteading/open plot use is **unchanged** (plots
-   claimed by labor, `SelfProduced` bread barters, SALT promotes). Land buying/selling/carrying-cost all begin
-   only post-promotion. (`pre_money_land_market_forbidden` control asserts no land trade before promotion.)
+2. **Idle-forfeiture OFF from tick 0 (Codex P1.3 — resolves the contradiction).** Under `land_market`, S23a's
+   `forfeit_on_idle` is **disabled from tick 0** (NOT only post-money), so the pre-money phase is *claim +
+   owner-exclusive harvest, no forfeiture* — homesteading/`SelfProduced` barter still bootstraps SALT, but the
+   pre-money phase does NOT inherit S23a's thrash. The land *market* (buy/sell/carrying-cost/foreclosure)
+   activates **only post-promotion** (`current_money_good() == Some(SALT)`); a `pre_money_forbidden` control
+   asserts zero land trades/charges before promotion.
 
-3. **Endogenous price (THE anti-fiat crux, Codex).** A plot's price is **capitalized realized rent**:
-   `price(plot) = land_price_cap_factor × recent_realized_yield(plot)` where `recent_realized_yield` is the
-   plot's own grain harvested over a rolling window (its rent proxy), blended with its **local sale history**
-   (the last cleared price for nearby plots). Good (high-regen) plots therefore price dearer than marginal
-   ones, and the price LEVEL is set by realized productivity, **not** a constant. A **seller's ask** = the
-   capitalized rent of its plot; a **buyer's bid** = its own capitalized expected rent (what the plot would
-   yield it) bounded by its SALT on hand. Trades clear **pairwise** (bid ≥ ask) at the midpoint (or ask),
-   SALT transferred buyer→seller, title transferred seller→buyer — a conserved transfer, no mint. (The
-   `price_cap_sensitivity` control sweeps `land_price_cap_factor` to show the result is not a tuned constant;
-   a fixed-nominal-price variant, if needed for a first slice, is classified DIAGNOSTIC, not headline.)
+3. **Endogenous price (THE anti-fiat crux, Codex P1.1 — fully pinned).**
+   `rent(plot)` = the plot's **rolling realized grain yield** (grain actually harvested from it) over
+   `LAND_RENT_WINDOW`, per period; until the plot has ≥ `LAND_MIN_RENT_HISTORY` realized-yield ticks, use a
+   **quality prior** `prior(plot) = f(regen, cap, distance)` (e.g. `regen × cap_weight / (1 + distance)`),
+   then switch to realized rent. `base_price(plot) = land_price_cap_factor × rent(plot)`. The **listed price**
+   blends in **local sale history**: `price = round((1 − w)·base_price + w·mean_last_sale(nearest
+   LAND_SALE_HISTORY_K plots))` with `w = LAND_SALE_HISTORY_WEIGHT` (0 if no local sales yet), clamped to
+   `[LAND_PRICE_MIN, base_price × 4]`. Good (high-regen) plots therefore price strictly dearer than marginal
+   ones and the price **level scales with realized productivity** — `land_price_cap_factor` is a slope, not a
+   level. **Anti-tuning bar:** a SUCCESS must hold at the shipped `land_price_cap_factor` AND ≥1 adjacent
+   swept value; if it holds at only one cap value → `TunedPriceDiagnostic`, not a headline success.
 
-4. **Carrying cost + the exit cost = SELL or LAPSE (replaces idle-forfeiture).** Under the market, S23a's
-   idle-forfeiture is OFF; instead a held plot incurs `land_carrying_cost` SALT per period (booked as a
-   transfer to the commons/exchange, conserved). An owner that **leaves cultivation** may **sell** its plot
-   (list an ask; recover SALT) or keep paying the carrying cost; an owner that **cannot pay** the carrying
-   cost has its plot **force-sold/foreclosed** (listed at a discounted ask). Leaving therefore converts the
-   plot back to SALT (minus market loss), not a free re-grab.
+4. **Deterministic listing / bidding / matching (Codex P1.2 + P2.3 — the institution).**
+   - **List (seller):** an owner lists its plot (ask = its `price`) iff post-money AND (it has not worked the
+     plot for `LAND_LIST_IDLE` ticks **or** it cannot pay this period's carrying cost). At most one live ask
+     per plot; one owner per plot.
+   - **Bid (buyer):** an eligible buyer is a **non-owner, S22a-eligible, alive, post-money** agent that is
+     cultivating-or-attempting and holds SALT; it bids on the **nearest** listed plot whose `price ≤ its SALT`,
+     `bid = min(SALT, land_price_cap_factor × its_expected_rent(plot))`. One live bid per agent; an agent that
+     already owns a plot does not bid (one-plot-per-agent).
+   - **Match:** a single **deterministic sorted global sweep** (by `(plot price, plot node_id)`, then bidders
+     by `(−bid, agent_id)`), **pairwise** (one buyer ↔ one seller ↔ one plot), clearing when `bid ≥ ask` at
+     the **ask** price. SALT transfers buyer→seller; title transfers seller→buyer. NO multilateral/ring
+     clearing. Reservations recomputed each sweep (no extra digest surface).
 
-5. **Budget hysteresis (the stabilizer).** Re-entry requires **buying** a plot at the market price. A lapsed
-   farmer that sold its plot and spent the SALT on food has too little SALT to re-buy comparable land → it is
-   priced out (must save up, or take only cheap marginal land if affordable). This is the mechanical exit cost
-   — no contract, no foresight. Record a **budget-hysteresis trace**: lapsed sellers' re-buy attempts that
-   fail for lack of SALT vs stayers who keep their land.
+5. **Carrying cost + foreclosure as CONSERVED transfers (Codex P1.4 + P1.5).** Each `LAND_CARRYING_PERIOD`,
+   every plot owner pays `land_carrying_cost` SALT into an explicit conserved **`land_fee_pool`** account
+   (NOT a burn/mint; included in the SALT-accounting invariant; the pool may be redistributed to the commons/
+   exchange per the existing fee-handling, documented). Payment ordering: charged before the market sweep. An
+   owner that **cannot pay** auto-lists at a **foreclosure discount** (`price × (1 − LAND_FORECLOSE_DISCOUNT_BPS)`)
+   but **keeps title and may keep harvesting** until a buyer clears; **if no buyer clears, the plot stays with
+   the owner, listed, re-priced down each period to `LAND_PRICE_MIN`** — it is **never** silently converted to
+   unowned (that would be a forfeiture variant; avoided so the carrying cost is a *budgetary* pressure, not a
+   relabeled forfeiture). The carrying cost is **part of the institution** (it is what converts "stop
+   cultivating" into an actual sale, creating the budget event), so SUCCESS is scoped as *priced alienability
+   **plus** carrying-cost pressure*; `no_carrying_cost` is therefore a **SENSITIVITY** (reported), not a
+   must-fail control (Codex P1.5).
 
-6. **Everything else is S23a/S22a unchanged** — the hunger-gated cultivate entry/exit, the plot registry,
-   excludable owner-only harvest, the heterogeneous population-scaled layout, deterministic targeting,
-   inheritance. NO fiat "owners must cultivate", NO hardcoded price level, NO `Vocation` mutation. Per-agent
-   SALT + per-plot price/owner state that steers behaviour is serialized ON-only under tag 14.
+6. **Budget hysteresis (the stabilizer).** Re-entry requires **buying** at the market price; a lapsed farmer
+   that sold its plot and spent the SALT on food is **priced out** — recorded precisely (P2.1 def): *an agent
+   attempted to bid on a comparable-or-better plot, its bid < the ask solely because its SALT on hand was too
+   low, while a stayer retained comparable land in the same window*. The trace counts priced-out re-buyers vs
+   stayers. This is the mechanical exit cost — no contract, no foresight.
 
-7. **Diagnostics (runtime-only):** land trades (count, prices, buyer/seller ids); price-vs-plot-rent
-   correlation (endogeneity check); carrying-cost paid / foreclosures; owner share + owner ∩ persistent
-   cohort; budget-hysteresis trace (priced-out re-buyers vs stayers); non-owner buyer cohort + post-promo
-   bought; churn vs matched baseline; pre-vs-post-promotion trade timing.
+7. **Cohort must be MARKET-stabilized, not inherited/static (Codex P2.2).** Because S23a already has
+   claim+inheritance, the persistent owner-cultivator cohort (§2.4) must include **market-relevant title
+   history** — each cohort id must have, in the final window, either **bought** its plot, or **retained it
+   through priced-out re-entry pressure**, or **paid carrying costs through the final window** — not merely be
+   an original homesteader/heir sitting on title. Report the title-share breakdown:
+   `{original-claim, inherited, bought, foreclosed-out}`.
+
+8. **Everything else is S23a/S22a unchanged** — hunger-gated cultivate entry/exit, plot registry, owner-only
+   harvest, heterogeneous population-scaled layout, deterministic targeting, inheritance. NO fiat "owners must
+   cultivate", NO hardcoded price level, NO `Vocation` mutation. Per-agent SALT + per-plot market state
+   serialized ON-only under tag 14.
+
+9. **Diagnostics (runtime-only):** land trades (count, prices, buyer/seller ids, tick); **price↔plot-rent
+   correlation** (endogeneity check) + good-vs-marginal mean price; carrying paid / foreclosure listings /
+   no-clear re-prices; `land_fee_pool` balance (conservation); owner share + owner∩persistent-cohort + the
+   title-share breakdown (§7); budget-hysteresis trace (priced-out re-buyers vs stayers); non-owner buyer
+   cohort + post-promo bought; churn vs matched baseline; pre-vs-post-promotion trade timing.
 
 ## 4. The new suite `sim/tests/land_market.rs`
 
@@ -167,12 +215,13 @@ final gate:** `if ALL NINE success clauses pass { LandMarketStickySuccess } else
   - **free_rebuy / zero_price** (`land_price_cap_factor = 0` / re-buy at no cost): no budget hysteresis ⇒ must
     NOT produce stickiness (proves it's the *illiquid price*, not owning).
   - **non_excludable_title** (ownership recorded, harvest gate off): title alone doesn't stabilize.
-  - **no_carrying_cost** (`land_carrying_cost = 0`, no forced sale): separates "owning priced title" from the
-    illiquid budget constraint.
   - **abundant_good_land** (good plots ≥ population): weak prices ⇒ weak stickiness.
-  - **price_cap_sensitivity** — sweep `land_price_cap_factor`; the verdict must be **outcome-driving** with it
-    AND the result must NOT hinge on one tuned value (if it only "works" at a single cap, that's a tuned-price
-    diagnostic, not a finding).
+  - **price_cap_sensitivity** (REQUIRED falsifier, Codex P1.1) — sweep `land_price_cap_factor`; the verdict
+    must be **outcome-driving** with it AND a SUCCESS must hold at ≥1 adjacent value, else `TunedPriceDiagnostic`.
+  - **no_carrying_cost** (`land_carrying_cost = 0`) — a **SENSITIVITY, not a must-fail** (Codex P1.5): the
+    hypothesis is *priced alienability **plus** carrying-cost pressure* (the carrying cost is what converts
+    "stop cultivating" into an actual sale). Reported to show how much the carrying-cost pressure contributes;
+    it does NOT gate the verdict (price hysteresis from sale + re-buy could be real without it).
 - **HARD GUARDS every run + cell:** conservation every tick (SALT paid for land + carrying cost are transfers,
   never mints); `bread_minted_max == 0`; provenance clean-or-disqualified; `!extinct`; the plot-registry
   invariant (≤1 owner; claim/buy/sell/inherit/foreclose preserve the finite plot set; no dead-owner plots);
@@ -204,3 +253,30 @@ Redirect cargo to files; never pipe to head/grep (EPIPE → spurious exit 101).
 - **Bounded to this WOOD-poor, mortality-on, population-scaled regime** + this capitalized-rent pricing; like
   S21h/i expect possible band-qualification — report the carrying-cost / cap-factor windows where it holds.
 - Follow repo conventions; NEVER add Claude/AI/assistant references in code, comments, or committed text.
+
+## 7. Codex spec-review resolutions (round 1)
+
+- **P1.1 price under-specified / anti-fiat** — §3.3: pinned `rent(plot)` = rolling realized grain yield over
+  `LAND_RENT_WINDOW` (quality prior from regen/cap/distance until `LAND_MIN_RENT_HISTORY`), `base_price =
+  cap_factor × rent`, blended with local sale history (`LAND_SALE_HISTORY_WEIGHT`/`_K`), clamped/rounded;
+  `cap_factor` is a slope not a level; SUCCESS must hold at ≥1 adjacent swept cap value else
+  `TunedPriceDiagnostic` (§2 mode + the `price_cap_sensitivity` falsifier).
+- **P1.2 listing/bidding/matching missing** — §3.4: deterministic list rule (idle `LAND_LIST_IDLE` or
+  can't-pay), buyer eligibility (non-owner/S22a-eligible/post-money/cultivating-or-attempting/has-SALT, nearest
+  affordable listed plot), one-plot-per-agent/one-owner-per-plot, single sorted pairwise sweep clearing at ask.
+- **P1.3 idle-forfeiture vs pre-money-unchanged contradiction** — §3.2: `forfeit_on_idle` OFF **from tick 0**
+  (pre-money = claim + owner-exclusive harvest, NO forfeiture, so no inherited thrash); the *market* activates
+  post-promotion only; `pre_money_forbidden` control asserts it.
+- **P1.4 foreclosure not a conserved transfer** — §3.5: carrying cost → explicit conserved `land_fee_pool`
+  (in the SALT invariant); can't-pay → auto-list at a foreclosure discount but **title stays with owner +
+  may keep harvesting**; no-buyer → stays listed, re-priced to `LAND_PRICE_MIN`, **never silently unowned**
+  (so it is not a relabeled forfeiture).
+- **P1.5 no-carrying-cost overstated** — §3.5/§4: the hypothesis is *priced alienability + carrying-cost
+  pressure*; `no_carrying_cost` is now a reported **SENSITIVITY**, not a must-fail control.
+- **P2.1 classifier thresholds not pinned** — §2: pinned `MIN_LAND_TRADES`/`LIQUID_CHURN_TRADES`/`MONO_SHARE`/
+  `OWNER_SHARE_MAX`/price↔rent gap/`priced_out` def; sharpened `LiquidChurn`/`HardBarrier`.
+- **P2.2 cohort could be inherited/static** — §2.4 + §3.7: the persistent cohort must have market-relevant
+  title history (bought / retained-through-priced-out / paid-carrying-through-final-window); title-share
+  breakdown `{original-claim, inherited, bought, foreclosed-out}` reported.
+- **P2.3 pairwise vs central matcher** — §3.4: a single deterministic sorted global sweep, strictly pairwise,
+  no multilateral/ring clearing.
