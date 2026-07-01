@@ -15,8 +15,9 @@ selection may need to see GROUP-level outcomes, not individual welfare.** Keep S
 replace the individual model score with a **local group score**: at each imitation step an agent compares
 nearby candidate GROUPS (all live agents within `GROUP_RADIUS` of a centre) scored *only* on **generic welfare
 aggregates** (alive share, mean hunger-relief, mean recent-food — no SALT in the headline, and **never** any
-adopter/committer/vocation/profit field), and copies the **modal `adopts_commitment_norm` bit of the best-off
-group**. The idea: a neighbourhood that *contains* committed producers and therefore eats well collectively can
+adopter/committer/vocation/profit field), then copies toward the **adopter-share gradient** of the best-off
+group (adopt if it has materially more adopters than yours, abandon if materially fewer — the norm that
+*distinguishes* the better-off group; §3.2). The idea: a neighbourhood that *contains* committed producers and therefore eats well collectively can
 propagate the norm, even though the individual producer is not the best-off agent — so the practice spreads
 because the group carrying it has better generic outcomes. The central anti-smuggling guard (Codex): "groups
 with committers do better" is **not** smuggling *iff* the score never reads commitment identity AND the
@@ -44,18 +45,19 @@ sharpest, least-circular first test of whether institution selection needs group
   update, the staged-at-expiry abandonment (`next_norm_bit`, no mid-term break), the deterministic seed, the
   generic per-agent welfare score (`2·alive + hunger_relief + food_score`, SALT excluded, score-purity), the
   copy-driver / adopter-advantage diagnostics, the flip accounting, and the control scaffolding.
-- The only change is: the imitation **score is computed over a local GROUP**, and the copied bit is the group's
-  **modal** norm bit (§3).
+- The only change is: the imitation **score is computed over a local GROUP**, and the copy direction follows
+  the best group's **adopter-share gradient** (§3.2).
 
 **Design decision (Codex):** group-payoff imitation over hysteresis/role-crediting; group = local spatial
-cluster; group score = generic welfare aggregate only; copy the modal norm of the best group; keep S24b
-abandonability.
+cluster; group score = generic welfare aggregate only; copy toward the best (welfare-selected) group's
+adopter-share gradient (NOT its modal bit — empty-by-construction, §3.2); keep S24b abandonability.
 
 ## 2. The central question and pre-named outcomes
 
 **Central question.** When S24b's abandonable adoption is driven by **local group-welfare** imitation — an
-agent copies the modal `adopts_commitment_norm` bit of the best-off nearby GROUP (scored only on generic alive
-/ hunger / food aggregates, never on institution identity) — does institution selection become **clean**: a
+agent selects the best-off nearby GROUP by generic welfare (alive / hunger / food aggregates, never institution
+identity) and copies toward that group's **adopter-share gradient** (adopt if it has materially more adopters
+than the agent's own group, abandon if fewer) — does institution selection become **clean**: a
 **bounded** adoption level that recreates the S22f committed core in the **majority** of seeds, with the
 matched `random_group_imitation` null failing to reach the core and money/mortality/provenance/conservation
 holding — where individual-welfare imitation (S24b) killed it, and without any institution/profit term in the
