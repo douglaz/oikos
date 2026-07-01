@@ -1,6 +1,6 @@
 # impl-43 — S24c: Group-payoff imitation (does group-level selection preserve the institution?)
 
-Status (spec): REVISED per Codex spec-review round 1 (4 P1 + 3 P2 folded in, §7; Codex confirmed group-payoff is the right mechanism, modal-bit was empty-by-construction → adopter-share-gradient copy); pending confirmation. Base: master `e654443` (S24b landed). **Third slice of the
+Status (spec): SPEC-READY (Codex round 1: 4 P1 + 3 P2; round 2: confirmed reachable + no punch-list). **Honest framing (Codex): S24c tests whether committed production creates a LOCALLY OBSERVABLE group-welfare advantage. If it does not — i.e. adopter-heavy groups do NOT out-welfare buyer-heavy groups (a live risk, since producers may feed OTHER groups) — S24c lands `NormDiesBack`/`GroupSignalVacuous`, which is not a spec flaw but the exact hypothesis failing, and the S24 arc CLOSES on the knife-edge/tragedy-of-imitation result. Keep the strict ≥3/5 bar (don't downgrade); 1-2 clean seeds → report mixed/band-qualified, not success. Do NOT change the score to contribution-accounting (that weakens the anti-smuggling line); first test whether generic group welfare is enough.** Base: master `e654443` (S24b landed). **Third slice of the
 S24 INSTITUTION-SELECTION arc** — the clean-positive test via a genuinely new mechanism (Codex-scoped:
 "group-payoff imitation, not hysteresis"). Composes on S24b (`abandonable_norm`), changing exactly one thing:
 imitation is scored on **local GROUP welfare**, not individual welfare.
