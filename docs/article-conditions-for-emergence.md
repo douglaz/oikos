@@ -455,21 +455,24 @@ We state the scaffolds plainly; a hostile reader should attack these first.
   *specific* hand-designed institutions make or break emergence (which exchange rule, which exit-cost
   institution). The next question is not another hand-designed institution but whether agents or populations
   can **select among institutions** based on their own survival and trade outcomes — i.e. whether the
-  institutional layer the experimenter has so far supplied can itself emerge. Two slices in, the answer
-  is a sharp negative pair. S24a (gate S22f's commitment behind an adopted-norm bit and let it **spread by
-  generic local imitation of observed success** — a generic survival score, never institution identity, with a
-  score-purity invariant and an outcome-blind null) gives a *mixed* result: the institution propagates and
-  recreates a core, but under *sticky* adoption it usually over-spreads or cannot be separated from drift. S24b
-  makes adoption **abandonable** (bidirectional imitation, so the norm can be dropped) — and the institution
-  **dies back completely**, because on a generic individual-welfare score the committed *producers* are not
-  better off than the *buyers* they feed, so imitation-of-success flows *away* from the productive role. So
-  generic-imitation institution selection is a **knife-edge** — sticky over-spreads, abandonable dissolves —
-  and the deeper result is a *tragedy of imitation*: **generic individual-welfare imitation does not preserve a
-  division-of-labor institution when the producers who sustain it are not individually better off than the
-  buyers they feed.** The clean positive now requires a genuinely different selection signal — **role-crediting
-  / group-payoff imitation** (imitate what the productive agents do, or what groups containing them achieve) or
-  **explicit adopt/abandon hysteresis** — and then genuine *choice among* competing institutions. Those are the
-  open slices.
+  institutional layer the experimenter has so far supplied can itself emerge. A three-slice arc
+  answers it with a clean triad of negatives. S24a (gate S22f's commitment behind an adopted-norm bit and let
+  it **spread by generic local imitation of observed success** — a generic survival score, never institution
+  identity, with a score-purity invariant and an outcome-blind null) gives a *mixed* result: the institution
+  propagates and recreates a core, but under *sticky* adoption it usually over-spreads or cannot be separated
+  from drift. S24b makes adoption **abandonable** — and the institution **dies back completely**, because on a
+  generic individual-welfare score the committed *producers* are not better off than the *buyers* they feed. S24c
+  changes the unit of imitation to the **local group** (imitate the practice of the better-off *neighbourhood*,
+  not the better-off individual) — and it **also dissolves**, because the best-fed group is itself
+  buyer-dominated, so the gradient still points away from the producing role. The three together are the
+  result: a working institution can be **supplied**, and can be made to **spread by ratchet**, but under
+  non-circular **local welfare-imitation — individual or group — it does not *select***. The unifying reason is
+  structural, a *tragedy of imitation* with a specific cause: **the value of a division-of-labor institution is
+  non-local — realized through exchange, flowing from producers to buyers across the market — so no purely
+  local welfare observable ever makes the producer role look best.** Selecting such an institution would need a
+  signal that sees past local welfare — a market-mediated or global payoff, explicit contribution accounting,
+  or group-level reproduction/selection — each a genuinely new mechanism, and the honest boundary at which this
+  study leaves the emergence of the institutional layer itself.
 
 ---
 
