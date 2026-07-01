@@ -1,6 +1,6 @@
 # impl-43 — S24c: Group-payoff imitation (does group-level selection preserve the institution?)
 
-Status (spec): DRAFT — pending Codex spec-review. Base: master `e654443` (S24b landed). **Third slice of the
+Status (spec): REVISED per Codex spec-review round 1 (4 P1 + 3 P2 folded in, §7; Codex confirmed group-payoff is the right mechanism, modal-bit was empty-by-construction → adopter-share-gradient copy); pending confirmation. Base: master `e654443` (S24b landed). **Third slice of the
 S24 INSTITUTION-SELECTION arc** — the clean-positive test via a genuinely new mechanism (Codex-scoped:
 "group-payoff imitation, not hysteresis"). Composes on S24b (`abandonable_norm`), changing exactly one thing:
 imitation is scored on **local GROUP welfare**, not individual welfare.
@@ -70,11 +70,13 @@ score?
    `PERSIST_FRACTION` of the final window, all renewing).
 3. **Surviving fluid non-adopter buyer tier materially buys** (post-money bought ≥ `MATERIAL_BOUGHT_FLOOR`,
    `final_buyer_cohort ≥ MIN_BUYER_COHORT`).
-4. **PER-SEED clean group selection with a MARGIN** — the headline beats its matched `random_group_imitation`
-   seed by `CORE_MARGIN (= PERSIST_COHORT)` AND that random group null does not itself satisfy the bounded
-   two-tier success; AND `no_imitation` forms no core; AND ≥1 copy is driven by a **positive pre-copy GROUP
-   welfare advantage** (the best group really out-welfared the agent's own before the copy); score-purity
-   holds; SALT contributes zero copies.
+4. **PER-SEED clean group selection with a MARGIN + ALIGNMENT** — the headline beats its matched
+   `random_group_imitation` seed by `CORE_MARGIN (= PERSIST_COHORT)` AND that random group null does not itself
+   satisfy the bounded two-tier success; AND `no_imitation` forms no core; AND (§3.5 alignment) **≥1 `false→true`
+   copy occurred where the best group had BOTH higher generic welfare AND higher adopter share than the agent's
+   own group, before the later core existed**, AND the welfare↔adopter-share covariance is positive (adopter
+   share genuinely covaries with welfare — else `GroupSignalVacuous`/`NormDiesBack`); score-purity holds; SALT
+   contributes zero copies.
 5. **Non-seed participation** — ≥ `MIN_NONSEED_ADOPTERS` non-seed agents adopt and ≥ `MIN_NONSEED_COMMITS`
    non-seed commitments (+ ≥1 renewal); the core is not merely the seed cluster (`SeedClusterOnly` fails).
 6. **Money + mortality + provenance + conservation hold** (SALT promotes; `seeded_minted == 0`; bread
@@ -106,14 +108,16 @@ threshold as a `const`; do NOT fit.
 
 ## 3. Engine design (additive, default-off, conservation-safe)
 
-1. **NEW default-off flag** `ChainConfig::group_payoff_imitation: bool` + consts: `GROUP_RADIUS` (Manhattan
-   radius for a group, default e.g. `IMITATION_RADIUS`), `GROUP_MIN_SIZE` (min live members for a group to be
-   scored, default 3), reuse of all S24a/S24b consts (`IMITATION_PERIOD/WINDOW/MARGIN_BPS/MAX_MODELS`, the
-   score weights, `ADOPTER_SHARE_MIN/MAX`, `CORE_MARGIN`, `MIN_ABANDONMENTS`, `commitment_seed_share`) + the
-   control toggles (§4). Helper `group_payoff_imitation_active(&self)` = flag on AND `abandonable_norm_active()`
-   (S24c modifies S24b's update; if S24b is off the flag is inert). Canonicalize ON-only with the **next free
-   flag-digest tag (17** unless master advanced) + the flag + group bookkeeping that steers behaviour. Off ⇒
-   byte-identical (S24b individual-score behaviour preserved).
+1. **NEW default-off flag** `ChainConfig::group_payoff_imitation: bool` + PINNED consts (Codex P2.1):
+   `GROUP_RADIUS = IMITATION_RADIUS` (Manhattan radius for a group), `GROUP_MIN_SIZE = 3` (min live members for
+   a group to be scored), `ADOPTER_SHARE_GAP = 0.10` (the minimum best-vs-own adopter-share gap that sets the
+   copy direction; within it → tie/keep), `SEED_CLUSTER = true` (clustered seed, §3.3), reuse of all S24a/S24b
+   consts (`IMITATION_PERIOD/WINDOW/MARGIN_BPS/MAX_MODELS`, the score weights, `ADOPTER_SHARE_MIN/MAX`,
+   `CORE_MARGIN`, `MIN_ABANDONMENTS`, `commitment_seed_share`) + the control toggles (§4). Helper
+   `group_payoff_imitation_active(&self)` = flag on AND `abandonable_norm_active()` (S24c modifies S24b's
+   update; if S24b is off the flag is inert). Canonicalize ON-only with the **next free flag-digest tag (17**
+   unless master advanced) + the flag + group bookkeeping that steers behaviour. Off ⇒ byte-identical (S24b
+   individual-score behaviour preserved).
 
 2. **The one change — group scoring (§0 design).** When `group_payoff_imitation_active()`, the per-agent
    imitation step (still bidirectional/abandonable, same `IMITATION_PERIOD`, same abandonment-timing state
@@ -129,25 +133,53 @@ threshold as a `const`; do NOT fit.
      NOT in the headline group score** (a `salt_in_score` sensitivity only). The group score **MUST NOT** read
      any member's adopter/committer/commitment/vocation/profit field (the score-purity invariant, now at group
      level).
-   - **Copy:** if the best-scoring observed group beats the agent's OWN group's score by ≥
-     `IMITATION_MARGIN_BPS`, the agent copies the **modal `adopts_commitment_norm` bit** of that best group
-     (majority vote over the best group's live members; ties → keep current bit). The norm bit is read ONLY to
-     compute the modal value to copy — never to score. Apply the copied bit through S24b's
-     `stage_or_apply_commitment_norm_bit` (immediate if unbound, staged to expiry if in a binding term).
-   - Record the **group-advantage** diagnostic (best-group score − own-group score at copy time) and the
-     copy-driver (which generic aggregate dominated), to prove the driver is generic group welfare.
+   - **Copy = ADOPTER-SHARE GRADIENT of the welfare-selected group (Codex P1.1 — NOT modal-bit).** Modal-bit
+     copying is empty-by-construction: the best-fed group is often buyer-heavy (buyers eat well) even when its
+     welfare depends on a minority committed producer core, so its modal bit is `false` → agents copy into
+     non-adoption → guaranteed `NormDiesBack`. Instead: the group is still **selected by generic welfare**, but
+     the agent copies toward the norm that *distinguishes* the better-off group. If the best observed group
+     beats the agent's OWN group's welfare score by ≥ `IMITATION_MARGIN_BPS`, compare
+     `best_group_adopter_share` vs `own_group_adopter_share`:
+     - best has materially **higher** adopter share (by ≥ `ADOPTER_SHARE_GAP`) → copy **`true`** (adopt);
+     - best has materially **lower** adopter share (by ≥ `ADOPTER_SHARE_GAP`) → copy **`false`** (abandon);
+     - within the gap (tie) → keep current bit.
+     This never scores group selection on commitment identity (welfare picks the group); the adopter-share only
+     sets the *direction* of the norm copy — "move toward the norm distribution characteristic of the group
+     that's doing better on generic welfare." Apply through S24b's `stage_or_apply_commitment_norm_bit`
+     (immediate if unbound, staged to expiry if in a binding term).
+   - Record the **group-advantage** diagnostic (best-group welfare − own-group welfare) AND the **adopter-share
+     gap** at copy time AND the copy-driver (which generic aggregate dominated), to prove the driver is generic
+     group welfare and the copy direction is the group's visible norm gradient.
 
-3. **Everything else is S24b/S24a/S22f unchanged** — the abandonability, the staged-at-expiry timing, the
-   commitment-entry gate, the deterministic seed, the commitment mechanism, money/mortality/conservation. NO
-   fiat, NO "commitment is good"/"most committers" term, NO `Vocation` mutation, NO reading norm/commitment in
-   the score. Flag + group bookkeeping serialized ON-only under tag 17.
+3. **Clustered minority seed (Codex P1.3 — initial institutional variation).** A group mechanism needs local
+   adopter-share variation to transmit: a hash-*scattered* seed may leave no group with enough adopter share to
+   move the gradient. When `SEED_CLUSTER`, the same-size `commitment_seed_share` minority is seeded as a
+   **deterministic spatial CLUSTER** (the `commitment_seed_share·N` agents nearest a deterministic centre by
+   `(manhattan, id)`) rather than hash-scattered, so at least one neighbourhood starts with materially higher
+   adopter share. This is disclosed as an initial condition (localized institutional variation is realistic);
+   the `seed_cluster_only` control (§4) guards that success is *spread beyond* the seed cluster, not the cluster
+   merely holding its own core. (`SEED_CLUSTER=false` reverts to the S24a hash-scatter for a sensitivity.)
 
-4. **Diagnostics (runtime-only):** adoption-over-time (non-monotonic); final adopter share + equilibrium;
+4. **Everything else is S24b/S24a/S22f unchanged** — the abandonability, the staged-at-expiry timing, the
+   commitment-entry gate, the commitment mechanism, money/mortality/conservation. NO fiat, NO "commitment is
+   good"/"most committers" term, NO `Vocation` mutation, NO reading norm/commitment in the group score. Flag +
+   group bookkeeping serialized ON-only under tag 17.
+
+5. **Welfare↔adopter-share ALIGNMENT diagnostic (Codex P1.2 — the sharp anti-oracle test).** Record, per copy
+   event, whether it was a **`false→true` copy in which the best group had BOTH higher generic welfare AND
+   higher adopter share than the agent's own group, and it occurred BEFORE the later core existed** (a genuine
+   group-payoff adoption, not post-hoc). Also report the **covariance/correlation between group welfare and
+   group adopter-share** across observed groups. The point: group-payoff SELECTION requires welfare to actually
+   *covary* with adopter share (adopter-heavy groups really do better). If a welfare advantage exists but is
+   **not** aligned with adopter share (covariance ≈ 0 or negative), there is no group-payoff signal → classify
+   `GroupSignalVacuous` (or `NormDiesBack`), never success.
+
+6. **Diagnostics (runtime-only):** adoption-over-time (non-monotonic); final adopter share + equilibrium;
    abandonment + adopt↔abandon flip counts + flip-rate + final-window share-variance; committed core (S24b
-   metrics) + adopter∩core; **group-advantage** trace (positive pre-copy best-vs-own group welfare gap) +
-   copy-driver; per-seed matched `random_group_imitation` final share + whether it reached the core; the
-   `individual_score_control` verdict (expect NormDiesBack); fluid buyer cohort + post-money bought;
-   money/mortality/provenance/conservation.
+   metrics) + adopter∩core; **group-advantage** trace (positive pre-copy best-vs-own group welfare gap) + the
+   **adopter-share gap** + the **welfare↔adopter-share covariance** (§3.5) + copy-driver; per-seed matched
+   `random_group_imitation` final share + whether it reached the core; the `individual_score_control` verdict
+   (expect NormDiesBack); fluid buyer cohort + post-money bought; money/mortality/provenance/conservation.
 
 ## 4. The new suite `sim/tests/group_payoff_imitation.rs`
 
@@ -169,9 +201,11 @@ threshold as a `const`; do NOT fit.
     `GroupDriftNotSelection`.
   - **no_imitation** — seed only: no spread, no core.
   - **no_seed** — share 0: the norm never appears.
-  - **unprofitable_commitment** — commitment made non-advantageous (`commitment_term = 1`, S24b's shape): the
-    group-welfare advantage and the spread must both vanish (proves the group advantage is real, not the
-    norm's mere presence).
+  - **unprofitable_commitment** (STRENGTHENED, Codex P1.4) — commitment made non-advantageous
+    (`commitment_term = 1`, S24b's shape): assert the group-level ALIGNMENT is killed, not just the final core —
+    (a) no material positive welfare↔adopter-share covariance / no aligned `false→true` copy signal, (b) no
+    non-seed adoption above seed/drift level, AND (c) no core. This proves group-payoff SELECTION (welfare
+    covarying with adopter share because committing really helps the group), not a norm-presence artifact.
   - **salt_in_score** (SENSITIVITY) — SALT in the group score; success only here → `WealthProxySelection`.
   - **seed_cluster_only_check** — success REQUIRES non-seed adopters + non-seed committed-core participation
     (else `SeedClusterOnly`).
@@ -209,3 +243,22 @@ Redirect cargo to files; never pipe to head/grep (EPIPE → spurious exit 101).
   committers" the result is void.
 - **Bounded to this base + this imitation rule**; expect possible band-qualification (margin/radius window).
 - Follow repo conventions; NEVER add Claude/AI/assistant references in code, comments, or committed text.
+
+## 7. Codex spec-review resolutions (round 1)
+
+- **P1.1 adopter-share-gradient copy (not modal-bit)** — §3.2: modal-bit was empty-by-construction (best-fed
+  group is buyer-heavy → modal `false` → guaranteed NormDiesBack). Now the group is selected by GENERIC welfare,
+  but the copy direction follows the adopter-share gradient: best group higher adopter-share by ≥
+  `ADOPTER_SHARE_GAP`=0.10 → copy `true`; lower → `false`; within-gap → keep. Welfare never scores on commitment
+  identity; the share only sets copy direction.
+- **P1.2 welfare↔adopter-share alignment diagnostic** — §3.5/§2.4/§4: success requires ≥1 `false→true` copy where
+  the best group had higher welfare AND higher adopter share, before the core existed; + positive welfare↔share
+  covariance. Misalignment → `GroupSignalVacuous`/`NormDiesBack`, not success.
+- **P1.3 clustered seed** — §3.3: `SEED_CLUSTER=true` seeds the minority as a deterministic spatial cluster (a
+  hash-scatter may leave no group with adopter-share variation to transmit); disclosed initial condition;
+  `seed_cluster_only` control guards spread-beyond-seed.
+- **P1.4 strengthened unprofitable_commitment** — §4: must kill the group-level ALIGNMENT (no covariance / no
+  aligned copy / no non-seed adoption / no core), not just the final core.
+- **P2.1 pinned constants** — §3.1: `GROUP_RADIUS=IMITATION_RADIUS`, `GROUP_MIN_SIZE=3`, `ADOPTER_SHARE_GAP=0.10`.
+- **P2.2 overlapping groups fine** — deterministic ordering/tie-breaks only. **P2.3 random-group null** kept
+  with the per-seed margin.
