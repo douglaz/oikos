@@ -1,6 +1,27 @@
 # impl-42 — S24b: Abandonable commitment-norm adoption (the clean institution-selection test)
 
-Status (spec): SPEC-READY (Codex round 1: 4 P1 + 3 P2; round 2: 1 pin — CHURN_SHARE_VAR=0.01; Codex confirmed the mechanism, reachability [the S22f term IS the hysteresis], and the strict ≥3/5 + zero-drift bar). Base: master `4bf6277` (S24a landed). **Second slice of the
+Status (result): LANDED as a FINDING — `NormDiesBack` 5/5 on `SEEDS = {3,7,11,19,23}` (`CleanInstitutionSpread`
+0/5, `DriftNotSelection` 0/5), so the strict clean-positive bar is NOT met — **and the way it fails is the
+result.** With abandonable adoption the norm dies back **completely** (final adopters = 0 every seed; the only
+flips are abandonment — `adopt=0, abandon=7–10` per run). **The mechanism (Codex-confirmed): on the GENERIC
+welfare score the committed CULTIVATORS are not better off than the well-fed fluid BUYERS** (buyers ~37–48
+alive, post_bought ~15k–32k — buyers eat plenty by buying; cultivators bear the production burden), so
+bidirectional welfare-imitation flows *away* from the productive role — nobody ever imitates into being a
+committed cultivator, and the seed adopters abandon at expiry. S24a's institution only spread because *sticky*
+adoption **ratcheted** it; remove the ratchet and generic-welfare selection dissolves it. **The honest insight:
+generic individual-welfare imitation does not preserve a division-of-labor institution when the producers who
+sustain it are not individually better off than the buyers they feed — a "tragedy of imitation".** Together
+S24a (sticky → over-spread/drift) + S24b (abandonable → die-back) show generic-imitation institution selection
+is a **knife-edge**: neither extreme yields a clean bounded equilibrium. **Codex review-of-results:
+PASS-WITH-CAVEATS** — `NormDiesBack` is the honest label, the interpretation is sound, and it is NOT an
+artifact (the random null DOES adopt and `sticky_reference` forms cores, so the false→true path is live, not
+dead-by-construction; the three candidate artifact-bugs — abandonment applied before a fair adoption
+opportunity / warm-up before adopters show benefit / a score window that excludes the cultivator-benefit period
+— were checked absent: adopters stay observable through their binding term, the warm-up gates on score-history,
+the window captures recent welfare; the only timing nuance is a benign one-tick abandon *lag* that gives
+adoption *more* chance). The clean positive is a genuinely NEW mechanism for **S24c** (role-crediting /
+group-payoff imitation, OR explicit adopt/abandon hysteresis), NOT a re-run. Verified: workspace all goldens
+byte-identical / fmt + clippy clean / suite passes. Base: master `4bf6277` (S24a landed). **Second slice of the
 S24 INSTITUTION-SELECTION arc.** Composes directly on S24a (`commitment_norm_spread`), changing exactly one
 thing: adoption is no longer **sticky** — the norm can be **abandoned**. The clean-positive test S24a named:
 S24a found a working institution *can* spread by generic local imitation but, under *sticky* (never-abandoned)

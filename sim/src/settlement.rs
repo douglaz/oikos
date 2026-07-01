@@ -226,6 +226,12 @@ const COMMITMENT_NORM_ALIVE_WEIGHT: u64 = 2;
 const COMMITMENT_NORM_HUNGER_WEIGHT: u64 = 1;
 const COMMITMENT_NORM_FOOD_WEIGHT: u64 = 1;
 const COMMITMENT_NORM_SALT_WEIGHT: u64 = 1;
+pub const ABANDONABLE_NORM_ADOPTER_SHARE_MIN: f64 = 0.15;
+pub const ABANDONABLE_NORM_ADOPTER_SHARE_MAX: f64 = 0.6;
+pub const ABANDONABLE_NORM_MIN_ABANDONMENTS: u64 = 8;
+pub const ABANDONABLE_NORM_CORE_MARGIN: usize = 4;
+pub const ABANDONABLE_NORM_CHURN_FLIP_RATE: f64 = 0.5;
+pub const ABANDONABLE_NORM_CHURN_SHARE_VAR: f64 = 0.01;
 
 /// S23a — the shipped private-land idle-forfeiture clock. A plot reverts only after this many
 /// consecutive fast ticks with no owner engagement (no harvest task, no pending carried grain from
@@ -1305,6 +1311,10 @@ pub struct ChainConfig {
     /// to agents carrying `adopts_commitment_norm`; a deterministic minority starts with that bit,
     /// and non-adopters can copy it from locally observed agents with better generic outcomes.
     pub commitment_norm_spread: bool,
+    /// S24b — abandonable commitment-norm adoption (default `false`, byte-identical when off).
+    /// When `true` AND S24a is active, the imitation step becomes bidirectional: every agent copies
+    /// the better-off observed neighbour's norm bit, so adoption can be dropped as well as gained.
+    pub abandonable_norm: bool,
     pub commitment_seed_share_bps: u16,
     pub imitation_period: u64,
     pub imitation_window: u64,
@@ -1740,6 +1750,7 @@ impl ChainConfig {
             commitment_entry_floor: COMMITMENT_ENTRY_FLOOR_DEFAULT,
             commitment_fiat_pin: 0,
             commitment_norm_spread: false,
+            abandonable_norm: false,
             commitment_seed_share_bps: COMMITMENT_SEED_SHARE_BPS_DEFAULT,
             imitation_period: COMMITMENT_NORM_IMITATION_PERIOD_DEFAULT,
             imitation_window: COMMITMENT_NORM_IMITATION_WINDOW_DEFAULT,
@@ -1912,6 +1923,7 @@ impl ChainConfig {
             commitment_entry_floor: COMMITMENT_ENTRY_FLOOR_DEFAULT,
             commitment_fiat_pin: 0,
             commitment_norm_spread: false,
+            abandonable_norm: false,
             commitment_seed_share_bps: COMMITMENT_SEED_SHARE_BPS_DEFAULT,
             imitation_period: COMMITMENT_NORM_IMITATION_PERIOD_DEFAULT,
             imitation_window: COMMITMENT_NORM_IMITATION_WINDOW_DEFAULT,
@@ -2064,6 +2076,7 @@ impl ChainConfig {
             commitment_entry_floor: COMMITMENT_ENTRY_FLOOR_DEFAULT,
             commitment_fiat_pin: 0,
             commitment_norm_spread: false,
+            abandonable_norm: false,
             commitment_seed_share_bps: COMMITMENT_SEED_SHARE_BPS_DEFAULT,
             imitation_period: COMMITMENT_NORM_IMITATION_PERIOD_DEFAULT,
             imitation_window: COMMITMENT_NORM_IMITATION_WINDOW_DEFAULT,
@@ -5299,6 +5312,7 @@ impl SettlementConfig {
         let mut cfg = Self::frontier_voluntary_commitment();
         if let Some(chain) = cfg.chain.as_mut() {
             chain.commitment_norm_spread = true;
+            chain.abandonable_norm = false;
             chain.commitment_seed_share_bps = COMMITMENT_SEED_SHARE_BPS_DEFAULT;
             chain.imitation_period = COMMITMENT_NORM_IMITATION_PERIOD_DEFAULT;
             chain.imitation_window = COMMITMENT_NORM_IMITATION_WINDOW_DEFAULT;
@@ -5309,6 +5323,14 @@ impl SettlementConfig {
             chain.no_imitation = false;
             chain.random_imitation = false;
             chain.salt_in_score = false;
+        }
+        cfg
+    }
+
+    pub fn frontier_abandonable_norm() -> Self {
+        let mut cfg = Self::frontier_commitment_norm_spread();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.abandonable_norm = true;
         }
         cfg
     }
@@ -5766,10 +5788,19 @@ pub struct CommitmentNormCopyRow {
     pub tick: u64,
     pub copier: u64,
     pub model: u64,
+    pub copied_norm_bit: bool,
     pub driver: CommitmentNormCopyDriver,
     pub copier_score_bps: u64,
     pub model_score_bps: u64,
     pub positive_pre_copy_advantage: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CommitmentNormFlipRow {
+    pub tick: u64,
+    pub agent: u64,
+    pub from: bool,
+    pub to: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -5781,7 +5812,7 @@ struct CommitmentNormObservation {
     at_market: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct CommitmentNormScore {
     alive_bps: u64,
     hunger_bps: u64,
@@ -5940,6 +5971,7 @@ struct Colonist {
     /// stays byte-identical. `0` off the voluntary-commitment path / for a never-renewed committer.
     commitment_renewals: u16,
     adopts_commitment_norm: bool,
+    next_norm_bit: Option<bool>,
     commitment_norm_seed_adopter: bool,
     commitment_norm_observations: VecDeque<CommitmentNormObservation>,
     /// S23a private land tenure: the grain plot this colonist is currently hauling from. Set by the
@@ -6145,6 +6177,9 @@ pub struct Settlement {
     /// exited (the real exit-override the mandatory non-vacuity test reads). Empty off the path.
     commitment_exit_override_ever: BTreeSet<AgentId>,
     commitment_norm_copy_events: Vec<CommitmentNormCopyRow>,
+    commitment_norm_flip_events: Vec<CommitmentNormFlipRow>,
+    commitment_norm_adoptions: u64,
+    commitment_norm_abandonments: u64,
     commitment_norm_imitation_adopters: BTreeSet<AgentId>,
     /// S22d: in-flight per-builder durable-cultivation-tool projects (a
     /// [`ProjectTemplateId::BuildCultivationTool`] each). Each holds a cultivating builder's own
@@ -6546,6 +6581,7 @@ struct ChainRuntime {
     commitment_entry_floor: u64,
     commitment_fiat_pin: u16,
     commitment_norm_spread: bool,
+    abandonable_norm: bool,
     commitment_seed_share_bps: u16,
     imitation_period: u64,
     imitation_window: u64,
@@ -8070,6 +8106,7 @@ impl Settlement {
                 commitment_remaining: 0,
                 commitment_renewals: 0,
                 adopts_commitment_norm: false,
+                next_norm_bit: None,
                 commitment_norm_seed_adopter: false,
                 commitment_norm_observations: VecDeque::new(),
                 carried_grain_source: None,
@@ -8170,6 +8207,7 @@ impl Settlement {
                         commitment_remaining: 0,
                         commitment_renewals: 0,
                         adopts_commitment_norm: false,
+                        next_norm_bit: None,
                         commitment_norm_seed_adopter: false,
                         commitment_norm_observations: VecDeque::new(),
                         carried_grain_source: None,
@@ -8621,6 +8659,7 @@ impl Settlement {
                 commitment_entry_floor: chain.commitment_entry_floor,
                 commitment_fiat_pin: chain.commitment_fiat_pin,
                 commitment_norm_spread: chain.commitment_norm_spread,
+                abandonable_norm: chain.abandonable_norm,
                 commitment_seed_share_bps: chain.commitment_seed_share_bps,
                 imitation_period: chain.imitation_period,
                 imitation_window: chain.imitation_window,
@@ -8712,6 +8751,9 @@ impl Settlement {
             commitment_exit_override_ids: BTreeSet::new(),
             commitment_exit_override_ever: BTreeSet::new(),
             commitment_norm_copy_events: Vec::new(),
+            commitment_norm_flip_events: Vec::new(),
+            commitment_norm_adoptions: 0,
+            commitment_norm_abandonments: 0,
             commitment_norm_imitation_adopters: BTreeSet::new(),
             cultivation_tool_builds: Vec::new(),
             next_cultivation_tool_project_id: 0,
@@ -9075,6 +9117,9 @@ impl Settlement {
             commitment_exit_override_ids: BTreeSet::new(),
             commitment_exit_override_ever: BTreeSet::new(),
             commitment_norm_copy_events: Vec::new(),
+            commitment_norm_flip_events: Vec::new(),
+            commitment_norm_adoptions: 0,
+            commitment_norm_abandonments: 0,
             commitment_norm_imitation_adopters: BTreeSet::new(),
             cultivation_tool_builds: Vec::new(),
             next_cultivation_tool_project_id: 0,
@@ -12176,6 +12221,7 @@ impl Settlement {
                 commitment_remaining: 0,
                 commitment_renewals: 0,
                 adopts_commitment_norm: false,
+                next_norm_bit: None,
                 commitment_norm_seed_adopter: false,
                 commitment_norm_observations: VecDeque::new(),
                 carried_grain_source: None,
@@ -13018,6 +13064,11 @@ impl Settlement {
             // not serialized off the gate anyway).
             self.colonists[slot].commitment_remaining =
                 binding_commitment_remaining.saturating_sub(u16::from(commitment_binds));
+            // S24b: a staged norm flip takes effect AT term expiry — the tick the binding clears —
+            // BEFORE the next renewal decision, so the end-of-tick adopter bit (and the digest)
+            // reflect the abandonment in the same tick rather than one econ tick late. Gated and a
+            // no-op off the path, and a no-op while the term still binds (`commitment_remaining > 0`).
+            self.apply_staged_commitment_norm_bit_if_unbound(slot);
             debug_assert!(
                 !(self.colonists[slot].foraging && self.colonists[slot].cultivating),
                 "a colonist must forage XOR cultivate — never both in one econ tick"
@@ -15228,6 +15279,12 @@ impl Settlement {
             .is_some_and(chain_runtime_commitment_norm_spread_active)
     }
 
+    fn abandonable_norm_active(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(chain_runtime_abandonable_norm_active)
+    }
+
     /// S22f: the configured commitment binding length (econ ticks), falling back to the pinned
     /// default for a settlement with no chain. Consulted only while the commitment path is active.
     fn commitment_term(&self) -> u16 {
@@ -15466,6 +15523,10 @@ impl Settlement {
         if !self.commitment_norm_spread_active() {
             return;
         }
+        if self.abandonable_norm_active() {
+            self.run_abandonable_norm_imitation();
+            return;
+        }
         let Some(chain) = self.chain.as_ref() else {
             return;
         };
@@ -15575,6 +15636,7 @@ impl Settlement {
                     tick: self.econ_tick,
                     copier: colonist.id.0,
                     model: model.id.0,
+                    copied_norm_bit: true,
                     driver,
                     copier_score_bps: own_score.total_bps,
                     model_score_bps: model_score.total_bps,
@@ -15591,6 +15653,179 @@ impl Settlement {
                 self.commitment_norm_copy_events.push(row);
             }
         }
+    }
+
+    fn run_abandonable_norm_imitation(&mut self) {
+        let Some(chain) = self.chain.as_ref() else {
+            return;
+        };
+        let period = chain.imitation_period;
+        let window = chain.imitation_window;
+        let margin = chain.imitation_margin_bps;
+        let radius = chain.imitation_radius;
+        let max_models = chain.imitation_max_models;
+        let food_target = chain.food_window_target;
+        let no_imitation = chain.no_imitation;
+        let random_imitation = chain.random_imitation;
+        let salt_in_score = chain.salt_in_score;
+        if no_imitation || period == 0 || window == 0 || self.econ_tick == 0 {
+            return;
+        }
+        if !self.econ_tick.is_multiple_of(period) {
+            return;
+        }
+
+        let live = self.live_colonist_slots.clone();
+        let exchange_pos = self
+            .world
+            .stockpile(self.exchange)
+            .map(|stockpile| stockpile.pos);
+        let mut copies: Vec<(usize, bool, CommitmentNormCopyRow)> = Vec::new();
+
+        for &slot in &live {
+            let colonist = &self.colonists[slot];
+            if !colonist.alive {
+                continue;
+            }
+            let models = self.commitment_norm_observation_set(
+                slot,
+                &live,
+                exchange_pos,
+                window,
+                radius,
+                max_models,
+            );
+            if models.is_empty() {
+                continue;
+            }
+
+            let chosen = if random_imitation {
+                // Gate the outcome-blind null on the SAME score-history warm-up as the scored path
+                // (the copier's own score must be ready), so the matched anti-drift null copies on
+                // the same cadence and stays comparable to the headline — the model is still drawn
+                // uniformly, ignoring score and institution.
+                let Some(own_score) =
+                    self.commitment_norm_score(slot, window, food_target, salt_in_score)
+                else {
+                    continue;
+                };
+                let draw = deterministic_mix64(
+                    COMMITMENT_NORM_RANDOM_SALT
+                        ^ self.econ_tick.rotate_left(17)
+                        ^ colonist.id.0.rotate_left(7),
+                );
+                let model_slot = models[(draw as usize) % models.len()];
+                let model_score = self
+                    .commitment_norm_score(model_slot, window, food_target, salt_in_score)
+                    .unwrap_or_default();
+                Some((model_slot, own_score, model_score))
+            } else {
+                let Some(own_score) =
+                    self.commitment_norm_score(slot, window, food_target, salt_in_score)
+                else {
+                    continue;
+                };
+                models
+                    .iter()
+                    .filter_map(|&model_slot| {
+                        self.commitment_norm_score(model_slot, window, food_target, salt_in_score)
+                            .map(|score| (model_slot, score))
+                    })
+                    .max_by_key(|&(model_slot, score)| {
+                        (
+                            score.total_bps,
+                            std::cmp::Reverse(self.colonists[model_slot].id.0),
+                        )
+                    })
+                    .filter(|&(_, score)| {
+                        score.total_bps.saturating_sub(own_score.total_bps) >= margin
+                    })
+                    .map(|(model_slot, model_score)| (model_slot, own_score, model_score))
+            };
+            let Some((model_slot, own_score, model_score)) = chosen else {
+                continue;
+            };
+            let model = &self.colonists[model_slot];
+            let copied_norm_bit = model.adopts_commitment_norm;
+            let driver = commitment_norm_copy_driver(own_score, model_score, salt_in_score);
+            copies.push((
+                slot,
+                copied_norm_bit,
+                CommitmentNormCopyRow {
+                    tick: self.econ_tick,
+                    copier: colonist.id.0,
+                    model: model.id.0,
+                    copied_norm_bit,
+                    driver,
+                    copier_score_bps: own_score.total_bps,
+                    model_score_bps: model_score.total_bps,
+                    positive_pre_copy_advantage: model_score.total_bps > own_score.total_bps,
+                },
+            ));
+        }
+
+        for (slot, copied_norm_bit, row) in copies {
+            if self.stage_or_apply_commitment_norm_bit(slot, copied_norm_bit) {
+                self.commitment_norm_copy_events.push(row);
+            }
+        }
+    }
+
+    fn stage_or_apply_commitment_norm_bit(&mut self, slot: usize, bit: bool) -> bool {
+        if !self
+            .colonists
+            .get(slot)
+            .is_some_and(|colonist| colonist.alive)
+        {
+            return false;
+        }
+        if self.colonists[slot].commitment_remaining > 0 {
+            let current = self.colonists[slot].adopts_commitment_norm;
+            if bit == current {
+                self.colonists[slot].next_norm_bit = None;
+                return false;
+            }
+            if self.colonists[slot].next_norm_bit == Some(bit) {
+                return false;
+            }
+            self.colonists[slot].next_norm_bit = Some(bit);
+            true
+        } else {
+            self.colonists[slot].next_norm_bit = None;
+            self.apply_commitment_norm_bit(slot, bit)
+        }
+    }
+
+    fn apply_staged_commitment_norm_bit_if_unbound(&mut self, slot: usize) {
+        if !self.abandonable_norm_active() || self.colonists[slot].commitment_remaining > 0 {
+            return;
+        }
+        if let Some(bit) = self.colonists[slot].next_norm_bit.take() {
+            self.apply_commitment_norm_bit(slot, bit);
+        }
+    }
+
+    fn apply_commitment_norm_bit(&mut self, slot: usize, bit: bool) -> bool {
+        let from = self.colonists[slot].adopts_commitment_norm;
+        if from == bit {
+            return false;
+        }
+        let id = self.colonists[slot].id;
+        self.colonists[slot].adopts_commitment_norm = bit;
+        self.commitment_norm_flip_events
+            .push(CommitmentNormFlipRow {
+                tick: self.econ_tick,
+                agent: id.0,
+                from,
+                to: bit,
+            });
+        if bit {
+            self.commitment_norm_adoptions = self.commitment_norm_adoptions.saturating_add(1);
+            self.commitment_norm_imitation_adopters.insert(id);
+        } else {
+            self.commitment_norm_abandonments = self.commitment_norm_abandonments.saturating_add(1);
+        }
+        true
     }
 
     fn commitment_norm_observation_set(
@@ -16810,6 +17045,7 @@ impl Settlement {
         // committer's binding so no orphaned commitment lingers in the digest on a non-living agent.
         // `0` for every non-commitment colonist, so this is byte-identical off the path.
         self.colonists[slot].commitment_remaining = 0;
+        self.colonists[slot].next_norm_bit = None;
         self.colonists[slot].carried_grain_source = None;
         if let Ok(index) = self.live_colonist_slots.binary_search(&slot) {
             self.live_colonist_slots.remove(index);
@@ -18262,10 +18498,18 @@ impl Settlement {
         self.commitment_norm_spread_active()
     }
 
+    pub fn abandonable_norm_on(&self) -> bool {
+        self.abandonable_norm_active()
+    }
+
     pub fn adopts_commitment_norm_of(&self, index: usize) -> bool {
         self.colonists
             .get(index)
             .is_some_and(|c| c.adopts_commitment_norm)
+    }
+
+    pub fn pending_commitment_norm_bit_of(&self, index: usize) -> Option<bool> {
+        self.colonists.get(index).and_then(|c| c.next_norm_bit)
     }
 
     pub fn commitment_norm_seed_adopter_ids(&self) -> Vec<u64> {
@@ -18293,6 +18537,18 @@ impl Settlement {
 
     pub fn commitment_norm_copy_events(&self) -> Vec<CommitmentNormCopyRow> {
         self.commitment_norm_copy_events.clone()
+    }
+
+    pub fn commitment_norm_flip_events(&self) -> Vec<CommitmentNormFlipRow> {
+        self.commitment_norm_flip_events.clone()
+    }
+
+    pub fn commitment_norm_adoptions(&self) -> u64 {
+        self.commitment_norm_adoptions
+    }
+
+    pub fn commitment_norm_abandonments(&self) -> u64 {
+        self.commitment_norm_abandonments
     }
 
     pub fn commitment_norm_positive_copy_advantages(&self) -> usize {
@@ -19838,6 +20094,10 @@ impl Settlement {
                 out.push(u8::from(chain.random_imitation));
                 out.push(u8::from(chain.salt_in_score));
             }
+            if self.abandonable_norm_active() {
+                out.push(16);
+                out.push(u8::from(chain.abandonable_norm));
+            }
             // The staple mapping steers the next needs/scale phase for *any* chain,
             // role-choice or not, so it is included whenever a chain is active. The
             // G3b no-spread control shares the emergent config's physical state but
@@ -20221,6 +20481,7 @@ impl Settlement {
         // every pre-S22f config keeps its per-colonist layout byte-identical.
         let commitment_serialized = self.voluntary_cultivation_commitment_active();
         let commitment_norm_serialized = self.commitment_norm_spread_active();
+        let abandonable_norm_serialized = self.abandonable_norm_active();
         // S23a: carried grain source steers the next idle-forfeiture pass while a cultivator is
         // hauling or awaiting transfer credit from a plot. Gate it with private land tenure, which
         // implies the cultivation block is active.
@@ -20348,6 +20609,15 @@ impl Settlement {
                         out.extend_from_slice(&observation.food_consumed.to_le_bytes());
                         out.extend_from_slice(&observation.salt_stock.to_le_bytes());
                         out.push(u8::from(observation.at_market));
+                    }
+                    if abandonable_norm_serialized {
+                        match colonist.next_norm_bit {
+                            Some(bit) => {
+                                out.push(1);
+                                out.push(u8::from(bit));
+                            }
+                            None => out.push(0),
+                        }
                     }
                 }
                 if land_serialized {
@@ -20960,6 +21230,10 @@ fn chain_runtime_voluntary_cultivation_commitment_active(chain: &ChainRuntime) -
 
 fn chain_runtime_commitment_norm_spread_active(chain: &ChainRuntime) -> bool {
     chain.commitment_norm_spread && chain_runtime_voluntary_cultivation_commitment_active(chain)
+}
+
+fn chain_runtime_abandonable_norm_active(chain: &ChainRuntime) -> bool {
+    chain.abandonable_norm && chain_runtime_commitment_norm_spread_active(chain)
 }
 
 /// S22e: the deterministic endowment-selection hash of `(world seed, household id)` — a SplitMix64
