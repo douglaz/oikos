@@ -1,6 +1,6 @@
 # impl-45 — S23c: Secure private land tenure (was it *insecurity*, not private property, that broke S23a?)
 
-Status (spec): DRAFT — for Codex spec-review. Base: master `855be95`. **Re-opens the S23 private-property arc**
+Status (spec): DRAFT — design decisions LOCKED (user): (1) UNIVERSAL HEIRS — every owner has a determinable heir (concentration is emergent, not a lineage-only artifact); (2) BOTH inheritance regimes IN SCOPE this milestone — an `inheritance_regime ∈ {impartible, partible}` axis, including the bounded plot-divisibility engine work for partible. Ready for Codex spec-review. Base: master `855be95`. **Re-opens the S23 private-property arc**
 with the honest counterfactual the S23a critique demands. Composes on the S23a machinery
 (`private_land_tenure`: plot registry, homesteading claim, owner-only harvest, inheritance, the population-scaled
 spatial layout) — changing exactly the thing whose realism was in doubt: **land tenure becomes SECURE.**
@@ -80,10 +80,12 @@ historically-real** outcomes that S23c should be able to show via an `inheritanc
   heirs** (reuse `regen`/`cap` + `LAND_VIABLE_REGEN_FLOOR` — once a share falls below the floor the plot is
   non-viable). Over generations, holdings shrink → *morcellement* → Malthusian collapse (pre-famine Ireland /
   partible-France). Land scarcity manifests as *smaller plots*.
-**Recommended sequencing:** do **`impartible` first** (existing atomic plots; the landless-younger-children →
-buyer-tier dynamic is precisely S23c's two-tier question), with **`partible` as a fast-follow** once
-plot-divisibility (capacity partition + viability floor) is added. Track **land-per-capita** across generations
-either way — the whole point is to watch it fall under fixed land + growing population.
+**DECIDED (user): BOTH regimes ship in this milestone** as the `inheritance_regime` axis — `impartible`
+(existing atomic plots; landless non-heir children → buyer tier) AND `partible` (plot-capacity partition among
+heirs + `LAND_VIABLE_REGEN_FLOOR`; fragmentation → morcellement). The partible branch's bounded plot-divisibility
+(capacity split; no new node creation — reduce the inherited plot's effective capacity per co-heir) is in scope.
+Track **land-per-capita** across generations for both — the whole point is to watch it fall under fixed land +
+growing population.
 
 **REALISM DECISION on inheritance (Codex to rule):** in the model inheritance is **not universal** — only
 lineage households have heirs. Real land inheritance is universal. If only lineages retain land, secure
@@ -91,8 +93,9 @@ heritable tenure will *mechanically* concentrate land in lineages — potentiall
 demographic model**, not an economic result. Two options: **(a) extend inheritance to ALL households** (a
 small, realistic engine change: every owner has a determinable heir, so newborns/next-of-kin inherit
 regardless of lineage) so concentration is *emergent*, not built-in; or **(b) keep the lineage-only asymmetry
-but disclose it prominently** and treat lineage-concentration as a known feature. Recommend (a) for a fair test
-unless it destabilizes the base.
+but disclose it prominently** and treat lineage-concentration as a known feature. **DECIDED (user): (a) UNIVERSAL HEIRS** — every owner has a determinable heir (next-of-kin / newborn), so a
+plot passes on death regardless of lineage and land concentration is an EMERGENT outcome of a fair rule, not a
+built-in lineage asymmetry. Keep it goldens-preserving (gated behind the secure-tenure mode, digested ON-only).
 
 **OPEN DESIGN QUESTIONS (Codex to resolve in spec-review):**
 0. **The inheritance realism decision above** — universal heirs (a) vs disclosed lineage-only (b) — and whether
