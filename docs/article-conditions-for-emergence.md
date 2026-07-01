@@ -455,14 +455,21 @@ We state the scaffolds plainly; a hostile reader should attack these first.
   *specific* hand-designed institutions make or break emergence (which exchange rule, which exit-cost
   institution). The next question is not another hand-designed institution but whether agents or populations
   can **select among institutions** based on their own survival and trade outcomes — i.e. whether the
-  institutional layer the experimenter has so far supplied can itself emerge. A first slice (S24a) gives a
-  *mixed* answer: gating S22f's commitment behind an adopted-norm bit and letting it **spread by generic local
-  imitation of observed success** (a generic survival score, never institution identity, with a score-purity
-  invariant and an outcome-blind random-imitation null) does propagate the institution and recreate a core —
-  but under *sticky* adoption it usually over-spreads to a re-pin or cannot be separated from drift, with only
-  a minority of seeds showing clean, bounded, selection-driven spread. The clean test — **non-sticky /
-  abandonable adoption**, which should let adoption settle below saturation and make the drift null clean — and
-  then genuine *choice among* competing institutions are the open slices.
+  institutional layer the experimenter has so far supplied can itself emerge. Two slices in, the answer
+  is a sharp negative pair. S24a (gate S22f's commitment behind an adopted-norm bit and let it **spread by
+  generic local imitation of observed success** — a generic survival score, never institution identity, with a
+  score-purity invariant and an outcome-blind null) gives a *mixed* result: the institution propagates and
+  recreates a core, but under *sticky* adoption it usually over-spreads or cannot be separated from drift. S24b
+  makes adoption **abandonable** (bidirectional imitation, so the norm can be dropped) — and the institution
+  **dies back completely**, because on a generic individual-welfare score the committed *producers* are not
+  better off than the *buyers* they feed, so imitation-of-success flows *away* from the productive role. So
+  generic-imitation institution selection is a **knife-edge** — sticky over-spreads, abandonable dissolves —
+  and the deeper result is a *tragedy of imitation*: **generic individual-welfare imitation does not preserve a
+  division-of-labor institution when the producers who sustain it are not individually better off than the
+  buyers they feed.** The clean positive now requires a genuinely different selection signal — **role-crediting
+  / group-payoff imitation** (imitate what the productive agents do, or what groups containing them achieve) or
+  **explicit adopt/abandon hysteresis** — and then genuine *choice among* competing institutions. Those are the
+  open slices.
 
 ---
 
