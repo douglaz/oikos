@@ -51,7 +51,31 @@ so it is a matched counterfactual to S23a's thrash.
 `idle_forfeiture_horizon ∈ {∞ (secure, headline), long (e.g. 200 ticks ≈ realistic abandonment), 12 (= S23a)}`,
 so the result reads as a *curve* from secure → long-horizon → S23a-harsh, showing exactly where thrash sets in.
 
+**DEATH + INHERITANCE IS THE CENTRAL MECHANISM (not a reused footnote).** Under secure tenure, ownership only
+ever turns over through **death → inheritance**, so the demography *is* the engine of the outcome. What OIKOS
+already has: old-age + starvation mortality with several generations per ~1600-tick run (`old_age_onset_years`
+~30 at `ticks_per_year` 6 ≈ 180 ticks/generation), and S23a's `settle_death` already transfers a dead owner's
+plot to a **live, eligible household heir** (else it reverts to unowned). **The load-bearing asymmetry:** heirs
+are **lineage-only** — non-lineage colonists (here, the SALT-rich buyers/consumers) die **heirless**, so their
+plots **recycle** to the commons, while **lineage** plots stay in the family across generations. So secure +
+heritable tenure will tend to **concentrate land in a few long-lived lineages** (a hereditary landed class),
+with the frontier's openness set by how fast heirless plots recycle. This makes the sharpest question:
+**does secure heritable tenure produce hereditary land CONCENTRATION over generations, and does it choke off or
+coexist with the buyer economy?** — a distinctly private-property question S23a never reached (its 12-tick
+churn destroyed plots before any generational dynamic could run).
+
+**REALISM DECISION on inheritance (Codex to rule):** in the model inheritance is **not universal** — only
+lineage households have heirs. Real land inheritance is universal. If only lineages retain land, secure
+heritable tenure will *mechanically* concentrate land in lineages — potentially an **artifact of the
+demographic model**, not an economic result. Two options: **(a) extend inheritance to ALL households** (a
+small, realistic engine change: every owner has a determinable heir, so newborns/next-of-kin inherit
+regardless of lineage) so concentration is *emergent*, not built-in; or **(b) keep the lineage-only asymmetry
+but disclose it prominently** and treat lineage-concentration as a known feature. Recommend (a) for a fair test
+unless it destabilizes the base.
+
 **OPEN DESIGN QUESTIONS (Codex to resolve in spec-review):**
+0. **The inheritance realism decision above** — universal heirs (a) vs disclosed lineage-only (b) — and whether
+   (a) is a safe, goldens-preserving engine change.
 1. **The static-pin vs healthy-class distinction (the crux).** Under secure tenure, a fixed set of first-movers
    owns the plots permanently. Is that (a) the *desired* outcome — a **stable bounded owner-cultivator class**
    who cultivate their secure plots + a **surviving buyer tier** who buy the food they produce (the two-tier
@@ -93,9 +117,18 @@ so the result reads as a *curve* from secure → long-horizon → S23a-harsh, sh
 - `TenureInertStaticPin` — owners hold plots but don't cultivate/produce/trade meaningfully (a degenerate pin,
   not a class).
 - `UniversalOwnershipNoBuyers` — plot density too high, everyone owns, buyer tier gone (`HardBarrier`).
+- `HereditaryConcentration` — over generations, land concentrates into a few long-lived lineages
+  (owner-lineage Gini / top-k share rises across generations) AND the buyer tier is squeezed out — a
+  landed-aristocracy collapse. (If concentration rises but buyers *survive*, that is a coexisting
+  landed-class outcome, reported, not a failure.)
 - `SeedClusterOnly` / `NoStableClass` — no bounded persistent owner-cultivator cohort forms.
 - `StillThrashes` — (sanity, at the `idle_forfeiture_horizon=12` end of the sweep) reproduces S23a.
-- `SecureTenureStableClass` — the two-tier economy forms and persists under secure tenure.
+- `SecureTenureStableClass` — a bounded owner-cultivator class + surviving buyer tier forms and persists across
+  generations under secure tenure (concentration bounded, not runaway).
+
+**Generational tracking (required):** report, per generation, the owner set, owner-lineage share / land-Gini,
+heir-inheritance vs heirless-recycle counts, and buyer-tier survival — so the result shows the *trajectory*
+across generations (concentrating? stable? recycling?), which is the whole point of secure heritable tenure.
 
 Contrast axis (the whole point): the `idle_forfeiture_horizon` sweep should show `StillThrashes` at 12 and
 (hypothesis) `SecureTenureStableClass` at ∞, with the long-horizon in between — isolating the security variable.
