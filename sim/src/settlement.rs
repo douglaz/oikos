@@ -226,6 +226,9 @@ const COMMITMENT_NORM_ALIVE_WEIGHT: u64 = 2;
 const COMMITMENT_NORM_HUNGER_WEIGHT: u64 = 1;
 const COMMITMENT_NORM_FOOD_WEIGHT: u64 = 1;
 const COMMITMENT_NORM_SALT_WEIGHT: u64 = 1;
+const COMMITMENT_NORM_GROUP_MIN_SIZE: usize = 3;
+const COMMITMENT_NORM_ADOPTER_SHARE_GAP_BPS: u64 = 1_000;
+const COMMITMENT_NORM_SEED_CLUSTER: bool = true;
 pub const ABANDONABLE_NORM_ADOPTER_SHARE_MIN: f64 = 0.15;
 pub const ABANDONABLE_NORM_ADOPTER_SHARE_MAX: f64 = 0.6;
 pub const ABANDONABLE_NORM_MIN_ABANDONMENTS: u64 = 8;
@@ -1315,6 +1318,10 @@ pub struct ChainConfig {
     /// When `true` AND S24a is active, the imitation step becomes bidirectional: every agent copies
     /// the better-off observed neighbour's norm bit, so adoption can be dropped as well as gained.
     pub abandonable_norm: bool,
+    /// S24c — group-payoff imitation (default `false`, byte-identical when off). When `true` AND
+    /// S24b is active, the abandonable imitation step scores local groups by generic welfare and
+    /// copies toward the adopter-share gradient of the welfare-selected group.
+    pub group_payoff_imitation: bool,
     pub commitment_seed_share_bps: u16,
     pub imitation_period: u64,
     pub imitation_window: u64,
@@ -1751,6 +1758,7 @@ impl ChainConfig {
             commitment_fiat_pin: 0,
             commitment_norm_spread: false,
             abandonable_norm: false,
+            group_payoff_imitation: false,
             commitment_seed_share_bps: COMMITMENT_SEED_SHARE_BPS_DEFAULT,
             imitation_period: COMMITMENT_NORM_IMITATION_PERIOD_DEFAULT,
             imitation_window: COMMITMENT_NORM_IMITATION_WINDOW_DEFAULT,
@@ -1924,6 +1932,7 @@ impl ChainConfig {
             commitment_fiat_pin: 0,
             commitment_norm_spread: false,
             abandonable_norm: false,
+            group_payoff_imitation: false,
             commitment_seed_share_bps: COMMITMENT_SEED_SHARE_BPS_DEFAULT,
             imitation_period: COMMITMENT_NORM_IMITATION_PERIOD_DEFAULT,
             imitation_window: COMMITMENT_NORM_IMITATION_WINDOW_DEFAULT,
@@ -2077,6 +2086,7 @@ impl ChainConfig {
             commitment_fiat_pin: 0,
             commitment_norm_spread: false,
             abandonable_norm: false,
+            group_payoff_imitation: false,
             commitment_seed_share_bps: COMMITMENT_SEED_SHARE_BPS_DEFAULT,
             imitation_period: COMMITMENT_NORM_IMITATION_PERIOD_DEFAULT,
             imitation_window: COMMITMENT_NORM_IMITATION_WINDOW_DEFAULT,
@@ -5335,6 +5345,14 @@ impl SettlementConfig {
         cfg
     }
 
+    pub fn frontier_group_payoff_imitation() -> Self {
+        let mut cfg = Self::frontier_abandonable_norm();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.group_payoff_imitation = true;
+        }
+        cfg
+    }
+
     /// S22f — the **earned-capital composition variant** (SECONDARY, never required for the headline
     /// verdict): [`Self::frontier_cultivation_capital`] (the S22d durable-capital colony) expanded to
     /// [`ENDOWED_ROSTER_HOUSEHOLDS`] with the voluntary commitment gate on top. Tests whether the
@@ -5793,6 +5811,9 @@ pub struct CommitmentNormCopyRow {
     pub copier_score_bps: u64,
     pub model_score_bps: u64,
     pub positive_pre_copy_advantage: bool,
+    pub adopter_share_gap_bps: i64,
+    pub group_imitation: bool,
+    pub aligned_group_adoption_pre_core: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -5819,6 +5840,13 @@ struct CommitmentNormScore {
     food_bps: u64,
     salt_bps: u64,
     total_bps: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CommitmentNormGroupCandidate {
+    center_id: AgentId,
+    score: CommitmentNormScore,
+    adopter_share_bps: u64,
 }
 
 struct Colonist {
@@ -6181,6 +6209,8 @@ pub struct Settlement {
     commitment_norm_adoptions: u64,
     commitment_norm_abandonments: u64,
     commitment_norm_imitation_adopters: BTreeSet<AgentId>,
+    commitment_norm_group_covariance_sum: i128,
+    commitment_norm_group_covariance_count: u64,
     /// S22d: in-flight per-builder durable-cultivation-tool projects (a
     /// [`ProjectTemplateId::BuildCultivationTool`] each). Each holds a cultivating builder's own
     /// committed WOOD + advancing labor; on completion the plow credits the builder's stock and
@@ -6582,6 +6612,7 @@ struct ChainRuntime {
     commitment_fiat_pin: u16,
     commitment_norm_spread: bool,
     abandonable_norm: bool,
+    group_payoff_imitation: bool,
     commitment_seed_share_bps: u16,
     imitation_period: u64,
     imitation_window: u64,
@@ -8660,6 +8691,7 @@ impl Settlement {
                 commitment_fiat_pin: chain.commitment_fiat_pin,
                 commitment_norm_spread: chain.commitment_norm_spread,
                 abandonable_norm: chain.abandonable_norm,
+                group_payoff_imitation: chain.group_payoff_imitation,
                 commitment_seed_share_bps: chain.commitment_seed_share_bps,
                 imitation_period: chain.imitation_period,
                 imitation_window: chain.imitation_window,
@@ -8755,6 +8787,8 @@ impl Settlement {
             commitment_norm_adoptions: 0,
             commitment_norm_abandonments: 0,
             commitment_norm_imitation_adopters: BTreeSet::new(),
+            commitment_norm_group_covariance_sum: 0,
+            commitment_norm_group_covariance_count: 0,
             cultivation_tool_builds: Vec::new(),
             next_cultivation_tool_project_id: 0,
             cultivation_tool_producers: BTreeSet::new(),
@@ -8902,11 +8936,55 @@ impl Settlement {
         if share_bps == 0 {
             return;
         }
+        if self.group_payoff_imitation_active() && COMMITMENT_NORM_SEED_CLUSTER {
+            self.init_commitment_norm_cluster_seed(seed, share_bps);
+            return;
+        }
         for colonist in &mut self.colonists {
             let seeded = commitment_norm_seeded(seed, colonist.id, share_bps);
             colonist.adopts_commitment_norm = seeded;
             colonist.commitment_norm_seed_adopter = seeded;
         }
+    }
+
+    fn init_commitment_norm_cluster_seed(&mut self, seed: u64, share_bps: u16) {
+        let target = (self.colonists.len().saturating_mul(usize::from(share_bps))
+            / usize::try_from(COMMITMENT_NORM_SCORE_BPS).expect("score bps fits usize"))
+        .max(1)
+        .min(self.colonists.len());
+        let center = commitment_norm_seed_cluster_center(
+            seed,
+            self.world.grid().width(),
+            self.world.grid().height(),
+        );
+        let exchange_pos = self
+            .world
+            .stockpile(self.exchange)
+            .map(|stockpile| stockpile.pos)
+            .unwrap_or(Pos::new(0, 0));
+        let mut ranked: Vec<(u32, u64, usize)> = self
+            .colonists
+            .iter()
+            .enumerate()
+            .map(|(slot, colonist)| {
+                let pos = self.commitment_norm_seed_anchor_pos(colonist, exchange_pos);
+                (pos.manhattan(center), colonist.id.0, slot)
+            })
+            .collect();
+        ranked.sort_unstable_by_key(|&(distance, id, _)| (distance, id));
+        for &(_, _, slot) in ranked.iter().take(target) {
+            self.colonists[slot].adopts_commitment_norm = true;
+            self.colonists[slot].commitment_norm_seed_adopter = true;
+        }
+    }
+
+    fn commitment_norm_seed_anchor_pos(&self, colonist: &Colonist, exchange_pos: Pos) -> Pos {
+        colonist
+            .home_node
+            .or(colonist.node)
+            .and_then(|node| self.world.node(node).map(|node| node.pos))
+            .or_else(|| self.world.agent_pos(colonist.id))
+            .unwrap_or(exchange_pos)
     }
 
     /// S22e: endow a MINORITY of lineage households with one durable cultivation tool (the plow) at
@@ -9121,6 +9199,8 @@ impl Settlement {
             commitment_norm_adoptions: 0,
             commitment_norm_abandonments: 0,
             commitment_norm_imitation_adopters: BTreeSet::new(),
+            commitment_norm_group_covariance_sum: 0,
+            commitment_norm_group_covariance_count: 0,
             cultivation_tool_builds: Vec::new(),
             next_cultivation_tool_project_id: 0,
             cultivation_tool_producers: BTreeSet::new(),
@@ -15285,6 +15365,12 @@ impl Settlement {
             .is_some_and(chain_runtime_abandonable_norm_active)
     }
 
+    fn group_payoff_imitation_active(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(chain_runtime_group_payoff_imitation_active)
+    }
+
     /// S22f: the configured commitment binding length (econ ticks), falling back to the pinned
     /// default for a settlement with no chain. Consulted only while the commitment path is active.
     fn commitment_term(&self) -> u16 {
@@ -15641,6 +15727,9 @@ impl Settlement {
                     copier_score_bps: own_score.total_bps,
                     model_score_bps: model_score.total_bps,
                     positive_pre_copy_advantage: model_score.total_bps > own_score.total_bps,
+                    adopter_share_gap_bps: 0,
+                    group_imitation: false,
+                    aligned_group_adoption_pre_core: false,
                 },
             ));
         }
@@ -15655,7 +15744,161 @@ impl Settlement {
         }
     }
 
+    fn run_group_payoff_imitation(&mut self) {
+        let Some(chain) = self.chain.as_ref() else {
+            return;
+        };
+        let period = chain.imitation_period;
+        let window = chain.imitation_window;
+        let margin = chain.imitation_margin_bps;
+        let radius = chain.imitation_radius;
+        let max_models = chain.imitation_max_models;
+        let food_target = chain.food_window_target;
+        let no_imitation = chain.no_imitation;
+        let random_imitation = chain.random_imitation;
+        let salt_in_score = chain.salt_in_score;
+        if no_imitation || period == 0 || window == 0 || self.econ_tick == 0 {
+            return;
+        }
+        if !self.econ_tick.is_multiple_of(period) {
+            return;
+        }
+
+        let live = self.live_colonist_slots.clone();
+        let exchange_stockpile_pos = self
+            .world
+            .stockpile(self.exchange)
+            .map(|stockpile| stockpile.pos);
+        let exchange_pos = exchange_stockpile_pos.unwrap_or(Pos::new(0, 0));
+        let committed_core_count = self.live_committed_count();
+        let mut copies: Vec<(usize, bool, CommitmentNormCopyRow)> = Vec::new();
+
+        for &slot in &live {
+            let (copier_id, current_norm_bit) = {
+                let colonist = &self.colonists[slot];
+                if !colonist.alive {
+                    continue;
+                }
+                (colonist.id, colonist.adopts_commitment_norm)
+            };
+            let Some(own_group) = self.commitment_norm_group_candidate(
+                slot,
+                &live,
+                window,
+                food_target,
+                salt_in_score,
+                radius,
+                exchange_pos,
+            ) else {
+                continue;
+            };
+            let models = self.commitment_norm_observation_set(
+                slot,
+                &live,
+                exchange_stockpile_pos,
+                window,
+                radius,
+                max_models,
+            );
+            if models.is_empty() {
+                continue;
+            }
+            let observed_groups: Vec<CommitmentNormGroupCandidate> = models
+                .iter()
+                .filter_map(|&model_slot| {
+                    self.commitment_norm_group_candidate(
+                        model_slot,
+                        &live,
+                        window,
+                        food_target,
+                        salt_in_score,
+                        radius,
+                        exchange_pos,
+                    )
+                })
+                .collect();
+            if observed_groups.is_empty() {
+                continue;
+            }
+
+            let mut all_groups = Vec::with_capacity(observed_groups.len() + 1);
+            all_groups.push(own_group.clone());
+            all_groups.extend(observed_groups.iter().cloned());
+            self.record_commitment_norm_group_covariance(&all_groups);
+
+            let chosen = if random_imitation {
+                let draw = deterministic_mix64(
+                    COMMITMENT_NORM_RANDOM_SALT
+                        ^ self.econ_tick.rotate_left(17)
+                        ^ copier_id.0.rotate_left(7),
+                );
+                Some(observed_groups[(draw as usize) % observed_groups.len()].clone())
+            } else {
+                all_groups
+                    .iter()
+                    .max_by_key(|group| {
+                        (group.score.total_bps, std::cmp::Reverse(group.center_id.0))
+                    })
+                    .filter(|group| {
+                        group
+                            .score
+                            .total_bps
+                            .saturating_sub(own_group.score.total_bps)
+                            >= margin
+                    })
+                    .cloned()
+            };
+            let Some(best_group) = chosen else {
+                continue;
+            };
+            let adopter_share_gap_bps =
+                best_group.adopter_share_bps as i64 - own_group.adopter_share_bps as i64;
+            let copied_norm_bit =
+                if adopter_share_gap_bps >= COMMITMENT_NORM_ADOPTER_SHARE_GAP_BPS as i64 {
+                    true
+                } else if adopter_share_gap_bps <= -(COMMITMENT_NORM_ADOPTER_SHARE_GAP_BPS as i64) {
+                    false
+                } else {
+                    continue;
+                };
+            let driver =
+                commitment_norm_copy_driver(own_group.score, best_group.score, salt_in_score);
+            copies.push((
+                slot,
+                copied_norm_bit,
+                CommitmentNormCopyRow {
+                    tick: self.econ_tick,
+                    copier: copier_id.0,
+                    model: best_group.center_id.0,
+                    copied_norm_bit,
+                    driver,
+                    copier_score_bps: own_group.score.total_bps,
+                    model_score_bps: best_group.score.total_bps,
+                    positive_pre_copy_advantage: best_group.score.total_bps
+                        > own_group.score.total_bps,
+                    adopter_share_gap_bps,
+                    group_imitation: true,
+                    aligned_group_adoption_pre_core: !current_norm_bit
+                        && copied_norm_bit
+                        && best_group.score.total_bps > own_group.score.total_bps
+                        && adopter_share_gap_bps > 0
+                        && committed_core_count < ABANDONABLE_NORM_CORE_MARGIN,
+                },
+            ));
+        }
+
+        for (slot, copied_norm_bit, row) in copies {
+            if self.stage_or_apply_commitment_norm_bit(slot, copied_norm_bit) {
+                self.commitment_norm_copy_events.push(row);
+            }
+        }
+    }
+
     fn run_abandonable_norm_imitation(&mut self) {
+        if self.group_payoff_imitation_active() {
+            self.run_group_payoff_imitation();
+            return;
+        }
         let Some(chain) = self.chain.as_ref() else {
             return;
         };
@@ -15760,6 +16003,9 @@ impl Settlement {
                     copier_score_bps: own_score.total_bps,
                     model_score_bps: model_score.total_bps,
                     positive_pre_copy_advantage: model_score.total_bps > own_score.total_bps,
+                    adopter_share_gap_bps: 0,
+                    group_imitation: false,
+                    aligned_group_adoption_pre_core: false,
                 },
             ));
         }
@@ -15863,6 +16109,168 @@ impl Settlement {
         models.sort_unstable_by_key(|&(distance, id, _)| (distance, id));
         models.truncate(usize::from(max_models));
         models.into_iter().map(|(_, _, slot)| slot).collect()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commitment_norm_group_candidate(
+        &self,
+        center_slot: usize,
+        live: &[usize],
+        window: u64,
+        food_target: u64,
+        include_salt: bool,
+        radius: u16,
+        exchange_pos: Pos,
+    ) -> Option<CommitmentNormGroupCandidate> {
+        let center = self.colonists.get(center_slot)?;
+        if !center.alive {
+            return None;
+        }
+        let members = self.commitment_norm_group_members(center_slot, live, radius, exchange_pos);
+        if members.len() < COMMITMENT_NORM_GROUP_MIN_SIZE {
+            return None;
+        }
+        let score =
+            self.commitment_norm_group_score(&members, window, food_target, include_salt)?;
+        let adopter_share_bps = self.commitment_norm_group_adopter_share_bps(&members);
+        Some(CommitmentNormGroupCandidate {
+            center_id: center.id,
+            score,
+            adopter_share_bps,
+        })
+    }
+
+    /// A group's members are drawn by Manhattan radius around the center's ECONOMIC anchor
+    /// position (its assigned resource node, falling back to its literal world position, then
+    /// the exchange), the same anchor `init_commitment_norm_cluster_seed` ranks the clustered
+    /// seed by (`commitment_norm_seed_anchor_pos`) — not the center's instantaneous world
+    /// position. Every colonist starts (and idle colonists remain) at the shared exchange
+    /// tile, and gatherers/cultivators complete their haul-and-return cycle well inside one
+    /// `imitation_period`, so a literal-position radius sampled at an imitation checkpoint
+    /// collapses every group to the whole colony (no group can ever out-score another). The
+    /// anchor is the colonist's persistent economic role (which resource it works), so it gives
+    /// GROUP_RADIUS genuine neighbourhoods to distinguish without moving anyone or reading any
+    /// adopter/committer/vocation field (a node id is a location, not an institution signal).
+    fn commitment_norm_group_members(
+        &self,
+        center_slot: usize,
+        live: &[usize],
+        radius: u16,
+        exchange_pos: Pos,
+    ) -> Vec<usize> {
+        let Some(center) = self.colonists.get(center_slot) else {
+            return Vec::new();
+        };
+        let center_pos = self.commitment_norm_seed_anchor_pos(center, exchange_pos);
+        let mut members: Vec<(u64, usize)> = Vec::new();
+        for &slot in live {
+            let colonist = &self.colonists[slot];
+            if !colonist.alive {
+                continue;
+            }
+            let pos = self.commitment_norm_seed_anchor_pos(colonist, exchange_pos);
+            if center_pos.manhattan(pos) <= u32::from(radius) {
+                members.push((colonist.id.0, slot));
+            }
+        }
+        members.sort_unstable_by_key(|&(id, _)| id);
+        members.into_iter().map(|(_, slot)| slot).collect()
+    }
+
+    fn commitment_norm_group_score(
+        &self,
+        members: &[usize],
+        window: u64,
+        food_target: u64,
+        include_salt: bool,
+    ) -> Option<CommitmentNormScore> {
+        if members.len() < COMMITMENT_NORM_GROUP_MIN_SIZE {
+            return None;
+        }
+        let mut alive_bps = 0u64;
+        let mut hunger_bps = 0u64;
+        let mut food_bps = 0u64;
+        let mut salt_bps = 0u64;
+        let mut scored = 0u64;
+        for &slot in members {
+            let Some(score) = self.commitment_norm_score(slot, window, food_target, include_salt)
+            else {
+                continue;
+            };
+            scored = scored.saturating_add(1);
+            alive_bps = alive_bps.saturating_add(score.alive_bps);
+            hunger_bps = hunger_bps.saturating_add(score.hunger_bps);
+            food_bps = food_bps.saturating_add(score.food_bps);
+            salt_bps = salt_bps.saturating_add(score.salt_bps);
+        }
+        if scored < COMMITMENT_NORM_GROUP_MIN_SIZE as u64 {
+            return None;
+        }
+        let count = scored;
+        let alive_bps = alive_bps / count;
+        let hunger_bps = hunger_bps / count;
+        let food_bps = food_bps / count;
+        let salt_bps = salt_bps / count;
+        let total_bps = COMMITMENT_NORM_ALIVE_WEIGHT
+            .saturating_mul(alive_bps)
+            .saturating_add(COMMITMENT_NORM_HUNGER_WEIGHT.saturating_mul(hunger_bps))
+            .saturating_add(COMMITMENT_NORM_FOOD_WEIGHT.saturating_mul(food_bps))
+            .saturating_add(COMMITMENT_NORM_SALT_WEIGHT.saturating_mul(salt_bps));
+        Some(CommitmentNormScore {
+            alive_bps,
+            hunger_bps,
+            food_bps,
+            salt_bps,
+            total_bps,
+        })
+    }
+
+    fn commitment_norm_group_adopter_share_bps(&self, members: &[usize]) -> u64 {
+        if members.is_empty() {
+            return 0;
+        }
+        let adopters = members
+            .iter()
+            .filter(|&&slot| self.colonists[slot].adopts_commitment_norm)
+            .count() as u64;
+        adopters.saturating_mul(COMMITMENT_NORM_SCORE_BPS) / members.len() as u64
+    }
+
+    fn record_commitment_norm_group_covariance(&mut self, groups: &[CommitmentNormGroupCandidate]) {
+        if groups.len() < 2 {
+            return;
+        }
+        let n = groups.len() as i128;
+        let sum_score: i128 = groups
+            .iter()
+            .map(|group| i128::from(group.score.total_bps))
+            .sum();
+        let sum_share: i128 = groups
+            .iter()
+            .map(|group| i128::from(group.adopter_share_bps))
+            .sum();
+        let sum_product: i128 = groups
+            .iter()
+            .map(|group| i128::from(group.score.total_bps) * i128::from(group.adopter_share_bps))
+            .sum();
+        let covariance = (sum_product * n - sum_score * sum_share) / (n * n);
+        self.commitment_norm_group_covariance_sum = self
+            .commitment_norm_group_covariance_sum
+            .saturating_add(covariance);
+        self.commitment_norm_group_covariance_count = self
+            .commitment_norm_group_covariance_count
+            .saturating_add(1);
+    }
+
+    fn live_committed_count(&self) -> usize {
+        self.live_colonist_slots
+            .iter()
+            .filter(|&&slot| {
+                self.colonists
+                    .get(slot)
+                    .is_some_and(|colonist| colonist.alive && colonist.commitment_remaining > 0)
+            })
+            .count()
     }
 
     fn commitment_norm_score(
@@ -18502,6 +18910,10 @@ impl Settlement {
         self.abandonable_norm_active()
     }
 
+    pub fn group_payoff_imitation_on(&self) -> bool {
+        self.group_payoff_imitation_active()
+    }
+
     pub fn adopts_commitment_norm_of(&self, index: usize) -> bool {
         self.colonists
             .get(index)
@@ -18556,6 +18968,69 @@ impl Settlement {
             .iter()
             .filter(|row| row.positive_pre_copy_advantage)
             .count()
+    }
+
+    pub fn commitment_norm_aligned_group_adoptions(&self) -> usize {
+        self.commitment_norm_copy_events
+            .iter()
+            .filter(|row| row.aligned_group_adoption_pre_core)
+            .count()
+    }
+
+    pub fn commitment_norm_group_welfare_adopter_covariance(&self) -> f64 {
+        if self.commitment_norm_group_covariance_count == 0 {
+            return 0.0;
+        }
+        self.commitment_norm_group_covariance_sum as f64
+            / self.commitment_norm_group_covariance_count as f64
+    }
+
+    pub fn commitment_norm_group_covariance_observations(&self) -> u64 {
+        self.commitment_norm_group_covariance_count
+    }
+
+    /// Empirically exercises [`Self::commitment_norm_group_score`] itself (not a re-check of the
+    /// individual-score driver classifier): score a real live group, flip every member's
+    /// adopter/committer/vocation identity, rescore the SAME membership, and confirm the score is
+    /// bit-for-bit unchanged — proving the group aggregation reads none of those fields — then
+    /// revert the flip. Diagnostic-only: never called from an economic phase.
+    pub fn commitment_norm_group_score_purity_guard(&mut self) -> bool {
+        let Some(chain) = self.chain.as_ref() else {
+            return true;
+        };
+        let window = chain.imitation_window;
+        let food_target = chain.food_window_target;
+        let salt_in_score = chain.salt_in_score;
+        let members = self.live_colonist_slots.clone();
+        if members.len() < COMMITMENT_NORM_GROUP_MIN_SIZE {
+            return true;
+        }
+        let Some(before) =
+            self.commitment_norm_group_score(&members, window, food_target, salt_in_score)
+        else {
+            return true;
+        };
+        let saved: Vec<(bool, u16, Vocation)> = members
+            .iter()
+            .map(|&slot| {
+                let c = &self.colonists[slot];
+                (c.adopts_commitment_norm, c.commitment_remaining, c.vocation)
+            })
+            .collect();
+        for (&slot, &(adopts, remaining, _)) in members.iter().zip(saved.iter()) {
+            let c = &mut self.colonists[slot];
+            c.adopts_commitment_norm = !adopts;
+            c.commitment_remaining = if remaining == 0 { 1 } else { 0 };
+            c.vocation = Vocation::Unassigned;
+        }
+        let after = self.commitment_norm_group_score(&members, window, food_target, salt_in_score);
+        for (&slot, &(adopts, remaining, vocation)) in members.iter().zip(saved.iter()) {
+            let c = &mut self.colonists[slot];
+            c.adopts_commitment_norm = adopts;
+            c.commitment_remaining = remaining;
+            c.vocation = vocation;
+        }
+        after == Some(before)
     }
 
     pub fn commitment_norm_score_purity_guard(&self) -> bool {
@@ -20098,6 +20573,13 @@ impl Settlement {
                 out.push(16);
                 out.push(u8::from(chain.abandonable_norm));
             }
+            if self.group_payoff_imitation_active() {
+                out.push(17);
+                out.push(u8::from(chain.group_payoff_imitation));
+                out.extend_from_slice(&(COMMITMENT_NORM_GROUP_MIN_SIZE as u16).to_le_bytes());
+                out.extend_from_slice(&COMMITMENT_NORM_ADOPTER_SHARE_GAP_BPS.to_le_bytes());
+                out.push(u8::from(COMMITMENT_NORM_SEED_CLUSTER));
+            }
             // The staple mapping steers the next needs/scale phase for *any* chain,
             // role-choice or not, so it is included whenever a chain is active. The
             // G3b no-spread control shares the emergent config's physical state but
@@ -20482,6 +20964,7 @@ impl Settlement {
         let commitment_serialized = self.voluntary_cultivation_commitment_active();
         let commitment_norm_serialized = self.commitment_norm_spread_active();
         let abandonable_norm_serialized = self.abandonable_norm_active();
+        let group_payoff_norm_serialized = self.group_payoff_imitation_active();
         // S23a: carried grain source steers the next idle-forfeiture pass while a cultivator is
         // hauling or awaiting transfer credit from a plot. Gate it with private land tenure, which
         // implies the cultivation block is active.
@@ -20523,6 +21006,18 @@ impl Settlement {
                 // vocation/node but different homes diverge on the revert path, so the
                 // home is part of the future-behaviour identity whenever re-entry runs.
                 out.push(colonist.home_vocation.tag());
+                match colonist.home_node {
+                    Some(node) => {
+                        out.push(1);
+                        out.extend_from_slice(&node.0.to_le_bytes());
+                    }
+                    None => out.push(0),
+                }
+            } else if group_payoff_norm_serialized {
+                // S24c group anchors prefer `home_node` over the current node, so the
+                // home node steers future group membership whenever group-payoff imitation
+                // is active. `home_vocation` is intentionally omitted here because S24c's
+                // anchor does not read it.
                 match colonist.home_node {
                     Some(node) => {
                         out.push(1);
@@ -21236,6 +21731,10 @@ fn chain_runtime_abandonable_norm_active(chain: &ChainRuntime) -> bool {
     chain.abandonable_norm && chain_runtime_commitment_norm_spread_active(chain)
 }
 
+fn chain_runtime_group_payoff_imitation_active(chain: &ChainRuntime) -> bool {
+    chain.group_payoff_imitation && chain_runtime_abandonable_norm_active(chain)
+}
+
 /// S22e: the deterministic endowment-selection hash of `(world seed, household id)` — a SplitMix64
 /// finalizer with a dedicated salt, so the endowed households are stable per `(seed, roster)` and
 /// the draw does not collide with the founder-seed / lifespan / starting-age derivations. Ranking
@@ -21251,6 +21750,19 @@ fn endowment_hash(seed: u64, household_id: usize) -> u64 {
 const ENDOWMENT_SELECT_SALT: u64 = 0x5322_e0ca_b1e5_eed5;
 const COMMITMENT_NORM_SEED_SALT: u64 = 0x24a0_c011_7a51_5eed;
 const COMMITMENT_NORM_RANDOM_SALT: u64 = 0x24a0_c011_7a51_4a9d;
+const COMMITMENT_NORM_CLUSTER_CENTER_SALT: u64 = 0x24c0_11ec_1a57_0001;
+
+fn commitment_norm_seed_cluster_center(seed: u64, width: u16, height: u16) -> Pos {
+    let width = u64::from(width.max(1));
+    let height = u64::from(height.max(1));
+    let x = deterministic_mix64(seed ^ COMMITMENT_NORM_CLUSTER_CENTER_SALT) % width;
+    let y =
+        deterministic_mix64(seed.rotate_left(23) ^ COMMITMENT_NORM_CLUSTER_CENTER_SALT) % height;
+    Pos::new(
+        u16::try_from(x).expect("cluster x is bounded by grid width"),
+        u16::try_from(y).expect("cluster y is bounded by grid height"),
+    )
+}
 
 fn commitment_norm_seeded(seed: u64, id: AgentId, share_bps: u16) -> bool {
     let draw = deterministic_mix64(
@@ -26825,6 +27337,40 @@ mod tests {
             inert_bytes,
             inert_node.canonical_bytes(),
             "without edible grain, re-entry home state must not steer the digest"
+        );
+    }
+
+    #[test]
+    fn canonical_bytes_include_group_payoff_home_anchor() {
+        let on = SettlementConfig::frontier_group_payoff_imitation();
+        let on_bytes = Settlement::generate(7, &on).canonical_bytes();
+
+        let mut on_node = Settlement::generate(7, &on);
+        let node_slot = on_node
+            .colonists
+            .iter()
+            .position(|c| c.home_node.is_some())
+            .expect("a spatial gatherer with a home node");
+        on_node.colonists[node_slot].home_node = None;
+        assert_ne!(
+            on_bytes,
+            on_node.canonical_bytes(),
+            "S24c group anchors read home_node, so it must split the digest"
+        );
+
+        let off = SettlementConfig::frontier_abandonable_norm();
+        let off_bytes = Settlement::generate(7, &off).canonical_bytes();
+        let mut off_node = Settlement::generate(7, &off);
+        let off_slot = off_node
+            .colonists
+            .iter()
+            .position(|c| c.home_node.is_some())
+            .expect("a spatial gatherer with a home node");
+        off_node.colonists[off_slot].home_node = None;
+        assert_eq!(
+            off_bytes,
+            off_node.canonical_bytes(),
+            "with S24c off, home_node must not perturb the S24b digest"
         );
     }
 

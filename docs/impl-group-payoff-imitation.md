@@ -1,6 +1,35 @@
 # impl-43 — S24c: Group-payoff imitation (does group-level selection preserve the institution?)
 
-Status (spec): SPEC-READY (Codex round 1: 4 P1 + 3 P2; round 2: confirmed reachable + no punch-list). **Honest framing (Codex): S24c tests whether committed production creates a LOCALLY OBSERVABLE group-welfare advantage. If it does not — i.e. adopter-heavy groups do NOT out-welfare buyer-heavy groups (a live risk, since producers may feed OTHER groups) — S24c lands `NormDiesBack`/`GroupSignalVacuous`, which is not a spec flaw but the exact hypothesis failing, and the S24 arc CLOSES on the knife-edge/tragedy-of-imitation result. Keep the strict ≥3/5 bar (don't downgrade); 1-2 clean seeds → report mixed/band-qualified, not success. Do NOT change the score to contribution-accounting (that weakens the anti-smuggling line); first test whether generic group welfare is enough.** Base: master `e654443` (S24b landed). **Third slice of the
+Status (landed): FINDING — **`NormDiesBack` 5/5** (Codex review-of-results relabel from the implementer's
+`GroupSignalVacuous`; `CleanInstitutionSpread` 0/5, `GroupDriftNotSelection` 0/5). **The S24 arc's terminal,
+arc-closing result.** Two review catches made this honest (rigor paid off, twice): **(1) a MECHANICAL
+ARTIFACT** — the first passes keyed group membership on colonists' literal instantaneous world position, and
+this base colony's non-hauling majority shares the exchange tile, so every "group" collapsed to the whole live
+population (zero group-copy events at any radius/margin — the reviewers caught it empirically). Round 3 fixed
+it by keying group membership on each colonist's economic anchor (`home_node`, canonicalized ON-only under the
+active flag, digest-safe), so real distinct local neighbourhoods form and **the group mechanism genuinely
+fires**: `group_copy_events=10` every seed, `covariance_samples≈5000`. **(2) a VERDICT MISLABEL (Codex
+review-of-results, S23a/S24a pattern):** the implementer's classifier routed `GroupSignalVacuous` whenever no
+*aligned* adoption occurred — but per the spec's own definition `GroupSignalVacuous` means "no group-welfare
+signal was observed", contradicted by `positive_group_copy_advantages=10` every seed and a **positive**
+welfare↔adopter-share covariance in **4/5** seeds (+2045/+3512/+908/+2676; adverse −911 on seed 19). A signal
+that fires and selects *away* is `NormDiesBack`, not vacuous (a negative covariance is an adverse signal, not
+"no signal"). Test-only classifier fix: `GroupSignalVacuous` now requires no meaningful signal
+(`positive_group_copy_advantages==0` or no samples); the fire-but-die-back case routes to `NormDiesBack` →
+**`NormDiesBack` 5/5**. The economic reading: the group mechanism fires, but every copy is an **abandonment**
+(`adoptions=0, abandonments=10`) because **the best-welfare group is buyer-heavy** (buyers 37–48 alive,
+post_bought 15k–32k) — so the adopter-share gradient points *away* from adoption, and even the seeded adopters
+drop the norm. Group-welfare imitation does **not** rescue the institution.
+**Honest scope limitation (disclosed):** the mechanism fires cleanly for the *anchored* agents (the clustered
+seed + hauling vocations); the non-hauling Consumer/Unassigned majority still shares the exchange tile, so a
+synthetic anchor for them was tried and REJECTED (it made the matched-random null / `commitment_term=1`
+unprofitable control produce forbidden spread — see `.rb-lite/runs/s24c/challenges-round-3.md`). So S24c tests
+group-payoff as far as this base's spatial structure allows; a fully spatially-dispersed colony is future
+work. The result — group-welfare imitation selects away from the institution because the best-welfare unit is
+buyer-dominated — holds within that scope. **Codex review-of-results: PASS-WITH-CAVEATS** (label ruling
+`NormDiesBack 5/5`; economic interpretation sound; arc-closing). rb-lite converged CLEAN in 3 rounds (fresh
+S24c reviewers file; second clean run in a row). Verified: mechanism fires, goldens byte-identical off, guards
+hold, individual_score_control reproduces NormDiesBack. **Honest framing (Codex): S24c tests whether committed production creates a LOCALLY OBSERVABLE group-welfare advantage. If it does not — i.e. adopter-heavy groups do NOT out-welfare buyer-heavy groups (a live risk, since producers may feed OTHER groups) — S24c lands `NormDiesBack`/`GroupSignalVacuous`, which is not a spec flaw but the exact hypothesis failing, and the S24 arc CLOSES on the knife-edge/tragedy-of-imitation result. Keep the strict ≥3/5 bar (don't downgrade); 1-2 clean seeds → report mixed/band-qualified, not success. Do NOT change the score to contribution-accounting (that weakens the anti-smuggling line); first test whether generic group welfare is enough.** Base: master `e654443` (S24b landed). **Third slice of the
 S24 INSTITUTION-SELECTION arc** — the clean-positive test via a genuinely new mechanism (Codex-scoped:
 "group-payoff imitation, not hysteresis"). Composes on S24b (`abandonable_norm`), changing exactly one thing:
 imitation is scored on **local GROUP welfare**, not individual welfare.
