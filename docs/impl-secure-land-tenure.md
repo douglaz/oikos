@@ -64,6 +64,27 @@ with the frontier's openness set by how fast heirless plots recycle. This makes 
 coexist with the buyer economy?** — a distinctly private-property question S23a never reached (its 12-tick
 churn destroyed plots before any generational dynamic could run).
 
+**FERTILITY + THE INHERITANCE REGIME (partible vs impartible) — a first-class axis.** OIKOS already models
+the **Malthusian preventive check**: households grow toward `max_household_size` only while every member's
+hunger is under a ceiling (food-gated fertility), so "numerous children competing for a fixed food/land base"
+is real. But land inheritance is currently **impartible**: `settle_estate_to_heirs` gives a plot to a *single*
+household heir, and plots are **atomic** (a ResourceNode with fixed regen/cap — no splitting). Land is *not*
+divided among children today. This is the primogeniture branch, and the two regimes give **different, both
+historically-real** outcomes that S23c should be able to show via an `inheritance_regime` axis:
+- **`impartible`** (primogeniture; runs on existing machinery): one heir keeps the whole plot; the *other*
+  children inherit **nothing → a growing LANDLESS class**. Land scarcity manifests as *more landless people*,
+  not smaller plots — and the landless younger children are exactly the **buyer/labor tier**, so impartible
+  secure tenure could itself *produce* the two-tier economy (landed lineage + expanding landless buyers).
+  Fertility (`max_household_size` / birth interval) dials how fast the landless class grows.
+- **`partible`** (fragmentation; needs a bounded engine change): a plot's capacity is **partitioned among all
+  heirs** (reuse `regen`/`cap` + `LAND_VIABLE_REGEN_FLOOR` — once a share falls below the floor the plot is
+  non-viable). Over generations, holdings shrink → *morcellement* → Malthusian collapse (pre-famine Ireland /
+  partible-France). Land scarcity manifests as *smaller plots*.
+**Recommended sequencing:** do **`impartible` first** (existing atomic plots; the landless-younger-children →
+buyer-tier dynamic is precisely S23c's two-tier question), with **`partible` as a fast-follow** once
+plot-divisibility (capacity partition + viability floor) is added. Track **land-per-capita** across generations
+either way — the whole point is to watch it fall under fixed land + growing population.
+
 **REALISM DECISION on inheritance (Codex to rule):** in the model inheritance is **not universal** — only
 lineage households have heirs. Real land inheritance is universal. If only lineages retain land, secure
 heritable tenure will *mechanically* concentrate land in lineages — potentially an **artifact of the
@@ -121,14 +142,24 @@ unless it destabilizes the base.
   (owner-lineage Gini / top-k share rises across generations) AND the buyer tier is squeezed out — a
   landed-aristocracy collapse. (If concentration rises but buyers *survive*, that is a coexisting
   landed-class outcome, reported, not a failure.)
+- `LandlessProletariat` — (`impartible` regime) the landless non-heir children grow into an ever-larger
+  landless majority; a *finding*, and the borderline case of the healthy two-tier outcome — success requires
+  the landless tier to still *materially buy* (a functioning buyer economy), failure is when they can't
+  (immiseration / mass starvation as land-per-capita falls).
+- `FragmentationCollapse` — (`partible` regime) plots subdivide below `LAND_VIABLE_REGEN_FLOOR` over
+  generations (morcellement); land-per-capita falls until holdings are non-viable and the colony can't feed
+  itself (Malthusian collapse).
 - `SeedClusterOnly` / `NoStableClass` — no bounded persistent owner-cultivator cohort forms.
 - `StillThrashes` — (sanity, at the `idle_forfeiture_horizon=12` end of the sweep) reproduces S23a.
 - `SecureTenureStableClass` — a bounded owner-cultivator class + surviving buyer tier forms and persists across
   generations under secure tenure (concentration bounded, not runaway).
 
 **Generational tracking (required):** report, per generation, the owner set, owner-lineage share / land-Gini,
-heir-inheritance vs heirless-recycle counts, and buyer-tier survival — so the result shows the *trajectory*
-across generations (concentrating? stable? recycling?), which is the whole point of secure heritable tenure.
+**land-per-capita** (owned land / population — the Malthusian pressure), the **landless share** (agents with no
+plot + no heir-claim), heir-inheritance vs heirless-recycle counts, plot-viability (under `partible`), and
+buyer-tier survival — so the result shows the *trajectory* across generations (concentrating? fragmenting?
+producing a landless buyer tier? collapsing?), which is the whole point of secure heritable tenure under a
+growing population.
 
 Contrast axis (the whole point): the `idle_forfeiture_horizon` sweep should show `StillThrashes` at 12 and
 (hypothesis) `SecureTenureStableClass` at ∞, with the long-horizon in between — isolating the security variable.
