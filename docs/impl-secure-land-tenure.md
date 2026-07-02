@@ -39,7 +39,7 @@ land looks like. If S23c → inert/static or still no stable class, that is the 
 even when secure, does not by itself produce the two-tier economy (and the contrast with S22f's contract
 stands).
 
-## 2. The design (headline + a realism spectrum) — OPEN QUESTIONS FLAGGED FOR CODEX
+## 2. The design (headline + a realism spectrum) — DECISIONS PINNED
 
 **Headline `secure_land_tenure` (default off):** the S23a tenure, with `forfeit_on_idle = false` promoted to
 the headline (secure title: own it forever, cultivate or not), everything else S23a (homesteading claim,
