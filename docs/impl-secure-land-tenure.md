@@ -1,6 +1,6 @@
 # impl-45 — S23c: Secure private land tenure (was it *insecurity*, not private property, that broke S23a?)
 
-Status (spec): DRAFT — design decisions LOCKED (user): (1) UNIVERSAL HEIRS — every owner has a determinable heir (concentration is emergent, not a lineage-only artifact); (2) BOTH inheritance regimes IN SCOPE this milestone — an `inheritance_regime ∈ {impartible, partible}` axis, including the bounded plot-divisibility engine work for partible. Ready for Codex spec-review. Base: master `855be95`. **Re-opens the S23 private-property arc**
+Status (spec): SPEC-READY (Codex spec-review: NEEDS-REVISION with a 6-item punch-list, all folded in — numeric SecureTenureStableClass/TenureInertStaticPin classifier, predeclared plot-density band {24,48}, same-base-as-S23a primary + S22f robustness-only, deterministic universal-heir order + conservation invariants, partible = fractional capacity shares on the same node (no subdivision), numeric finding-mode thresholds; bar-reframe confirmed legitimate). User decisions LOCKED: universal heirs + both `inheritance_regime ∈ {impartible, partible}` in one milestone. Base: master `855be95`. **Re-opens the S23 private-property arc**
 with the honest counterfactual the S23a critique demands. Composes on the S23a machinery
 (`private_land_tenure`: plot registry, homesteading claim, owner-only harvest, inheritance, the population-scaled
 spatial layout) — changing exactly the thing whose realism was in doubt: **land tenure becomes SECURE.**
@@ -97,65 +97,67 @@ but disclose it prominently** and treat lineage-concentration as a known feature
 plot passes on death regardless of lineage and land concentration is an EMERGENT outcome of a fair rule, not a
 built-in lineage asymmetry. Keep it goldens-preserving (gated behind the secure-tenure mode, digested ON-only).
 
-**OPEN DESIGN QUESTIONS (Codex to resolve in spec-review):**
-0. **The inheritance realism decision above** — universal heirs (a) vs disclosed lineage-only (b) — and whether
-   (a) is a safe, goldens-preserving engine change.
-1. **The static-pin vs healthy-class distinction (the crux).** Under secure tenure, a fixed set of first-movers
-   owns the plots permanently. Is that (a) the *desired* outcome — a **stable bounded owner-cultivator class**
-   who cultivate their secure plots + a **surviving buyer tier** who buy the food they produce (the two-tier
-   economy = SUCCESS), or (b) a degenerate **static pin** (owners never cultivate/trade, nothing moves)? What
-   metric distinguishes a *healthy stable class* (owners actually cultivate + produce + buyers materially buy)
-   from an *inert pin*? The success bar must reward the former and fail the latter.
-2. **What bounds ownership to a MINORITY + keeps a buyer tier?** With secure tenure + open homesteading, if
-   every agent homesteads a plot → universal ownership (`HardBarrier`, no buyers). The land-capacity axis
-   (scarce-but-adequate plots vs population) is the lever: too many plots → everyone owns → no buyers; too few
-   → HardBarrier. Is there a plot-density band where a **bounded owner minority + surviving buyer majority**
-   emerges under secure tenure? (S23a's population-scaled axis is the tool.)
-3. **Is the base "healthy" enough, or does it need S22f?** S23a's base (S22a on, population-scaled) had its
-   buyer tier collapsed *by* the forfeiture thrash. On the *same* base with secure tenure, does the buyer tier
-   *survive* (proving forfeiture was the culprit), or was the base already fragile? Should the healthy-base
-   variant layer secure tenure on the **S22f two-tier-preserving** regime, or does that conflate land tenure
-   with the commitment institution? (Codex ruling needed: same-base-as-S23a for a clean isolation, vs
-   S22f-base for a guaranteed-healthy two-tier economy.)
-4. **Relation to S23a's `no_forfeit → TenureLeverInert` result.** S23a already ran `no_forfeit` as a control
-   and classified it inert *by S23a's churn-drop bar*. S23c's claim is that the RIGHT bar for secure tenure is
-   not "churn drops" but "**a stable bounded owner-cultivator class + surviving buyer tier forms**" — a
-   two-tier-economy bar, not a stickiness-churn bar. Codex to confirm this reframing is legitimate (not
-   success-bar shopping) — i.e. secure tenure is a *different question* (does secure property build a class?)
-   than S23a's (does forfeiture make occupation sticky?), warranting a different, predeclared bar.
+**PINNED DECISIONS (Codex spec-review — all open questions resolved):**
+0. **Universal heirs — LOCKED (a).** Every owner has a determinable heir (§2 above); the deterministic heir
+   order + conservation invariants are pinned in §4.
+1. **Static-pin vs healthy-class — PINNED numerically (§3).** A stable owner set that does NOT cultivate/produce
+   /support-buyers is `TenureInertStaticPin` (a *finding*, not success); the healthy two-tier economy is
+   `SecureTenureStableClass`. Secure tenure does NOT trivially win — low churn is *necessary but not sufficient*.
+2. **Plot-density band — PINNED `{24,48}` primary** (predeclared, chosen before results). `12` = scarcity /
+   seed-cluster boundary probe; `96` = expected `UniversalOwnershipNoBuyers`/`HardBarrier` (open homesteading
+   absorbs too many into ownership). Success = within `{24,48}`, ≥1 density passes in ≥3/5 seeds, and adjacent
+   densities classify honestly.
+3. **Base — PINNED same-base-as-S23a as the primary** (the clean isolation: same seeds, same population-scaled
+   layout, same machinery, ONLY security changes). "Healthy once forfeiture is off" is testable on this base
+   with the §3 metric. **S22f is a labeled robustness appendix/control ONLY, not the headline** — if S23c only
+   works on S22f, the finding is "secure land composes with the commitment institution", not "forfeiture broke
+   S23a".
+4. **Bar reframe — CONFIRMED legitimate (not success-bar shopping), because predeclared exactly as §3.** S23a
+   asked "do tenure rules reduce churn/stickiness"; S23c asks "does secure heritable exclusion create a
+   functioning owner-cultivator + buyer economy" — a different question. **Honesty guard: still report S23a's
+   old churn/drop metrics, as NON-success metrics** (low churn necessary for secure title, not sufficient for
+   success).
 
-## 3. Success / finding modes (DRAFT — to be pinned with Codex)
+## 3. Success / finding modes (PINNED — Codex spec-review)
 
-**Primary success = `SecureTenureStableClass`** (majority of seeds, within a disclosed plot-density band):
-1. **Bounded owner minority** — owner share ∈ `[MIN, MAX]` (a minority own plots; not universal `HardBarrier`,
-   not seed-only).
-2. **Owners actually cultivate + produce** — the owner cohort persistently cultivates its secure plots and
-   produces food (NOT an inert pin: cultivation + grain output materially above zero, sustained).
-3. **A surviving non-owner buyer tier materially buys** — the non-owner majority survives and buys the food the
-   owners produce (post-money bought ≥ floor) — the two-tier economy the S23a thrash destroyed.
-4. **Stable membership** — the owner-cultivator cohort is persistent (low churn — secure tenure means owners
-   don't rotate), a genuine *class*, not S23a's rotating thrash.
-5. Money + mortality + provenance + conservation hold; goldens byte-identical off.
+**Evaluation window:** the final 50% of the run, spanning ≥3 completed inheritance generations where possible.
+All shares/thresholds are consts; do NOT fit.
 
-**Finding modes (DRAFT):**
-- `TenureInertStaticPin` — owners hold plots but don't cultivate/produce/trade meaningfully (a degenerate pin,
-  not a class).
-- `UniversalOwnershipNoBuyers` — plot density too high, everyone owns, buyer tier gone (`HardBarrier`).
-- `HereditaryConcentration` — over generations, land concentrates into a few long-lived lineages
-  (owner-lineage Gini / top-k share rises across generations) AND the buyer tier is squeezed out — a
-  landed-aristocracy collapse. (If concentration rises but buyers *survive*, that is a coexisting
-  landed-class outcome, reported, not a failure.)
-- `LandlessProletariat` — (`impartible` regime) the landless non-heir children grow into an ever-larger
-  landless majority; a *finding*, and the borderline case of the healthy two-tier outcome — success requires
-  the landless tier to still *materially buy* (a functioning buyer economy), failure is when they can't
-  (immiseration / mass starvation as land-per-capita falls).
-- `FragmentationCollapse` — (`partible` regime) plots subdivide below `LAND_VIABLE_REGEN_FLOOR` over
-  generations (morcellement); land-per-capita falls until holdings are non-viable and the colony can't feed
-  itself (Malthusian collapse).
-- `SeedClusterOnly` / `NoStableClass` — no bounded persistent owner-cultivator cohort forms.
-- `StillThrashes` — (sanity, at the `idle_forfeiture_horizon=12` end of the sweep) reproduces S23a.
-- `SecureTenureStableClass` — a bounded owner-cultivator class + surviving buyer tier forms and persists across
-  generations under secure tenure (concentration bounded, not runaway).
+**Primary success = `SecureTenureStableClass`** (in ≥3/5 seeds, at ≥1 density in the predeclared `{24,48}`
+band):
+1. **Bounded owner minority** — `owner_share ∈ [0.10, 0.45]`.
+2. **Buyer majority** — `non_owner_share ≥ 0.50`.
+3. **Owners actually cultivate** — `≥ 0.60` of owned viable plots cultivated at least once per generation AND
+   `≥ 0.50` of owner-households have positive grain production in the window (NOT an inert registry).
+4. **Material production** — owner-produced grain `≥ 0.35` of all grain acquired/consumed by non-owners.
+5. **Material buyer tier** — non-owner post-money food bought `≥ 0.25` of non-owner food intake, AND non-owner
+   survival not collapsing below `0.60` of its mature-window mean.
+6. **Stable class** — title churn *excluding death/inheritance* `≤ 0.05` of plots per generation (inheritance
+   turnover is allowed + reported separately).
+7. **Bounded concentration** — land Gini does not trip the `HereditaryConcentration` collapse threshold (§below).
+8. Money promotes; `seeded_minted == 0`; provenance clean; mortality + conservation hold every tick; goldens
+   byte-identical off.
+
+**Finding modes (PINNED thresholds):**
+- `TenureInertStaticPin` — owner share stable BUT (owner cultivation `< 0.30`) OR (owner grain production
+  `< 0.20` of buyer food intake) OR (non-owner bought food `< 0.10`): a static title registry without a working
+  economy. (This is why secure tenure can't trivially "win" — reducing churn alone fails.)
+- `UniversalOwnershipNoBuyers` — `owner_share ≥ 0.75` OR `non_owner_share < 0.25` (`HardBarrier`; expected at
+  density 96).
+- `HereditaryConcentration` — land Gini rises by `≥ 0.15` from the first mature generation to the final, OR the
+  top-10% of owners hold `≥ 0.50` of viable land — **classified a FAILURE only if** buyer material purchases
+  fail or landless starvation rises; if concentration rises but the buyer tier *survives*, it is a reported
+  *coexisting landed-class* outcome, not a failure.
+- `LandlessProletariat` — (`impartible`) `landless_share ≥ 0.60` and rising across ≥2 generations. Healthy
+  variant if the buyer-purchase floor passes; FAILURE variant if non-owner survival `< 0.60` or the bought-food
+  floor fails.
+- `FragmentationCollapse` — (`partible` only) `≥ 0.35` of inherited shares below `LAND_VIABLE_REGEN_FLOOR`, OR
+  median viable land per owner falls by `≥ 0.40`, plus food/survival decline (morcellement → Malthusian collapse).
+- `SeedClusterOnly` — `owner_share < 0.10` OR the owner count stays within the initial seed cohort with no
+  generational inheritance expansion.
+- `StillThrashes` — (sanity, at the `idle_forfeiture_horizon = 12` end of the sweep) reproduces S23a's churn.
+- `SecureTenureStableClass` — passes the full healthy-class classifier above without tripping concentration/
+  fragmentation collapse.
 
 **Generational tracking (required):** report, per generation, the owner set, owner-lineage share / land-Gini,
 **land-per-capita** (owned land / population — the Malthusian pressure), the **landless share** (agents with no
@@ -167,19 +169,46 @@ growing population.
 Contrast axis (the whole point): the `idle_forfeiture_horizon` sweep should show `StillThrashes` at 12 and
 (hypothesis) `SecureTenureStableClass` at ∞, with the long-horizon in between — isolating the security variable.
 
-## 4. Controls / verification (DRAFT — to be pinned with Codex)
+## 4. Mechanics / controls / verification (PINNED — Codex spec-review)
 
-- **`idle_forfeiture_horizon` sweep** {∞, long, 12} — the core contrast; must be outcome-driving (12 reproduces
-  S23a thrash, ∞ tested for the stable class).
-- **plot-density sweep** (the S23a population-scaled land axis) — locate the bounded-minority band.
-- **`property_off`** (commons) baseline; **`non_excludable_deed`** (title but no owner-only harvest) — title
-  alone vs exclusion.
-- The `TenureInertStaticPin` guard: a stable owner set that does NOT cultivate/produce/support-buyers is a
-  *finding*, not a success.
-- HARD GUARDS: conservation every tick; provenance clean; money promotes; the plot-registry invariant (finite
-  plots, ≤1 owner, inheritance conserved, no dead-owner plots); **goldens byte-identical off** (digest tag 15
-  ON-only, or reuse the S23a tag surface if it composes cleanly — Codex to confirm).
-- New suite `sim/tests/secure_land_tenure.rs`; `goldens_unchanged`; classify-not-tune; predeclared consts.
+**Universal-heir order (PINNED deterministic; Codex §5).** On an owner's death, choose the heir by the first
+that yields a live agent:
+1. a live **child in the owner's household**, deterministic by **age descending, then stable agent id**;
+2. else the nearest live **kin** by household/lineage relation (if available);
+3. else a designated live **household successor** from the owner's household;
+4. else a deterministic **colony next-of-kin**: the live non-owner minimizing `(household_distance,
+   spatial_distance, agent_id)`;
+5. else (no live agents qualify) the plot **reverts to unowned**.
+**Conservation invariants:** exactly ONE successor per impartible plot; NO dead-owner plots after settlement;
+NO duplicate ownership; every inheritance event logs `{deceased id, heir id, plot id, regime, pre/post effective
+capacity}`.
+
+**Partible = fractional beneficial interests on the SAME node (PINNED; no spatial subdivision — Codex §6/§8).**
+The one `ResourceNode` stays; `effective_regen` + `effective_cap` are **split among co-heirs**; the sum of heir
+shares **equals** the pre-death effective plot capacity (modulo explicit floor/writeoff accounting — a share
+that falls below `LAND_VIABLE_REGEN_FLOOR` is classified **non-viable/stranded and LOGGED**, never silently
+created/destroyed). Each co-heir has a holding share; harvest is capped by their share. **Real node subdivision
+is explicitly forbidden in S23c** (it would add spatial/pathing churn unrelated to inheritance).
+
+**Axes / controls (each a test):**
+- **`inheritance_regime ∈ {impartible, partible}`** — the headline axis (both ship this milestone).
+- **plot-density band {24,48} primary; 12, 96 boundary probes** — predeclared; success within the band.
+- **`idle_forfeiture_horizon` sweep** {∞ (secure headline), long ≈200, 12 (= S23a)} — the security contrast;
+  must be outcome-driving (12 reproduces S23a's thrash; ∞ tested for the stable class).
+- **`property_off`** (commons) baseline; **`non_excludable_deed`** (title, no owner-only harvest) — title alone
+  vs exclusion.
+- **S22f-base robustness appendix** (labeled control, NOT headline) — secure tenure on the known-healthy
+  two-tier base, to separate "forfeiture broke S23a" from "secure land needs the commitment institution".
+- **`fixed_partition` writeoff guard** — the partible capacity split conserves (sum of shares + stranded =
+  pre-death capacity).
+
+**HARD GUARDS every run + cell:** conservation every tick; `bread_minted_max == 0`; provenance
+clean-or-disqualified; money promotes; **the plot-registry invariant** (finite plots, ≤1 owner per atomic plot
+/ conserved shares per partible plot, inheritance conserved, NO dead-owner plots); **per-generation tracking**
+(§3) reported. New default-off flag `secure_land_tenure` (+ `inheritance_regime`) canonicalized ON-only under
+the **next free flag-digest tag (18** unless master advanced — S23a used 13); **goldens byte-identical off.**
+
+New suite `sim/tests/secure_land_tenure.rs`; `goldens_unchanged`; classify-not-tune; predeclared consts.
 
 ## 5. Honesty / scope (DRAFT)
 
@@ -192,6 +221,11 @@ Contrast axis (the whole point): the `idle_forfeiture_horizon` sweep should show
   S22f's contract as the lone stabilizer.
 - The `idle_forfeiture_horizon` sweep makes the result a **curve**, not a single point — the honest way to
   present "how much of S23a's thrash was the clock."
+- **THE BIGGEST TRAP (Codex §9), load-bearing:** do NOT let "stable ownership" stand in for "a working land
+  economy." Secure title MECHANICALLY reduces churn — that proves almost nothing. The honest success is ONLY
+  the full §3 healthy-class classifier (owners cultivate + produce, buyers materially buy, non-owner survival
+  holds, concentration bounded); low churn is necessary, never sufficient. S23a's old churn/drop metrics are
+  reported as NON-success diagnostics.
 - **This is a DRAFT.** Next step: Codex spec-review to resolve the four open design questions (§2), pin the
   success bar + finding-mode thresholds + the base choice, then rb-lite build under the usual discipline.
 - Follow repo conventions; NEVER add Claude/AI/assistant references in code, comments, or committed text.
