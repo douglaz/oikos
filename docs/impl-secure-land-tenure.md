@@ -1,5 +1,23 @@
 # impl-45 — S23c: Secure private land tenure (was it *insecurity*, not private property, that broke S23a?)
 
+Status: **LANDED (rb-lite) — honest NULL/DISQUALIFIED on the generational headline; engine verified by
+probes.** The universal-heir order (age-desc child → same-household kin → household successor → colony
+next-of-kin → unowned) and the partible fractional-share split (capacity + remaining availability
+conserved; sub-floor shares stranded-and-logged; no node subdivision) are implemented default-off
+(digest tag 18, goldens byte-identical off) and verified by three forced-mortality probes (impartible
+one-heir, partible conservation+stranding, and a positive age-descending-then-id heir-order
+assertion). **But on the pinned same-as-S23a base death→inheritance among owners is structurally
+unreachable:** land is claimed by the immortal standalone cultivator roster (`lifespan == None`,
+`household == None`), while the mortal lineage founders are hearth-fed consumers that never
+cultivate/claim — so `inherit_win == 0` in every secure acceptance run, and those runs are
+**DISQUALIFIED (`DisqualifiedNoInheritance`), not classified** (the §5 honesty guard: a frozen
+immortal registry is not evidence about heritable tenure). The security-contrast controls are honest:
+`StillThrashes` at `idle_forfeiture_horizon = 12`, `UniversalOwnershipNoBuyers` at density 48/96
+(open homesteading absorbs everyone). The generational concentration/fragmentation question the
+milestone leads with cannot be answered on this base without changing the demography — which the
+pinned "ONLY security changes" isolation forbids and the honesty section forbids manufacturing (see
+`.rb-lite/runs/s23c/challenges-round-2.md`). Spec below unchanged.
+
 Status (spec): SPEC-READY (Codex spec-review: NEEDS-REVISION with a 6-item punch-list, all folded in — numeric SecureTenureStableClass/TenureInertStaticPin classifier, predeclared plot-density band {24,48}, same-base-as-S23a primary + S22f robustness-only, deterministic universal-heir order + conservation invariants, partible = fractional capacity shares on the same node (no subdivision), numeric finding-mode thresholds; bar-reframe confirmed legitimate). User decisions LOCKED: universal heirs + both `inheritance_regime ∈ {impartible, partible}` in one milestone. Base: master `855be95`. **Re-opens the S23 private-property arc**
 with the honest counterfactual the S23a critique demands. Composes on the S23a machinery
 (`private_land_tenure`: plot registry, homesteading claim, owner-only harvest, inheritance, the population-scaled

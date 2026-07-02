@@ -961,7 +961,14 @@ pub struct ForageCommons {
     pub cap: u32,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum InheritanceRegime {
+    #[default]
+    Impartible,
+    Partible,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct ChainConfig {
     /// The interned chain goods and recipes (built once at generation).
     pub content: ContentSet,
@@ -1322,6 +1329,12 @@ pub struct ChainConfig {
     /// S24b is active, the abandonable imitation step scores local groups by generic welfare and
     /// copies toward the adopter-share gradient of the welfare-selected group.
     pub group_payoff_imitation: bool,
+    /// S25a — fixed deme-level commitment-norm culture (default `None`, byte-identical when off).
+    /// When set, S22f commitment entry is gated by `adopts_commitment_norm`, founders and newborns
+    /// receive that bit from a deterministic hash against this prevalence, and S24 imitation/spread
+    /// machinery remains off. The option itself is the inherited deme culture selected by the
+    /// multi-deme harness; no per-agent imitation rule reads it.
+    pub fixed_commitment_norm_prevalence: Option<f64>,
     pub commitment_seed_share_bps: u16,
     pub imitation_period: u64,
     pub imitation_window: u64,
@@ -1357,6 +1370,13 @@ pub struct ChainConfig {
     /// S23a: per-tick regeneration for marginal plots. The viability floor is intentionally below
     /// the default so the robustness sweep can expose the hard-barrier boundary.
     pub land_marginal_regen: u32,
+    /// S23c — secure private land tenure (default `false`, byte-identical when off). When
+    /// active on the S22a private-land substrate, title does not lapse from idle use, harvest is
+    /// owner-only, and ownership turns over through death inheritance.
+    pub secure_land_tenure: bool,
+    /// S23c: whether secure-title inheritance keeps each plot atomic (`Impartible`) or splits
+    /// fractional beneficial interests on the same resource node (`Partible`).
+    pub inheritance_regime: InheritanceRegime,
     /// S23b — **post-money alienable land market** (default `false`, byte-identical when off).
     /// When `true` AND private land tenure is active, idle forfeiture is disabled from tick 0 and
     /// the market institution activates only after SALT is the money good. Owned plots can be
@@ -1759,6 +1779,7 @@ impl ChainConfig {
             commitment_norm_spread: false,
             abandonable_norm: false,
             group_payoff_imitation: false,
+            fixed_commitment_norm_prevalence: None,
             commitment_seed_share_bps: COMMITMENT_SEED_SHARE_BPS_DEFAULT,
             imitation_period: COMMITMENT_NORM_IMITATION_PERIOD_DEFAULT,
             imitation_window: COMMITMENT_NORM_IMITATION_WINDOW_DEFAULT,
@@ -1777,6 +1798,8 @@ impl ChainConfig {
             land_good_plots: LAND_GOOD_PLOTS_DEFAULT,
             land_marginal_plots: LAND_MARGINAL_PLOTS_DEFAULT,
             land_marginal_regen: LAND_MARGINAL_REGEN_DEFAULT,
+            secure_land_tenure: false,
+            inheritance_regime: InheritanceRegime::Impartible,
             land_market: false,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
             land_price_cap_factor: LAND_PRICE_CAP_FACTOR_DEFAULT,
@@ -1933,6 +1956,7 @@ impl ChainConfig {
             commitment_norm_spread: false,
             abandonable_norm: false,
             group_payoff_imitation: false,
+            fixed_commitment_norm_prevalence: None,
             commitment_seed_share_bps: COMMITMENT_SEED_SHARE_BPS_DEFAULT,
             imitation_period: COMMITMENT_NORM_IMITATION_PERIOD_DEFAULT,
             imitation_window: COMMITMENT_NORM_IMITATION_WINDOW_DEFAULT,
@@ -1951,6 +1975,8 @@ impl ChainConfig {
             land_good_plots: LAND_GOOD_PLOTS_DEFAULT,
             land_marginal_plots: LAND_MARGINAL_PLOTS_DEFAULT,
             land_marginal_regen: LAND_MARGINAL_REGEN_DEFAULT,
+            secure_land_tenure: false,
+            inheritance_regime: InheritanceRegime::Impartible,
             land_market: false,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
             land_price_cap_factor: LAND_PRICE_CAP_FACTOR_DEFAULT,
@@ -2087,6 +2113,7 @@ impl ChainConfig {
             commitment_norm_spread: false,
             abandonable_norm: false,
             group_payoff_imitation: false,
+            fixed_commitment_norm_prevalence: None,
             commitment_seed_share_bps: COMMITMENT_SEED_SHARE_BPS_DEFAULT,
             imitation_period: COMMITMENT_NORM_IMITATION_PERIOD_DEFAULT,
             imitation_window: COMMITMENT_NORM_IMITATION_WINDOW_DEFAULT,
@@ -2105,6 +2132,8 @@ impl ChainConfig {
             land_good_plots: LAND_GOOD_PLOTS_DEFAULT,
             land_marginal_plots: LAND_MARGINAL_PLOTS_DEFAULT,
             land_marginal_regen: LAND_MARGINAL_REGEN_DEFAULT,
+            secure_land_tenure: false,
+            inheritance_regime: InheritanceRegime::Impartible,
             land_market: false,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
             land_price_cap_factor: LAND_PRICE_CAP_FACTOR_DEFAULT,
@@ -2277,7 +2306,7 @@ pub struct BankConfig {
 /// The settlement recipe: geometry (grid, exchange, FOOD nodes), the
 /// gatherer/consumer rosters, and the economic knobs. Mechanism knobs, not
 /// balance targets.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SettlementConfig {
     pub width: u16,
     pub height: u16,
@@ -5393,6 +5422,22 @@ impl SettlementConfig {
         cfg
     }
 
+    /// S23c — **secure private land tenure**: the S23a finite, owner-exclusive plot
+    /// registry over the same expanded S22a base, but title never lapses from idle use.
+    /// Ownership turns over only through death inheritance, with the inheritance regime set by
+    /// [`ChainConfig::inheritance_regime`].
+    pub fn frontier_secure_land_tenure() -> Self {
+        let mut cfg = Self::frontier_private_land_tenure();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.secure_land_tenure = true;
+            chain.harvest_gate = true;
+            chain.forfeit_on_idle = false;
+            chain.inheritance_regime = InheritanceRegime::Impartible;
+            debug_assert!(chain_config_secure_land_tenure_active(chain));
+        }
+        cfg
+    }
+
     /// S23b — **post-money alienable land market** (the HEADLINE): S23a's finite,
     /// owner-exclusive, heterogeneous plot registry over the S22a population-scaled base, with the
     /// land-market institution enabled. The market disables idle forfeiture from tick 0, but buying,
@@ -5888,6 +5933,10 @@ struct Colonist {
     /// (gatherer/consumer/producer in a pre-G4b config). Drives the per-member
     /// provision, the birth roster, and estate routing to heirs.
     household: Option<usize>,
+    /// S23c: the stable parent id for a newborn, if this colonist was born inside the
+    /// simulation. Founders and pre-demography colonists have no parent. Read only by the
+    /// secure-tenure universal-heir order and serialized only when that mode is active.
+    parent: Option<AgentId>,
     /// G4b: age in **econ ticks** since birth (founders seeded with a staggered
     /// starting age). Advanced once per econ tick for a living demography colonist;
     /// `0` and untouched for a non-demography colonist.
@@ -6011,6 +6060,7 @@ struct Colonist {
 
 /// A settlement of generated colonists driven over a real `world` + `econ`.
 pub struct Settlement {
+    generation_seed: u64,
     world: World,
     society: Society,
     colonists: Vec<Colonist>,
@@ -6262,6 +6312,13 @@ pub struct Settlement {
     /// the node stock remains in the world conservation ledger. The registry steers harvest gating
     /// and idle forfeiture, so it is serialized ON-only under private land tenure.
     land_plots: BTreeMap<NodeId, LandPlotRecord>,
+    /// S23c runtime diagnostics: title transfers caused by death inheritance, including
+    /// partible co-heir transfers and heirless reversions. Future behavior is in `land_plots`;
+    /// this log is for the verdict trace.
+    secure_land_inheritance_events: Vec<SecureLandInheritanceRow>,
+    /// S23c runtime diagnostic: count of partible inheritance shares that fell below the
+    /// viability floor and were recorded as stranded capacity.
+    secure_land_stranded_shares_total: u64,
     /// S23a runtime-only diagnostics used by the acceptance classifier and trace surface.
     land_claims_total: u64,
     land_idle_losses_total: u64,
@@ -6284,6 +6341,7 @@ pub struct Settlement {
     land_reclaims_by_other_total: u64,
     land_marginal_nonowner_claims_total: u64,
     land_lapsed_reentry_worse_total: u64,
+    land_plot_harvest_totals: BTreeMap<NodeId, u64>,
     land_lapsed_losses: BTreeMap<AgentId, LandPlotQuality>,
     land_lost_prior_owners: BTreeMap<NodeId, (AgentId, LandLossCause)>,
     land_market_plots: BTreeMap<NodeId, LandMarketPlotState>,
@@ -6613,6 +6671,7 @@ struct ChainRuntime {
     commitment_norm_spread: bool,
     abandonable_norm: bool,
     group_payoff_imitation: bool,
+    fixed_commitment_norm_prevalence: Option<f64>,
     commitment_seed_share_bps: u16,
     imitation_period: u64,
     imitation_window: u64,
@@ -6633,6 +6692,8 @@ struct ChainRuntime {
     land_good_plots: u16,
     land_marginal_plots: u16,
     land_marginal_regen: u32,
+    secure_land_tenure: bool,
+    inheritance_regime: InheritanceRegime,
     land_market: bool,
     land_carrying_cost: u64,
     land_price_cap_factor: u64,
@@ -6679,11 +6740,38 @@ struct ChainRuntime {
     capital_build_hunger_max: u16,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct LandShare {
+    regen: u32,
+    cap: u32,
+    available: u32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SecureLandInheritanceRow {
+    pub tick: u64,
+    pub deceased: u64,
+    pub heir: Option<u64>,
+    pub plot: u32,
+    pub regime: InheritanceRegime,
+    pub pre_regen: u32,
+    pub pre_cap: u32,
+    pub post_regen: u32,
+    pub post_cap: u32,
+}
+
+pub type SecureLandShareRow = (u32, u64, u32, u32, u32);
+type ImpartibleLandTransfer = (NodeId, AgentId, Option<AgentId>, (u32, u32));
+type PartibleLandTransfer = (NodeId, AgentId, Vec<AgentId>, (u32, u32), u32, bool);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct LandPlotRecord {
     owner: Option<AgentId>,
     idle_counter: u16,
     reserved_for: Option<AgentId>,
+    shares: BTreeMap<AgentId, LandShare>,
+    stranded_regen: u32,
+    stranded_cap: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -7289,6 +7377,12 @@ struct AcquisitionLedger {
     /// actually transact, distinguishing a genuine division-of-labor split from a commune whose
     /// non-cultivators are alive but never buy. Never digested.
     bought_credited_by_agent: BTreeMap<AgentId, u64>,
+    /// S23c (runtime-only): cumulative tracked food a given agent ever CONSUMED (ate), across
+    /// every channel — the per-agent food-intake denominator. Lets a tenure-tier metric divide
+    /// "bought food" (a subset of intake) and "owner-supplied production" by the food a specific
+    /// cohort (e.g. non-owners) actually ate, instead of by the whole colony's consumption.
+    /// Never digested.
+    consumed_food_by_agent: BTreeMap<AgentId, u64>,
 }
 
 impl AcquisitionLedger {
@@ -7354,9 +7448,22 @@ impl AcquisitionLedger {
     /// units to `consumed_by_channel` — the headline trace.
     fn consume(&mut self, agent: AgentId, qty: u64) {
         let drawn = self.draw(agent, qty);
+        let mut total = 0u64;
         for channel in FoodChannel::ALL {
             self.consumed_by_channel[channel.index()] += drawn[channel.index()];
+            total += drawn[channel.index()];
         }
+        if total > 0 {
+            *self.consumed_food_by_agent.entry(agent).or_insert(0) += total;
+        }
+    }
+
+    /// S23c (runtime-only): cumulative tracked food `agent` has consumed across all channels.
+    fn consumed_food_of_agent(&self, agent: AgentId) -> u64 {
+        self.consumed_food_by_agent
+            .get(&agent)
+            .copied()
+            .unwrap_or(0)
     }
 
     /// A SINK debit (spoiled / estate→commons): draw FIFO and book the drawn units to the
@@ -7806,6 +7913,12 @@ impl Settlement {
                 chain.operating_cost >= 1,
                 "chain operating_cost must be at least 1"
             );
+            if let Some(prevalence) = chain.fixed_commitment_norm_prevalence {
+                assert!(
+                    prevalence.is_finite() && (0.0..=1.0).contains(&prevalence),
+                    "fixed_commitment_norm_prevalence must be finite and in [0, 1]"
+                );
+            }
             // A producer's throughput becomes that many input wants on its value scale
             // each regeneration; bound it so a config cannot drive the scale (and the
             // market that iterates it) to an unbounded size. See [`MAX_CHAIN_THROUGHPUT`].
@@ -8122,6 +8235,7 @@ impl Settlement {
                 // aging, no old-age mortality), so a no-demography settlement is
                 // byte-identical to G3/G4a.
                 household: None,
+                parent: None,
                 age: 0,
                 lifespan: None,
                 seed: 0,
@@ -8223,6 +8337,7 @@ impl Settlement {
                         alive: true,
                         latent: None,
                         household: Some(household_index),
+                        parent: None,
                         age: demo.founder_start_age_ticks(seed),
                         lifespan: Some(demo.lifespan_ticks(seed)),
                         seed,
@@ -8692,6 +8807,7 @@ impl Settlement {
                 commitment_norm_spread: chain.commitment_norm_spread,
                 abandonable_norm: chain.abandonable_norm,
                 group_payoff_imitation: chain.group_payoff_imitation,
+                fixed_commitment_norm_prevalence: chain.fixed_commitment_norm_prevalence,
                 commitment_seed_share_bps: chain.commitment_seed_share_bps,
                 imitation_period: chain.imitation_period,
                 imitation_window: chain.imitation_window,
@@ -8710,6 +8826,8 @@ impl Settlement {
                 land_good_plots: chain.land_good_plots,
                 land_marginal_plots: chain.land_marginal_plots,
                 land_marginal_regen: chain.land_marginal_regen,
+                secure_land_tenure: chain.secure_land_tenure,
+                inheritance_regime: chain.inheritance_regime,
                 land_market: chain.land_market,
                 land_carrying_cost: chain.land_carrying_cost,
                 land_price_cap_factor: chain.land_price_cap_factor,
@@ -8739,6 +8857,7 @@ impl Settlement {
             .collect();
 
         let mut settlement = Self {
+            generation_seed: seed,
             world,
             society,
             colonists,
@@ -8801,6 +8920,8 @@ impl Settlement {
             cultivation_tool_inherited_total: 0,
             cultivation_tool_inheritor_ids: BTreeSet::new(),
             land_plots: BTreeMap::new(),
+            secure_land_inheritance_events: Vec::new(),
+            secure_land_stranded_shares_total: 0,
             land_claims_total: 0,
             land_idle_losses_total: 0,
             land_harvest_denials_total: 0,
@@ -8809,6 +8930,7 @@ impl Settlement {
             land_reclaims_by_other_total: 0,
             land_marginal_nonowner_claims_total: 0,
             land_lapsed_reentry_worse_total: 0,
+            land_plot_harvest_totals: BTreeMap::new(),
             land_lapsed_losses: BTreeMap::new(),
             land_lost_prior_owners: BTreeMap::new(),
             land_market_plots: BTreeMap::new(),
@@ -8913,6 +9035,9 @@ impl Settlement {
                         owner: None,
                         idle_counter: 0,
                         reserved_for: None,
+                        shares: BTreeMap::new(),
+                        stranded_regen: 0,
+                        stranded_cap: 0,
                     },
                 );
                 if self.land_market_active() {
@@ -8925,6 +9050,14 @@ impl Settlement {
     }
 
     fn init_commitment_norm_seed(&mut self, seed: u64) {
+        if let Some(prevalence) = self.fixed_commitment_norm_prevalence() {
+            for colonist in &mut self.colonists {
+                let seeded = fixed_commitment_norm_seeded(seed, colonist.id, prevalence);
+                colonist.adopts_commitment_norm = seeded;
+                colonist.commitment_norm_seed_adopter = seeded;
+            }
+            return;
+        }
         if !self.commitment_norm_spread_active() {
             return;
         }
@@ -9140,6 +9273,7 @@ impl Settlement {
             .expect("exchange lands on a passable tile");
 
         Self {
+            generation_seed: seed,
             world,
             society,
             colonists: Vec::new(),
@@ -9213,6 +9347,8 @@ impl Settlement {
             cultivation_tool_inherited_total: 0,
             cultivation_tool_inheritor_ids: BTreeSet::new(),
             land_plots: BTreeMap::new(),
+            secure_land_inheritance_events: Vec::new(),
+            secure_land_stranded_shares_total: 0,
             land_claims_total: 0,
             land_idle_losses_total: 0,
             land_harvest_denials_total: 0,
@@ -9221,6 +9357,7 @@ impl Settlement {
             land_reclaims_by_other_total: 0,
             land_marginal_nonowner_claims_total: 0,
             land_lapsed_reentry_worse_total: 0,
+            land_plot_harvest_totals: BTreeMap::new(),
             land_lapsed_losses: BTreeMap::new(),
             land_lost_prior_owners: BTreeMap::new(),
             land_market_plots: BTreeMap::new(),
@@ -10356,11 +10493,14 @@ impl Settlement {
                         } else {
                             base_haul
                         };
+                        let haul = self.private_land_harvest_room_for(id, grain_node, haul);
                         // `GoHarvestWithRoom(grain, carry_cap, carry_cap)` is behaviour-identical
                         // to `GoHarvest(grain, carry_cap)` (both room-capped at carry_cap), only
                         // the task tag differs — so a non-skilled non-owner keeps the exact S22c
                         // `GoHarvest` task and stays byte-identical.
-                        if skill_active || owns_tool {
+                        if haul == 0 {
+                            Task::Idle
+                        } else if skill_active || owns_tool || haul != self.carry_cap {
                             Task::GoHarvestWithRoom(grain_node, haul, haul)
                         } else {
                             Task::GoHarvest(grain_node, self.carry_cap)
@@ -10444,7 +10584,9 @@ impl Settlement {
 
     fn private_land_has_better_stayer(&self, agent: AgentId, quality: LandPlotQuality) -> bool {
         self.land_plots.iter().any(|(&node, record)| {
-            record.owner.is_some_and(|owner| owner != agent)
+            Self::private_land_record_holders(record)
+                .into_iter()
+                .any(|owner| owner != agent)
                 && self.private_land_plot_quality(node).is_some_and(|other| {
                     other.regen > quality.regen
                         || other.cap > quality.cap
@@ -10459,6 +10601,103 @@ impl Settlement {
             .is_some_and(|&slot| self.colonists[slot].alive)
     }
 
+    fn private_land_record_has_holding(record: &LandPlotRecord) -> bool {
+        record.owner.is_some() || !record.shares.is_empty()
+    }
+
+    fn private_land_record_agent_holds(record: &LandPlotRecord, agent: AgentId) -> bool {
+        record.owner == Some(agent) || record.shares.contains_key(&agent)
+    }
+
+    fn private_land_record_claimable(record: &LandPlotRecord) -> bool {
+        record.owner.is_none()
+            && record.shares.is_empty()
+            && record.reserved_for.is_none()
+            && record.stranded_regen == 0
+            && record.stranded_cap == 0
+    }
+
+    fn private_land_record_primary_holder(record: &LandPlotRecord) -> Option<AgentId> {
+        record
+            .owner
+            .or_else(|| record.shares.keys().next().copied())
+    }
+
+    fn private_land_record_holders(record: &LandPlotRecord) -> Vec<AgentId> {
+        let mut owners = BTreeSet::new();
+        if let Some(owner) = record.owner {
+            owners.insert(owner);
+        }
+        owners.extend(record.shares.keys().copied());
+        owners.into_iter().collect()
+    }
+
+    fn private_land_record_held_by_live_other(
+        &self,
+        record: &LandPlotRecord,
+        agent: AgentId,
+    ) -> bool {
+        if Self::private_land_record_agent_holds(record, agent) {
+            return false;
+        }
+        Self::private_land_record_holders(record)
+            .into_iter()
+            .any(|owner| owner != agent && self.private_land_live_agent(owner))
+    }
+
+    fn private_land_harvest_room_for(&self, agent: AgentId, node: NodeId, requested: u32) -> u32 {
+        if !self.secure_partible_land_active() {
+            return requested;
+        }
+        let Some(record) = self.land_plots.get(&node) else {
+            return requested;
+        };
+        let Some(share) = record.shares.get(&agent) else {
+            return requested;
+        };
+        requested.min(share.available)
+    }
+
+    fn private_land_share_capacity(
+        &self,
+        record: &LandPlotRecord,
+        node: NodeId,
+        agent: AgentId,
+    ) -> Option<(u32, u32)> {
+        if let Some(share) = record.shares.get(&agent) {
+            return Some((share.regen, share.cap));
+        }
+        if record.owner == Some(agent) {
+            let quality = self.private_land_plot_quality(node)?;
+            return Some((quality.regen, quality.cap));
+        }
+        None
+    }
+
+    fn private_land_replenish_partible_shares(&mut self) {
+        if !self.secure_partible_land_active() {
+            return;
+        }
+        for record in self.land_plots.values_mut() {
+            for share in record.shares.values_mut() {
+                share.available = share.available.saturating_add(share.regen).min(share.cap);
+            }
+        }
+    }
+
+    fn private_land_debit_partible_share(&mut self, node: NodeId, agent: AgentId, moved: u32) {
+        if !self.secure_partible_land_active() || moved == 0 {
+            return;
+        }
+        if let Some(share) = self
+            .land_plots
+            .get_mut(&node)
+            .and_then(|record| record.shares.get_mut(&agent))
+        {
+            share.available = share.available.saturating_sub(moved);
+        }
+    }
+
     fn private_land_target_for_agent(
         &self,
         agent: AgentId,
@@ -10467,7 +10706,7 @@ impl Settlement {
         if !self.private_land_tenure_active() {
             return self.grain_node();
         }
-        let harvest_gate = self.chain.as_ref().is_some_and(|chain| chain.harvest_gate);
+        let harvest_gate = self.private_land_harvest_gate_active();
         let rank = |this: &Self, node: NodeId| {
             this.private_land_agent_distance(agent, node)
                 .map(|distance| (distance, node.0))
@@ -10488,7 +10727,9 @@ impl Settlement {
             .iter()
             .filter(|&(&node, record)| {
                 self.private_land_plot_has_stock(node)
-                    && (record.owner == Some(agent) || record.reserved_for == Some(agent))
+                    && (Self::private_land_record_agent_holds(record, agent)
+                        || record.reserved_for == Some(agent))
+                    && self.private_land_harvest_room_for(agent, node, 1) > 0
             })
             .filter_map(|(&node, _)| rank(self, node).map(|key| (key, node)))
             .min_by_key(|(key, _)| *key)
@@ -10505,8 +10746,7 @@ impl Settlement {
             .iter()
             .filter(|&(&node, record)| {
                 self.private_land_plot_has_stock(node)
-                    && record.owner.is_none()
-                    && record.reserved_for.is_none()
+                    && Self::private_land_record_claimable(record)
                     && !reserved_unowned.contains(&node)
             })
             .filter_map(|(&node, _)| rank(self, node).map(|key| (key, node)))
@@ -10515,9 +10755,7 @@ impl Settlement {
     }
 
     fn private_land_validate_harvest_tasks(&mut self) {
-        if !self.private_land_tenure_active()
-            || !self.chain.as_ref().is_some_and(|chain| chain.harvest_gate)
-        {
+        if !self.private_land_tenure_active() || !self.private_land_harvest_gate_active() {
             return;
         }
 
@@ -10544,12 +10782,10 @@ impl Settlement {
             let Some(node) = Self::private_land_harvest_task_node(task) else {
                 continue;
             };
-            let Some(record) = self.land_plots.get(&node).copied() else {
+            let Some(record) = self.land_plots.get(&node).cloned() else {
                 continue;
             };
-            let owned_by_other_live = record
-                .owner
-                .is_some_and(|owner| owner != id && self.private_land_live_agent(owner));
+            let owned_by_other_live = self.private_land_record_held_by_live_other(&record, id);
             let reserved_by_other = record.reserved_for.is_some_and(|owner| owner != id);
             if owned_by_other_live || reserved_by_other {
                 // A true exclusion: this agent is denied a plot held/reserved by another live owner.
@@ -10557,7 +10793,7 @@ impl Settlement {
                 // ownership to actually gate harvest, not merely thin out unowned-plot contenders.
                 self.land_owner_gate_denials_total += 1;
                 invalid.push((id, task));
-            } else if record.owner.is_none() && record.reserved_for.is_none() {
+            } else if Self::private_land_record_claimable(&record) {
                 if homestead_closed {
                     // Reroute the would-be homesteader to its own plot if it holds one, else to Idle
                     // (`private_land_target_for_agent` returns `None` for a post-promotion non-owner).
@@ -10593,7 +10829,7 @@ impl Settlement {
                 if self
                     .land_plots
                     .get(&node)
-                    .is_some_and(|record| record.owner.is_none())
+                    .is_some_and(Self::private_land_record_claimable)
                 {
                     reserved.insert(node);
                 }
@@ -10654,6 +10890,7 @@ impl Settlement {
         }
         for event in events {
             debug_assert!(event.moved > 0);
+            *self.land_plot_harvest_totals.entry(event.node).or_insert(0) += u64::from(event.moved);
             if self.land_market_active() {
                 *self
                     .land_market_yield_this_tick
@@ -10665,15 +10902,17 @@ impl Settlement {
                     self.colonists[slot].carried_grain_source = Some(event.node);
                 }
             }
-            let Some(record) = self.land_plots.get(&event.node).copied() else {
+            let Some(record) = self.land_plots.get(&event.node).cloned() else {
                 continue;
             };
-            if let Some(owner) = record.owner {
-                if owner != event.agent {
+            if Self::private_land_record_has_holding(&record) {
+                if !Self::private_land_record_agent_holds(&record, event.agent) {
                     // A non-owner pulled grain from a plot HELD by another. Impossible under the
                     // headline (validation reroutes non-owners off owned plots before world.tick);
                     // > 0 only when `harvest_gate` is off — the load-bearing proof the gate bites.
                     self.land_nonowner_harvest_of_owned_total += 1;
+                } else {
+                    self.private_land_debit_partible_share(event.node, event.agent, event.moved);
                 }
                 // Already owned (by this agent or another) — no (re)claim.
                 continue;
@@ -10682,6 +10921,9 @@ impl Settlement {
                 .reserved_for
                 .is_some_and(|reserved| reserved != event.agent)
             {
+                continue;
+            }
+            if record.stranded_regen > 0 || record.stranded_cap > 0 {
                 continue;
             }
             if self.land_market_active() && self.current_money_good() == Some(SALT) {
@@ -10696,7 +10938,7 @@ impl Settlement {
             let was_non_owner = !self
                 .land_plots
                 .values()
-                .any(|record| record.owner == Some(event.agent));
+                .any(|record| Self::private_land_record_agent_holds(record, event.agent));
             let viable_marginal = self.private_land_viable_marginal_node(event.node);
             let quality = self.private_land_plot_quality(event.node);
             let lapsed_reentry_worse = quality.is_some_and(|q| {
@@ -10704,9 +10946,24 @@ impl Settlement {
                     && self.private_land_has_better_stayer(event.agent, q)
             });
             let prior_lost = self.land_lost_prior_owners.remove(&event.node);
+            let partible_active = self.secure_partible_land_active();
 
             if let Some(record) = self.land_plots.get_mut(&event.node) {
-                record.owner = Some(event.agent);
+                if partible_active {
+                    if let Some(quality) = quality {
+                        record.owner = None;
+                        record.shares.insert(
+                            event.agent,
+                            LandShare {
+                                regen: quality.regen,
+                                cap: quality.cap,
+                                available: quality.cap.saturating_sub(event.moved),
+                            },
+                        );
+                    }
+                } else {
+                    record.owner = Some(event.agent);
+                }
                 record.idle_counter = 0;
                 record.reserved_for = None;
             }
@@ -10741,12 +10998,9 @@ impl Settlement {
         if !self.private_land_tenure_active() {
             return;
         }
+        self.private_land_replenish_partible_shares();
         let land_market = self.land_market_active();
-        let forfeit_on_idle = self
-            .chain
-            .as_ref()
-            .is_some_and(|chain| chain.forfeit_on_idle)
-            && !land_market;
+        let forfeit_on_idle = self.private_land_forfeit_on_idle_active();
         if !forfeit_on_idle && !land_market {
             return;
         }
@@ -11149,7 +11403,7 @@ impl Settlement {
     fn land_market_agent_owns_plot(&self, agent: AgentId) -> bool {
         self.land_plots
             .values()
-            .any(|record| record.owner == Some(agent))
+            .any(|record| Self::private_land_record_agent_holds(record, agent))
     }
 
     fn land_market_buyer_eligible(&self, slot: usize) -> bool {
@@ -11196,21 +11450,25 @@ impl Settlement {
     ) -> Vec<AgentId> {
         self.land_plots
             .iter()
-            .filter_map(|(&node, record)| {
+            .flat_map(|(&node, record)| {
                 if node == priced_out_node {
-                    return None;
+                    return Vec::new();
                 }
-                let owner = record.owner?;
-                if owner == agent || !self.private_land_live_agent(owner) {
-                    return None;
-                }
+                let owners = Self::private_land_record_holders(record);
                 // For the hysteresis trace, "comparable-or-better" is productive land quality.
                 // Distance already enters the plot's rent/price and the buyer's nearest-plot
                 // selection; requiring another plot to be at least as close would make the best
                 // located good plot incomparable by construction and erase real re-buy pressure.
-                self.private_land_plot_quality(node).and_then(|other| {
-                    (other.regen >= quality.regen && other.cap >= quality.cap).then_some(owner)
-                })
+                let comparable = self
+                    .private_land_plot_quality(node)
+                    .is_some_and(|other| other.regen >= quality.regen && other.cap >= quality.cap);
+                if !comparable {
+                    return Vec::new();
+                }
+                owners
+                    .into_iter()
+                    .filter(|&owner| owner != agent && self.private_land_live_agent(owner))
+                    .collect::<Vec<_>>()
             })
             .collect()
     }
@@ -11910,8 +12168,407 @@ impl Settlement {
             )
     }
 
+    fn secure_land_live_agent(&self, agent: AgentId) -> bool {
+        self.slot_for_id(agent)
+            .is_some_and(|slot| self.colonists[slot].alive)
+            && self.society.agents.get(agent).is_some()
+    }
+
+    fn secure_land_live_children(&self, owner: AgentId) -> Vec<AgentId> {
+        let household = self.colonist_household(owner);
+        let mut children: Vec<(std::cmp::Reverse<u64>, AgentId)> = self
+            .live_colonist_slots
+            .iter()
+            .filter_map(|&slot| {
+                let colonist = &self.colonists[slot];
+                (colonist.parent == Some(owner)
+                    && colonist.household == household
+                    && self.secure_land_live_agent(colonist.id))
+                .then_some((std::cmp::Reverse(colonist.age), colonist.id))
+            })
+            .collect();
+        children.sort_by_key(|&(age, id)| (age, id.0));
+        children.into_iter().map(|(_, id)| id).collect()
+    }
+
+    fn secure_land_same_household_kin(&self, owner: AgentId) -> Option<AgentId> {
+        let household = self.colonist_household(owner)?;
+        let mut kin: Vec<(std::cmp::Reverse<u64>, AgentId)> = self
+            .live_colonist_slots
+            .iter()
+            .filter_map(|&slot| {
+                let colonist = &self.colonists[slot];
+                (colonist.id != owner
+                    && colonist.household == Some(household)
+                    && self.secure_land_live_agent(colonist.id))
+                .then_some((std::cmp::Reverse(colonist.age), colonist.id))
+            })
+            .collect();
+        kin.sort_by_key(|&(age, id)| (age, id.0));
+        kin.into_iter().map(|(_, id)| id).next()
+    }
+
+    fn private_land_agent_holds_any_plot(&self, agent: AgentId) -> bool {
+        self.land_plots
+            .values()
+            .any(|record| Self::private_land_record_agent_holds(record, agent))
+    }
+
+    fn secure_land_household_distance(&self, owner: AgentId, candidate: AgentId) -> u32 {
+        match (
+            self.colonist_household(owner),
+            self.colonist_household(candidate),
+        ) {
+            (Some(a), Some(b)) => u32::try_from(a.abs_diff(b)).unwrap_or(u32::MAX),
+            (None, None) => 0,
+            _ => u32::MAX / 2,
+        }
+    }
+
+    fn secure_land_spatial_distance(&self, owner: AgentId, candidate: AgentId) -> u32 {
+        let Some(candidate_pos) = self.world.agent_pos(candidate) else {
+            return u32::MAX;
+        };
+        let owner_pos = self.world.agent_pos(owner).or_else(|| {
+            self.world
+                .stockpile(self.exchange)
+                .map(|stockpile| stockpile.pos)
+        });
+        owner_pos.map_or(u32::MAX, |pos| self.world.grid_distance(pos, candidate_pos))
+    }
+
+    fn secure_land_colony_next_of_kin(&self, owner: AgentId) -> Option<AgentId> {
+        self.live_colonist_slots
+            .iter()
+            .filter_map(|&slot| {
+                let candidate = self.colonists[slot].id;
+                (candidate != owner
+                    && self.secure_land_live_agent(candidate)
+                    && !self.private_land_agent_holds_any_plot(candidate))
+                .then_some((
+                    self.secure_land_household_distance(owner, candidate),
+                    self.secure_land_spatial_distance(owner, candidate),
+                    candidate.0,
+                    candidate,
+                ))
+            })
+            .min_by_key(|&(household, spatial, id, _)| (household, spatial, id))
+            .map(|(_, _, _, candidate)| candidate)
+    }
+
+    fn secure_land_universal_heir_for(&self, owner: AgentId) -> Option<AgentId> {
+        self.secure_land_live_children(owner)
+            .into_iter()
+            .next()
+            .or_else(|| self.secure_land_same_household_kin(owner))
+            .or_else(|| {
+                self.heir_for(owner)
+                    .filter(|&heir| self.secure_land_live_agent(heir))
+            })
+            .or_else(|| self.secure_land_colony_next_of_kin(owner))
+    }
+
+    fn secure_land_partible_coheirs_for(&self, owner: AgentId) -> Vec<AgentId> {
+        let children = self.secure_land_live_children(owner);
+        if !children.is_empty() {
+            return children;
+        }
+        self.secure_land_universal_heir_for(owner)
+            .into_iter()
+            .collect()
+    }
+
+    fn secure_land_log_inheritance(
+        &mut self,
+        deceased: AgentId,
+        heir: Option<AgentId>,
+        plot: NodeId,
+        regime: InheritanceRegime,
+        pre: (u32, u32),
+        post: (u32, u32),
+    ) {
+        self.secure_land_inheritance_events
+            .push(SecureLandInheritanceRow {
+                tick: self.econ_tick,
+                deceased: deceased.0,
+                heir: heir.map(|id| id.0),
+                plot: plot.0,
+                regime,
+                pre_regen: pre.0,
+                pre_cap: pre.1,
+                post_regen: post.0,
+                post_cap: post.1,
+            });
+    }
+
+    fn secure_land_split_effective_capacity(
+        regen: u32,
+        cap: u32,
+        available: u32,
+        heirs: &[AgentId],
+    ) -> Vec<(AgentId, LandShare)> {
+        if heirs.is_empty() {
+            return Vec::new();
+        }
+        let n = u32::try_from(heirs.len()).unwrap_or(u32::MAX).max(1);
+        let regen_base = regen / n;
+        let regen_extra = regen % n;
+        let cap_base = cap / n;
+        let cap_extra = cap % n;
+        // Split the deceased holder's REMAINING harvest availability alongside the
+        // capacity, so a depleted share is inherited depleted rather than silently refilled
+        // to a fresh full cap. Resetting `available` to `share_cap` would let a co-heir
+        // re-harvest a share the deceased had already spent this regen cycle, drawing node
+        // stock that should stay for the surviving co-owners. Clamped to `cap` so each
+        // co-heir's `available <= cap` invariant holds.
+        let available = available.min(cap);
+        let avail_base = available / n;
+        let avail_extra = available % n;
+        heirs
+            .iter()
+            .enumerate()
+            .map(|(idx, &heir)| {
+                let idx = u32::try_from(idx).unwrap_or(u32::MAX);
+                let share_regen = regen_base + u32::from(idx < regen_extra);
+                let share_cap = cap_base + u32::from(idx < cap_extra);
+                let share_available = avail_base + u32::from(idx < avail_extra);
+                (
+                    heir,
+                    LandShare {
+                        regen: share_regen,
+                        cap: share_cap,
+                        available: share_available,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn secure_land_add_partible_share(
+        record: &mut LandPlotRecord,
+        heir: AgentId,
+        share: LandShare,
+    ) {
+        let entry = record.shares.entry(heir).or_default();
+        entry.regen = entry.regen.saturating_add(share.regen);
+        entry.cap = entry.cap.saturating_add(share.cap);
+        entry.available = entry
+            .available
+            .saturating_add(share.available)
+            .min(entry.cap);
+    }
+
+    fn transfer_secure_private_land_on_death(&mut self, dead: AgentId) {
+        let Some(regime) = self.chain.as_ref().map(|chain| chain.inheritance_regime) else {
+            return;
+        };
+        let mut dead_owners: BTreeSet<AgentId> = self
+            .land_plots
+            .values()
+            .flat_map(Self::private_land_record_holders)
+            .filter(|&owner| !self.private_land_live_agent(owner))
+            .collect();
+        dead_owners.insert(dead);
+        if dead_owners.is_empty() {
+            return;
+        }
+
+        match regime {
+            InheritanceRegime::Impartible => {
+                let transfers: Vec<ImpartibleLandTransfer> = self
+                    .land_plots
+                    .iter()
+                    .filter_map(|(&node, record)| {
+                        let owner = record.owner?;
+                        dead_owners.contains(&owner).then(|| {
+                            let capacity = self
+                                .private_land_share_capacity(record, node, owner)
+                                .unwrap_or((0, 0));
+                            (
+                                node,
+                                owner,
+                                self.secure_land_universal_heir_for(owner),
+                                capacity,
+                            )
+                        })
+                    })
+                    .collect();
+                let mut lost = Vec::new();
+                for (node, owner, heir, capacity) in transfers {
+                    if let Some(record) = self.land_plots.get_mut(&node) {
+                        if record.owner != Some(owner) {
+                            continue;
+                        }
+                        record.owner = heir;
+                        record.idle_counter = 0;
+                        record.reserved_for = None;
+                    }
+                    if heir.is_none() {
+                        lost.push((node, owner));
+                    }
+                    self.secure_land_log_inheritance(
+                        owner,
+                        heir,
+                        node,
+                        regime,
+                        capacity,
+                        heir.map_or((0, 0), |_| capacity),
+                    );
+                    if self.land_market_active() {
+                        let owner_history =
+                            self.land_market_title_history.entry(owner).or_default();
+                        owner_history.ever_owned = true;
+                        owner_history.current = None;
+                        if let Some(heir) = heir {
+                            let heir_history =
+                                self.land_market_title_history.entry(heir).or_default();
+                            heir_history.ever_owned = true;
+                            heir_history.current = Some(LandTitleSource::Inherited);
+                        }
+                    }
+                }
+                for (node, owner) in lost {
+                    self.land_lost_prior_owners
+                        .insert(node, (owner, LandLossCause::Death));
+                    if let Some(quality) = self.private_land_plot_quality(node) {
+                        self.land_lapsed_losses.insert(owner, quality);
+                    }
+                    if self.land_market_active() {
+                        if let Some(state) = self.land_market_plots.get_mut(&node) {
+                            state.listing = None;
+                        }
+                    }
+                }
+            }
+            InheritanceRegime::Partible => {
+                let mut transfers: Vec<PartibleLandTransfer> = Vec::new();
+                for (&node, record) in &self.land_plots {
+                    if let Some(owner) = record.owner {
+                        if dead_owners.contains(&owner) {
+                            let capacity = self
+                                .private_land_share_capacity(record, node, owner)
+                                .unwrap_or((0, 0));
+                            transfers.push((
+                                node,
+                                owner,
+                                self.secure_land_partible_coheirs_for(owner),
+                                capacity,
+                                // An atomic owner holds the whole plot with no per-share
+                                // rationing, so the first division hands each co-heir its
+                                // titled share at full availability (node stock still bounds
+                                // the physical harvest).
+                                capacity.1,
+                                true,
+                            ));
+                        }
+                    }
+                    for (&owner, share) in &record.shares {
+                        if dead_owners.contains(&owner) {
+                            transfers.push((
+                                node,
+                                owner,
+                                self.secure_land_partible_coheirs_for(owner),
+                                (share.regen, share.cap),
+                                // Carry the deceased share's remaining availability so a
+                                // depleted share is inherited depleted, not refilled.
+                                share.available,
+                                false,
+                            ));
+                        }
+                    }
+                }
+
+                for (node, owner, heirs, capacity, available, from_atomic_owner) in transfers {
+                    let split = Self::secure_land_split_effective_capacity(
+                        capacity.0, capacity.1, available, &heirs,
+                    );
+                    let mut stranded_added = 0u64;
+                    if let Some(record) = self.land_plots.get_mut(&node) {
+                        if from_atomic_owner && record.owner == Some(owner) {
+                            record.owner = None;
+                        }
+                        record.shares.remove(&owner);
+                        record.idle_counter = 0;
+                        record.reserved_for = None;
+                        if split.is_empty() {
+                            if record.owner.is_none() && record.shares.is_empty() {
+                                record.stranded_regen = 0;
+                                record.stranded_cap = 0;
+                            } else {
+                                record.stranded_regen =
+                                    record.stranded_regen.saturating_add(capacity.0);
+                                record.stranded_cap =
+                                    record.stranded_cap.saturating_add(capacity.1);
+                                stranded_added = stranded_added.saturating_add(1);
+                            }
+                        } else {
+                            for &(heir, share) in &split {
+                                if share.regen < LAND_VIABLE_REGEN_FLOOR {
+                                    record.stranded_regen =
+                                        record.stranded_regen.saturating_add(share.regen);
+                                    record.stranded_cap =
+                                        record.stranded_cap.saturating_add(share.cap);
+                                    stranded_added = stranded_added.saturating_add(1);
+                                } else {
+                                    Self::secure_land_add_partible_share(record, heir, share);
+                                }
+                            }
+                        }
+                    }
+                    self.secure_land_stranded_shares_total = self
+                        .secure_land_stranded_shares_total
+                        .saturating_add(stranded_added);
+                    if split.is_empty() {
+                        self.secure_land_log_inheritance(
+                            owner,
+                            None,
+                            node,
+                            regime,
+                            capacity,
+                            (0, 0),
+                        );
+                    } else {
+                        for (heir, share) in split {
+                            let post = if share.regen < LAND_VIABLE_REGEN_FLOOR {
+                                (0, 0)
+                            } else {
+                                (share.regen, share.cap)
+                            };
+                            self.secure_land_log_inheritance(
+                                owner,
+                                Some(heir),
+                                node,
+                                regime,
+                                capacity,
+                                post,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        let dead_owners = dead_owners;
+        for record in self.land_plots.values_mut() {
+            if record
+                .reserved_for
+                .is_some_and(|owner| dead_owners.contains(&owner))
+            {
+                record.reserved_for = None;
+            }
+        }
+        debug_assert!(
+            self.private_land_registry_invariant_holds(),
+            "secure private land registry must settle dead owners"
+        );
+    }
+
     fn transfer_private_land_on_death(&mut self, dead: AgentId) {
         if !self.private_land_tenure_active() {
+            return;
+        }
+        if self.secure_land_tenure_active() {
+            self.transfer_secure_private_land_on_death(dead);
             return;
         }
         let mut dead_owners: BTreeSet<AgentId> = self
@@ -12038,7 +12695,7 @@ impl Settlement {
             // Scoped to `land_market_active()`: S23a's idle-forfeiture path tolerates the lazy
             // cleanup and its `land_plots` records are digested, so changing the reassignment timing
             // there would shift the byte-identical S23a goldens.
-            if self.land_market_active() {
+            if self.land_market_active() || self.secure_land_tenure_active() {
                 self.transfer_private_land_on_death(id);
             }
             deaths += u32::from(self.settle_estate_to_heirs(id));
@@ -12272,6 +12929,11 @@ impl Settlement {
                     .transfer_gold(parent_id, child_id, Gold(gold_endow));
                 debug_assert!(transferred, "the parent's gold gift must transfer");
             }
+            let fixed_commitment_norm =
+                self.fixed_commitment_norm_prevalence()
+                    .is_some_and(|prevalence| {
+                        fixed_commitment_norm_seeded(self.generation_seed, child_id, prevalence)
+                    });
 
             self.colonists.push(Colonist {
                 id: child_id,
@@ -12286,6 +12948,7 @@ impl Settlement {
                 alive: true,
                 latent: None,
                 household: Some(h),
+                parent: Some(parent_id),
                 age: 0,
                 lifespan: Some(lifespan),
                 seed: cseed,
@@ -12300,9 +12963,9 @@ impl Settlement {
                 cultivation_tenure: 0,
                 commitment_remaining: 0,
                 commitment_renewals: 0,
-                adopts_commitment_norm: false,
+                adopts_commitment_norm: fixed_commitment_norm,
                 next_norm_bit: None,
-                commitment_norm_seed_adopter: false,
+                commitment_norm_seed_adopter: fixed_commitment_norm,
                 commitment_norm_observations: VecDeque::new(),
                 carried_grain_source: None,
             });
@@ -13042,7 +13705,7 @@ impl Settlement {
             let mut commitment_remaining = was_commitment_remaining;
             if commitment {
                 let norm_allows_commitment =
-                    !self.commitment_norm_spread_active() || adopts_commitment_norm;
+                    !self.commitment_norm_gate_active() || adopts_commitment_norm;
                 if !eligible || !norm_allows_commitment {
                     // §3.5b: commitment overrides the EXIT, not vocation eligibility. An agent that
                     // left the S22a-eligible set (became an active specialized producer) drops its
@@ -15290,6 +15953,30 @@ impl Settlement {
             .is_some_and(chain_runtime_private_land_tenure_active)
     }
 
+    fn secure_land_tenure_active(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(chain_runtime_secure_land_tenure_active)
+    }
+
+    fn secure_partible_land_active(&self) -> bool {
+        self.chain.as_ref().is_some_and(|chain| {
+            chain_runtime_secure_land_tenure_active(chain)
+                && chain.inheritance_regime == InheritanceRegime::Partible
+        })
+    }
+
+    fn private_land_harvest_gate_active(&self) -> bool {
+        self.secure_land_tenure_active()
+            || self.chain.as_ref().is_some_and(|chain| chain.harvest_gate)
+    }
+
+    fn private_land_forfeit_on_idle_active(&self) -> bool {
+        self.chain.as_ref().is_some_and(|chain| {
+            chain.forfeit_on_idle && !chain_runtime_secure_land_tenure_active(chain)
+        }) && !self.land_market_active()
+    }
+
     /// S23b: whether the post-money land-market institution is active as a behavior surface. The
     /// flag composes strictly on private land tenure; a flag-only config on an older substrate is
     /// inert and omitted from the digest.
@@ -15357,6 +16044,24 @@ impl Settlement {
         self.chain
             .as_ref()
             .is_some_and(chain_runtime_commitment_norm_spread_active)
+    }
+
+    fn fixed_commitment_norm_prevalence(&self) -> Option<f64> {
+        self.chain
+            .as_ref()
+            .and_then(|chain| chain.fixed_commitment_norm_prevalence)
+            .map(|prevalence| prevalence.clamp(0.0, 1.0))
+    }
+
+    fn fixed_commitment_norm_active(&self) -> bool {
+        self.chain.as_ref().is_some_and(|chain| {
+            chain.fixed_commitment_norm_prevalence.is_some()
+                && chain_runtime_voluntary_cultivation_commitment_active(chain)
+        })
+    }
+
+    fn commitment_norm_gate_active(&self) -> bool {
+        self.commitment_norm_spread_active() || self.fixed_commitment_norm_active()
     }
 
     fn abandonable_norm_active(&self) -> bool {
@@ -18435,6 +19140,16 @@ impl Settlement {
             .map_or(0, |c| self.acquisition.bought_credited_of(c.id))
     }
 
+    /// S23c (read-only): cumulative tracked food (bread) the colonist at `index` has CONSUMED
+    /// (eaten) across every acquisition channel over the run — the per-agent food-intake basis a
+    /// tenure-tier metric divides by. `0` off the acquisition-ledger path. Runtime-only; not
+    /// digested.
+    pub fn consumed_food_of(&self, index: usize) -> u64 {
+        self.colonists
+            .get(index)
+            .map_or(0, |c| self.acquisition.consumed_food_of_agent(c.id))
+    }
+
     /// S22b: the bounded cultivation **skill** of the colonist at generation `index` (born `0`,
     /// saturating at [`ChainConfig::skill_cap`]). `0` off the cultivation-skill path. The
     /// skill-distribution diagnostic (max / mean / count above a maturity threshold) reads it.
@@ -18516,7 +19231,8 @@ impl Settlement {
     pub fn private_land_owner_ids(&self) -> Vec<u64> {
         self.land_plots
             .values()
-            .filter_map(|record| record.owner.map(|owner| owner.0))
+            .flat_map(Self::private_land_record_holders)
+            .map(|owner| owner.0)
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect()
@@ -18526,8 +19242,7 @@ impl Settlement {
         self.land_plots
             .iter()
             .filter(|&(&node, record)| {
-                record.owner.is_none()
-                    && record.reserved_for.is_none()
+                Self::private_land_record_claimable(record)
                     && self.private_land_viable_marginal_node(node)
             })
             .count()
@@ -18540,7 +19255,7 @@ impl Settlement {
                 let quality = self.private_land_plot_quality(node)?;
                 Some((
                     node.0,
-                    record.owner.map(|owner| owner.0),
+                    Self::private_land_record_primary_holder(record).map(|owner| owner.0),
                     record.idle_counter,
                     quality.regen,
                     quality.cap,
@@ -18550,11 +19265,78 @@ impl Settlement {
             .collect()
     }
 
+    pub fn secure_land_tenure_on(&self) -> bool {
+        self.secure_land_tenure_active()
+    }
+
+    pub fn secure_land_inheritance_regime(&self) -> Option<InheritanceRegime> {
+        self.chain
+            .as_ref()
+            .filter(|chain| chain_runtime_secure_land_tenure_active(chain))
+            .map(|chain| chain.inheritance_regime)
+    }
+
+    pub fn secure_land_inheritance_events(&self) -> Vec<SecureLandInheritanceRow> {
+        self.secure_land_inheritance_events.clone()
+    }
+
+    pub fn secure_land_stranded_shares_total(&self) -> u64 {
+        self.secure_land_stranded_shares_total
+    }
+
+    pub fn private_land_share_summaries(&self) -> Vec<SecureLandShareRow> {
+        self.land_plots
+            .iter()
+            .flat_map(|(&node, record)| {
+                record.shares.iter().map(move |(&owner, share)| {
+                    (node.0, owner.0, share.regen, share.cap, share.available)
+                })
+            })
+            .collect()
+    }
+
+    pub fn private_land_stranded_capacity_summaries(&self) -> Vec<(u32, u32, u32)> {
+        self.land_plots
+            .iter()
+            .filter_map(|(&node, record)| {
+                (record.stranded_regen > 0 || record.stranded_cap > 0).then_some((
+                    node.0,
+                    record.stranded_regen,
+                    record.stranded_cap,
+                ))
+            })
+            .collect()
+    }
+
+    pub fn private_land_plot_harvest_totals(&self) -> Vec<(u32, u64)> {
+        self.land_plot_harvest_totals
+            .iter()
+            .map(|(&node, &qty)| (node.0, qty))
+            .collect()
+    }
+
+    pub fn private_land_effective_capacity_by_owner(&self) -> Vec<(u64, u32, u32)> {
+        let mut totals: BTreeMap<AgentId, (u32, u32)> = BTreeMap::new();
+        for (&node, record) in &self.land_plots {
+            for owner in Self::private_land_record_holders(record) {
+                if let Some((regen, cap)) = self.private_land_share_capacity(record, node, owner) {
+                    let entry = totals.entry(owner).or_insert((0, 0));
+                    entry.0 = entry.0.saturating_add(regen);
+                    entry.1 = entry.1.saturating_add(cap);
+                }
+            }
+        }
+        totals
+            .into_iter()
+            .map(|(owner, (regen, cap))| (owner.0, regen, cap))
+            .collect()
+    }
+
     pub fn private_land_owner_grain_share_bps(&self) -> u64 {
         let owners: BTreeSet<AgentId> = self
             .land_plots
             .values()
-            .filter_map(|record| record.owner)
+            .flat_map(Self::private_land_record_holders)
             .collect();
         let total: u64 = self.cultivation_grain_harvested.values().copied().sum();
         if total == 0 {
@@ -18717,6 +19499,9 @@ impl Settlement {
             if !self.world.node(node).is_some_and(|plot| plot.good == grain) {
                 return false;
             }
+            if record.owner.is_some() && !record.shares.is_empty() {
+                return false;
+            }
             if record
                 .owner
                 .is_some_and(|owner| !self.private_land_live_agent(owner))
@@ -18724,8 +19509,38 @@ impl Settlement {
                 return false;
             }
             if record
+                .shares
+                .keys()
+                .any(|&owner| !self.private_land_live_agent(owner))
+            {
+                return false;
+            }
+            if record
                 .reserved_for
                 .is_some_and(|owner| !self.private_land_live_agent(owner))
+            {
+                return false;
+            }
+            if (!record.shares.is_empty() || record.stranded_regen > 0 || record.stranded_cap > 0)
+                && !self.private_land_plot_quality(node).is_some_and(|quality| {
+                    let share_regen: u32 = record
+                        .shares
+                        .values()
+                        .map(|share| share.regen)
+                        .sum::<u32>()
+                        .saturating_add(record.stranded_regen);
+                    let share_cap: u32 = record
+                        .shares
+                        .values()
+                        .map(|share| share.cap)
+                        .sum::<u32>()
+                        .saturating_add(record.stranded_cap);
+                    let available_ok = record
+                        .shares
+                        .values()
+                        .all(|share| share.available <= share.cap);
+                    available_ok && share_regen == quality.regen && share_cap == quality.cap
+                })
             {
                 return false;
             }
@@ -18740,7 +19555,7 @@ impl Settlement {
                 return false;
             }
         }
-        let harvest_gate = self.chain.as_ref().is_some_and(|chain| chain.harvest_gate);
+        let harvest_gate = self.private_land_harvest_gate_active();
         let mut unowned_target_counts: BTreeMap<NodeId, usize> = BTreeMap::new();
         for &slot in &self.live_colonist_slots {
             let colonist = &self.colonists[slot];
@@ -18764,7 +19579,7 @@ impl Settlement {
                         && self
                             .land_plots
                             .get(&node)
-                            .is_some_and(|record| record.owner.is_none())
+                            .is_some_and(Self::private_land_record_claimable)
                     {
                         *unowned_target_counts.entry(node).or_insert(0) += 1;
                     }
@@ -18912,6 +19727,32 @@ impl Settlement {
 
     pub fn group_payoff_imitation_on(&self) -> bool {
         self.group_payoff_imitation_active()
+    }
+
+    pub fn fixed_commitment_norm_prevalence_config(&self) -> Option<f64> {
+        self.fixed_commitment_norm_prevalence()
+    }
+
+    pub fn fixed_commitment_norm_on(&self) -> bool {
+        self.fixed_commitment_norm_active()
+    }
+
+    pub fn flip_commitment_identity_for_fitness_guard(&mut self) {
+        let term = self.commitment_term().max(1);
+        for colonist in &mut self.colonists {
+            colonist.adopts_commitment_norm = !colonist.adopts_commitment_norm;
+            colonist.next_norm_bit = colonist.next_norm_bit.map(|bit| !bit);
+            colonist.commitment_remaining = if colonist.commitment_remaining == 0 {
+                term
+            } else {
+                0
+            };
+        }
+        if let Some(chain) = self.chain.as_mut() {
+            if let Some(prevalence) = chain.fixed_commitment_norm_prevalence {
+                chain.fixed_commitment_norm_prevalence = Some(1.0 - prevalence);
+            }
+        }
     }
 
     pub fn adopts_commitment_norm_of(&self, index: usize) -> bool {
@@ -19389,6 +20230,13 @@ impl Settlement {
     /// The age (econ ticks) of the colonist at generation `index`, or `None`.
     pub fn age_of(&self, index: usize) -> Option<u64> {
         self.colonists.get(index).map(|c| c.age)
+    }
+
+    /// S23c (read-only): the parent (owning progenitor) of the colonist at generation `index`,
+    /// or `None` for a founder / pre-demography colonist. Lets the heir-order probe recompute the
+    /// deterministic universal-heir selection (child-of-deceased before same-household kin).
+    pub fn parent_of(&self, index: usize) -> Option<AgentId> {
+        self.colonists.get(index).and_then(|c| c.parent)
     }
 
     /// The deterministic old-age lifespan (econ ticks) of the colonist at generation
@@ -20475,10 +21323,8 @@ impl Settlement {
             if self.private_land_tenure_active() {
                 out.push(13);
                 out.extend_from_slice(&chain.land_idle_limit.to_le_bytes());
-                out.push(u8::from(chain.harvest_gate));
-                out.push(u8::from(
-                    chain.forfeit_on_idle && !self.land_market_active(),
-                ));
+                out.push(u8::from(self.private_land_harvest_gate_active()));
+                out.push(u8::from(self.private_land_forfeit_on_idle_active()));
                 out.push(u8::from(chain.reclaim_reserved_for_prior_owner));
                 out.extend_from_slice(&chain.land_good_plots.to_le_bytes());
                 out.extend_from_slice(&chain.land_marginal_plots.to_le_bytes());
@@ -20501,6 +21347,25 @@ impl Settlement {
                         }
                         None => out.push(0),
                     }
+                }
+            }
+            if self.secure_land_tenure_active() {
+                out.push(18);
+                out.push(u8::from(chain.secure_land_tenure));
+                out.push(inheritance_regime_tag(chain.inheritance_regime));
+                out.push(1); // universal-heir rule version
+                out.extend_from_slice(&(self.land_plots.len() as u32).to_le_bytes());
+                for (&node, record) in &self.land_plots {
+                    out.extend_from_slice(&node.0.to_le_bytes());
+                    out.extend_from_slice(&(record.shares.len() as u32).to_le_bytes());
+                    for (&owner, share) in &record.shares {
+                        out.extend_from_slice(&owner.0.to_le_bytes());
+                        out.extend_from_slice(&share.regen.to_le_bytes());
+                        out.extend_from_slice(&share.cap.to_le_bytes());
+                        out.extend_from_slice(&share.available.to_le_bytes());
+                    }
+                    out.extend_from_slice(&record.stranded_regen.to_le_bytes());
+                    out.extend_from_slice(&record.stranded_cap.to_le_bytes());
                 }
             }
             // S23b: the post-money land market extends S23a's registry with an endogenous-price
@@ -20579,6 +21444,15 @@ impl Settlement {
                 out.extend_from_slice(&(COMMITMENT_NORM_GROUP_MIN_SIZE as u16).to_le_bytes());
                 out.extend_from_slice(&COMMITMENT_NORM_ADOPTER_SHARE_GAP_BPS.to_le_bytes());
                 out.push(u8::from(COMMITMENT_NORM_SEED_CLUSTER));
+            }
+            if self.fixed_commitment_norm_active() {
+                out.push(19);
+                let prevalence = self
+                    .fixed_commitment_norm_prevalence()
+                    .expect("fixed mode has a prevalence");
+                out.extend_from_slice(&prevalence.to_bits().to_le_bytes());
+                out.extend_from_slice(&self.generation_seed.to_le_bytes());
+                out.push(1);
             }
             // The staple mapping steers the next needs/scale phase for *any* chain,
             // role-choice or not, so it is included whenever a chain is active. The
@@ -20962,13 +21836,14 @@ impl Settlement {
         // (which implies `cultivation_serialized`, so it nests inside the cultivation block below), so
         // every pre-S22f config keeps its per-colonist layout byte-identical.
         let commitment_serialized = self.voluntary_cultivation_commitment_active();
-        let commitment_norm_serialized = self.commitment_norm_spread_active();
+        let commitment_norm_serialized = self.commitment_norm_gate_active();
         let abandonable_norm_serialized = self.abandonable_norm_active();
         let group_payoff_norm_serialized = self.group_payoff_imitation_active();
         // S23a: carried grain source steers the next idle-forfeiture pass while a cultivator is
         // hauling or awaiting transfer credit from a plot. Gate it with private land tenure, which
         // implies the cultivation block is active.
         let land_serialized = self.private_land_tenure_active();
+        let secure_land_serialized = self.secure_land_tenure_active();
         out.extend_from_slice(&(self.colonists.len() as u32).to_le_bytes());
         for colonist in &self.colonists {
             out.extend_from_slice(&colonist.id.0.to_le_bytes());
@@ -21162,6 +22037,15 @@ impl Settlement {
                     None => out.push(0),
                 }
                 out.extend_from_slice(&colonist.seed.to_le_bytes());
+                if secure_land_serialized {
+                    match colonist.parent {
+                        Some(parent) => {
+                            out.push(1);
+                            out.extend_from_slice(&parent.0.to_le_bytes());
+                        }
+                        None => out.push(0),
+                    }
+                }
             }
             if has_estate_destinations {
                 match colonist.estate_destination {
@@ -21607,12 +22491,24 @@ fn chain_config_cultivation_sells_surplus_active(chain: &ChainConfig) -> bool {
     chain.cultivation_sells_surplus && chain_config_own_use_cultivation_active(chain)
 }
 
+fn inheritance_regime_tag(regime: InheritanceRegime) -> u8 {
+    match regime {
+        InheritanceRegime::Impartible => 0,
+        InheritanceRegime::Partible => 1,
+    }
+}
+
 fn chain_config_endogenous_cultivation_entry_active(chain: &ChainConfig) -> bool {
     chain.endogenous_cultivation_entry && chain_config_cultivation_sells_surplus_active(chain)
 }
 
 fn chain_config_private_land_tenure_active(chain: &ChainConfig) -> bool {
-    chain.private_land_tenure && chain_config_endogenous_cultivation_entry_active(chain)
+    (chain.private_land_tenure || chain.secure_land_tenure)
+        && chain_config_endogenous_cultivation_entry_active(chain)
+}
+
+fn chain_config_secure_land_tenure_active(chain: &ChainConfig) -> bool {
+    chain.secure_land_tenure && chain_config_endogenous_cultivation_entry_active(chain)
 }
 
 fn chain_config_land_market_active(chain: &ChainConfig) -> bool {
@@ -21675,7 +22571,12 @@ fn chain_runtime_endogenous_cultivation_entry_active(chain: &ChainRuntime) -> bo
 /// entry is active. A manually toggled flag on an older substrate is inert and therefore
 /// preserves the older run byte-for-byte.
 fn chain_runtime_private_land_tenure_active(chain: &ChainRuntime) -> bool {
-    chain.private_land_tenure && chain_runtime_endogenous_cultivation_entry_active(chain)
+    (chain.private_land_tenure || chain.secure_land_tenure)
+        && chain_runtime_endogenous_cultivation_entry_active(chain)
+}
+
+fn chain_runtime_secure_land_tenure_active(chain: &ChainRuntime) -> bool {
+    chain.secure_land_tenure && chain_runtime_endogenous_cultivation_entry_active(chain)
 }
 
 fn chain_runtime_land_market_active(chain: &ChainRuntime) -> bool {
@@ -21724,7 +22625,9 @@ fn chain_runtime_voluntary_cultivation_commitment_active(chain: &ChainRuntime) -
 }
 
 fn chain_runtime_commitment_norm_spread_active(chain: &ChainRuntime) -> bool {
-    chain.commitment_norm_spread && chain_runtime_voluntary_cultivation_commitment_active(chain)
+    chain.fixed_commitment_norm_prevalence.is_none()
+        && chain.commitment_norm_spread
+        && chain_runtime_voluntary_cultivation_commitment_active(chain)
 }
 
 fn chain_runtime_abandonable_norm_active(chain: &ChainRuntime) -> bool {
@@ -21769,6 +22672,20 @@ fn commitment_norm_seeded(seed: u64, id: AgentId, share_bps: u16) -> bool {
         seed ^ COMMITMENT_NORM_SEED_SALT ^ id.0.wrapping_mul(0x9e37_79b9_7f4a_7c15),
     ) % COMMITMENT_NORM_SCORE_BPS;
     draw < u64::from(share_bps)
+}
+
+fn fixed_commitment_norm_seeded(seed: u64, id: AgentId, prevalence: f64) -> bool {
+    let threshold = (prevalence.clamp(0.0, 1.0) * COMMITMENT_NORM_SCORE_BPS as f64).round() as u64;
+    if threshold == 0 {
+        return false;
+    }
+    if threshold >= COMMITMENT_NORM_SCORE_BPS {
+        return true;
+    }
+    let draw = deterministic_mix64(
+        seed ^ COMMITMENT_NORM_SEED_SALT ^ id.0.wrapping_mul(0x9e37_79b9_7f4a_7c15),
+    ) % COMMITMENT_NORM_SCORE_BPS;
+    draw < threshold
 }
 
 fn commitment_norm_copy_driver(
