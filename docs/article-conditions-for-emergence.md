@@ -358,6 +358,26 @@ two-tier market survived; the two property institutions made leaving costly in w
 (forfeiture) or hollow out the demand side (market). What stabilized an occupation here was contract, not
 property.
 
+**A generational revisit (S23c, S23d).** Both property tests share a silent limitation: the agents who *own*
+land and the agents who *die and reproduce* are different populations, so the canonical intergenerational
+mechanism — **inheritance** — never engages. S23c supplies it: a secure (never-forfeited) heritable title with a
+full universal-heir engine and a partible fractional-share regime, all conservation-checked and probe-verified.
+On the shipped base it is **vacuous** — the persistent owners are an immortal cultivator roster, the mortal
+lineage households rarely hold a plot at death, so land is never bequeathed (zero inheritance events). S23d then
+does the one thing that unblocks it: a base-building step that makes the mortal, reproducing lineage households
+*themselves* the persistent cultivator-owners (guarded by an owner-identity invariant that an owner be a lineage
+reproductive actor, not merely something with a finite lifespan). This **works** — owners die of old age and
+inheritance fires endogenously, twenty-plus times per run with real heir transfers — and yet the composed colony
+is **not viable**: with an unlimited own-labor survival floor every agent feeds itself, so the owners' grain is
+never bought, and the producer/buyer money economy never forms. Money promotes, but there is no sustained
+exchange behind it. The result is two honest nulls that tighten rather than cross the boundary: the inheritance
+engine is correct but the old base cannot exercise it, and the fixed base exercises it but is *subsistence-bound*.
+It restates the project's oldest lesson from the property side — a division of labor needs self-provision to be
+*worse* than exchange — and leaves an unretired risk (short adult lifespans may prevent owners from accumulating
+a marketable surplus before death). The disciplined next step is a scarcity of the outside option that forces
+exchange on its own terms (§10), not a floor tuned downward until a market appears; neither milestone is merged,
+and the generational tenure study stays deferred until a base is shown viable.
+
 ---
 
 ## 8. Discussion
@@ -451,6 +471,20 @@ We state the scaffolds plainly; a hostile reader should attack these first.
   load-bearing or whether the contract remains the real stabilizer (with a commitment-off control to rule out
   the market merely inheriting the thin/collapsed regime). Deferred, because attribution is messy when the
   contract is already solving the exit problem.
+- **A viable base for generational land tenure — via scarcity of the outside option, not a tuned floor.** S23c's
+  secure heritable-title engine works but its study is vacuous on a base where owners are immortal and reproducers
+  are landless; S23d fixes that (mortal reproducing owners, inheritance fires endogenously) but the composed
+  colony is subsistence-bound — with an unlimited own-labor survival floor no one needs to buy, so no market
+  forms. The disciplined route to a viable base is to replace the unlimited floor with a **finite, regenerating
+  rival commons** (an outside option that is genuinely scarce), so that private land matters because subsistence
+  access is *rivalrous* — with the scarcity band predeclared by ecological carrying capacity / mass balance, not
+  searched for a passing verdict, and controls that keep it honest (an abundant-outside-option control must
+  reproduce the subsidy-bound null; scarcity with owner surplus disabled must stay non-viable; scarcity with
+  surplus enabled may pass only if buyers materially buy owner-produced food and survival improves). A prior
+  unretired risk rides along: short adult lifespans may prevent owners from accumulating a marketable surplus
+  before death, so the base needs new instrumentation (owner tenure-before-death, surplus-sold-before-death,
+  inherited stock/capital, buyer purchases by owner-age cohort). Only once such a base is viable on its own terms
+  does re-running the S23c generational tenure study become meaningful.
 - **Endogenous institution selection — the natural next frontier, now opened.** The study has shown that
   *specific* hand-designed institutions make or break emergence (which exchange rule, which exit-cost
   institution). The next question is not another hand-designed institution but whether agents or populations
