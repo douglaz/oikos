@@ -256,8 +256,22 @@ const LAND_LAYOUT_MIN_WIDTH: u16 = 64;
 const LAND_LAYOUT_MARGIN: u32 = 10;
 const LAND_CARRYING_COST_DEFAULT: u64 = 1;
 const LAND_PRICE_CAP_FACTOR_DEFAULT: u64 = 1;
+pub const RIVAL_COMMONS_BASELINE_FINAL_WINDOW_TICKS: u64 = 400;
+pub const RIVAL_COMMONS_BASELINE_EMERGENCY_DRAW: u64 = 12_768;
+pub const RIVAL_COMMONS_K_TICKS: u64 = 3;
+pub const RIVAL_COMMONS_PHI_ABUNDANT_BPS: u32 = 12_500;
+pub const RIVAL_COMMONS_PHI_MARGINAL_BPS: u32 = 5_000;
+pub const RIVAL_COMMONS_PHI_SCARCE_BPS: u32 = 2_500;
+const RIVAL_COMMONS_BPS_DENOM: u64 = 10_000;
 pub const LAND_CARRYING_PERIOD: u64 = 12;
 pub const LAND_RENT_WINDOW: u64 = 100;
+
+pub fn rival_subsistence_commons_regen_for_phi(phi_bps: u32) -> u64 {
+    let numerator = u128::from(RIVAL_COMMONS_BASELINE_EMERGENCY_DRAW) * u128::from(phi_bps);
+    let denominator =
+        u128::from(RIVAL_COMMONS_BASELINE_FINAL_WINDOW_TICKS * RIVAL_COMMONS_BPS_DENOM);
+    ((numerator + denominator / 2) / denominator) as u64
+}
 pub const LAND_MIN_RENT_HISTORY: usize = 8;
 pub const LAND_SALE_HISTORY_WEIGHT_BPS: u64 = 5_000;
 pub const LAND_SALE_HISTORY_K: usize = 3;
@@ -1387,6 +1401,18 @@ pub struct ChainConfig {
     /// When active on the secure-land substrate, only mortal reproducing lineage household
     /// actors may claim homesteaded plots or receive secure-title fallback inheritance.
     pub mortal_landowner_demography: bool,
+    /// S23e — finite rival subsistence commons (default `false`, byte-identical when off).
+    /// When active on the S23d mortal-landowner base, the S21h emergency survival step draws
+    /// residual non-lineage hunger from a finite regenerating, non-excludable rival pool instead
+    /// of minting unlimited own-labor bread. The pool is distinct from the death-estate commons:
+    /// it has its own stock/cap/regen telemetry and acquisition channel, and only the active
+    /// ON path is canonicalized.
+    pub rival_subsistence_commons: bool,
+    /// S23e: scarcity scalar in basis points. The shipped sweep uses 12_500 (abundant), 5_000
+    /// (marginal), and 2_500 (scarce). Runtime regen is `round(phi * D0)`, where D0 is the
+    /// measured S23d flag-off emergency throughput pinned by
+    /// [`RIVAL_COMMONS_BASELINE_EMERGENCY_DRAW`] / [`RIVAL_COMMONS_BASELINE_FINAL_WINDOW_TICKS`].
+    pub rival_subsistence_commons_phi_bps: u32,
     /// S23b: SALT carrying cost per held plot every [`LAND_CARRYING_PERIOD`] econ ticks. Paid into
     /// the settlement land-fee sink, never redistributed in this slice.
     pub land_carrying_cost: u64,
@@ -1806,6 +1832,8 @@ impl ChainConfig {
             inheritance_regime: InheritanceRegime::Impartible,
             land_market: false,
             mortal_landowner_demography: false,
+            rival_subsistence_commons: false,
+            rival_subsistence_commons_phi_bps: 0,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
             land_price_cap_factor: LAND_PRICE_CAP_FACTOR_DEFAULT,
             // S21d.0 off by default: the food mints stay, so every existing config and its
@@ -1984,6 +2012,8 @@ impl ChainConfig {
             inheritance_regime: InheritanceRegime::Impartible,
             land_market: false,
             mortal_landowner_demography: false,
+            rival_subsistence_commons: false,
+            rival_subsistence_commons_phi_bps: 0,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
             land_price_cap_factor: LAND_PRICE_CAP_FACTOR_DEFAULT,
             // S21d.0 off by default: the food mints stay, so every existing config and its
@@ -2142,6 +2172,8 @@ impl ChainConfig {
             inheritance_regime: InheritanceRegime::Impartible,
             land_market: false,
             mortal_landowner_demography: false,
+            rival_subsistence_commons: false,
+            rival_subsistence_commons_phi_bps: 0,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
             land_price_cap_factor: LAND_PRICE_CAP_FACTOR_DEFAULT,
             // S21d.0 off by default: the food mints stay, so every existing config and its
@@ -5543,6 +5575,19 @@ pub struct EconTickReport {
     /// ([`ChainConfig::perishable_decay_bps`]), so the conservation identity is
     /// unchanged on every other settlement.
     pub spoiled: BTreeMap<GoodId, u64>,
+    /// S23e: bread regenerated into the finite rival subsistence commons this tick. This is a
+    /// named source for the whole-system identity, distinct from node regen and from the death
+    /// estate commons.
+    pub subsistence_commons_regen: BTreeMap<GoodId, u64>,
+    /// S23e: bread drawn out of the finite rival subsistence commons and immediately eaten by
+    /// eligible residual-hunger agents. This is a pool sink / agent transfer diagnostic; the
+    /// whole-system goods identity treats it as internal movement because the pool itself is
+    /// included in [`Settlement::whole_system_total`].
+    pub subsistence_commons_draw: BTreeMap<GoodId, u64>,
+    pub subsistence_commons_stock_before: u64,
+    pub subsistence_commons_stock_after: u64,
+    pub subsistence_commons_cap: u64,
+    pub subsistence_commons_phi_bps: u32,
     /// Whole-system total per good at the start of the econ tick.
     pub whole_system_before: BTreeMap<GoodId, u64>,
     /// Whole-system total per good at the end of the econ tick.
@@ -5615,6 +5660,18 @@ impl EconTickReport {
     pub fn spoiled_of(&self, good: GoodId) -> u64 {
         self.spoiled.get(&good).copied().unwrap_or(0)
     }
+    pub fn subsistence_commons_regen_of(&self, good: GoodId) -> u64 {
+        self.subsistence_commons_regen
+            .get(&good)
+            .copied()
+            .unwrap_or(0)
+    }
+    pub fn subsistence_commons_draw_of(&self, good: GoodId) -> u64 {
+        self.subsistence_commons_draw
+            .get(&good)
+            .copied()
+            .unwrap_or(0)
+    }
 
     /// Whether the whole-system ledger balances for every tracked good. This is
     /// the conservation DoD; [`Settlement::econ_tick`] also `debug_assert`s it.
@@ -5656,13 +5713,23 @@ impl EconTickReport {
             let consumed_as_input = self.consumed_as_input_of(*good) as i128;
             let promoted = self.promoted_of(*good) as i128;
             let spoiled = self.spoiled_of(*good) as i128;
+            let subsistence_commons_regen = self.subsistence_commons_regen_of(*good) as i128;
             after
-                == before + regen + endowment + produced
+                == before + regen + endowment + produced + subsistence_commons_regen
                     - consumed_as_input
                     - consumed
                     - promoted
                     - spoiled
         })
+    }
+
+    pub fn subsistence_commons_conserves(&self) -> bool {
+        self.subsistence_commons_stock_after
+            == self
+                .subsistence_commons_stock_before
+                .saturating_add(self.subsistence_commons_regen.values().copied().sum())
+                .saturating_sub(self.subsistence_commons_draw.values().copied().sum())
+            && self.subsistence_commons_stock_after <= self.subsistence_commons_cap
     }
 }
 
@@ -5737,6 +5804,7 @@ pub struct AcquisitionChannels {
     pub seeded_minted: u64,
     pub self_produced: u64,
     pub foraged: u64,
+    pub commons: u64,
 }
 
 /// S22a: a read-only snapshot of the produced bread→SALT volume split by the PRODUCER's class
@@ -5770,12 +5838,13 @@ impl AcquisitionChannels {
             seeded_minted: channels[FoodChannel::SeededMinted.index()],
             self_produced: channels[FoodChannel::SelfProduced.index()],
             foraged: channels[FoodChannel::Foraged.index()],
+            commons: channels[FoodChannel::Commons.index()],
         }
     }
 
-    /// Total units across all four channels.
+    /// Total units across all acquisition channels.
     pub fn total(&self) -> u64 {
-        self.bought + self.seeded_minted + self.self_produced + self.foraged
+        self.bought + self.seeded_minted + self.self_produced + self.foraged + self.commons
     }
 }
 
@@ -6218,6 +6287,29 @@ pub struct Settlement {
     /// minimum, not the bulk of the demand side's food (post-promotion their food is
     /// materially BOUGHT, with the emergency floor a small tail). `0` off the seam; not digested.
     emergency_bread_provisioned: u64,
+    /// S23e: finite rival subsistence commons state. This pool is a distinct accounting object
+    /// from the G4a death-estate `commons_stock`: it regenerates bread as a named source and is
+    /// drawn down by the S21h residual-hunger set as a rival outside option.
+    subsistence_commons_stock: u64,
+    subsistence_commons_cap: u64,
+    subsistence_commons_regen: u64,
+    subsistence_commons_phi_bps: u32,
+    subsistence_commons_drawn_total: u64,
+    subsistence_commons_unmet_total: u64,
+    subsistence_commons_depleted_ticks: u64,
+    subsistence_commons_shortfall_ticks: u64,
+    subsistence_commons_eligible_need_total: u64,
+    /// S23e runtime-only owner/surplus telemetry used by the scarcity classifier.
+    ever_landowner_ids: BTreeSet<AgentId>,
+    owner_first_claim_tick: BTreeMap<AgentId, u64>,
+    owner_age_at_first_claim: BTreeMap<AgentId, u64>,
+    owner_tenure_before_death: Vec<(AgentId, u64)>,
+    owner_bread_consumed: BTreeMap<AgentId, u64>,
+    owner_surplus_sold_before_death: BTreeMap<AgentId, u64>,
+    owner_inventory_at_death: Vec<(AgentId, u64)>,
+    inherited_stock_to_heirs: u64,
+    buyer_purchases_by_owner_age_cohort: BTreeMap<u64, u64>,
+    owner_seller_attributed_bought: u64,
     /// S22b: per-econ-tick scratch — the set of agent ids that realized cultivation output
     /// (harvested grain AND converted it to bread, output > 0) in the current tick's
     /// [`Self::run_own_use_cultivation`]. Drained by [`Self::run_cultivation_skill`] to credit
@@ -6724,6 +6816,8 @@ struct ChainRuntime {
     inheritance_regime: InheritanceRegime,
     land_market: bool,
     mortal_landowner_demography: bool,
+    rival_subsistence_commons: bool,
+    rival_subsistence_commons_phi_bps: u32,
     land_carrying_cost: u64,
     land_price_cap_factor: u64,
     /// S21h.0: the non-lineage woodcutters' consumed-only bread cushion (see
@@ -6798,6 +6892,31 @@ pub struct MortalLandownerOwnerRow {
     pub reproduction_eligible: bool,
     pub in_birth_kinship_graph: bool,
     pub born_in_sim: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RivalSubsistenceCommonsState {
+    pub stock: u64,
+    pub cap: u64,
+    pub regen: u64,
+    pub phi_bps: u32,
+    pub drawn_total: u64,
+    pub unmet_total: u64,
+    pub depleted_ticks: u64,
+    pub shortfall_ticks: u64,
+    pub eligible_need_total: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OwnerSurplusTelemetry {
+    pub owner_age_at_first_claim: Vec<(u64, u64)>,
+    pub owner_tenure_before_death: Vec<(u64, u64)>,
+    pub owner_surplus_produced_minus_consumed: Vec<(u64, i64)>,
+    pub owner_surplus_sold_before_death: Vec<(u64, u64)>,
+    pub owner_inventory_at_death: Vec<(u64, u64)>,
+    pub inherited_stock_to_heirs: u64,
+    pub buyer_purchases_by_owner_age_cohort: Vec<(u64, u64)>,
+    pub owner_seller_attributed_bought: u64,
 }
 
 pub type SecureLandShareRow = (u32, u64, u32, u32, u32);
@@ -6897,6 +7016,13 @@ struct WorkedLandEvent {
     agent: AgentId,
     node: NodeId,
     moved: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SubsistenceCommonsRequest {
+    agent: AgentId,
+    hunger: u16,
+    need: u32,
 }
 
 /// S23a: why a plot last reverted to unowned. Kept on the runtime-only `land_lost_prior_owners`
@@ -7336,7 +7462,7 @@ fn observe_round_trip_side(
 }
 
 /// S21d.1: the **acquisition channel** a tracked-food (bread) unit entered an agent's stock
-/// by — the four mutually-exclusive ways food can reach a colonist. A FIFO lot is tagged with
+/// by — the mutually-exclusive ways food can reach a colonist. A FIFO lot is tagged with
 /// its channel so that when food leaves (eaten, sold, spoiled, inherited) it is debited against
 /// the channel it actually ARRIVED through, not whatever stock happens to be on hand — which is
 /// what lets the probe claim "after warm-up, survivors eat food they BOUGHT" without a resold or
@@ -7355,15 +7481,19 @@ enum FoodChannel {
     /// Own-labor forage. N/A for this probe: bread is never foraged (FORAGE is a distinct,
     /// untracked good), so this channel stays zero — present for completeness/conservation.
     Foraged = 3,
+    /// S23e finite rival subsistence commons draw. Distinct from forage and from the G4a
+    /// death-estate commons, so the scarce outside-option relief share is directly observable.
+    Commons = 4,
 }
 
 impl FoodChannel {
-    const COUNT: usize = 4;
+    const COUNT: usize = 5;
     const ALL: [FoodChannel; Self::COUNT] = [
         FoodChannel::Bought,
         FoodChannel::SeededMinted,
         FoodChannel::SelfProduced,
         FoodChannel::Foraged,
+        FoodChannel::Commons,
     ];
     fn index(self) -> usize {
         self as usize
@@ -8759,6 +8889,20 @@ impl Settlement {
                     );
                 }
             }
+            if chain_config_rival_subsistence_commons_active(chain) {
+                assert!(
+                    chain.rival_subsistence_commons_phi_bps > 0,
+                    "rival subsistence commons requires a positive phi_bps"
+                );
+                assert!(
+                    chain.emergency_hunger_threshold > 0,
+                    "rival subsistence commons composes on the S21h emergency residual set"
+                );
+                assert!(
+                    chain.content.bread() == known.hunger,
+                    "rival subsistence commons requires bread to be the hunger staple"
+                );
+            }
             // S7.2 prerequisite: a built tool is useless unless holding it makes the
             // builder eligible to adopt (S7.1), so producible capital requires the
             // tool-acquisition gate. The capital scenario composes both; this guards a
@@ -8870,6 +9014,8 @@ impl Settlement {
                 inheritance_regime: chain.inheritance_regime,
                 land_market: chain.land_market,
                 mortal_landowner_demography: chain.mortal_landowner_demography,
+                rival_subsistence_commons: chain.rival_subsistence_commons,
+                rival_subsistence_commons_phi_bps: chain.rival_subsistence_commons_phi_bps,
                 land_carrying_cost: chain.land_carrying_cost,
                 land_price_cap_factor: chain.land_price_cap_factor,
                 gatherer_food_cushion: chain.gatherer_food_cushion,
@@ -8930,6 +9076,25 @@ impl Settlement {
             seeded_surplus_trace: SeededSurplusTrace::default(),
             seeded_minted_bread_sold_for_salt: 0,
             emergency_bread_provisioned: 0,
+            subsistence_commons_stock: 0,
+            subsistence_commons_cap: 0,
+            subsistence_commons_regen: 0,
+            subsistence_commons_phi_bps: 0,
+            subsistence_commons_drawn_total: 0,
+            subsistence_commons_unmet_total: 0,
+            subsistence_commons_depleted_ticks: 0,
+            subsistence_commons_shortfall_ticks: 0,
+            subsistence_commons_eligible_need_total: 0,
+            ever_landowner_ids: BTreeSet::new(),
+            owner_first_claim_tick: BTreeMap::new(),
+            owner_age_at_first_claim: BTreeMap::new(),
+            owner_tenure_before_death: Vec::new(),
+            owner_bread_consumed: BTreeMap::new(),
+            owner_surplus_sold_before_death: BTreeMap::new(),
+            owner_inventory_at_death: Vec::new(),
+            inherited_stock_to_heirs: 0,
+            buyer_purchases_by_owner_age_cohort: BTreeMap::new(),
+            owner_seller_attributed_bought: 0,
             cultivation_skill_producers: BTreeSet::new(),
             cultivation_grain_harvested: BTreeMap::new(),
             cultivation_bread_produced: BTreeMap::new(),
@@ -9050,10 +9215,27 @@ impl Settlement {
         // every existing config is byte-identical. Runs after construction so the colonist roster
         // + econ agents exist; the granted plows land in agent stock before the first `econ_tick`,
         // so they are part of the tick-0 whole-system baseline and conservation holds every tick.
+        settlement.init_rival_subsistence_commons();
         settlement.apply_endowed_cultivation_capital(seed, config);
         settlement.init_private_land_tenure();
         settlement.init_commitment_norm_seed(seed);
         settlement
+    }
+
+    fn init_rival_subsistence_commons(&mut self) {
+        if !self.rival_subsistence_commons_active() {
+            return;
+        }
+        let phi_bps = self
+            .chain
+            .as_ref()
+            .map_or(0, |chain| chain.rival_subsistence_commons_phi_bps);
+        let regen = rival_subsistence_commons_regen_for_phi(phi_bps);
+        let cap = regen.saturating_mul(RIVAL_COMMONS_K_TICKS);
+        self.subsistence_commons_phi_bps = phi_bps;
+        self.subsistence_commons_regen = regen;
+        self.subsistence_commons_cap = cap;
+        self.subsistence_commons_stock = cap;
     }
 
     fn init_private_land_tenure(&mut self) {
@@ -9359,6 +9541,25 @@ impl Settlement {
             seeded_surplus_trace: SeededSurplusTrace::default(),
             seeded_minted_bread_sold_for_salt: 0,
             emergency_bread_provisioned: 0,
+            subsistence_commons_stock: 0,
+            subsistence_commons_cap: 0,
+            subsistence_commons_regen: 0,
+            subsistence_commons_phi_bps: 0,
+            subsistence_commons_drawn_total: 0,
+            subsistence_commons_unmet_total: 0,
+            subsistence_commons_depleted_ticks: 0,
+            subsistence_commons_shortfall_ticks: 0,
+            subsistence_commons_eligible_need_total: 0,
+            ever_landowner_ids: BTreeSet::new(),
+            owner_first_claim_tick: BTreeMap::new(),
+            owner_age_at_first_claim: BTreeMap::new(),
+            owner_tenure_before_death: Vec::new(),
+            owner_bread_consumed: BTreeMap::new(),
+            owner_surplus_sold_before_death: BTreeMap::new(),
+            owner_inventory_at_death: Vec::new(),
+            inherited_stock_to_heirs: 0,
+            buyer_purchases_by_owner_age_cohort: BTreeMap::new(),
+            owner_seller_attributed_bought: 0,
             cultivation_skill_producers: BTreeSet::new(),
             cultivation_grain_harvested: BTreeMap::new(),
             cultivation_bread_produced: BTreeMap::new(),
@@ -9849,8 +10050,14 @@ impl Settlement {
         // births) must balance against before + regen + endowment + produced −
         // consumed_as_input − consumed − promoted for every good (births/deaths move
         // goods within the whole system, so they need no term).
-        for &(_, good, qty) in self.society.consumption_log_last_tick() {
+        let owner_bread = self.provenance_bread_good();
+        let consumed_log: Vec<(AgentId, GoodId, u32)> =
+            self.society.consumption_log_last_tick().to_vec();
+        for (agent, good, qty) in consumed_log {
             *report.consumed.entry(good).or_insert(0) += u64::from(qty);
+            if Some(good) == owner_bread && self.current_or_ever_landowner(agent) {
+                *self.owner_bread_consumed.entry(agent).or_insert(0) += u64::from(qty);
+            }
         }
         // ---- 7. SPOILAGE (EXPERIMENT): decay perishable food holdings, a real
         // sink recorded in `report.spoiled`. After all production/consumption so
@@ -11019,6 +11226,7 @@ impl Settlement {
                 record.idle_counter = 0;
                 record.reserved_for = None;
             }
+            self.record_landowner_acquired(event.agent);
             self.land_claims_total += 1;
             if self.land_market_active() {
                 let history = self
@@ -11874,6 +12082,7 @@ impl Settlement {
     /// The dispatch keeps the no-demography path structurally unchanged, so the G4a
     /// suite and the conformance goldens are byte-identical.
     fn settle_death(&mut self, id: AgentId) -> bool {
+        self.record_owner_death_telemetry(id);
         self.transfer_private_land_on_death(id);
         if self.demography.is_some() {
             self.settle_estate_to_heirs(id)
@@ -12114,6 +12323,11 @@ impl Settlement {
                 *self.commons_stock.entry(plow).or_insert(0) += forced_commons_plows;
             }
         }
+        if self.current_or_ever_landowner(id) {
+            self.inherited_stock_to_heirs = self
+                .inherited_stock_to_heirs
+                .saturating_add(bread_placed_with_heir);
+        }
         // S16: route the dead colonist's produced bread with the bread units the estate
         // actually placed. Heir headroom can split physical bread between heir and commons,
         // so the produced-origin counter follows that same split.
@@ -12264,6 +12478,43 @@ impl Settlement {
         self.land_plots
             .values()
             .any(|record| Self::private_land_record_agent_holds(record, agent))
+    }
+
+    fn record_landowner_acquired(&mut self, owner: AgentId) {
+        self.ever_landowner_ids.insert(owner);
+        if self.owner_first_claim_tick.contains_key(&owner) {
+            return;
+        }
+        self.owner_first_claim_tick.insert(owner, self.econ_tick);
+        if let Some(slot) = self.slot_for_id(owner) {
+            self.owner_age_at_first_claim
+                .insert(owner, self.colonists[slot].age);
+        }
+    }
+
+    fn current_or_ever_landowner(&self, owner: AgentId) -> bool {
+        self.ever_landowner_ids.contains(&owner) || self.private_land_agent_holds_any_plot(owner)
+    }
+
+    fn stock_of_id(&self, agent: AgentId, good: GoodId) -> u64 {
+        self.society
+            .agents
+            .get(agent)
+            .map_or(0, |held| u64::from(held.stock.get(good)))
+    }
+
+    fn record_owner_death_telemetry(&mut self, owner: AgentId) {
+        if !self.current_or_ever_landowner(owner) {
+            return;
+        }
+        if let Some(first_tick) = self.owner_first_claim_tick.get(&owner).copied() {
+            self.owner_tenure_before_death
+                .push((owner, self.econ_tick.saturating_sub(first_tick)));
+        }
+        if let Some(bread) = self.provenance_bread_good() {
+            self.owner_inventory_at_death
+                .push((owner, self.stock_of_id(owner, bread)));
+        }
     }
 
     fn secure_land_household_distance(&self, owner: AgentId, candidate: AgentId) -> u32 {
@@ -12465,6 +12716,9 @@ impl Settlement {
                         record.idle_counter = 0;
                         record.reserved_for = None;
                     }
+                    if let Some(heir) = heir {
+                        self.record_landowner_acquired(heir);
+                    }
                     if heir.is_none() {
                         lost.push((node, owner));
                     }
@@ -12577,6 +12831,11 @@ impl Settlement {
                             }
                         }
                     }
+                    for &(heir, share) in &split {
+                        if share.regen >= LAND_VIABLE_REGEN_FLOOR {
+                            self.record_landowner_acquired(heir);
+                        }
+                    }
                     self.secure_land_stranded_shares_total = self
                         .secure_land_stranded_shares_total
                         .saturating_add(stranded_added);
@@ -12652,6 +12911,7 @@ impl Settlement {
 
         let land_market = self.land_market_active();
         let mut inherited_titles = Vec::new();
+        let mut acquired_titles = Vec::new();
         let mut cleared_market_titles = Vec::new();
         let mut lost = Vec::new();
         for (&node, record) in &mut self.land_plots {
@@ -12665,6 +12925,9 @@ impl Settlement {
                         if let Some(heir) = heir {
                             inherited_titles.push(heir);
                         }
+                    }
+                    if let Some(heir) = heir {
+                        acquired_titles.push(heir);
                     }
                     if heir.is_none() {
                         lost.push((node, owner));
@@ -12687,6 +12950,9 @@ impl Settlement {
             let heir_history = self.land_market_title_history.entry(heir).or_default();
             heir_history.ever_owned = true;
             heir_history.current = Some(LandTitleSource::Inherited);
+        }
+        for heir in acquired_titles {
+            self.record_landowner_acquired(heir);
         }
         for (node, owner) in lost {
             // Tagged `Death` so the by-other reclaim counter never credits a heirless-death vacancy
@@ -12763,6 +13029,7 @@ impl Settlement {
             };
         let mut deaths = 0;
         for id in dying {
+            self.record_owner_death_telemetry(id);
             if let Some((_, true, inherit_eligible)) = secure_owner_death_snapshot
                 .iter()
                 .find(|&&(owner, _, _)| owner == id)
@@ -13972,6 +14239,7 @@ impl Settlement {
         if tool_active {
             self.cultivation_tool_producers.clear();
         }
+        let land_owner_telemetry = self.private_land_tenure_active();
         let hunger_target = 0;
         let hunger_deplete = self.dynamics.hunger_deplete;
         let hunger_per_food = self.dynamics.hunger_per_food;
@@ -14060,9 +14328,9 @@ impl Settlement {
                 if tool_active {
                     self.cultivation_tool_producers.insert(id);
                 }
-                // The cumulative produced-bread diagnostic is maintained on EITHER the skill or
-                // the cultivation-capital path (the S22d non-vacuity test reads it with skill off).
-                if skill_active || tool_active {
+                // The cumulative produced-bread diagnostic is maintained on skill/capital paths and
+                // on private-land runs, where S23e reads owner surplus under mortality.
+                if skill_active || tool_active || land_owner_telemetry {
                     *self.cultivation_bread_produced.entry(id).or_insert(0) += realized_bread;
                 }
             }
@@ -14361,7 +14629,12 @@ impl Settlement {
         // cultivation phase): the hunger staple plus any directly-edible subsistence food.
         let hunger_staple = self.known.hunger;
         let subsistence_food = self.known.subsistence;
+        let commons_active = self.rival_subsistence_commons_active();
+        if commons_active {
+            self.regenerate_subsistence_commons(bread, report);
+        }
         let live = self.live_colonist_slots.clone();
+        let mut commons_requests = Vec::new();
         for slot in live {
             let (id, vocation, household, hunger) = {
                 let colonist = &self.colonists[slot];
@@ -14406,6 +14679,14 @@ impl Settlement {
             if eat == 0 {
                 continue;
             }
+            if commons_active {
+                commons_requests.push(SubsistenceCommonsRequest {
+                    agent: id,
+                    hunger,
+                    need: eat,
+                });
+                continue;
+            }
             // PRODUCE the floor from own labor (no grain input): conserved `report.produced`,
             // credited SelfProduced — then immediately eat ALL of it, so no offerable unit
             // remains. `credit_produced` books the produced side; `consume_own_use_stock`
@@ -14431,6 +14712,103 @@ impl Settlement {
                 .emergency_bread_provisioned
                 .saturating_add(u64::from(eat));
         }
+        if commons_active {
+            self.fulfill_subsistence_commons_requests(bread, commons_requests, report);
+        }
+    }
+
+    fn regenerate_subsistence_commons(&mut self, bread: GoodId, report: &mut EconTickReport) {
+        report.subsistence_commons_stock_before = self.subsistence_commons_stock;
+        report.subsistence_commons_cap = self.subsistence_commons_cap;
+        report.subsistence_commons_phi_bps = self.subsistence_commons_phi_bps;
+        if self.subsistence_commons_regen == 0
+            || self.subsistence_commons_stock >= self.subsistence_commons_cap
+        {
+            report.subsistence_commons_stock_after = self.subsistence_commons_stock;
+            return;
+        }
+        let before = self.subsistence_commons_stock;
+        self.subsistence_commons_stock = self
+            .subsistence_commons_stock
+            .saturating_add(self.subsistence_commons_regen)
+            .min(self.subsistence_commons_cap);
+        let regen = self.subsistence_commons_stock - before;
+        if regen > 0 {
+            *report.subsistence_commons_regen.entry(bread).or_insert(0) += regen;
+        }
+        report.subsistence_commons_stock_after = self.subsistence_commons_stock;
+    }
+
+    fn fulfill_subsistence_commons_requests(
+        &mut self,
+        bread: GoodId,
+        mut requests: Vec<SubsistenceCommonsRequest>,
+        report: &mut EconTickReport,
+    ) {
+        requests.sort_by_key(|request| (std::cmp::Reverse(request.hunger), request.agent.0));
+        let total_need: u64 = requests.iter().map(|request| u64::from(request.need)).sum();
+        self.subsistence_commons_eligible_need_total = self
+            .subsistence_commons_eligible_need_total
+            .saturating_add(total_need);
+        let mut drawn_total = 0u64;
+        let mut unmet_total = 0u64;
+        for request in requests {
+            if request.need == 0 {
+                continue;
+            }
+            let available = self.subsistence_commons_stock.min(u64::from(u32::MAX));
+            let Some(held) = self
+                .society
+                .agents
+                .get(request.agent)
+                .map(|agent| agent.stock.get(bread))
+            else {
+                unmet_total = unmet_total.saturating_add(u64::from(request.need));
+                continue;
+            };
+            let headroom = u64::from(u32::MAX - held);
+            let draw = u64::from(request.need).min(available).min(headroom);
+            let draw_u32 = u32::try_from(draw).unwrap_or(0);
+            if draw_u32 == 0 {
+                unmet_total = unmet_total.saturating_add(u64::from(request.need));
+                continue;
+            }
+            if self.society.credit_stock(request.agent, bread, draw_u32) {
+                self.subsistence_commons_stock =
+                    self.subsistence_commons_stock.saturating_sub(draw);
+                drawn_total = drawn_total.saturating_add(draw);
+                *report.subsistence_commons_draw.entry(bread).or_insert(0) += draw;
+                if self.acquisition_ledger_active() {
+                    self.acquisition
+                        .credit(request.agent, FoodChannel::Commons, draw);
+                }
+                self.consume_own_use_stock(request.agent, bread, draw_u32);
+                unmet_total =
+                    unmet_total.saturating_add(u64::from(request.need).saturating_sub(draw));
+            } else {
+                unmet_total = unmet_total.saturating_add(u64::from(request.need));
+            }
+        }
+        self.subsistence_commons_drawn_total = self
+            .subsistence_commons_drawn_total
+            .saturating_add(drawn_total);
+        self.subsistence_commons_unmet_total = self
+            .subsistence_commons_unmet_total
+            .saturating_add(unmet_total);
+        if total_need > 0 && self.subsistence_commons_stock == 0 {
+            self.subsistence_commons_depleted_ticks =
+                self.subsistence_commons_depleted_ticks.saturating_add(1);
+        }
+        if unmet_total > 0 {
+            self.subsistence_commons_shortfall_ticks =
+                self.subsistence_commons_shortfall_ticks.saturating_add(1);
+        }
+        report.subsistence_commons_stock_after = self.subsistence_commons_stock;
+        debug_assert!(
+            report.subsistence_commons_conserves(),
+            "subsistence commons conservation broke at econ tick {}",
+            self.econ_tick
+        );
     }
 
     /// S15 own-use readback seam: debit `qty` of `good` from `agent`'s OWN stock and
@@ -16081,6 +16459,13 @@ impl Settlement {
             .is_some_and(chain_runtime_mortal_landowner_demography_active)
     }
 
+    fn rival_subsistence_commons_active(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(chain_runtime_rival_subsistence_commons_active)
+            && self.provenance_bread_good().is_some()
+    }
+
     /// S22b: whether **bounded cultivation skill** is active this tick — the
     /// `cultivation_skill` flag is on AND the S22a endogenous-cultivation-entry path is active
     /// (it composes strictly on it). When this holds, the per-agent skill scalar accumulates/
@@ -17361,6 +17746,30 @@ impl Settlement {
                     tick,
                 );
             }
+            let owner_own_qty: u64 = drawn_lots
+                .iter()
+                .filter(|lot| lot.producer == row.seller)
+                .map(|lot| lot.qty)
+                .sum();
+            if owner_own_qty > 0 && self.current_or_ever_landowner(row.seller) {
+                *self
+                    .owner_surplus_sold_before_death
+                    .entry(row.seller)
+                    .or_insert(0) += owner_own_qty;
+                let seller_age = self
+                    .slot_for_id(row.seller)
+                    .map_or(0, |slot| self.colonists[slot].age);
+                let cohort = (seller_age / 10) * 10;
+                *self
+                    .buyer_purchases_by_owner_age_cohort
+                    .entry(cohort)
+                    .or_insert(0) += owner_own_qty;
+                if !self.private_land_agent_holds_any_plot(row.buyer) {
+                    self.owner_seller_attributed_bought = self
+                        .owner_seller_attributed_bought
+                        .saturating_add(owner_own_qty);
+                }
+            }
             if let Some(price) = row.spot_price {
                 if credit_proceeds {
                     let own_qty: u64 = drawn_lots
@@ -18268,7 +18677,10 @@ impl Settlement {
     /// conserved quantity. The commons term is zero until the first death, so a
     /// no-death run's totals are byte-identical to G2b/G3.
     pub fn whole_system_total(&self, good: GoodId) -> u64 {
-        self.world.total_goods_of(good) + self.econ_stock_total(good) + self.commons_stock_of(good)
+        self.world.total_goods_of(good)
+            + self.econ_stock_total(good)
+            + self.commons_stock_of(good)
+            + self.subsistence_commons_stock_of(good)
     }
 
     /// Total of `good` held in econ agent stock across all live agents (a freed
@@ -18302,6 +18714,32 @@ impl Settlement {
     /// dead colonists' settled estates (G4a). Zero until the first death.
     pub fn commons_stock_of(&self, good: GoodId) -> u64 {
         self.commons_stock.get(&good).copied().unwrap_or(0)
+    }
+
+    pub fn subsistence_commons_stock_of(&self, good: GoodId) -> u64 {
+        if self.rival_subsistence_commons_active()
+            && self
+                .provenance_bread_good()
+                .is_some_and(|bread| bread == good)
+        {
+            self.subsistence_commons_stock
+        } else {
+            0
+        }
+    }
+
+    pub fn rival_subsistence_commons_state(&self) -> RivalSubsistenceCommonsState {
+        RivalSubsistenceCommonsState {
+            stock: self.subsistence_commons_stock,
+            cap: self.subsistence_commons_cap,
+            regen: self.subsistence_commons_regen,
+            phi_bps: self.subsistence_commons_phi_bps,
+            drawn_total: self.subsistence_commons_drawn_total,
+            unmet_total: self.subsistence_commons_unmet_total,
+            depleted_ticks: self.subsistence_commons_depleted_ticks,
+            shortfall_ticks: self.subsistence_commons_shortfall_ticks,
+            eligible_need_total: self.subsistence_commons_eligible_need_total,
+        }
     }
 
     /// The gold pooled in the settlement commons — dead colonists' settled gold
@@ -19395,6 +19833,55 @@ impl Settlement {
                 }
             })
             .collect()
+    }
+
+    pub fn owner_surplus_telemetry(&self) -> OwnerSurplusTelemetry {
+        let mut produced_minus_consumed = Vec::new();
+        for owner in &self.ever_landowner_ids {
+            let produced = self
+                .cultivation_bread_produced
+                .get(owner)
+                .copied()
+                .unwrap_or(0);
+            let consumed = self.owner_bread_consumed.get(owner).copied().unwrap_or(0);
+            produced_minus_consumed.push((
+                owner.0,
+                i64::try_from(produced).unwrap_or(i64::MAX)
+                    - i64::try_from(consumed).unwrap_or(i64::MAX),
+            ));
+        }
+        produced_minus_consumed.sort_by_key(|&(owner, _)| owner);
+
+        OwnerSurplusTelemetry {
+            owner_age_at_first_claim: self
+                .owner_age_at_first_claim
+                .iter()
+                .map(|(&owner, &age)| (owner.0, age))
+                .collect(),
+            owner_tenure_before_death: self
+                .owner_tenure_before_death
+                .iter()
+                .map(|&(owner, tenure)| (owner.0, tenure))
+                .collect(),
+            owner_surplus_produced_minus_consumed: produced_minus_consumed,
+            owner_surplus_sold_before_death: self
+                .owner_surplus_sold_before_death
+                .iter()
+                .map(|(&owner, &qty)| (owner.0, qty))
+                .collect(),
+            owner_inventory_at_death: self
+                .owner_inventory_at_death
+                .iter()
+                .map(|&(owner, qty)| (owner.0, qty))
+                .collect(),
+            inherited_stock_to_heirs: self.inherited_stock_to_heirs,
+            buyer_purchases_by_owner_age_cohort: self
+                .buyer_purchases_by_owner_age_cohort
+                .iter()
+                .map(|(&cohort, &qty)| (cohort, qty))
+                .collect(),
+            owner_seller_attributed_bought: self.owner_seller_attributed_bought,
+        }
     }
 
     pub fn private_land_viable_marginal_plots(&self) -> usize {
@@ -21535,6 +22022,14 @@ impl Settlement {
                 out.push(u8::from(chain.mortal_landowner_demography));
                 out.push(1); // lineage-owner routing rule version
             }
+            if self.rival_subsistence_commons_active() {
+                out.push(21);
+                out.push(u8::from(chain.rival_subsistence_commons));
+                out.extend_from_slice(&chain.rival_subsistence_commons_phi_bps.to_le_bytes());
+                out.extend_from_slice(&self.subsistence_commons_stock.to_le_bytes());
+                out.extend_from_slice(&self.subsistence_commons_cap.to_le_bytes());
+                out.extend_from_slice(&self.subsistence_commons_regen.to_le_bytes());
+            }
             // S23b: the post-money land market extends S23a's registry with an endogenous-price
             // state, listings, last-sale anchors, and the non-agent fee sink. Emitted only when the
             // market composes on active private land tenure; with the flag off every S23a and older
@@ -22688,6 +23183,12 @@ fn chain_config_mortal_landowner_demography_active(chain: &ChainConfig) -> bool 
         && !chain_config_land_market_active(chain)
 }
 
+fn chain_config_rival_subsistence_commons_active(chain: &ChainConfig) -> bool {
+    chain.rival_subsistence_commons
+        && chain_config_mortal_landowner_demography_active(chain)
+        && chain.emergency_hunger_threshold > 0
+}
+
 fn config_private_land_tenure_active(config: &SettlementConfig) -> bool {
     config
         .chain
@@ -22760,6 +23261,12 @@ fn chain_runtime_mortal_landowner_demography_active(chain: &ChainRuntime) -> boo
     chain.mortal_landowner_demography
         && chain_runtime_secure_land_tenure_active(chain)
         && !chain_runtime_land_market_active(chain)
+}
+
+fn chain_runtime_rival_subsistence_commons_active(chain: &ChainRuntime) -> bool {
+    chain.rival_subsistence_commons
+        && chain_runtime_mortal_landowner_demography_active(chain)
+        && chain.emergency_hunger_threshold > 0
 }
 
 /// S22b: bounded cultivation skill is active iff the flag is on AND the S22a

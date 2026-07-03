@@ -1,5 +1,29 @@
 # impl-47 — S23e: Finite rival subsistence commons (does scarcity of the outside option force the market S23d could not?)
 
+**Status (impl): LANDED (rb-lite) — HONEST NULL; NO φ forces a market. Not merged; the binding constraint is
+the DEMAND-SIDE INCOME LOOP, not scarcity.** Across the predeclared `φ` sweep no producer/buyer market forms:
+`abundant (1.25) → AbundanceReproducesNull` (control behaves — reproduces the S23d subsidy-bound null, survival
+0.69), `marginal (0.5) → SubsistenceBoundDespiteScarcity` (**the informative cell**: money promotes, owners
+produce AND sell surplus, the commons is scarce — yet alive non-owner `buyer_bought = 0`, survival 0.34),
+`scarce (0.25) → MoneyFailure` (extreme scarcity collapses the money bootstrap before any market forms, survival
+0.17 — starvation pressure, not the economic headline). **The honest, correctly-scoped finding (Codex
+review-of-results, ACCEPT-AS-HONEST-NULL):** on this S23d mortal-landowner base, replacing the unlimited
+emergency floor with a finite rival commons does **not** force a sustained producer/buyer bread market, because
+**hungry non-owner demand has no sustained purchasing-power loop** — scarcity and owner surplus are *not*
+sufficient. This is NOT the mortality wall (owners DO produce+sell surplus: `produced_minus_consumed` 330–779,
+`owner_sold` up to 106) and NOT a confound (Codex verified the buy path is reachable — `bought_food_of` reads the
+acquisition `Bought` channel credited from real bread trades). Metric caveat (Codex P2): `owner_sold` is
+lifetime-cumulative while `final_buyer_bought` is final-window/alive-non-owner, so "owners sold 106" does not
+contradict `buyer_bought=0` (sales can be earlier / to now-dead buyers). Verified: workspace 40 suites green,
+goldens byte-identical off, fmt/clippy clean, suite 11/11; `D0=12768` is the *measured* S23d baseline
+(pinned + guarded by `s23d_baseline_reproduced_for_d0`); rival conservation + after-market S21h-eligible routing
+faithful. **Review caveat:** rb-lite converged in 1 round and its second reviewer (the detailed claude checklist)
+never ran (`claude: command not found`), so this milestone rests on independent verification + Codex
+review-of-results, not the panel. **Next step (Codex):** a **buyer-income / money-circulation lever** (a
+labor-market / wage-rent-payment loop giving hungry non-owners recurring purchasing power) — NOT another
+scarcity tweak. The generational-land thread is blocked on that demand-side income loop. Preserved unmerged on
+`feat/rival-commons-impl-rb`.
+
 Status (spec): **SPEC-READY** (Codex spec-review round 1 folded in — P0 `φ`/`D0` baseline-anchored predeclaration
 + P0 `ScarcityStarves` absolute-floor redefine, P1 `K` pinned + after-market S21h routing + owner-seller
 attribution + `NoSurplusUnderMortality` sharpening, P2 denominators + diagnostic-only lifespan probe + tag
