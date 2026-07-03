@@ -1,11 +1,13 @@
 # impl-48 — C1: Wage Labor and the Circular Flow of Income (does buyer income finally make the market live?)
 
-Status (spec): **DRAFT — pending Codex spec-review.** Opens the CIVILIZATION-CORE arc
+Status (spec): **SPEC-READY** (independent second-model spec-review: round 1 high + rounds 2–3 xhigh folded in;
+a final whole-document xhigh read added three cross-slice P1 fixes — own-funded wage appraisal §4.3, retained-earnings
+ledger digested + death-routed §4.6/§5, verdict scaffold-before-vacuity ordering §2). Opens the CIVILIZATION-CORE arc
 (`docs/spec-civ-core-roadmap.md`, layer C1). This is the **keystone** milestone: every layer above it
 (firms, unified households, factor markets, the state, the credit cycle) depends on a demand side that
 can *earn*.
 
-Base: master `1029223`, composed with **S23d** (`mortal_landowner_demography`, tag 20) + **S23e**
+Base: master `b7e6b0f`, composed with **S23d** (`mortal_landowner_demography`, tag 20) + **S23e**
 (`rival_subsistence_commons`, tag 21) rebased forward from `feat/rival-commons-impl-rb` @ `e592854`
 (see §3 for the sequencing decision). Flag `wage_labor`, digest **tag 22**, ON-only. Composes the
 existing labor-market and ordinal-reservation machinery (`econ/src/factor.rs`) into the settlement
@@ -107,20 +109,31 @@ wage-driven (not a fiat re-pin and not a subsidised-wage scaffold)?
 BasePrecondition failures (checked first, disqualifying):
   BaseUnviable            — SALT never promotes / owners hold no surplus / mortality doesn't fire
                             (the S23e base itself didn't reproduce → C1 is untestable this seed)
-  ConservationBroken      — whole-system or escrow conservation failed a tick
+  ConservationBroken      — whole-system or escrow/money conservation failed a tick
   EscrowUnbalanced        — escrow not fully released+refunded by horizon (funds stranded/lost)
   ProvenanceDisqualified  — bread provenance unclean / bread_minted_max > 0
-Signal / vacuity:
-  WageMarketVacuous       — < MIN_HIRES voluntary hires after promotion (labor market inert)
-Scaffold:
-  WageScaffoldOnly        — hires occur but only under fiat_wage or subsidised_wage (not voluntary,
-                            not from own earnings)
+Scaffold mode (checked by SCENARIO FLAG, before vacuity — spec-review round 4, P1):
+  WageScaffoldOnly        — the run IS a fiat_wage or subsidised_wage control (employment forced, or
+                            wage fund injected rather than paid from own earnings). Determined by the
+                            scenario mode, NOT by counting hires — a forced/subsidised run with few
+                            or zero voluntary retained-earnings hires must still classify here, never
+                            as vacuous.
+Signal / vacuity (HEADLINE voluntary run only):
+  WageMarketVacuous       — in the voluntary headline scenario, < MIN_HIRES own-earnings-funded hires
+                            after promotion (labor market inert). Scoped to the headline run so it
+                            cannot preempt a scaffold control.
 Outcome (the real question):
   CircularFlowForms       — success clauses 1–4 all hold (headline positive)
   WageInertDemandStillDead— voluntary wages clear from own earnings, yet demand stays dead
                             (buyer_bought ≈ 0 / velocity ≈ 0): a NEW, sharper null than S23e —
                             "even wage income does not make the market live, because <reported reason>"
 ```
+
+**Ordering note (round 4, P1):** scaffold classification is keyed on the **scenario mode** (which
+control is running) and is checked **before** voluntary-vacuity; `WageMarketVacuous` is scoped to the
+headline voluntary run. This prevents a `fiat_wage`/`subsidised_wage` control — which may legitimately
+have zero *voluntary retained-earnings* hires — from misclassifying as `WageMarketVacuous` and defeating
+its own purpose.
 
 `CircularFlowForms` would be the first *positive* of the entire generational strand and the event that
 **reopens the deferred S23c generational-tenure study** (now a viable C3). `WageInertDemandStillDead`
@@ -220,12 +233,19 @@ bundle appraisal but pricing labor:
 - Forecast the output the hired labor will produce with `forecast_output_price()` (settlement.rs:21312–21327),
   capped at the observed realized price by `project_input_bid_limit()` (:22620) so the forecast cannot
   inflate the offer.
-- Build a `ProjectBundleCandidate` whose `present_advance` **includes the wage cost** (`wage × labor_units`)
-  plus any operating cost, and whose future receivable is the output's forecast sale value.
-- Acceptance (ordinal, via `appraise_project_bundle_for_money()` / `soonest_savings_horizon()` :22816):
-  hire at wage `w` only if the resulting bundle still newly provisions the owner's own soonest
-  future-money savings want, preserving higher-ranked wants. Binary-search the highest `w` that clears
-  — that is the wage ceiling.
+- **Own-funded, not financed (spec-review round 4, P1).** Do **not** reuse
+  `appraise_project_bundle_for_money()` directly: that path leaves the owner's current `gold` unchanged
+  and models the advance as a future *due/payable* (bundle.rs:109) — i.e. a **financed** project, which
+  would smuggle credit into C1 (credit is C7) and could approve a hire without testing the real
+  present-money sacrifice. `appraise_labor_hire_for_money` must be a **true own-money adapter**: the wage
+  is paid **now** out of the owner's wage-eligible retained earnings (§4.6), so the appraisal compares
+  the owner's ordinal provisioning at **current gold** against provisioning at **(gold − wage_now)** plus
+  the *expected future sale proceeds* of the output — no synthetic payable, no fake credit.
+- Acceptance (ordinal): hire at wage `w` only if, after debiting `w` from present gold, the owner's
+  soonest future-money savings want (`soonest_savings_horizon()` :22816) is still newly provisioned by
+  the expected sale proceeds while all higher-ranked wants are preserved. Binary-search the highest `w`
+  that clears — that is the wage ceiling. (If credit is ever wanted here, it must be introduced
+  explicitly as a C7 dependency, never implied by the bundle's payable semantics.)
 
 No cardinal marginal-product is ever computed; the ceiling is the rank-walk break-even, the same
 discipline the input bid uses, with the wage cost entering `present_advance` instead of an input
@@ -308,8 +328,17 @@ the S23d subsidy in disguise. C1 enforces provenance with a ledger:
   bucket) must classify `WageScaffoldOnly`.
 - Any cold-start owner reserve (Risk 2) is a **declared scaffold**, classified as such, never counted
   toward the headline circular flow.
+- **Provenance-only, capped, and death-routed (spec-review round 4, P1).** The bucket is a *provenance
+  tag* on already-conserved gold, **never a second store of value**: it is capped at the owner's actual
+  spendable gold (you can't pay a wage the balance can't cover even if the tag says otherwise), so it
+  cannot double-count or mint capital. On owner **death**, the bucket is simply **discarded** — the
+  owner's gold routes through the normal estate machinery, and a **heir does NOT inherit wage-eligible
+  status**: inherited/endowment gold is not "earned," so an heir must re-earn wage-eligibility through
+  its own sales before it can fund wages (this is what stops endowment gold from becoming earned wage
+  capital across a generation).
 
-This makes "wages come from real earnings" a **checkable invariant**, not a hope.
+This makes "wages come from real earnings" a **checkable invariant**, not a hope. Because the bucket
+**steers** hiring, it is digested ON-only (see §5).
 
 ### 4.7 Money-regime handling (the emergent-money gotcha)
 
@@ -340,10 +369,16 @@ already left the agent balance, so the estate path cannot see it.
 
 **Digest (tag 22, ON-only).** In `canonical_bytes()` (settlement.rs:20107+), following the tag-13..17
 idiom exactly: `if self.wage_labor_active() { out.push(22); out.push(u8::from(flag)); /* wage_margin_bps,
-market params */ ; /* escrow_gold; per-colonist employment state */ }`. Per-colonist steering state
-(current wage-contract remaining, escrowed amount, assigned worksite) is serialized ON-only inside the
-gate, no marker, conditional-omit — exactly as S22f's `commitment_remaining` (settlement.rs:21091) and
-S22b's skill (:21058). **Off-path (`wage_labor` false): nothing emitted → byte-identical.**
+market params */ ; /* escrow_gold; escrow records; per-owner retained-earnings ledger; per-worker
+wage-proceeds bucket; per-colonist employment state */ }`. **Every piece of state that steers behavior
+must be digested (spec-review round 4, P1)** — this explicitly includes the **retained-earnings ledger**
+(it gates wage bids, §4.6) and the **wage-proceeds bucket** (it drives the attribution metric, §7), not
+just `escrow_gold` and per-colonist employment state (current wage-contract remaining, escrowed amount,
+assigned worksite). All serialized ON-only inside the gate, no marker, conditional-omit — exactly as
+S22f's `commitment_remaining` (settlement.rs:21091) and S22b's skill (:21058). **Off-path (`wage_labor`
+false): nothing emitted → byte-identical.** (Diagnostic-only counters that never steer a decision —
+e.g. `endowment_funded_wages` if used purely for reporting — stay out of the digest, per the S22
+runtime-only convention.)
 
 **Determinism.** No live RNG; the labor market clears deterministically (price-then-seq like the goods
 book). All new state integer-only.
@@ -456,14 +491,15 @@ Build/verify (plain cargo, no nix): `cargo test -p sim --test wage_labor -- --no
    still stalls, that is `WageInertDemandStillDead` and the next finding — reported, not tuned.
 2. **The employer-side chicken-and-egg.** The owner needs prior earnings to advance a wage, but needs
    to sell output to have earnings. On the S23e base owners already sell *some* surplus (S23e:
-   `owner_sold ≤ 106`), so a bootstrap reserve exists; if it is too thin to fund hiring, C1 may need a
+   `owner_sold ≤ 106`), which makes a self-funded bootstrap **plausible but not guaranteed** — the
+   surplus may be too thin to fund a wage large enough to matter. If so, C1 may need a
    cold-start seeded owner reserve (disclosed, like the S5 cold-start buffers) — classified as a
    **declared scaffold** in the retained-earnings ledger (§4.6) and excluded from the headline circular
    flow, never a per-tick subsidy.
 3. **Escrow scope.** The two-rate escrow plus the worksite/capacity bridge (§4.4) are the largest new
    mechanisms; if they balloon the milestone, Slice B ships the synchronous fallback (§4.5) and the
    escrow becomes C1.5. Decide at Slice B review.
-4. **Base rebase drift.** S23d/S23e were cut before `1029223`; the rebase must be verified to
+4. **Base rebase drift.** S23d/S23e were cut before `b7e6b0f`; the rebase must be verified to
    reproduce their goldens/verdicts (Slice A). If master moved something they depend on, that surfaces
    in Slice A as a mechanical fix, not a C1 design change.
 5. **Which φ is the honest headline.** Marginal (0.5) is the informative cell (money + surplus +
