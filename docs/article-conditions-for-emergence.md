@@ -2,8 +2,9 @@
 
 ### A praxeologic agent-based study under a no-smuggling, conservation, and adversarial-review discipline
 
-*Working paper distilled from the OIKOS experimental record (milestones S5–S23b). Companion to the
-running report `report-emergence-and-its-limits.md`, which carries the per-milestone detail.*
+*Working paper distilled from the OIKOS experimental record (milestones S5–S24c, plus the S23c–e generational
+property coda). Companion to the running report `report-emergence-and-its-limits.md`, which carries the
+per-milestone detail.*
 
 ---
 
@@ -373,10 +374,21 @@ never bought, and the producer/buyer money economy never forms. Money promotes, 
 exchange behind it. The result is two honest nulls that tighten rather than cross the boundary: the inheritance
 engine is correct but the old base cannot exercise it, and the fixed base exercises it but is *subsistence-bound*.
 It restates the project's oldest lesson from the property side — a division of labor needs self-provision to be
-*worse* than exchange — and leaves an unretired risk (short adult lifespans may prevent owners from accumulating
-a marketable surplus before death). The disciplined next step is a scarcity of the outside option that forces
-exchange on its own terms (§10), not a floor tuned downward until a market appears; neither milestone is merged,
-and the generational tenure study stays deferred until a base is shown viable.
+*worse* than exchange. The disciplined next step — a scarcity of the outside option that forces exchange on its
+own terms, not a floor tuned downward — was then *tried* (S23e): the unlimited floor was replaced by a finite,
+regenerating rival commons, its scarcity pinned to a **measured** baseline and **swept** across abundant,
+marginal, and scarce rather than searched for a passing value. It did **not** rescue the base. At no scarcity
+level did a producer/buyer market form — abundant reproduced the subsidy-bound null, extreme scarcity merely
+collapsed the money bootstrap, and at the informative middle the owners *produced and sold* a surplus while the
+hungry non-owner buyers still bought nothing. A result review confirmed with code evidence that this is neither a
+wiring artifact nor the short-lifespan wall (the owners have surplus; the buy path is real but untaken). The true
+constraint is a **demand-side income loop**: the non-owner buyers have no sustained purchasing power — a one-time
+money endowment that depletes, with no wage, rent, or payment stream to renew it — so when the commons runs short
+they cannot buy the owners' bread and simply go hungry. The generational strand has thus walked its constraint
+down to a single joint: inheritance is inert on disjoint populations (S23c), the fixed base is subsidy-bound
+(S23d), and scarcity does not rescue it (S23e). The honest next lever is therefore neither property nor scarcity
+but a mechanism that lets the demand side *earn* (§10). None of the three milestones is merged; the tenure study
+stays deferred until buyers can pay.
 
 ---
 
@@ -471,20 +483,20 @@ We state the scaffolds plainly; a hostile reader should attack these first.
   load-bearing or whether the contract remains the real stabilizer (with a commitment-off control to rule out
   the market merely inheriting the thin/collapsed regime). Deferred, because attribution is messy when the
   contract is already solving the exit problem.
-- **A viable base for generational land tenure — via scarcity of the outside option, not a tuned floor.** S23c's
-  secure heritable-title engine works but its study is vacuous on a base where owners are immortal and reproducers
-  are landless; S23d fixes that (mortal reproducing owners, inheritance fires endogenously) but the composed
-  colony is subsistence-bound — with an unlimited own-labor survival floor no one needs to buy, so no market
-  forms. The disciplined route to a viable base is to replace the unlimited floor with a **finite, regenerating
-  rival commons** (an outside option that is genuinely scarce), so that private land matters because subsistence
-  access is *rivalrous* — with the scarcity band predeclared by ecological carrying capacity / mass balance, not
-  searched for a passing verdict, and controls that keep it honest (an abundant-outside-option control must
-  reproduce the subsidy-bound null; scarcity with owner surplus disabled must stay non-viable; scarcity with
-  surplus enabled may pass only if buyers materially buy owner-produced food and survival improves). A prior
-  unretired risk rides along: short adult lifespans may prevent owners from accumulating a marketable surplus
-  before death, so the base needs new instrumentation (owner tenure-before-death, surplus-sold-before-death,
-  inherited stock/capital, buyer purchases by owner-age cohort). Only once such a base is viable on its own terms
-  does re-running the S23c generational tenure study become meaningful.
+- **A demand-side income loop — the constraint the generational-land strand has now isolated.** S23c's secure
+  heritable-title engine works but is vacuous on a base where owners are immortal and reproducers are landless;
+  S23d fixed that (mortal reproducing owners, inheritance fires endogenously) but the base was subsistence-bound
+  under an unlimited own-labor floor; and S23e then *tried* the disciplined repair — a finite, regenerating rival
+  commons whose scarcity was pinned to a measured baseline and swept, not searched — and it did **not** rescue the
+  base at any scarcity level. A result review with code evidence ruled out both a wiring confound and the
+  short-lifespan wall: the owners produce and sell a surplus, and the buy path is real but untaken. The isolated
+  constraint is that the non-owner demand side has **no sustained purchasing power** — a one-time money endowment
+  that depletes, with no wage, rent, or payment stream — so scarcity merely starves buyers rather than sending
+  them to the market. The next lever is therefore a **buyer-income / money-circulation mechanism**: a labor
+  market, or a wage/rent/payment loop that gives non-owners recurring earnings, so a hungry buyer can actually
+  *pay* an owner for bread. Only once the demand side can earn does re-running the S23c generational tenure study
+  become meaningful; until then it stays deferred, and the three milestones (S23c/d/e) remain branch-preserved
+  nulls.
 - **Endogenous institution selection — the natural next frontier, now opened.** The study has shown that
   *specific* hand-designed institutions make or break emergence (which exchange rule, which exit-cost
   institution). The next question is not another hand-designed institution but whether agents or populations
