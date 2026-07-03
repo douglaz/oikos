@@ -1383,6 +1383,10 @@ pub struct ChainConfig {
     /// listed, bought, sold, and charged a conserved carrying cost; title remains metadata over the
     /// finite plot registry.
     pub land_market: bool,
+    /// S23d — mortal-landowner demography base (default `false`, byte-identical when off).
+    /// When active on the secure-land substrate, only mortal reproducing lineage household
+    /// actors may claim homesteaded plots or receive secure-title fallback inheritance.
+    pub mortal_landowner_demography: bool,
     /// S23b: SALT carrying cost per held plot every [`LAND_CARRYING_PERIOD`] econ ticks. Paid into
     /// the settlement land-fee sink, never redistributed in this slice.
     pub land_carrying_cost: u64,
@@ -1801,6 +1805,7 @@ impl ChainConfig {
             secure_land_tenure: false,
             inheritance_regime: InheritanceRegime::Impartible,
             land_market: false,
+            mortal_landowner_demography: false,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
             land_price_cap_factor: LAND_PRICE_CAP_FACTOR_DEFAULT,
             // S21d.0 off by default: the food mints stay, so every existing config and its
@@ -1978,6 +1983,7 @@ impl ChainConfig {
             secure_land_tenure: false,
             inheritance_regime: InheritanceRegime::Impartible,
             land_market: false,
+            mortal_landowner_demography: false,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
             land_price_cap_factor: LAND_PRICE_CAP_FACTOR_DEFAULT,
             // S21d.0 off by default: the food mints stay, so every existing config and its
@@ -2135,6 +2141,7 @@ impl ChainConfig {
             secure_land_tenure: false,
             inheritance_regime: InheritanceRegime::Impartible,
             land_market: false,
+            mortal_landowner_demography: false,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
             land_price_cap_factor: LAND_PRICE_CAP_FACTOR_DEFAULT,
             // S21d.0 off by default: the food mints stay, so every existing config and its
@@ -5438,6 +5445,22 @@ impl SettlementConfig {
         cfg
     }
 
+    /// S23d — **mortal-landowner demography base**: the verified S23c secure-title
+    /// substrate over the S21f/S21h/S22a money-and-mortality colony, with homesteading
+    /// title routed only to mortal reproducing lineage households. This is a fixed base
+    /// composition, not a tenure comparison; the land market remains off and idle
+    /// forfeiture remains off through secure tenure.
+    pub fn frontier_mortal_landowner_demography() -> Self {
+        let mut cfg = Self::frontier_secure_land_tenure();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.mortal_landowner_demography = true;
+            chain.land_market = false;
+            chain.forfeit_on_idle = false;
+            debug_assert!(chain_config_mortal_landowner_demography_active(chain));
+        }
+        cfg
+    }
+
     /// S23b — **post-money alienable land market** (the HEADLINE): S23a's finite,
     /// owner-exclusive, heterogeneous plot registry over the S22a population-scaled base, with the
     /// land-market institution enabled. The market disables idle forfeiture from tick 0, but buying,
@@ -6316,6 +6339,11 @@ pub struct Settlement {
     /// partible co-heir transfers and heirless reversions. Future behavior is in `land_plots`;
     /// this log is for the verdict trace.
     secure_land_inheritance_events: Vec<SecureLandInheritanceRow>,
+    /// S23d runtime diagnostics: distinct secure-title owners that died of old age while
+    /// holding land, and the subset that had at least one live secure heir at death. They are
+    /// measurement-only and deliberately excluded from canonical bytes.
+    secure_land_owner_old_age_deaths_total: u64,
+    secure_land_inherit_eligible_owner_deaths_total: u64,
     /// S23c runtime diagnostic: count of partible inheritance shares that fell below the
     /// viability floor and were recorded as stranded capacity.
     secure_land_stranded_shares_total: u64,
@@ -6695,6 +6723,7 @@ struct ChainRuntime {
     secure_land_tenure: bool,
     inheritance_regime: InheritanceRegime,
     land_market: bool,
+    mortal_landowner_demography: bool,
     land_carrying_cost: u64,
     land_price_cap_factor: u64,
     /// S21h.0: the non-lineage woodcutters' consumed-only bread cushion (see
@@ -6758,6 +6787,17 @@ pub struct SecureLandInheritanceRow {
     pub pre_cap: u32,
     pub post_regen: u32,
     pub post_cap: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MortalLandownerOwnerRow {
+    pub owner: u64,
+    pub lifespan: Option<u64>,
+    pub household: Option<usize>,
+    pub lineage_id: Option<usize>,
+    pub reproduction_eligible: bool,
+    pub in_birth_kinship_graph: bool,
+    pub born_in_sim: bool,
 }
 
 pub type SecureLandShareRow = (u32, u64, u32, u32, u32);
@@ -8829,6 +8869,7 @@ impl Settlement {
                 secure_land_tenure: chain.secure_land_tenure,
                 inheritance_regime: chain.inheritance_regime,
                 land_market: chain.land_market,
+                mortal_landowner_demography: chain.mortal_landowner_demography,
                 land_carrying_cost: chain.land_carrying_cost,
                 land_price_cap_factor: chain.land_price_cap_factor,
                 gatherer_food_cushion: chain.gatherer_food_cushion,
@@ -8921,6 +8962,8 @@ impl Settlement {
             cultivation_tool_inheritor_ids: BTreeSet::new(),
             land_plots: BTreeMap::new(),
             secure_land_inheritance_events: Vec::new(),
+            secure_land_owner_old_age_deaths_total: 0,
+            secure_land_inherit_eligible_owner_deaths_total: 0,
             secure_land_stranded_shares_total: 0,
             land_claims_total: 0,
             land_idle_losses_total: 0,
@@ -9348,6 +9391,8 @@ impl Settlement {
             cultivation_tool_inheritor_ids: BTreeSet::new(),
             land_plots: BTreeMap::new(),
             secure_land_inheritance_events: Vec::new(),
+            secure_land_owner_old_age_deaths_total: 0,
+            secure_land_inherit_eligible_owner_deaths_total: 0,
             secure_land_stranded_shares_total: 0,
             land_claims_total: 0,
             land_idle_losses_total: 0,
@@ -10742,6 +10787,10 @@ impl Settlement {
             return None;
         }
 
+        if !self.mortal_landowner_claim_eligible(agent) {
+            return None;
+        }
+
         self.land_plots
             .iter()
             .filter(|&(&node, record)| {
@@ -10794,7 +10843,7 @@ impl Settlement {
                 self.land_owner_gate_denials_total += 1;
                 invalid.push((id, task));
             } else if Self::private_land_record_claimable(&record) {
-                if homestead_closed {
+                if homestead_closed || !self.mortal_landowner_claim_eligible(id) {
                     // Reroute the would-be homesteader to its own plot if it holds one, else to Idle
                     // (`private_land_target_for_agent` returns `None` for a post-promotion non-owner).
                     invalid.push((id, task));
@@ -10932,6 +10981,9 @@ impl Settlement {
                 // unowned plots, so this is the defense-in-depth net; under `non_excludable_title`
                 // (gate off) validation is skipped, so this is the load-bearing suppression that
                 // keeps a free harvest from minting post-promotion title.
+                continue;
+            }
+            if !self.mortal_landowner_claim_eligible(event.agent) {
                 continue;
             }
 
@@ -12244,6 +12296,8 @@ impl Settlement {
                 let candidate = self.colonists[slot].id;
                 (candidate != owner
                     && self.secure_land_live_agent(candidate)
+                    && (!self.mortal_landowner_demography_active()
+                        || self.mortal_landowner_reproductive_actor(candidate))
                     && !self.private_land_agent_holds_any_plot(candidate))
                 .then_some((
                     self.secure_land_household_distance(owner, candidate),
@@ -12257,6 +12311,14 @@ impl Settlement {
     }
 
     fn secure_land_universal_heir_for(&self, owner: AgentId) -> Option<AgentId> {
+        // Branch order: live children → same-household kin → household heir → colony next-of-kin.
+        // The first three branches are household-scoped *by construction* (`live_children`,
+        // `same_household_kin`, and `heir_for` all filter to the owner's own household), so under
+        // the S23d flag they can only ever return a fellow lineage-household member — never the
+        // immortal roster. Only `colony_next_of_kin` ranks candidates *across* households and can
+        // reach a non-lineage/immortal agent, which is why the mortal-landowner reproductive-actor
+        // gate lives there alone (see `secure_land_colony_next_of_kin`). Do not "symmetrise" by
+        // adding the gate to branches 1–3 (redundant) or by dropping it from branch 4 (a leak).
         self.secure_land_live_children(owner)
             .into_iter()
             .next()
@@ -12685,8 +12747,35 @@ impl Settlement {
                 self.mark_colonist_dead(slot);
             }
         }
+        let secure_owner_death_snapshot: Vec<(AgentId, bool, bool)> =
+            if self.secure_land_tenure_active() {
+                dying
+                    .iter()
+                    .map(|&id| {
+                        let owned_plot = self.private_land_agent_holds_any_plot(id);
+                        let inherit_eligible =
+                            owned_plot && self.secure_land_universal_heir_for(id).is_some();
+                        (id, owned_plot, inherit_eligible)
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
         let mut deaths = 0;
         for id in dying {
+            if let Some((_, true, inherit_eligible)) = secure_owner_death_snapshot
+                .iter()
+                .find(|&&(owner, _, _)| owner == id)
+            {
+                self.secure_land_owner_old_age_deaths_total = self
+                    .secure_land_owner_old_age_deaths_total
+                    .saturating_add(1);
+                if *inherit_eligible {
+                    self.secure_land_inherit_eligible_owner_deaths_total = self
+                        .secure_land_inherit_eligible_owner_deaths_total
+                        .saturating_add(1);
+                }
+            }
             // Old-age deaths must settle private land tenure too. Starvation deaths route through
             // `settle_death`, which calls `transfer_private_land_on_death` (reassign the plot to an
             // heir, clear a market listing on a heirless death); this estate path settles directly,
@@ -15986,6 +16075,12 @@ impl Settlement {
             .is_some_and(chain_runtime_land_market_active)
     }
 
+    fn mortal_landowner_demography_active(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(chain_runtime_mortal_landowner_demography_active)
+    }
+
     /// S22b: whether **bounded cultivation skill** is active this tick — the
     /// `cultivation_skill` flag is on AND the S22a endogenous-cultivation-entry path is active
     /// (it composes strictly on it). When this holds, the per-agent skill scalar accumulates/
@@ -19048,6 +19143,33 @@ impl Settlement {
             .is_some_and(|&slot| self.colonists[slot].household.is_some())
     }
 
+    /// Whether `id` is a mortal reproducing-lineage actor for the S23d owner-identity invariant
+    /// (§2.1). In this model reproduction flows through households — there is no separate fertility
+    /// or adulthood concept — so live lineage-household membership *is* the reproductive-actor
+    /// signal. The `lineage_id`/`reproduction_eligible`/`in_birth_kinship_graph` fields on
+    /// [`MortalLandownerOwnerRow`] are therefore all derived from this one domain-grounded signal by
+    /// design; they are not independent predicates. That is the correct signal for the §2.1
+    /// disjoint-population test: it separates the immortal roster (`household = None`,
+    /// `lifespan = None`) and any mortal shell outside a household from the reproducing lineage.
+    /// It is deliberately **not** age-gated — a newborn heir owner is a legitimate member of the
+    /// reproducing lineage, not a disjoint shell, so gating on adulthood here would misclassify it
+    /// as residue.
+    fn mortal_landowner_reproductive_actor(&self, id: AgentId) -> bool {
+        let Some(&slot) = self.colonist_slot_by_id.get(&id) else {
+            return false;
+        };
+        let colonist = &self.colonists[slot];
+        colonist.alive
+            && self.demography.is_some()
+            && colonist.lifespan.is_some()
+            && colonist.household.is_some()
+            && self.society.agents.get(id).is_some()
+    }
+
+    fn mortal_landowner_claim_eligible(&self, id: AgentId) -> bool {
+        !self.mortal_landowner_demography_active() || self.mortal_landowner_reproductive_actor(id)
+    }
+
     /// Whether the colonist at generation `index` is still alive.
     pub fn is_alive(&self, index: usize) -> bool {
         self.colonists.get(index).is_some_and(|c| c.alive)
@@ -19235,6 +19357,43 @@ impl Settlement {
             .map(|owner| owner.0)
             .collect::<BTreeSet<_>>()
             .into_iter()
+            .collect()
+    }
+
+    pub fn mortal_landowner_demography_on(&self) -> bool {
+        self.mortal_landowner_demography_active()
+    }
+
+    pub fn secure_land_owner_old_age_deaths_total(&self) -> u64 {
+        self.secure_land_owner_old_age_deaths_total
+    }
+
+    pub fn secure_land_inherit_eligible_owner_deaths_total(&self) -> u64 {
+        self.secure_land_inherit_eligible_owner_deaths_total
+    }
+
+    pub fn private_land_owner_identity_rows(&self) -> Vec<MortalLandownerOwnerRow> {
+        self.land_plots
+            .values()
+            .flat_map(Self::private_land_record_holders)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .map(|owner| {
+                let slot = self.colonist_slot_by_id.get(&owner).copied();
+                let colonist = slot.and_then(|slot| self.colonists.get(slot));
+                let household = colonist.and_then(|c| c.household);
+                let lifespan = colonist.and_then(|c| c.lifespan);
+                let reproduction_eligible = self.mortal_landowner_reproductive_actor(owner);
+                MortalLandownerOwnerRow {
+                    owner: owner.0,
+                    lifespan,
+                    household,
+                    lineage_id: household,
+                    reproduction_eligible,
+                    in_birth_kinship_graph: self.demography.is_some() && household.is_some(),
+                    born_in_sim: colonist.is_some_and(|c| c.parent.is_some()),
+                }
+            })
             .collect()
     }
 
@@ -21368,6 +21527,14 @@ impl Settlement {
                     out.extend_from_slice(&record.stranded_cap.to_le_bytes());
                 }
             }
+            if self.mortal_landowner_demography_active() {
+                // Tag 19 is already occupied by `fixed_commitment_norm_active()` below in this same
+                // gated chain, so S23d takes the next free tag (`20`) to keep the ON-only sections
+                // injective when a config composes both.
+                out.push(20);
+                out.push(u8::from(chain.mortal_landowner_demography));
+                out.push(1); // lineage-owner routing rule version
+            }
             // S23b: the post-money land market extends S23a's registry with an endogenous-price
             // state, listings, last-sale anchors, and the non-agent fee sink. Emitted only when the
             // market composes on active private land tenure; with the flag off every S23a and older
@@ -22515,6 +22682,12 @@ fn chain_config_land_market_active(chain: &ChainConfig) -> bool {
     chain.land_market && chain_config_private_land_tenure_active(chain)
 }
 
+fn chain_config_mortal_landowner_demography_active(chain: &ChainConfig) -> bool {
+    chain.mortal_landowner_demography
+        && chain_config_secure_land_tenure_active(chain)
+        && !chain_config_land_market_active(chain)
+}
+
 fn config_private_land_tenure_active(config: &SettlementConfig) -> bool {
     config
         .chain
@@ -22581,6 +22754,12 @@ fn chain_runtime_secure_land_tenure_active(chain: &ChainRuntime) -> bool {
 
 fn chain_runtime_land_market_active(chain: &ChainRuntime) -> bool {
     chain.land_market && chain_runtime_private_land_tenure_active(chain)
+}
+
+fn chain_runtime_mortal_landowner_demography_active(chain: &ChainRuntime) -> bool {
+    chain.mortal_landowner_demography
+        && chain_runtime_secure_land_tenure_active(chain)
+        && !chain_runtime_land_market_active(chain)
 }
 
 /// S22b: bounded cultivation skill is active iff the flag is on AND the S22a

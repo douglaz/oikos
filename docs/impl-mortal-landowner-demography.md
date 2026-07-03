@@ -1,5 +1,27 @@
 # impl-46 — S23d: Mortal-landowner demography base (make generational land tenure measurable)
 
+**Status (impl): LANDED (rb-lite) — HONEST NULL `DemographyBaseUnviable` (all 5 seeds); the inheritance
+vacuity is SOLVED but the base is subsidy-bound. NOT merged to master; S23c stays deferred.** The demographic
+fix works: owners are mortal lineage reproducers (`immortal_roster_owned_plot_ticks == 0`,
+`non_lineage_owner_plot_ticks == 0`), owners die of old age (`owner_old_age = 21–28`), and **inheritance fires
+endogenously** in normal play (`inherit_eligible = 21–28 ≥ 20`, real heir transfers, no forced mortality) —
+the exact S23c blocker (impl-45, `DisqualifiedNoInheritance`) is removed. Money promotes on `SelfProduced`
+bread (`seeded_minted == 0`); born-in-sim agents grow up and own (`born_owners = 19–26`). **But the economy is
+subsidy-dependent:** final-window consumption is `12768/12768 = 1.000` from the S21h own-labor emergency floor
+and non-owner buyers buy nothing through money (`buyer_bought == 0`) → the ordered classifier returns
+`DemographyBaseUnviable` (`final_floor_share > SUBSIDY_CAP` and material-bought-fail, independently). Codex
+review-of-results: **ACCEPT-AS-HONEST-NULL** (no P0; verified this is a true structural null, not an artifact —
+the floor runs *after* the market and subtracts market consumption before minting emergency units, so it does
+not preempt purchases; everyone genuinely self-provisions, so no one buys). One P1 folded in: the
+`min_lineage_after_cold_start` cutoff conflated the generation-count const with a tick offset — fixed to a named
+`COLD_START_TICKS` (= one mean adult lifespan); verdict unchanged (`min_lineage` stays 0, so the lineage
+collapse is real, not a cold-start transient). Full workspace green, `fmt`/`clippy` clean, goldens
+byte-identical off. **Finding:** making landowners mortal-and-reproducing removes the inheritance vacuity, but
+*this* composed base — with an own-labor survival floor — is subsistence-bound: cultivator-owners' grain is
+never traded, so the producer/buyer money economy does not persist. The honest next step is a **lever** (tighter
+survival floor / scarcity margin that forces exchange), NOT tuning S23d's floor to pass. Preserved unmerged on
+`feat/mortal-landowner-impl-rb`; S23c re-run stays deferred pending a viable base.
+
 Status (spec): **SPEC-READY** (Codex spec-review round 1 folded in — P0 owner-identity strengthening, P1
 generation-turnover + classifier-order + substrate wording, P2 inherit-count framing + `no_lineage_land_claims`
 control + partial-failure reporting; see §9). Base: master `855be95` (S24c landed; property arc S23a/b
