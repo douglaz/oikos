@@ -309,6 +309,15 @@ escrow primitives**:
     flow through the balance-based estate logic — C1 settles it explicitly: release the delivered portion
     to the worker, route the remainder to the employer's estate at death.
 
+**Build notes (from the GO/NO-GO review; non-blocking but fix during Slice C):**
+- **Death-hook ordering.** Death settlement removes agents (`update_needs_and_remove_dead` ~9357,
+  `age_and_remove_elderly` ~9362) *before* the proposed T+1 labor-settlement phase — so the escrow
+  death hook must run **at/inside death removal** (settling the dying agent's escrow obligations there),
+  not in the later labor phase, or a worker/employer removed at T+1 would never settle its escrow.
+- **Debit exactly once.** When the wage moves into escrow at clearing, the matched hire **reservation**
+  (`LaborReservations`, factor.rs) must be **released/consumed** in the same step, so the owner is
+  debited once (into escrow) and not twice (reservation hold + escrow).
+
 **Simpler synchronous fallback (noted, not recommended):** pay for labor already delivered in this
 tick's fast loop, no escrow — but it cannot represent short delivery and needs prior-tick assignment. If
 the escrow + bridge over-scope the milestone, Slice B ships the synchronous variant and the escrow
