@@ -982,6 +982,14 @@ pub enum InheritanceRegime {
     Partible,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WageLaborMode {
+    #[default]
+    Voluntary,
+    FiatWage,
+    SubsidisedWage,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChainConfig {
     /// The interned chain goods and recipes (built once at generation).
@@ -1413,6 +1421,11 @@ pub struct ChainConfig {
     /// measured S23d flag-off emergency throughput pinned by
     /// [`RIVAL_COMMONS_BASELINE_EMERGENCY_DRAW`] / [`RIVAL_COMMONS_BASELINE_FINAL_WINDOW_TICKS`].
     pub rival_subsistence_commons_phi_bps: u32,
+    /// C1 — wage labor on the S23e rival-commons mortal-landowner base. Default-off and
+    /// inert unless it composes on S23e and SALT has promoted.
+    pub wage_labor: bool,
+    /// C1 acceptance controls. Ignored while `wage_labor` is off.
+    pub wage_labor_mode: WageLaborMode,
     /// S23b: SALT carrying cost per held plot every [`LAND_CARRYING_PERIOD`] econ ticks. Paid into
     /// the settlement land-fee sink, never redistributed in this slice.
     pub land_carrying_cost: u64,
@@ -1834,6 +1847,8 @@ impl ChainConfig {
             mortal_landowner_demography: false,
             rival_subsistence_commons: false,
             rival_subsistence_commons_phi_bps: 0,
+            wage_labor: false,
+            wage_labor_mode: WageLaborMode::Voluntary,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
             land_price_cap_factor: LAND_PRICE_CAP_FACTOR_DEFAULT,
             // S21d.0 off by default: the food mints stay, so every existing config and its
@@ -2014,6 +2029,8 @@ impl ChainConfig {
             mortal_landowner_demography: false,
             rival_subsistence_commons: false,
             rival_subsistence_commons_phi_bps: 0,
+            wage_labor: false,
+            wage_labor_mode: WageLaborMode::Voluntary,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
             land_price_cap_factor: LAND_PRICE_CAP_FACTOR_DEFAULT,
             // S21d.0 off by default: the food mints stay, so every existing config and its
@@ -2174,6 +2191,8 @@ impl ChainConfig {
             mortal_landowner_demography: false,
             rival_subsistence_commons: false,
             rival_subsistence_commons_phi_bps: 0,
+            wage_labor: false,
+            wage_labor_mode: WageLaborMode::Voluntary,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
             land_price_cap_factor: LAND_PRICE_CAP_FACTOR_DEFAULT,
             // S21d.0 off by default: the food mints stay, so every existing config and its
@@ -5731,6 +5750,12 @@ impl EconTickReport {
                 .saturating_sub(self.subsistence_commons_draw.values().copied().sum())
             && self.subsistence_commons_stock_after <= self.subsistence_commons_cap
     }
+
+    pub fn money_conserves(&self) -> bool {
+        let promoted: u64 = self.promoted.values().copied().sum();
+        self.total_gold_after_fast == self.total_gold_before_fast
+            && self.total_gold_after_step == self.total_gold_before_fast.saturating_add(promoted)
+    }
 }
 
 /// Where a dead colonist's estate was routed.
@@ -6299,6 +6324,25 @@ pub struct Settlement {
     subsistence_commons_depleted_ticks: u64,
     subsistence_commons_shortfall_ticks: u64,
     subsistence_commons_eligible_need_total: u64,
+    /// C1: conserved wage escrow holder and live contracts. `escrow_gold` joins
+    /// [`Self::total_gold`]; each record either releases to the worker or refunds to the employer.
+    wage_escrow_gold: Gold,
+    wage_escrows: Vec<WageEscrow>,
+    next_wage_contract_id: u64,
+    /// C1: provenance tag on already-conserved owner money. Credited only from realized output
+    /// sales, capped by spendable gold, discarded on death.
+    wage_retained_earnings: BTreeMap<AgentId, Gold>,
+    /// C1: FIFO wage-derived money attribution for non-owner purchases.
+    wage_proceeds_buckets: BTreeMap<AgentId, VecDeque<WageProceedsLot>>,
+    wage_workers_ever: BTreeSet<AgentId>,
+    wage_employers_ever: BTreeSet<AgentId>,
+    wage_hires_total: u64,
+    wage_hires_post_promotion: u64,
+    wage_below_ask_not_hired: u64,
+    wage_endowment_funded_wages: Gold,
+    wage_financed_output_buys: Gold,
+    wage_nonowner_output_buys: Gold,
+    wage_circular_loop_turnovers: u64,
     /// S23e runtime-only owner/surplus telemetry used by the scarcity classifier.
     ever_landowner_ids: BTreeSet<AgentId>,
     owner_first_claim_tick: BTreeMap<AgentId, u64>,
@@ -6818,6 +6862,8 @@ struct ChainRuntime {
     mortal_landowner_demography: bool,
     rival_subsistence_commons: bool,
     rival_subsistence_commons_phi_bps: u32,
+    wage_labor: bool,
+    wage_labor_mode: WageLaborMode,
     land_carrying_cost: u64,
     land_price_cap_factor: u64,
     /// S21h.0: the non-lineage woodcutters' consumed-only bread cushion (see
@@ -6917,6 +6963,59 @@ pub struct OwnerSurplusTelemetry {
     pub inherited_stock_to_heirs: u64,
     pub buyer_purchases_by_owner_age_cohort: Vec<(u64, u64)>,
     pub owner_seller_attributed_bought: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WageLaborStats {
+    pub escrow_gold: Gold,
+    pub open_escrows: usize,
+    pub retained_earnings_total: Gold,
+    pub wage_proceeds_bucket_total: Gold,
+    pub hires_total: u64,
+    pub hires_post_promotion: u64,
+    pub distinct_workers: usize,
+    pub distinct_employers: usize,
+    pub below_ask_not_hired: u64,
+    pub endowment_funded_wages: Gold,
+    pub wage_financed_output_buys: Gold,
+    pub nonowner_output_buys: Gold,
+    pub circular_loop_turnovers: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WageEscrow {
+    id: u64,
+    employer: AgentId,
+    worker: AgentId,
+    amount: Gold,
+    wage: Gold,
+    retained_funded: Gold,
+    endowment_funded: Gold,
+    qty: u32,
+    opened_tick: u64,
+    release_tick: u64,
+    recipe: RecipeId,
+    output_good: GoodId,
+    output_qty: u32,
+    input: Option<(GoodId, u32)>,
+    delivered: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WageProceedsLot {
+    amount: Gold,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WageWorkerQuote {
+    worker: AgentId,
+    ask: Gold,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WageHireCandidate {
+    employer: AgentId,
+    max_total_wage: Gold,
 }
 
 pub type SecureLandShareRow = (u32, u64, u32, u32, u32);
@@ -9016,6 +9115,8 @@ impl Settlement {
                 mortal_landowner_demography: chain.mortal_landowner_demography,
                 rival_subsistence_commons: chain.rival_subsistence_commons,
                 rival_subsistence_commons_phi_bps: chain.rival_subsistence_commons_phi_bps,
+                wage_labor: chain.wage_labor,
+                wage_labor_mode: chain.wage_labor_mode,
                 land_carrying_cost: chain.land_carrying_cost,
                 land_price_cap_factor: chain.land_price_cap_factor,
                 gatherer_food_cushion: chain.gatherer_food_cushion,
@@ -9085,6 +9186,20 @@ impl Settlement {
             subsistence_commons_depleted_ticks: 0,
             subsistence_commons_shortfall_ticks: 0,
             subsistence_commons_eligible_need_total: 0,
+            wage_escrow_gold: Gold::ZERO,
+            wage_escrows: Vec::new(),
+            next_wage_contract_id: 0,
+            wage_retained_earnings: BTreeMap::new(),
+            wage_proceeds_buckets: BTreeMap::new(),
+            wage_workers_ever: BTreeSet::new(),
+            wage_employers_ever: BTreeSet::new(),
+            wage_hires_total: 0,
+            wage_hires_post_promotion: 0,
+            wage_below_ask_not_hired: 0,
+            wage_endowment_funded_wages: Gold::ZERO,
+            wage_financed_output_buys: Gold::ZERO,
+            wage_nonowner_output_buys: Gold::ZERO,
+            wage_circular_loop_turnovers: 0,
             ever_landowner_ids: BTreeSet::new(),
             owner_first_claim_tick: BTreeMap::new(),
             owner_age_at_first_claim: BTreeMap::new(),
@@ -9550,6 +9665,20 @@ impl Settlement {
             subsistence_commons_depleted_ticks: 0,
             subsistence_commons_shortfall_ticks: 0,
             subsistence_commons_eligible_need_total: 0,
+            wage_escrow_gold: Gold::ZERO,
+            wage_escrows: Vec::new(),
+            next_wage_contract_id: 0,
+            wage_retained_earnings: BTreeMap::new(),
+            wage_proceeds_buckets: BTreeMap::new(),
+            wage_workers_ever: BTreeSet::new(),
+            wage_employers_ever: BTreeSet::new(),
+            wage_hires_total: 0,
+            wage_hires_post_promotion: 0,
+            wage_below_ask_not_hired: 0,
+            wage_endowment_funded_wages: Gold::ZERO,
+            wage_financed_output_buys: Gold::ZERO,
+            wage_nonowner_output_buys: Gold::ZERO,
+            wage_circular_loop_turnovers: 0,
             ever_landowner_ids: BTreeSet::new(),
             owner_first_claim_tick: BTreeMap::new(),
             owner_age_at_first_claim: BTreeMap::new(),
@@ -9737,17 +9866,22 @@ impl Settlement {
             self.multigood.wood_gathered = self.multigood.wood_gathered.saturating_add(gathered);
         }
 
+        // Wage labor released by the normal phase is recorded after the market step because
+        // `Society::step` clears the tick-local labor log at entry. A due escrow can also be
+        // released inside death settlement below, so the scratch log has to exist before deaths.
+        let mut wage_labor_used = Vec::new();
+
         // ---- 3. NEEDS + real death (G4a): settle each starvation death's estate to
         // the household heir (G4b) or the commons (G4a fallback), free its arena
         // slot, reconcile the society's caches.
-        report.deaths = self.update_needs_and_remove_dead();
+        report.deaths = self.update_needs_and_remove_dead(&mut report, &mut wage_labor_used);
 
         // ---- 3b. AGING + OLD-AGE DEATH (G4b): advance each living householder's age
         // and remove any that reach their deterministic lifespan, routing the estate
         // to a household heir (commons if the lineage is extinct). Reuses G4a's
         // removal path; a no-op without a demography overlay. Deterministic — the
         // lifespan is a function of the stable seed, nothing is drawn.
-        report.deaths += self.age_and_remove_elderly();
+        report.deaths += self.age_and_remove_elderly(&mut report, &mut wage_labor_used);
 
         // ---- 4. SCALES.
         self.regenerate_scales();
@@ -9860,6 +9994,16 @@ impl Settlement {
         // byte-identical.
         self.set_project_input_bid_overrides();
 
+        // ---- 4f. WAGE LABOR (C1): after all pre-market bids are prepared but before the
+        // goods market, release any due wage escrows from prior matches (worker labor produces
+        // the owner's bread, wage escrow pays the worker), then match new owner-funded hires.
+        // The phase is post-promotion-only and default-off, so existing runs never see it.
+        // The worker's delivered wage-labor is accumulated here and recorded AFTER the market
+        // step, mirroring `capital_labor_used`: every `Society::step` variant clears
+        // `tick_labor_used` at entry, so recording the labor now would erase it before the
+        // needs readback and let the worker spend a full labor budget again this same tick.
+        self.run_wage_labor_phase(&mut report, &mut wage_labor_used);
+
         // ---- 5. MARKET: the econ clearing; money is redistributed between
         // colonists here. Producers have bought their inputs (a miller a unit of
         // grain, a baker a unit of flour) and sold last tick's output. For a G5a
@@ -9892,6 +10036,15 @@ impl Settlement {
         }
         self.finalize_bootstrap_bid_attempts(provenance_spot_trades_start);
         for (agent, labor) in capital_labor_used {
+            self.society.record_external_labor_used(agent, labor);
+        }
+        // Wage labor delivered in this tick's escrow release (§4.5): recorded after the step
+        // cleared `tick_labor_used`, so the worker's wage-labor reduces the labor budget the
+        // needs readback and next tick see (a no-op off the wage path — the vec stays empty).
+        for (agent, labor) in wage_labor_used {
+            if let Some(worker) = self.society.agents.get_mut(agent) {
+                worker.labor_capacity = worker.labor_capacity.max(labor);
+            }
             self.society.record_external_labor_used(agent, labor);
         }
         // ---- 5b. CAPITAL-ADVANCE REPAYMENT (EXPERIMENT): borrowers repay their
@@ -9954,6 +10107,7 @@ impl Settlement {
         // not re-counted. No-op off the path.
         let acquisition_consume_cursor = self
             .run_acquisition_market(provenance_barter_trades_start, provenance_spot_trades_start);
+        self.run_wage_labor_market_attribution(provenance_spot_trades_start);
 
         // ---- 5b-bis''. LAND MARKET (S23b): after ordinary food/SALT trades, and only once
         // SALT has promoted, charge carrying costs and run the deterministic pairwise land sweep.
@@ -9961,6 +10115,17 @@ impl Settlement {
         // SALT on food before trying to re-buy land.
         self.run_land_market();
         report.total_gold_after_step = self.total_gold().0;
+        // §5 money/escrow invariant, asserted each tick the wage escrow can hold funds: total
+        // gold (agents + commons + land-fee pool + wage escrow) after the market equals the
+        // pre-fast total plus only what the promotion channel minted. `report.conserves()` is
+        // per-good and does NOT cover money, so this is the escrow-inclusive money check. Scoped
+        // to `wage_labor_active()` (the closed-gold C1 configs the acceptance suite exercises)
+        // rather than unconditional, since ledger-money (M3) regimes are not a closed-gold total.
+        debug_assert!(
+            !self.wage_labor_active() || report.money_conserves(),
+            "wage-labor money/escrow invariant: gold + escrow must conserve across the step \
+             except at the promotion channel"
+        );
 
         // ---- 5b-ter. MULTI-GOOD MONEY INSTRUMENTATION (S18): trace this tick's barter
         // trades for the WOOD↔medium leg (the WOOD provenance bound) and the
@@ -10436,6 +10601,7 @@ impl Settlement {
             .map(|&g| (g, self.world.stockpile_get(self.exchange, g)))
             .collect();
 
+        self.idle_open_wage_workers();
         for _ in 0..FAST_TICKS_PER_ECON_TICK {
             self.assign_idle_gatherer_tasks();
             self.private_land_validate_harvest_tasks();
@@ -10505,6 +10671,28 @@ impl Settlement {
         }
 
         FastLoopReport { deposited, foraged }
+    }
+
+    fn wage_worker_has_open_escrow(&self, worker: AgentId) -> bool {
+        self.wage_labor_active()
+            && self
+                .wage_escrows
+                .iter()
+                .any(|escrow| escrow.worker == worker)
+    }
+
+    fn idle_open_wage_workers(&mut self) {
+        if !self.wage_labor_active() || self.wage_escrows.is_empty() {
+            return;
+        }
+        let workers: Vec<AgentId> = self
+            .wage_escrows
+            .iter()
+            .map(|escrow| escrow.worker)
+            .collect();
+        for worker in workers {
+            let _ = self.world.assign_task(worker, Task::Idle);
+        }
     }
 
     fn record_pending_deposits(&mut self, deposited: BTreeMap<(AgentId, GoodId), u32>) {
@@ -10691,6 +10879,9 @@ impl Settlement {
         for &slot in &self.live_colonist_slots {
             let colonist = &self.colonists[slot];
             let id = colonist.id;
+            if self.wage_worker_has_open_escrow(id) {
+                continue;
+            }
             if self.world.agent_status(id) != Some(AgentStatus::Idle) {
                 continue;
             }
@@ -11976,7 +12167,11 @@ impl Settlement {
     /// freeing its arena slot, and removing it from the world. Returns the number of
     /// deaths. Deterministic: deaths are collected in generation order and settled
     /// in that order; nothing is drawn.
-    fn update_needs_and_remove_dead(&mut self) -> u32 {
+    fn update_needs_and_remove_dead(
+        &mut self,
+        report: &mut EconTickReport,
+        wage_labor_used: &mut Vec<(AgentId, u32)>,
+    ) -> u32 {
         let live_slots = self.live_colonist_slots.clone();
         let mut intakes = vec![NeedIntake::default(); live_slots.len()];
         for &(agent, good, qty) in self.society.consumption_log_last_tick() {
@@ -12065,7 +12260,7 @@ impl Settlement {
         }
         let mut deaths = 0;
         for id in dying {
-            deaths += u32::from(self.settle_death(id));
+            deaths += u32::from(self.settle_death(id, report, wage_labor_used));
         }
         // S17 — attribute the positive check: accumulate the starvation death count into
         // the runtime-only counter (mirrors `old_age_deaths_total` in `age_and_remove_elderly`,
@@ -12081,13 +12276,18 @@ impl Settlement {
     /// is extinct); every pre-G4b settlement routes to the commons exactly as G4a.
     /// The dispatch keeps the no-demography path structurally unchanged, so the G4a
     /// suite and the conformance goldens are byte-identical.
-    fn settle_death(&mut self, id: AgentId) -> bool {
+    fn settle_death(
+        &mut self,
+        id: AgentId,
+        report: &mut EconTickReport,
+        wage_labor_used: &mut Vec<(AgentId, u32)>,
+    ) -> bool {
         self.record_owner_death_telemetry(id);
         self.transfer_private_land_on_death(id);
         if self.demography.is_some() {
-            self.settle_estate_to_heirs(id)
+            self.settle_estate_to_heirs(id, report, wage_labor_used)
         } else {
-            self.settle_estate_to_commons(id)
+            self.settle_estate_to_commons(id, report, wage_labor_used)
         }
     }
 
@@ -12099,7 +12299,13 @@ impl Settlement {
     /// order is the spec's (settle → cancel → free → reconcile, inside
     /// `remove_agent`; then drain world/exchange escrow), so wherever the estate goes
     /// the whole-system total is conserved. Deterministic: id-ordered, no RNG.
-    fn collect_estate(&mut self, id: AgentId) -> Option<(Gold, BTreeMap<GoodId, u64>)> {
+    fn collect_estate(
+        &mut self,
+        id: AgentId,
+        report: &mut EconTickReport,
+        wage_labor_used: &mut Vec<(AgentId, u32)>,
+    ) -> Option<(Gold, BTreeMap<GoodId, u64>)> {
+        self.settle_wage_labor_for_death(id, report, wage_labor_used);
         let estate = self.society.remove_agent(id)?;
         let gold = estate.gold;
         let mut stock: BTreeMap<GoodId, u64> = BTreeMap::new();
@@ -12174,14 +12380,19 @@ impl Settlement {
     /// Settle a dead colonist's estate to the **commons** (G4a). A conserved transfer
     /// end to end: the gold and goods leave the society and the world for the commons,
     /// nothing created or destroyed. Deterministic: id-ordered, no RNG.
-    fn settle_estate_to_commons(&mut self, id: AgentId) -> bool {
+    fn settle_estate_to_commons(
+        &mut self,
+        id: AgentId,
+        report: &mut EconTickReport,
+        wage_labor_used: &mut Vec<(AgentId, u32)>,
+    ) -> bool {
         if !self.society.can_remove_agent(id) {
             return false;
         }
         if let Some(slot) = self.slot_for_id(id) {
             self.mark_colonist_dead(slot);
         }
-        let Some((gold, stock)) = self.collect_estate(id) else {
+        let Some((gold, stock)) = self.collect_estate(id, report, wage_labor_used) else {
             return false;
         };
         self.commons_gold = self.commons_gold.saturating_add(gold);
@@ -12212,14 +12423,19 @@ impl Settlement {
     /// is the same conserved transfer G4a used — so whole-system conservation holds
     /// either way. Any unplaceable remainder (an heir at the `u32`/`u64` ceiling — never
     /// reached with these small quantities) routes to the commons rather than vanish.
-    fn settle_estate_to_heirs(&mut self, id: AgentId) -> bool {
+    fn settle_estate_to_heirs(
+        &mut self,
+        id: AgentId,
+        report: &mut EconTickReport,
+        wage_labor_used: &mut Vec<(AgentId, u32)>,
+    ) -> bool {
         if !self.society.can_remove_agent(id) {
             return false;
         }
         if let Some(slot) = self.slot_for_id(id) {
             self.mark_colonist_dead(slot);
         }
-        let Some((gold, mut stock)) = self.collect_estate(id) else {
+        let Some((gold, mut stock)) = self.collect_estate(id, report, wage_labor_used) else {
             return false;
         };
         let destination = self.heir_for(id).map(|heir| EstateDestination::Household {
@@ -12988,7 +13204,11 @@ impl Settlement {
     /// death count. A no-op without a demography overlay. Deterministic: ages and
     /// deaths are taken in slot order, the lifespan is a pure function of the
     /// colonist's seed, nothing is drawn.
-    fn age_and_remove_elderly(&mut self) -> u32 {
+    fn age_and_remove_elderly(
+        &mut self,
+        report: &mut EconTickReport,
+        wage_labor_used: &mut Vec<(AgentId, u32)>,
+    ) -> u32 {
         if self.demography.is_none() {
             return 0;
         }
@@ -13054,7 +13274,7 @@ impl Settlement {
             if self.land_market_active() || self.secure_land_tenure_active() {
                 self.transfer_private_land_on_death(id);
             }
-            deaths += u32::from(self.settle_estate_to_heirs(id));
+            deaths += u32::from(self.settle_estate_to_heirs(id, report, wage_labor_used));
         }
         self.old_age_deaths_total = self.old_age_deaths_total.saturating_add(u64::from(deaths));
         deaths
@@ -15224,6 +15444,765 @@ impl Settlement {
         }
     }
 
+    fn run_wage_labor_phase(
+        &mut self,
+        report: &mut EconTickReport,
+        wage_labor_used: &mut Vec<(AgentId, u32)>,
+    ) {
+        if !self.wage_labor_active() {
+            return;
+        }
+        self.reset_wage_labor_capacities();
+        self.release_due_wage_escrows(report, wage_labor_used);
+        if !self.wage_labor_market_open() {
+            return;
+        }
+        let Some(recipe) = self.wage_labor_recipe() else {
+            return;
+        };
+        let labor_qty = recipe.labor.max(1);
+        let workers = self.wage_worker_quotes(recipe.output_good, labor_qty);
+        if workers.is_empty() {
+            return;
+        }
+        let employers = self.wage_hire_candidates(&recipe);
+        if employers.is_empty() {
+            self.wage_below_ask_not_hired = self
+                .wage_below_ask_not_hired
+                .saturating_add(u64::try_from(workers.len()).unwrap_or(u64::MAX));
+            return;
+        }
+        self.clear_wage_labor_market(&recipe, labor_qty, workers, employers);
+    }
+
+    fn reset_wage_labor_capacities(&mut self) {
+        for &slot in &self.live_colonist_slots {
+            let id = self.colonists[slot].id;
+            if let Some(agent) = self.society.agents.get_mut(id) {
+                agent.labor_capacity = 0;
+            }
+        }
+    }
+
+    fn wage_labor_recipe(&self) -> Option<Recipe> {
+        let recipe = self.chain.as_ref()?.content.cultivate_recipe()?.clone();
+        (recipe.enabled && recipe.input_good.is_some() && recipe.output_qty > 0).then_some(recipe)
+    }
+
+    fn wage_labor_mode(&self) -> WageLaborMode {
+        self.chain
+            .as_ref()
+            .map_or(WageLaborMode::Voluntary, |chain| chain.wage_labor_mode)
+    }
+
+    fn wage_worker_quotes(&self, bread: GoodId, labor_qty: u32) -> Vec<WageWorkerQuote> {
+        let mode = self.wage_labor_mode();
+        let mut quotes = Vec::new();
+        for &slot in &self.live_colonist_slots {
+            let colonist = &self.colonists[slot];
+            // Only the demand-side non-owner roles the finite commons actually feeds may sell
+            // labor: `Consumer`/`Gatherer` — the exact set the realized S23e draw
+            // (`run_emergency_self_provision`) and the pre-market forecast below both use. Admitting
+            // `Unassigned` here (a latent producer the commons never feeds) diverged from those two
+            // sets, so `forecast_commons_sufficiency` returned "sufficient" for it and silently
+            // gated it out anyway; keeping the three sets identical removes the asymmetry.
+            if self.private_land_agent_holds_any_plot(colonist.id)
+                || !matches!(colonist.vocation, Vocation::Consumer | Vocation::Gatherer)
+                || self.forecast_commons_sufficiency(colonist.id, bread)
+            {
+                continue;
+            }
+            let ask = match mode {
+                WageLaborMode::FiatWage => Some(Gold(1)),
+                WageLaborMode::Voluntary | WageLaborMode::SubsidisedWage => {
+                    self.worker_labor_ask_for_salt(colonist.id, labor_qty)
+                }
+            };
+            if let Some(ask) = ask.filter(|ask| *ask > Gold::ZERO) {
+                quotes.push(WageWorkerQuote {
+                    worker: colonist.id,
+                    ask,
+                });
+            }
+        }
+        quotes.sort_by_key(|quote| (quote.ask, quote.worker.0));
+        quotes
+    }
+
+    fn worker_labor_ask_for_salt(&self, worker: AgentId, labor_qty: u32) -> Option<Gold> {
+        let mut agent = self.society.agents.get(worker)?.clone();
+        agent.labor_capacity = self.wage_worker_available_labor(worker, labor_qty)?;
+        agent.reservation_labor_ask_for_money(labor_qty, SALT)
+    }
+
+    fn wage_worker_available_labor(&self, worker: AgentId, labor_qty: u32) -> Option<u32> {
+        if labor_qty == 0
+            || self.private_land_agent_holds_any_plot(worker)
+            || self
+                .wage_escrows
+                .iter()
+                .any(|escrow| escrow.worker == worker)
+        {
+            return None;
+        }
+        let slot = self.slot_for_id(worker)?;
+        let colonist = &self.colonists[slot];
+        if !colonist.alive || !matches!(colonist.vocation, Vocation::Consumer | Vocation::Gatherer)
+        {
+            return None;
+        }
+        Some(labor_qty)
+    }
+
+    fn forecast_commons_sufficiency(&self, target_agent: AgentId, bread: GoodId) -> bool {
+        if !self.rival_subsistence_commons_active() {
+            return false;
+        }
+        let threshold = self
+            .chain
+            .as_ref()
+            .map_or(0, |chain| chain.emergency_hunger_threshold);
+        if threshold == 0 {
+            return true;
+        }
+        let target_hunger = threshold.saturating_sub(1);
+        let mut requests = Vec::new();
+        for &slot in &self.live_colonist_slots {
+            let colonist = &self.colonists[slot];
+            if colonist.household.is_some()
+                || !matches!(colonist.vocation, Vocation::Consumer | Vocation::Gatherer)
+                || colonist.need.hunger < threshold
+            {
+                continue;
+            }
+            let needed = food_needed_to_reach_hunger(
+                colonist.need.hunger,
+                self.dynamics.hunger_deplete,
+                self.dynamics.hunger_per_food,
+                target_hunger,
+            );
+            let held = self
+                .society
+                .free_stock_after_all_reserves(colonist.id, bread);
+            let need = needed.saturating_sub(held);
+            if need > 0 {
+                requests.push(SubsistenceCommonsRequest {
+                    agent: colonist.id,
+                    hunger: colonist.need.hunger,
+                    need,
+                });
+            } else if colonist.id == target_agent {
+                return true;
+            }
+        }
+        if !requests.iter().any(|request| request.agent == target_agent) {
+            return true;
+        }
+        requests.sort_by_key(|request| (std::cmp::Reverse(request.hunger), request.agent.0));
+        let mut available = self
+            .subsistence_commons_stock
+            .saturating_add(self.subsistence_commons_regen)
+            .min(self.subsistence_commons_cap);
+        for request in requests {
+            let held = self
+                .society
+                .agents
+                .get(request.agent)
+                .map_or(u32::MAX, |agent| agent.stock.get(bread));
+            let headroom = u64::from(u32::MAX - held);
+            let draw = u64::from(request.need).min(available).min(headroom);
+            available = available.saturating_sub(draw);
+            if request.agent == target_agent {
+                return draw >= u64::from(request.need);
+            }
+        }
+        true
+    }
+
+    fn wage_hire_candidates(&self, recipe: &Recipe) -> Vec<WageHireCandidate> {
+        let Some(raw_output_price) = self.society.realized_price(recipe.output_good) else {
+            return Vec::new();
+        };
+        let mode = self.wage_labor_mode();
+        let mut owners: BTreeSet<AgentId> = BTreeSet::new();
+        for record in self.land_plots.values() {
+            owners.extend(Self::private_land_record_holders(record));
+        }
+        let mut candidates = Vec::new();
+        for employer in owners {
+            let Some(agent) = self.society.agents.get(employer) else {
+                continue;
+            };
+            if !self.private_land_live_agent(employer)
+                || !self.wage_recipe_inputs_available(employer, recipe)
+            {
+                continue;
+            }
+            let output_held = agent.stock.get(recipe.output_good);
+            if output_held.checked_add(recipe.output_qty).is_none() {
+                continue;
+            }
+            let forecast_bias = self
+                .slot_for_id(employer)
+                .map_or(FORECAST_BIAS_NEUTRAL_BPS, |slot| {
+                    self.colonists[slot].culture.forecast_bias_bps
+                });
+            let Some(output_price) = forecast_output_price(
+                agent,
+                recipe.output_good,
+                Some(raw_output_price),
+                forecast_bias,
+            ) else {
+                continue;
+            };
+            // §4.3 anti-inflation guard: cap the forecast at the observed realized output price
+            // (the same discipline `project_input_bid_limit` applies to input bids) so a bullish
+            // belief or a positive forecast bias cannot inflate the expected revenue, and with it
+            // the wage-acceptance ceiling, above the output's realized value.
+            let output_price = output_price.min(raw_output_price);
+            let Some(expected_revenue) = gold_mul_qty(output_price, recipe.output_qty) else {
+                continue;
+            };
+            let free = self.society.free_gold_after_all_reserves(employer);
+            let retained = self
+                .wage_retained_earnings
+                .get(&employer)
+                .copied()
+                .unwrap_or(Gold::ZERO);
+            let spendable = match mode {
+                WageLaborMode::Voluntary => retained.min(free),
+                WageLaborMode::FiatWage | WageLaborMode::SubsidisedWage => free,
+            };
+            let max_total_wage = spendable.min(expected_revenue);
+            if max_total_wage == Gold::ZERO {
+                continue;
+            }
+            let max_total_wage = match mode {
+                WageLaborMode::FiatWage => max_total_wage,
+                WageLaborMode::Voluntary | WageLaborMode::SubsidisedWage => {
+                    let Some(total) = highest_appraised_labor_total_wage(
+                        agent,
+                        expected_revenue,
+                        max_total_wage,
+                        self.econ_tick,
+                        SALT,
+                    ) else {
+                        continue;
+                    };
+                    total
+                }
+            };
+            if max_total_wage > Gold::ZERO {
+                candidates.push(WageHireCandidate {
+                    employer,
+                    max_total_wage,
+                });
+            }
+        }
+        candidates.sort_by_key(|candidate| {
+            (
+                std::cmp::Reverse(candidate.max_total_wage),
+                candidate.employer.0,
+            )
+        });
+        candidates
+    }
+
+    fn wage_recipe_inputs_available(&self, employer: AgentId, recipe: &Recipe) -> bool {
+        let Some((input, input_qty)) = recipe.input_good else {
+            return false;
+        };
+        self.society.free_stock_after_all_reserves(employer, input) >= input_qty
+    }
+
+    fn clear_wage_labor_market(
+        &mut self,
+        recipe: &Recipe,
+        labor_qty: u32,
+        workers: Vec<WageWorkerQuote>,
+        mut employers: Vec<WageHireCandidate>,
+    ) {
+        for worker in workers {
+            // `worker.ask` is the total reservation wage for the whole `labor_qty` bundle
+            // (`reservation_labor_ask_for_money(labor_qty, ...)`). Match and escrow that same total
+            // amount; never multiply it by `labor_qty` or floor the employer's total ceiling into
+            // per-unit pieces.
+            let Some((index, amount)) =
+                employers.iter().enumerate().find_map(|(index, candidate)| {
+                    wage_hire_payment(worker.ask, candidate.max_total_wage)
+                        .map(|amount| (index, amount))
+                })
+            else {
+                self.wage_below_ask_not_hired = self.wage_below_ask_not_hired.saturating_add(1);
+                continue;
+            };
+            let candidate = employers.remove(index);
+            let Some((retained_funded, endowment_funded)) =
+                self.reserve_wage_funding(candidate.employer, amount)
+            else {
+                continue;
+            };
+            if !self.debit_to_wage_escrow(candidate.employer, amount) {
+                self.restore_wage_retained_earnings(candidate.employer, retained_funded);
+                continue;
+            }
+            let contract_id = self.next_wage_contract_id;
+            self.next_wage_contract_id = self.next_wage_contract_id.wrapping_add(1);
+            self.wage_escrows.push(WageEscrow {
+                id: contract_id,
+                employer: candidate.employer,
+                worker: worker.worker,
+                amount,
+                wage: worker.ask,
+                retained_funded,
+                endowment_funded,
+                qty: labor_qty,
+                opened_tick: self.econ_tick,
+                release_tick: self.econ_tick.saturating_add(1),
+                recipe: recipe.id,
+                output_good: recipe.output_good,
+                output_qty: recipe.output_qty,
+                input: recipe.input_good,
+                delivered: 0,
+            });
+            self.wage_hires_total = self.wage_hires_total.saturating_add(1);
+            if self.current_money_good() == Some(SALT) {
+                self.wage_hires_post_promotion = self.wage_hires_post_promotion.saturating_add(1);
+            }
+            self.wage_workers_ever.insert(worker.worker);
+            self.wage_employers_ever.insert(candidate.employer);
+        }
+    }
+
+    fn reserve_wage_funding(&mut self, employer: AgentId, amount: Gold) -> Option<(Gold, Gold)> {
+        if amount == Gold::ZERO || self.society.free_gold_after_all_reserves(employer) < amount {
+            return None;
+        }
+        let mode = self.wage_labor_mode();
+        let retained = self
+            .wage_retained_earnings
+            .get(&employer)
+            .copied()
+            .unwrap_or(Gold::ZERO);
+        if mode == WageLaborMode::Voluntary && retained < amount {
+            return None;
+        }
+        let retained_funded = retained.min(amount);
+        let endowment_funded = amount.saturating_sub(retained_funded);
+        if endowment_funded > Gold::ZERO && mode == WageLaborMode::Voluntary {
+            return None;
+        }
+        let remaining = retained.saturating_sub(retained_funded);
+        if remaining > Gold::ZERO {
+            self.wage_retained_earnings.insert(employer, remaining);
+        } else {
+            self.wage_retained_earnings.remove(&employer);
+        }
+        Some((retained_funded, endowment_funded))
+    }
+
+    fn restore_wage_retained_earnings(&mut self, employer: AgentId, amount: Gold) {
+        if amount == Gold::ZERO {
+            return;
+        }
+        let cap = self.wage_retained_earnings_cap(employer);
+        let current = self
+            .wage_retained_earnings
+            .get(&employer)
+            .copied()
+            .unwrap_or(Gold::ZERO)
+            .min(cap);
+        let restored = amount.min(cap.saturating_sub(current));
+        let next = current.saturating_add(restored);
+        if next > Gold::ZERO {
+            self.wage_retained_earnings.insert(employer, next);
+        } else {
+            self.wage_retained_earnings.remove(&employer);
+        }
+    }
+
+    /// Spend down an owner's wage-eligible retained-earnings provenance tag when it buys goods
+    /// (§4.6 anti-subsidy guard). Purely subtractive — it can never inflate the ledger — so an
+    /// owner that spends its realized proceeds on goods cannot then fund a voluntary wage from
+    /// them a second time. Saturates at zero; drops the entry when depleted.
+    fn debit_wage_retained_earnings(&mut self, owner: AgentId, amount: Gold) {
+        if amount == Gold::ZERO {
+            return;
+        }
+        let Some(current) = self.wage_retained_earnings.get(&owner).copied() else {
+            return;
+        };
+        let remaining = current.saturating_sub(amount);
+        if remaining > Gold::ZERO {
+            self.wage_retained_earnings.insert(owner, remaining);
+        } else {
+            self.wage_retained_earnings.remove(&owner);
+        }
+    }
+
+    fn debit_to_wage_escrow(&mut self, employer: AgentId, amount: Gold) -> bool {
+        if amount == Gold::ZERO || self.society.free_gold_after_all_reserves(employer) < amount {
+            return false;
+        }
+        let Some(agent) = self.society.agents.get_mut(employer) else {
+            return false;
+        };
+        let Some(next_gold) = agent.gold.checked_sub(amount) else {
+            return false;
+        };
+        agent.gold = next_gold;
+        self.wage_escrow_gold = self.wage_escrow_gold.saturating_add(amount);
+        true
+    }
+
+    fn credit_from_wage_escrow(&mut self, recipient: AgentId, amount: Gold) -> bool {
+        if amount == Gold::ZERO {
+            return true;
+        }
+        let Some(next_escrow) = self.wage_escrow_gold.checked_sub(amount) else {
+            return false;
+        };
+        self.wage_escrow_gold = next_escrow;
+        if let Some(agent) = self.society.agents.get_mut(recipient) {
+            agent.gold = agent.gold.saturating_add(amount);
+        } else {
+            self.commons_gold = self.commons_gold.saturating_add(amount);
+        }
+        true
+    }
+
+    fn release_due_wage_escrows(
+        &mut self,
+        report: &mut EconTickReport,
+        wage_labor_used: &mut Vec<(AgentId, u32)>,
+    ) {
+        if self.wage_escrows.is_empty() {
+            return;
+        }
+        let escrows = std::mem::take(&mut self.wage_escrows);
+        for escrow in escrows {
+            if escrow.release_tick > self.econ_tick {
+                self.wage_escrows.push(escrow);
+            } else {
+                self.release_wage_escrow(escrow, report, wage_labor_used);
+            }
+        }
+    }
+
+    fn release_wage_escrow(
+        &mut self,
+        escrow: WageEscrow,
+        report: &mut EconTickReport,
+        wage_labor_used: &mut Vec<(AgentId, u32)>,
+    ) {
+        self.release_wage_escrow_inner(escrow, None, report, wage_labor_used);
+    }
+
+    fn release_wage_escrow_for_death(
+        &mut self,
+        escrow: WageEscrow,
+        report: &mut EconTickReport,
+        wage_labor_used: &mut Vec<(AgentId, u32)>,
+    ) {
+        self.release_wage_escrow_inner(escrow, Some(escrow.qty), report, wage_labor_used);
+    }
+
+    fn release_wage_escrow_inner(
+        &mut self,
+        mut escrow: WageEscrow,
+        delivered_override: Option<u32>,
+        report: &mut EconTickReport,
+        wage_labor_used: &mut Vec<(AgentId, u32)>,
+    ) {
+        let worker_live = self.society.agents.get(escrow.worker).is_some();
+        let employer_live = self.society.agents.get(escrow.employer).is_some();
+        let worker_dead = self.colonist_marked_dead(escrow.worker);
+        let employer_dead = self.colonist_marked_dead(escrow.employer);
+        let restore_retained = !employer_dead;
+        if !worker_live || !employer_live {
+            self.refund_wage_escrow_with_retained(escrow, restore_retained);
+            return;
+        }
+
+        let delivered = delivered_override
+            .or_else(|| self.wage_worker_available_labor(escrow.worker, escrow.qty))
+            .unwrap_or(0)
+            .min(escrow.qty);
+        escrow.delivered = delivered;
+        if delivered == 0 {
+            self.refund_wage_escrow_with_retained(escrow, restore_retained);
+            return;
+        }
+
+        let output_qty = prorate_u32_floor(escrow.output_qty, delivered, escrow.qty);
+        if output_qty == 0 {
+            self.refund_wage_escrow_with_retained(escrow, restore_retained);
+            return;
+        }
+        let input = escrow.input.and_then(|(input, input_qty)| {
+            let qty = prorate_u32_floor(input_qty, delivered, escrow.qty);
+            (qty > 0).then_some((input, qty))
+        });
+        if !self.wage_contract_can_deliver(&escrow, output_qty, input) {
+            self.refund_wage_escrow_with_retained(escrow, restore_retained);
+            return;
+        }
+
+        if let Some((input, input_qty)) = input {
+            if !self.society.debit_stock(escrow.employer, input, input_qty) {
+                self.refund_wage_escrow_with_retained(escrow, restore_retained);
+                return;
+            }
+            *report.consumed_as_input.entry(input).or_insert(0) += u64::from(input_qty);
+        }
+        if !self
+            .society
+            .credit_stock(escrow.employer, escrow.output_good, output_qty)
+        {
+            if let Some((input, input_qty)) = input {
+                let _ = self.society.credit_stock(escrow.employer, input, input_qty);
+                let booked = report.consumed_as_input.entry(input).or_insert(0);
+                *booked = booked.saturating_sub(u64::from(input_qty));
+            }
+            self.refund_wage_escrow_with_retained(escrow, restore_retained);
+            return;
+        }
+        *report.produced.entry(escrow.output_good).or_insert(0) += u64::from(output_qty);
+        if Some(escrow.output_good) == self.provenance_bread_good() {
+            if self.bread_provenance_active() {
+                let lineage = self.is_lineage_agent(escrow.employer);
+                self.bread_provenance.credit_produced(
+                    escrow.employer,
+                    u64::from(output_qty),
+                    lineage,
+                );
+            }
+            if self.acquisition_ledger_active() {
+                self.acquisition.credit(
+                    escrow.employer,
+                    FoodChannel::SelfProduced,
+                    u64::from(output_qty),
+                );
+            }
+        }
+
+        let earned = prorate_gold_floor(escrow.amount, delivered, escrow.qty);
+        let refund = escrow.amount.saturating_sub(earned);
+        let retained_earned = prorate_gold_floor(escrow.retained_funded, delivered, escrow.qty);
+        let retained_refund = escrow.retained_funded.saturating_sub(retained_earned);
+        let endowment_earned = prorate_gold_floor(escrow.endowment_funded, delivered, escrow.qty);
+
+        if self.credit_from_wage_escrow(escrow.worker, earned) {
+            if !worker_dead {
+                self.credit_wage_proceeds(escrow.worker, earned);
+            }
+            self.wage_endowment_funded_wages = self
+                .wage_endowment_funded_wages
+                .saturating_add(endowment_earned);
+        }
+        if refund > Gold::ZERO {
+            let _ = self.credit_from_wage_escrow(escrow.employer, refund);
+            if restore_retained {
+                self.restore_wage_retained_earnings(escrow.employer, retained_refund);
+            }
+        }
+        // Defer the labor accounting until after the market step (see the call site): the step
+        // clears `tick_labor_used` at entry, so recording here would be erased.
+        if !worker_dead {
+            wage_labor_used.push((escrow.worker, delivered));
+        }
+    }
+
+    fn wage_contract_can_deliver(
+        &self,
+        escrow: &WageEscrow,
+        output_qty: u32,
+        input: Option<(GoodId, u32)>,
+    ) -> bool {
+        let Some(employer) = self.society.agents.get(escrow.employer) else {
+            return false;
+        };
+        if employer
+            .stock
+            .get(escrow.output_good)
+            .checked_add(output_qty)
+            .is_none()
+        {
+            return false;
+        }
+        match input {
+            Some((input, input_qty)) => {
+                self.society
+                    .free_stock_after_all_reserves(escrow.employer, input)
+                    >= input_qty
+            }
+            None => true,
+        }
+    }
+
+    fn refund_wage_escrow(&mut self, escrow: WageEscrow) {
+        self.refund_wage_escrow_with_retained(escrow, true);
+    }
+
+    fn refund_wage_escrow_with_retained(&mut self, escrow: WageEscrow, restore_retained: bool) {
+        let _ = self.credit_from_wage_escrow(escrow.employer, escrow.amount);
+        if restore_retained {
+            self.restore_wage_retained_earnings(escrow.employer, escrow.retained_funded);
+        }
+    }
+
+    fn colonist_marked_dead(&self, id: AgentId) -> bool {
+        self.slot_for_id(id)
+            .is_some_and(|slot| !self.colonists[slot].alive)
+    }
+
+    fn credit_wage_proceeds(&mut self, worker: AgentId, amount: Gold) {
+        if amount == Gold::ZERO {
+            return;
+        }
+        self.wage_proceeds_buckets
+            .entry(worker)
+            .or_default()
+            .push_back(WageProceedsLot { amount });
+    }
+
+    fn settle_wage_labor_for_death(
+        &mut self,
+        dead: AgentId,
+        report: &mut EconTickReport,
+        wage_labor_used: &mut Vec<(AgentId, u32)>,
+    ) {
+        self.wage_retained_earnings.remove(&dead);
+        self.wage_proceeds_buckets.remove(&dead);
+        if self.wage_escrows.is_empty() {
+            return;
+        }
+        let escrows = std::mem::take(&mut self.wage_escrows);
+        for escrow in escrows {
+            if escrow.employer == dead {
+                if escrow.release_tick <= self.econ_tick {
+                    self.release_wage_escrow_for_death(escrow, report, wage_labor_used);
+                    continue;
+                }
+                // Dead employer (§4.5): the escrowed wage already left its balance, so route it
+                // back to the still-present dying agent's gold and let the estate machinery
+                // (`collect_estate`, called right after this) carry it to the heir/commons. Its
+                // wage-eligible retained-earnings are DISCARDED on death (§4.6) — do NOT restore
+                // them (that would re-insert a stale ledger entry for a non-live owner after the
+                // map entry was just dropped above).
+                let _ = self.credit_from_wage_escrow(escrow.employer, escrow.amount);
+            } else if escrow.worker == dead {
+                if escrow.release_tick <= self.econ_tick {
+                    self.release_wage_escrow_for_death(escrow, report, wage_labor_used);
+                    continue;
+                }
+                // Dead worker before delivery (§4.5): the full escrowed wage refunds to the
+                // living employer, which keeps its earned wage-eligibility (retained restored).
+                self.refund_wage_escrow(escrow);
+            } else {
+                self.wage_escrows.push(escrow);
+            }
+        }
+    }
+
+    fn credit_wage_retained_earnings_from_sale(&mut self, seller: AgentId, proceeds: Gold) {
+        if proceeds == Gold::ZERO || !self.wage_labor_active() {
+            return;
+        }
+        let cap = self.wage_retained_earnings_cap(seller);
+        let current = self
+            .wage_retained_earnings
+            .get(&seller)
+            .copied()
+            .unwrap_or(Gold::ZERO)
+            .min(cap);
+        let credit = proceeds.min(cap.saturating_sub(current));
+        let next = current.saturating_add(credit);
+        if next > Gold::ZERO {
+            self.wage_retained_earnings.insert(seller, next);
+        } else {
+            self.wage_retained_earnings.remove(&seller);
+        }
+    }
+
+    fn wage_retained_earnings_cap(&self, owner: AgentId) -> Gold {
+        let free = self.society.free_gold_after_all_reserves(owner);
+        let held = self
+            .society
+            .agents
+            .get(owner)
+            .map_or(Gold::ZERO, |agent| agent.gold);
+        free.min(held)
+    }
+
+    fn run_wage_labor_market_attribution(&mut self, spot_trades_start: usize) {
+        if !self.wage_labor_active() || self.current_money_good() != Some(SALT) {
+            return;
+        }
+        let Some(bread) = self.provenance_bread_good() else {
+            return;
+        };
+        // Read the full spot-trade suffix in order: money is fungible, so a wage recipient's
+        // bucket must be retired by EVERY purchase, not only its output (bread) buys.
+        let trades: Vec<_> = self.society.trades[spot_trades_start..].to_vec();
+        for trade in trades {
+            let Some(payment) = gold_mul_qty(trade.price, trade.qty) else {
+                continue;
+            };
+            // Owners fund wages; they do not earn them. Money is fungible, so the conservative
+            // anti-subsidy rule (§4.6) is that an owner's own purchases spend down its realized
+            // sale proceeds FIRST: every owner buy debits `wage_retained_earnings`, so a later
+            // voluntary hire can never be booked as retained-funded from proceeds that were
+            // already spent on goods (which would let endowment gold masquerade as earned wage
+            // capital). Owner buys still neither retire a worker bucket nor count toward the flow.
+            if self.private_land_agent_holds_any_plot(trade.buyer) {
+                self.debit_wage_retained_earnings(trade.buyer, payment);
+                continue;
+            }
+            // Debit the FIFO wage-proceeds bucket for this purchase whatever the good: wage
+            // income spent on a non-output good is retired here, so a later bread buy financed
+            // from the depleting one-time endowment is not misattributed as wage-financed.
+            let wage_paid = self.debit_wage_proceeds_fifo(trade.buyer, payment);
+            if trade.good != bread {
+                continue;
+            }
+            // Only OUTPUT (bread) buys drive the circular-flow metric: `nonowner_output_buys`
+            // is the denominator, `wage_financed_output_buys` the wage-derived numerator.
+            self.wage_nonowner_output_buys = self.wage_nonowner_output_buys.saturating_add(payment);
+            if wage_paid > Gold::ZERO {
+                self.wage_financed_output_buys =
+                    self.wage_financed_output_buys.saturating_add(wage_paid);
+                if self.current_or_ever_landowner(trade.seller) {
+                    self.wage_circular_loop_turnovers =
+                        self.wage_circular_loop_turnovers.saturating_add(1);
+                }
+            }
+        }
+    }
+
+    fn debit_wage_proceeds_fifo(&mut self, buyer: AgentId, mut amount: Gold) -> Gold {
+        let Some(bucket) = self.wage_proceeds_buckets.get_mut(&buyer) else {
+            return Gold::ZERO;
+        };
+        let mut debited = Gold::ZERO;
+        while amount > Gold::ZERO {
+            let Some(front) = bucket.front_mut() else {
+                break;
+            };
+            let take = front.amount.min(amount);
+            front.amount = front.amount.saturating_sub(take);
+            amount = amount.saturating_sub(take);
+            debited = debited.saturating_add(take);
+            if front.amount == Gold::ZERO {
+                bucket.pop_front();
+            }
+        }
+        if bucket.is_empty() {
+            self.wage_proceeds_buckets.remove(&buyer);
+        }
+        debited
+    }
+
     /// S21d.2a: classify the project-input bid attempts prepared before the market after the
     /// market has run. A bid counts as posted if it either remains live in the spot book or filled
     /// as an input purchase on this tick's trade suffix; otherwise it was blocked by the real
@@ -16464,6 +17443,17 @@ impl Settlement {
             .as_ref()
             .is_some_and(chain_runtime_rival_subsistence_commons_active)
             && self.provenance_bread_good().is_some()
+    }
+
+    fn wage_labor_active(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(chain_runtime_wage_labor_active)
+            && self.provenance_bread_good().is_some()
+    }
+
+    fn wage_labor_market_open(&self) -> bool {
+        self.wage_labor_active() && self.current_money_good() == Some(SALT)
     }
 
     /// S22b: whether **bounded cultivation skill** is active this tick — the
@@ -17785,6 +18775,20 @@ impl Settlement {
                             .or_insert(0) += proceeds;
                     }
                 }
+                if self.wage_labor_active()
+                    && spot_medium == Some(SALT)
+                    && self.current_or_ever_landowner(row.seller)
+                {
+                    let own_qty: u64 = drawn_lots
+                        .iter()
+                        .filter(|lot| lot.producer == row.seller)
+                        .map(|lot| lot.qty)
+                        .sum();
+                    if own_qty > 0 {
+                        let proceeds = price.saturating_mul(own_qty);
+                        self.credit_wage_retained_earnings_from_sale(row.seller, Gold(proceeds));
+                    }
+                }
             }
         }
         cursor
@@ -18959,6 +19963,7 @@ impl Settlement {
             .total_gold()
             .saturating_add(self.commons_gold)
             .saturating_add(self.land_fee_pool_salt)
+            .saturating_add(self.wage_escrow_gold)
     }
 
     /// Whether this settlement runs on the M3 ledger-money [`econ::ledger::MoneySystem`]
@@ -19881,6 +20886,51 @@ impl Settlement {
                 .map(|(&cohort, &qty)| (cohort, qty))
                 .collect(),
             owner_seller_attributed_bought: self.owner_seller_attributed_bought,
+        }
+    }
+
+    pub fn wage_labor_stats(&self) -> WageLaborStats {
+        WageLaborStats {
+            escrow_gold: self.wage_escrow_gold,
+            open_escrows: self.wage_escrows.len(),
+            retained_earnings_total: self
+                .wage_retained_earnings
+                .values()
+                .copied()
+                .fold(Gold::ZERO, |sum, amount| sum.saturating_add(amount)),
+            wage_proceeds_bucket_total: self
+                .wage_proceeds_buckets
+                .values()
+                .flat_map(|bucket| bucket.iter())
+                .fold(Gold::ZERO, |sum, lot| sum.saturating_add(lot.amount)),
+            hires_total: self.wage_hires_total,
+            hires_post_promotion: self.wage_hires_post_promotion,
+            distinct_workers: self.wage_workers_ever.len(),
+            distinct_employers: self.wage_employers_ever.len(),
+            below_ask_not_hired: self.wage_below_ask_not_hired,
+            endowment_funded_wages: self.wage_endowment_funded_wages,
+            wage_financed_output_buys: self.wage_financed_output_buys,
+            nonowner_output_buys: self.wage_nonowner_output_buys,
+            circular_loop_turnovers: self.wage_circular_loop_turnovers,
+        }
+    }
+
+    pub fn wage_labor_escrow_balanced(&self) -> bool {
+        self.wage_escrow_gold == Gold::ZERO && self.wage_escrows.is_empty()
+    }
+
+    /// Close out every still-open wage escrow by refunding it to its employer — the
+    /// accounting-period close the acceptance harness runs at the horizon (§5: "every wage
+    /// entering escrow must be released or refunded by horizon end"). A hire on the final tick
+    /// opens an escrow whose one-tick release lag (`release_tick = econ_tick + 1`) falls past
+    /// the run's last tick, so it would otherwise linger and misreport a genuinely-live market
+    /// as `EscrowUnbalanced`. Refunding is conserved (escrow gold → employer gold), so the
+    /// per-tick money invariant still holds; the wage was already counted when the escrow
+    /// opened, and the metrics window has closed, so this distorts no headline figure.
+    pub fn settle_open_wage_escrows_at_horizon(&mut self) {
+        let escrows = std::mem::take(&mut self.wage_escrows);
+        for escrow in escrows {
+            self.refund_wage_escrow(escrow);
         }
     }
 
@@ -22030,6 +23080,56 @@ impl Settlement {
                 out.extend_from_slice(&self.subsistence_commons_cap.to_le_bytes());
                 out.extend_from_slice(&self.subsistence_commons_regen.to_le_bytes());
             }
+            if self.wage_labor_active() {
+                out.push(22);
+                out.push(u8::from(chain.wage_labor));
+                out.push(wage_labor_mode_tag(chain.wage_labor_mode));
+                out.extend_from_slice(&self.wage_escrow_gold.0.to_le_bytes());
+                out.extend_from_slice(&self.next_wage_contract_id.to_le_bytes());
+                out.extend_from_slice(&(self.wage_escrows.len() as u32).to_le_bytes());
+                for escrow in &self.wage_escrows {
+                    out.extend_from_slice(&escrow.id.to_le_bytes());
+                    out.extend_from_slice(&escrow.employer.0.to_le_bytes());
+                    out.extend_from_slice(&escrow.worker.0.to_le_bytes());
+                    out.extend_from_slice(&escrow.amount.0.to_le_bytes());
+                    out.extend_from_slice(&escrow.wage.0.to_le_bytes());
+                    out.extend_from_slice(&escrow.retained_funded.0.to_le_bytes());
+                    out.extend_from_slice(&escrow.endowment_funded.0.to_le_bytes());
+                    out.extend_from_slice(&escrow.qty.to_le_bytes());
+                    out.extend_from_slice(&escrow.opened_tick.to_le_bytes());
+                    out.extend_from_slice(&escrow.release_tick.to_le_bytes());
+                    push_recipe_id_bytes(&mut out, escrow.recipe);
+                    out.extend_from_slice(&escrow.output_good.0.to_le_bytes());
+                    out.extend_from_slice(&escrow.output_qty.to_le_bytes());
+                    match escrow.input {
+                        Some((good, qty)) => {
+                            out.push(1);
+                            out.extend_from_slice(&good.0.to_le_bytes());
+                            out.extend_from_slice(&qty.to_le_bytes());
+                        }
+                        None => out.push(0),
+                    }
+                    out.extend_from_slice(&escrow.delivered.to_le_bytes());
+                }
+                out.extend_from_slice(&(self.wage_retained_earnings.len() as u32).to_le_bytes());
+                for (&agent, &amount) in &self.wage_retained_earnings {
+                    out.extend_from_slice(&agent.0.to_le_bytes());
+                    out.extend_from_slice(&amount.0.to_le_bytes());
+                }
+                out.extend_from_slice(&(self.wage_proceeds_buckets.len() as u32).to_le_bytes());
+                for (&agent, bucket) in &self.wage_proceeds_buckets {
+                    out.extend_from_slice(&agent.0.to_le_bytes());
+                    out.extend_from_slice(&(bucket.len() as u32).to_le_bytes());
+                    for lot in bucket {
+                        out.extend_from_slice(&lot.amount.0.to_le_bytes());
+                    }
+                }
+                // wage_workers_ever / wage_employers_ever are DIAGNOSTIC-ONLY (read solely by
+                // wage_labor_stats for distinct_* counts; consulted by no matching / escrow /
+                // decision path). Excluding them from canonical_bytes keeps the digest byte-identical
+                // for two states that differ only in *historical* hire participants — preserving the
+                // "byte-identical iff future behaviour identical" contract (spec-review P2).
+            }
             // S23b: the post-money land market extends S23a's registry with an endogenous-price
             // state, listings, last-sale anchors, and the non-agent fee sink. Emitted only when the
             // market composes on active private land tenure; with the flag off every S23a and older
@@ -23160,6 +24260,14 @@ fn inheritance_regime_tag(regime: InheritanceRegime) -> u8 {
     }
 }
 
+fn wage_labor_mode_tag(mode: WageLaborMode) -> u8 {
+    match mode {
+        WageLaborMode::Voluntary => 0,
+        WageLaborMode::FiatWage => 1,
+        WageLaborMode::SubsidisedWage => 2,
+    }
+}
+
 fn chain_config_endogenous_cultivation_entry_active(chain: &ChainConfig) -> bool {
     chain.endogenous_cultivation_entry && chain_config_cultivation_sells_surplus_active(chain)
 }
@@ -23267,6 +24375,10 @@ fn chain_runtime_rival_subsistence_commons_active(chain: &ChainRuntime) -> bool 
     chain.rival_subsistence_commons
         && chain_runtime_mortal_landowner_demography_active(chain)
         && chain.emergency_hunger_threshold > 0
+}
+
+fn chain_runtime_wage_labor_active(chain: &ChainRuntime) -> bool {
+    chain.wage_labor && chain_runtime_rival_subsistence_commons_active(chain)
 }
 
 /// S22b: bounded cultivation skill is active iff the flag is on AND the S22a
@@ -23945,6 +25057,138 @@ fn recipe_net_margin(candidate: &ToolCandidate<'_>, operating_cost: u64) -> i128
         .map_or(0, |price| price.0)
         .saturating_mul(u64::from(input_qty));
     i128::from(revenue) - i128::from(input_cost) - i128::from(operating_cost)
+}
+
+fn gold_mul_qty(price: Gold, qty: u32) -> Option<Gold> {
+    price.0.checked_mul(u64::from(qty)).map(Gold)
+}
+
+fn prorate_gold_floor(amount: Gold, numerator: u32, denominator: u32) -> Gold {
+    if amount == Gold::ZERO || numerator == 0 || denominator == 0 {
+        return Gold::ZERO;
+    }
+    let prorated =
+        u128::from(amount.0).saturating_mul(u128::from(numerator)) / u128::from(denominator);
+    Gold(prorated.min(u128::from(u64::MAX)) as u64)
+}
+
+fn prorate_u32_floor(amount: u32, numerator: u32, denominator: u32) -> u32 {
+    if amount == 0 || numerator == 0 || denominator == 0 {
+        return 0;
+    }
+    let prorated =
+        u128::from(amount).saturating_mul(u128::from(numerator)) / u128::from(denominator);
+    prorated.min(u128::from(u32::MAX)) as u32
+}
+
+/// The escrowed payment when a worker's total reservation ask (`worker_ask`, already priced for the
+/// whole `labor_qty` bundle by `reservation_labor_ask_for_money`) is met by an employer's total wage
+/// ceiling. The payment is the total ask itself, never `worker_ask * labor_qty`.
+fn wage_hire_payment(worker_ask: Gold, max_total_wage: Gold) -> Option<Gold> {
+    (max_total_wage >= worker_ask).then_some(worker_ask)
+}
+
+fn highest_appraised_labor_total_wage(
+    agent: &Agent,
+    expected_revenue: Gold,
+    max_total_wage: Gold,
+    tick: u64,
+    money_good: GoodId,
+) -> Option<Gold> {
+    if max_total_wage == Gold::ZERO {
+        return None;
+    }
+    let pays = |amount: u64| -> bool {
+        appraise_labor_hire_for_money(agent, expected_revenue, Gold(amount), tick, money_good)
+    };
+    // `appraise_labor_hire_for_money` is NOT monotone in the wage, so a low-end binary search
+    // (assuming it clears from 1 upward) is unsound. It clears only on a band whose floor is the
+    // owner's surplus above its soonest future-money savings threshold `(gold − threshold, …]`:
+    // when the owner holds gold above that threshold, a small wage (including 1) leaves the want
+    // still provisioned by present gold — so the expected proceeds are not pivotal and the hire is
+    // declined — while a larger wage newly un-provisions the want that the proceeds then restore
+    // and clears. A `!pays(1)` early-out therefore dropped every owner whose valid wage band lay
+    // above 1, suppressing otherwise-acceptable voluntary/subsidised hires. The §4.3 ceiling is the
+    // HIGHEST clearing wage, so scan down from the affordability cap (bounded by the small
+    // `spendable.min(expected_revenue)`) and take the first wage that clears.
+    // Bound the descend-scan by the affordability cap (spec-review P2): a wage above the owner's
+    // spendable gold can never clear (`appraise_labor_hire_for_money` does `gold.checked_sub(wage)`
+    // and declines on overflow), so cap the ceiling at `min(max_total_wage, gold)` — the scan is then
+    // O(gold), never the nominal `max_total_wage` up to u64::MAX (which could hang `econ_tick()` when
+    // a high realized bread price inflates the cap). NOTE the clearing band CAN extend above
+    // `expected_revenue` (see `highest_wage_ceiling_finds_the_band_above_a_declined_low_wage`), so
+    // revenue is NOT a valid upper bound; spendable gold is.
+    let ceiling = max_total_wage.0.min(agent.gold.0);
+    (1..=ceiling).rev().find(|&amount| pays(amount)).map(Gold)
+}
+
+fn appraise_labor_hire_for_money(
+    agent: &Agent,
+    expected_revenue: Gold,
+    wage_amount: Gold,
+    tick: u64,
+    money_good: GoodId,
+) -> bool {
+    if expected_revenue == Gold::ZERO || wage_amount == Gold::ZERO {
+        return false;
+    }
+    let Some(after_gold) = agent.gold.checked_sub(wage_amount) else {
+        return false;
+    };
+    let receipt = wage_labor_receipt(agent.id, tick, expected_revenue);
+    let receipts = [receipt];
+    let current = TemporalEndowment {
+        stock: &agent.stock,
+        gold: agent.gold,
+        receivables: &[],
+        payables: &[],
+        tick: Tick(tick),
+    };
+    let current_bitmap = provisioning_bitmap_for_money(&agent.scale, &current, money_good);
+    let debited = TemporalEndowment {
+        stock: &agent.stock,
+        gold: after_gold,
+        receivables: &[],
+        payables: &[],
+        tick: Tick(tick),
+    };
+    let debited_bitmap = provisioning_bitmap_for_money(&agent.scale, &debited, money_good);
+    let after = TemporalEndowment {
+        stock: &agent.stock,
+        gold: after_gold,
+        receivables: &receipts,
+        payables: &[],
+        tick: Tick(tick),
+    };
+    let after_bitmap = provisioning_bitmap_for_money(&agent.scale, &after, money_good);
+    let target = agent.scale.iter().enumerate().find_map(|(index, want)| {
+        let future_money =
+            want.kind == WantKind::Good(money_good) && matches!(want.horizon, Horizon::Later(_));
+        (future_money
+            && !debited_bitmap.get(index).copied().unwrap_or(false)
+            && after_bitmap.get(index).copied().unwrap_or(false))
+        .then_some(index)
+    });
+    let Some(target) = target else {
+        return false;
+    };
+    preserved_provisioning_above(&current_bitmap, &after_bitmap, target)
+}
+
+fn wage_labor_receipt(owner: AgentId, tick: u64, due: Gold) -> DebtContract {
+    DebtContract {
+        id: DebtId(0),
+        lender: CreditLender::Agent(owner),
+        borrower: AgentId(0),
+        opened_tick: Tick(tick),
+        due_tick: Tick(tick.saturating_add(1)),
+        principal: Gold::ZERO,
+        due,
+        paid: Gold::ZERO,
+        state: DebtState::Open,
+        purpose: DebtPurpose::Consumption,
+        funding: CreditSource::Commodity,
+    }
 }
 
 /// S10: appraise EVERY tool `agent` could build on its OWN scale (most-rewarding first)
@@ -26100,7 +27344,9 @@ mod tests {
         // Mirror the real caller: mark the dying member dead, then settle to heirs.
         let slot = s.slot_for_id(deceased).unwrap();
         s.mark_colonist_dead(slot);
-        s.settle_estate_to_heirs(deceased);
+        let mut report = EconTickReport::default();
+        let mut wage_labor_used = Vec::new();
+        s.settle_estate_to_heirs(deceased, &mut report, &mut wage_labor_used);
 
         // The heir saturates at the ceiling, the remainder (the deceased's stock minus
         // the heir's single unit of headroom) lands in the commons, and total FOOD is
@@ -26178,7 +27424,9 @@ mod tests {
             !s.society.credit_gold(heir, estate_gold),
             "the external gold accessor must still reject emergent-money societies"
         );
-        assert!(s.settle_estate_to_heirs(victim));
+        let mut report = EconTickReport::default();
+        let mut wage_labor_used = Vec::new();
+        assert!(s.settle_estate_to_heirs(victim, &mut report, &mut wage_labor_used));
 
         let heir_gold_after = s.society.agents.get(heir).expect("live heir").gold;
         assert_eq!(
@@ -26296,7 +27544,9 @@ mod tests {
         let exchange_before = s.world.stockpile_get(s.exchange, good);
         let commons_before = s.commons_stock_of(good);
 
-        s.settle_estate_to_commons(depositor);
+        let mut report = EconTickReport::default();
+        let mut wage_labor_used = Vec::new();
+        s.settle_estate_to_commons(depositor, &mut report, &mut wage_labor_used);
 
         // The attribution is gone, exactly the stranded units left the exchange for
         // the commons, and every good's whole-system total is unchanged.
@@ -27194,6 +28444,459 @@ mod tests {
             project_input_bid_limit(Gold(9), Some(Gold(4)), false),
             Gold(9),
             "with forecasts off, the legacy reservation-as-limit path is byte-identical"
+        );
+    }
+
+    #[test]
+    fn labor_hire_appraisal_accepts_receipt_that_restores_debited_savings() {
+        let owner = Agent {
+            id: AgentId(1),
+            scale: vec![Want {
+                kind: WantKind::Good(SALT),
+                horizon: Horizon::Later(1),
+                qty: 10,
+                satisfied: false,
+            }],
+            stock: Stock::new(NET.0),
+            gold: Gold(10),
+            labor_capacity: 0,
+            hunger_deficit: 0,
+            roles: vec![Role::Household],
+            expect: Vec::new(),
+        };
+
+        assert!(
+            appraise_labor_hire_for_money(&owner, Gold(4), Gold(4), 0, SALT),
+            "future proceeds that restore a savings want after the wage debit must appraise"
+        );
+        assert!(
+            !appraise_labor_hire_for_money(&owner, Gold(3), Gold(4), 0, SALT),
+            "a receipt that leaves the post-wage savings want unprovisioned must still decline"
+        );
+    }
+
+    #[test]
+    fn wage_hire_payment_prices_the_whole_bundle_not_per_unit() {
+        // The Cultivate recipe hires `CULTIVATE_LABOR` (= 2) units in one contract, so `worker_ask`
+        // is the TOTAL reservation for the 2-unit bundle. The employer ceiling is also a total
+        // amount, and the escrowed payment is the total ask — never `ask * labor_qty`.
+        assert_eq!(
+            wage_hire_payment(Gold(5), Gold(6)),
+            Some(Gold(5)),
+            "affordable hire pays the worker's total ask, not ask * labor_qty"
+        );
+        // A total ceiling too low to cover the total ask cannot hire.
+        assert_eq!(
+            wage_hire_payment(Gold(7), Gold(6)),
+            None,
+            "total ceiling 6 below the total ask 7 must not match"
+        );
+        // A ceiling exactly meeting the ask still pays only the ask.
+        assert_eq!(
+            wage_hire_payment(Gold(6), Gold(6)),
+            Some(Gold(6)),
+            "ceiling exactly meeting the ask pays the ask"
+        );
+        assert_eq!(wage_hire_payment(Gold(4), Gold(4)), Some(Gold(4)));
+        assert_eq!(wage_hire_payment(Gold(5), Gold(4)), None);
+    }
+
+    #[test]
+    fn labor_hire_appraisal_uses_total_wage_ceiling_without_unit_floor() {
+        let owner = Agent {
+            id: AgentId(1),
+            scale: vec![Want {
+                kind: WantKind::Good(SALT),
+                horizon: Horizon::Later(1),
+                qty: 1,
+                satisfied: false,
+            }],
+            stock: Stock::new(NET.0),
+            gold: Gold(1),
+            labor_capacity: 0,
+            hunger_deficit: 0,
+            roles: vec![Role::Household],
+            expect: Vec::new(),
+        };
+
+        assert_eq!(
+            highest_appraised_labor_total_wage(&owner, Gold(1), Gold(1), 0, SALT),
+            Some(Gold(1)),
+            "a 1-SALT total wage remains affordable for a multi-labor bundle"
+        );
+    }
+
+    #[test]
+    fn highest_wage_ceiling_finds_the_band_above_a_declined_low_wage() {
+        // The appraisal clears on a band, not from the bottom: an owner holding gold ABOVE its
+        // soonest future-money savings threshold declines a 1-SALT wage (the want is still
+        // provisioned by present gold, so the proceeds are not pivotal) yet accepts a larger wage
+        // that newly un-provisions the want the proceeds then restore. Here the threshold is 5, the
+        // owner holds 7 (surplus 2), and the expected proceeds are 3, so the clearing band is
+        // `(2, 5]`. The ceiling must be the HIGHEST clearing wage — never `None` from a `pays(1)`
+        // early-out that assumes monotonicity.
+        let owner = Agent {
+            id: AgentId(1),
+            scale: vec![Want {
+                kind: WantKind::Good(SALT),
+                horizon: Horizon::Later(1),
+                qty: 5,
+                satisfied: false,
+            }],
+            stock: Stock::new(NET.0),
+            gold: Gold(7),
+            labor_capacity: 0,
+            hunger_deficit: 0,
+            roles: vec![Role::Household],
+            expect: Vec::new(),
+        };
+
+        // The low wage is genuinely declined — this is the state the old early-out mis-read.
+        assert!(!appraise_labor_hire_for_money(
+            &owner,
+            Gold(3),
+            Gold(1),
+            0,
+            SALT
+        ));
+        assert!(!appraise_labor_hire_for_money(
+            &owner,
+            Gold(3),
+            Gold(2),
+            0,
+            SALT
+        ));
+        assert!(appraise_labor_hire_for_money(
+            &owner,
+            Gold(3),
+            Gold(3),
+            0,
+            SALT
+        ));
+        // Capped by the affordability ceiling: the highest clearing wage within `[1, 3]` is 3, even
+        // though `pays(1)` and `pays(2)` are both false.
+        assert_eq!(
+            highest_appraised_labor_total_wage(&owner, Gold(3), Gold(3), 0, SALT),
+            Some(Gold(3)),
+            "the ceiling is the highest clearing wage in the band, not None from a pays(1) gate"
+        );
+        // With headroom to reach the top of the band, the ceiling is the band's upper edge (5),
+        // where the proceeds (3) still just restore the threshold (5) at post-wage gold (2).
+        assert_eq!(
+            highest_appraised_labor_total_wage(&owner, Gold(3), Gold(10), 0, SALT),
+            Some(Gold(5)),
+            "an ample affordability cap resolves to the top of the clearing band"
+        );
+    }
+
+    fn wage_labor_test_config(mode: WageLaborMode) -> SettlementConfig {
+        let mut cfg = SettlementConfig::frontier_mortal_landowner_demography();
+        let chain = cfg.chain.as_mut().expect("frontier base carries a chain");
+        chain.rival_subsistence_commons = true;
+        chain.rival_subsistence_commons_phi_bps = RIVAL_COMMONS_PHI_MARGINAL_BPS;
+        chain.wage_labor = true;
+        chain.wage_labor_mode = mode;
+        cfg
+    }
+
+    fn same_household_pair(s: &Settlement) -> (usize, AgentId) {
+        s.live_colonist_slots
+            .iter()
+            .copied()
+            .find_map(|slot| {
+                let colonist = &s.colonists[slot];
+                let household = colonist.household?;
+                let heir = s
+                    .live_colonist_slots
+                    .iter()
+                    .copied()
+                    .find(|&other| other != slot && s.colonists[other].household == Some(household))
+                    .map(|other| s.colonists[other].id)?;
+                Some((slot, heir))
+            })
+            .expect("wage labor test config has a same-household pair")
+    }
+
+    fn add_due_wage_escrow(
+        s: &mut Settlement,
+        employer: AgentId,
+        worker: AgentId,
+        recipe: &Recipe,
+        amount: Gold,
+    ) {
+        if let Some((input, input_qty)) = recipe.input_good {
+            s.society
+                .agents
+                .get_mut(employer)
+                .expect("employer exists")
+                .stock
+                .add(input, input_qty);
+        }
+        s.wage_escrow_gold = s.wage_escrow_gold.saturating_add(amount);
+        s.wage_escrows.push(WageEscrow {
+            id: 1,
+            employer,
+            worker,
+            amount,
+            wage: amount,
+            retained_funded: amount,
+            endowment_funded: Gold::ZERO,
+            qty: recipe.labor.max(1),
+            opened_tick: s.econ_tick.saturating_sub(1),
+            release_tick: s.econ_tick,
+            recipe: recipe.id,
+            output_good: recipe.output_good,
+            output_qty: recipe.output_qty,
+            input: recipe.input_good,
+            delivered: 0,
+        });
+    }
+
+    #[test]
+    fn fiat_wage_quotes_are_pinned_not_voluntary_asks() {
+        let mut s = Settlement::generate(3, &wage_labor_test_config(WageLaborMode::FiatWage));
+        let bread = s.provenance_bread_good().expect("wage base has bread");
+        let threshold = s
+            .chain
+            .as_ref()
+            .expect("wage base has a chain")
+            .emergency_hunger_threshold;
+        assert!(threshold > 0);
+        s.subsistence_commons_stock = 0;
+        s.subsistence_commons_regen = 0;
+        s.subsistence_commons_cap = 0;
+
+        let slot = s
+            .live_colonist_slots
+            .iter()
+            .copied()
+            .find(|&slot| !s.private_land_agent_holds_any_plot(s.colonists[slot].id))
+            .expect("wage base has a live non-owner");
+        let worker = s.colonists[slot].id;
+        s.colonists[slot].vocation = Vocation::Consumer;
+        s.colonists[slot].household = None;
+        s.colonists[slot].need.hunger = threshold;
+        let agent = s.society.agents.get_mut(worker).expect("worker is live");
+        let held = agent.stock.get(bread);
+        assert!(agent.stock.remove(bread, held));
+        agent.gold = Gold::ZERO;
+        agent.scale = vec![
+            Want {
+                kind: WantKind::Good(SALT),
+                horizon: Horizon::Later(1),
+                qty: 5,
+                satisfied: false,
+            },
+            Want {
+                kind: WantKind::Leisure,
+                horizon: Horizon::Now,
+                qty: 1,
+                satisfied: false,
+            },
+        ];
+
+        assert_eq!(
+            s.worker_labor_ask_for_salt(worker, 2),
+            Some(Gold(5)),
+            "test setup must give the worker a voluntary ask above the fiat pin"
+        );
+        let quote = s
+            .wage_worker_quotes(bread, 2)
+            .into_iter()
+            .find(|quote| quote.worker == worker)
+            .expect("hungry non-owner must quote labor under the fiat control");
+        assert_eq!(
+            quote.ask,
+            Gold(1),
+            "fiat_wage is a forced-employment control and must override the voluntary ask"
+        );
+    }
+
+    #[test]
+    fn due_wage_escrow_releases_when_worker_dies_on_release_tick() {
+        let mut s = Settlement::generate(3, &wage_labor_test_config(WageLaborMode::Voluntary));
+        let recipe = s
+            .wage_labor_recipe()
+            .expect("wage base has a cultivate recipe");
+        let (worker_slot, heir) = same_household_pair(&s);
+        let worker = s.colonists[worker_slot].id;
+        let employer = s
+            .live_colonist_slots
+            .iter()
+            .map(|&slot| s.colonists[slot].id)
+            .find(|&id| id != worker && id != heir)
+            .expect("wage base has a distinct employer");
+        let amount = Gold(7);
+        s.society.agents.get_mut(worker).expect("worker").gold = Gold::ZERO;
+        let heir_gold_before = s.society.agents.get(heir).expect("heir").gold;
+        let employer_output_before = s
+            .society
+            .agents
+            .get(employer)
+            .expect("employer")
+            .stock
+            .get(recipe.output_good);
+        add_due_wage_escrow(&mut s, employer, worker, &recipe, amount);
+
+        s.mark_colonist_dead(worker_slot);
+        let mut report = EconTickReport::default();
+        let mut wage_labor_used = Vec::new();
+        assert!(s.settle_estate_to_heirs(worker, &mut report, &mut wage_labor_used));
+
+        assert_eq!(s.wage_escrow_gold, Gold::ZERO);
+        assert!(s.wage_escrows.is_empty());
+        assert_eq!(
+            s.society.agents.get(heir).expect("heir").gold,
+            heir_gold_before
+                .checked_add(amount)
+                .expect("test wage fits heir gold"),
+            "a due wage earned before worker death must route through the worker estate"
+        );
+        assert_eq!(
+            s.society
+                .agents
+                .get(employer)
+                .expect("employer")
+                .stock
+                .get(recipe.output_good),
+            employer_output_before + recipe.output_qty,
+            "the employer keeps output from labor delivered before the worker death"
+        );
+        assert_eq!(
+            report.produced_of(recipe.output_good),
+            u64::from(recipe.output_qty)
+        );
+        assert!(
+            !s.wage_proceeds_buckets.contains_key(&worker),
+            "wage-spend attribution is not inherited by a dead worker"
+        );
+        assert!(
+            wage_labor_used.is_empty(),
+            "dead workers do not need a next-tick labor readback"
+        );
+    }
+
+    #[test]
+    fn due_wage_escrow_releases_when_employer_dies_on_release_tick() {
+        let mut s = Settlement::generate(3, &wage_labor_test_config(WageLaborMode::Voluntary));
+        let recipe = s
+            .wage_labor_recipe()
+            .expect("wage base has a cultivate recipe");
+        let (employer_slot, heir) = same_household_pair(&s);
+        let employer = s.colonists[employer_slot].id;
+        let worker = s
+            .live_colonist_slots
+            .iter()
+            .map(|&slot| s.colonists[slot].id)
+            .find(|&id| id != employer && id != heir)
+            .expect("wage base has a distinct worker");
+        let amount = Gold(9);
+        let worker_gold_before = s.society.agents.get(worker).expect("worker").gold;
+        {
+            let heir_stock = &mut s.society.agents.get_mut(heir).expect("heir").stock;
+            let held = heir_stock.get(recipe.output_good);
+            assert!(heir_stock.remove(recipe.output_good, held));
+        }
+        {
+            let employer_stock = &mut s.society.agents.get_mut(employer).expect("employer").stock;
+            let held = employer_stock.get(recipe.output_good);
+            assert!(employer_stock.remove(recipe.output_good, held));
+        }
+        add_due_wage_escrow(&mut s, employer, worker, &recipe, amount);
+
+        s.mark_colonist_dead(employer_slot);
+        let mut report = EconTickReport::default();
+        let mut wage_labor_used = Vec::new();
+        assert!(s.settle_estate_to_heirs(employer, &mut report, &mut wage_labor_used));
+
+        assert_eq!(s.wage_escrow_gold, Gold::ZERO);
+        assert!(s.wage_escrows.is_empty());
+        assert_eq!(
+            s.society.agents.get(worker).expect("worker").gold,
+            worker_gold_before
+                .checked_add(amount)
+                .expect("test wage fits worker gold"),
+            "a due wage must release to the live worker when the employer dies"
+        );
+        assert_eq!(
+            s.society
+                .agents
+                .get(heir)
+                .expect("heir")
+                .stock
+                .get(recipe.output_good),
+            recipe.output_qty,
+            "output credited before employer removal must route through the employer estate"
+        );
+        assert_eq!(
+            report.produced_of(recipe.output_good),
+            u64::from(recipe.output_qty)
+        );
+        assert_eq!(
+            s.wage_retained_earnings.get(&employer),
+            None,
+            "dead employers do not keep or restore wage-eligible retained earnings"
+        );
+        assert_eq!(wage_labor_used, vec![(worker, recipe.labor.max(1))]);
+    }
+
+    #[test]
+    fn open_wage_escrow_workers_are_not_assigned_world_tasks() {
+        let mut s = Settlement::generate(3, &wage_labor_test_config(WageLaborMode::Voluntary));
+        let recipe = s
+            .wage_labor_recipe()
+            .expect("wage base has a cultivate recipe");
+        let (slot, node) = s
+            .live_colonist_slots
+            .iter()
+            .find_map(|&slot| {
+                let colonist = &s.colonists[slot];
+                (colonist.vocation == Vocation::Gatherer
+                    && !s.private_land_agent_holds_any_plot(colonist.id))
+                .then_some((slot, colonist.node?))
+            })
+            .expect("wage base has a non-owner gatherer");
+        let worker = s.colonists[slot].id;
+        let employer = s
+            .live_colonist_slots
+            .iter()
+            .map(|&slot| s.colonists[slot].id)
+            .find(|&id| id != worker)
+            .expect("wage base has another live agent");
+
+        assert!(s
+            .world
+            .assign_task(worker, Task::GoHarvest(node, s.carry_cap)));
+        assert_eq!(s.world.agent_status(worker), Some(AgentStatus::Moving));
+        s.wage_escrows.push(WageEscrow {
+            id: 1,
+            employer,
+            worker,
+            amount: Gold(1),
+            wage: Gold(1),
+            retained_funded: Gold(1),
+            endowment_funded: Gold::ZERO,
+            qty: recipe.labor.max(1),
+            opened_tick: s.econ_tick,
+            release_tick: s.econ_tick.saturating_add(1),
+            recipe: recipe.id,
+            output_good: recipe.output_good,
+            output_qty: recipe.output_qty,
+            input: recipe.input_good,
+            delivered: 0,
+        });
+
+        s.idle_open_wage_workers();
+        assert_eq!(
+            s.world.agent_status(worker),
+            Some(AgentStatus::Idle),
+            "an escrowed worker's prior gather/deposit task must be cleared"
+        );
+        s.assign_idle_gatherer_tasks();
+        assert_eq!(
+            s.world.agent_status(worker),
+            Some(AgentStatus::Idle),
+            "an escrowed worker must not be reassigned to normal gathering"
         );
     }
 
@@ -28553,7 +30256,9 @@ mod tests {
         s.bread_provenance.credit_produced(deceased, 4, true);
 
         let commons_before = s.commons_stock_of(bread);
-        assert!(s.settle_estate_to_heirs(deceased));
+        let mut report = EconTickReport::default();
+        let mut wage_labor_used = Vec::new();
+        assert!(s.settle_estate_to_heirs(deceased, &mut report, &mut wage_labor_used));
 
         assert_eq!(
             s.society.agents.get(heir).expect("heir").stock.get(bread),
