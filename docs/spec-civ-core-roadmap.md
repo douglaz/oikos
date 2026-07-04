@@ -9,6 +9,16 @@
 > companion to `spec-civ-game-integration.md` (how a game wraps this core) and the successor-in-scope
 > to the microfoundations recorded in `report-emergence-and-its-limits.md`.
 >
+> **SEQUENCING SUPERSEDED (2026-07-04).** The C1 build landed `WageMarketVacuous` (report §22) and a
+> from-scratch three-input review found this roadmap's build ordering **teleological where it should be
+> genetic** — institutions must be ordered by their *preconditions*, not by textbook maturity, and the
+> "keystone" (money-wage labor) presupposed a wages-fund the base lacks. **The §5 build order is
+> superseded by `docs/review-and-replan-2026-07.md`** (P1 `C1R` share tenancy → P2 `C1N` natural wages →
+> P3 `C1A` accumulation + money-wage re-entry → P4 `C3R` the mortal economy → P5+ re-derived layers).
+> The **layer taxonomy (C1–C10) and the §4 praxeology contract stand**; the per-layer impl specs are
+> demoted to reference material, each to be re-derived when its preconditions demonstrably exist. The
+> "Central claim" below overstates: composition is the unsolved problem, not a sequencing detail.
+>
 > **Central claim.** OIKOS has already built the *microfoundations* of a market economy — Mengerian
 > money (strong-bar, non-circular), the grain→flour→bread division of labor, producible capital,
 > per-agent originary interest, entrepreneurial profit/loss, private land tenure, a land market, and

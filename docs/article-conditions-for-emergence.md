@@ -496,7 +496,27 @@ We state the scaffolds plainly; a hostile reader should attack these first.
   market, or a wage/rent/payment loop that gives non-owners recurring earnings, so a hungry buyer can actually
   *pay* an owner for bread. Only once the demand side can earn does re-running the S23c generational tenure study
   become meaningful; until then it stays deferred, and the three milestones (S23c/d/e) remain branch-preserved
-  nulls.
+  nulls. That lever has since been *built* — **C1, the keystone of a civilization-core arc** (a full C1–C10
+  praxeology-consistent roadmap): a voluntary wage market on the S23e marginal base, an owner hiring a hungry
+  non-owner for a money wage paid *now* from the owner's own prior bread-sale earnings, with an ordinal worker ask
+  and an own-money employer appraisal (no smuggled credit) imputed from the low realized bread price the poor buyers
+  actually pay. It produced a *third, sharper* null — **`WageMarketVacuous`**: across all seeds and the whole
+  scarcity sweep, no voluntary wage contract clears *at all*, because the owner's willingness-to-pay sits below the
+  worker's reservation ask. The machinery is proven functional (a fiat-wage control forces eight hires), so the null
+  is economic, not a wiring artifact: voluntary bilateral wage contracting cannot **self-start** the circular flow —
+  the bid–ask gap will not close while owners cannot sell for enough because buyers cannot earn because there are no
+  wages. This is neither the hoped-for `CircularFlowForms` nor even the anticipated `WageInertDemandStillDead` (wages
+  clear but demand stays dead); the wage market never opens. The scoping matters: C1 ruled out exactly *one*
+  voluntary institution — post-money **money-wage** contracts — on a base with no accumulated savings, which is what
+  the Austrian wages-fund doctrine predicts (a wage is an advance of present goods out of *prior saving*; no fund,
+  no money-wage market). Read correctly, the null *confirms* the sequencing that capital accumulation precedes wage
+  labor; it does not indict voluntary exchange. The levers it points to, untested and first in line, are voluntary:
+  **in-kind (natural) wages** (the measured gap is a *money* gap — a hungry worker paid in bread has essentially no
+  reservation ask), **share contracts / tenancy** (no wage advance needed — historically the institution of
+  thin-capital economies), and the **accumulation horizon** (can a wages-fund form endogenously?). A state that
+  hires and spends first, or a credit advance against future output, remain interesting *interventionist
+  comparisons* — in the game, the state is an optional intervention the player can try, never a requirement — but
+  not the implied fix. C1 is preserved as a branch-only null, not merged.
 - **Endogenous institution selection — the natural next frontier, now opened.** The study has shown that
   *specific* hand-designed institutions make or break emergence (which exchange rule, which exit-cost
   institution). The next question is not another hand-designed institution but whether agents or populations

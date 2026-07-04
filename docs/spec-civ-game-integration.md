@@ -314,9 +314,13 @@ first (UI lags by design) and is gated on its DoD. The core-layer dependencies p
   wage/income and firm-sheet views. *DoD: a player can answer "why did the colony do that?" for any
   price, wage, and coin from the UI.*
 - **Gd — The state & policy layer (core C5).** Property-regime, wage-legality, tax, tender, and
-  treasury-spend commands; the treasury-spend loop and V2→M3 bridge. *DoD: the M21 chartalist circuit
-  is reproducible in-game by a player using only Commands, and a treasury-funded public work gets
-  built; a bad policy visibly harms the economy by necessity, not script.*
+  treasury-spend commands; the treasury-spend loop and V2→M3 bridge. **The state is optional content,
+  not a requirement:** a stateless colony is a fully valid playthrough — the faithful economy must
+  live (or honestly fail) with no fiscal layer at all, and the state exists as an *intervention the
+  player can choose*, whose consequences (Cantillon paths, labor-supply shifts, shortages under a
+  price band) emerge rather than being scripted. *DoD: the M21 chartalist circuit is reproducible
+  in-game by a player using only Commands, and a treasury-funded public work gets built; a bad policy
+  visibly harms the economy by necessity, not script; a no-state run remains fully playable.*
 - **Ge — Tech, eras, and the robustness gate (core C6 + G5 risk).** The knowledge ladder and era
   detection surfaced to the player; **the envelope-scoped robustness gate** (game-spec §10.3): inside
   a declared worldgen envelope, the living economy (Ga) forms in ≥80% of randomized worlds, with
