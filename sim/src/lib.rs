@@ -102,7 +102,7 @@ pub use settlement::{
     CycleKind, DirectIndirectAcceptances, EconTickReport, EntrantClassSale, EstateDestination,
     ForageCommons, InheritanceRegime, LandMarketSaleRow, LineageStats, MortalLandownerOwnerRow,
     NodeSpec, OrderStat, OwnerSurplusTelemetry, ProducerCash, ProducerRole,
-    RivalSubsistenceCommonsState, Settlement, SettlementConfig, ShareContractRow, ShareTenancyMode,
+    RivalSubsistenceCommonsState, Settlement, SettlementConfig, ShareTenancyMode,
     ShareTenancyStats, TaxLevy, TaxPolicy, TenderBench, TenderPolicy, TraderEndowment, Vocation,
     WageLaborMode, WageLaborStats, ECON_TICKS_PER_YEAR, FAST_TICKS_PER_ECON_TICK,
     LAND_CARRYING_PERIOD, LAND_FORECLOSE_DISCOUNT_BPS, LAND_LIST_IDLE, LAND_MIN_RENT_HISTORY,

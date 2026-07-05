@@ -7073,21 +7073,6 @@ pub struct ShareTenancyStats {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ShareContractRow {
-    pub id: u64,
-    pub owner: u64,
-    pub worker: u64,
-    pub node: u32,
-    pub share_bps: u16,
-    pub term: u16,
-    pub opened_tick: u64,
-    pub renewals: u16,
-    pub cap_at_start: u32,
-    pub grain_in_stock: u32,
-    pub split_remainder_bps: u16,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ShareContract {
     id: u64,
     owner: AgentId,
@@ -10934,6 +10919,21 @@ impl Settlement {
         }
     }
 
+    /// The contracted worker's steering: deposit any carry, else haul from the contracted
+    /// plot with the regen-bounded room, else idle. Shared by the fast-loop steer and the
+    /// idle-task assignment so the two seams can never drift apart.
+    fn share_contract_task(&self, worker: AgentId, node: NodeId) -> Task {
+        if self.world.agent_carry_total(worker) > 0 {
+            return Task::GoDeposit(self.exchange);
+        }
+        let room = self.share_contract_harvest_room(node);
+        if room == 0 {
+            Task::Idle
+        } else {
+            Task::GoHarvestWithRoom(node, room, room)
+        }
+    }
+
     fn steer_share_contract_workers(&mut self) {
         if self.share_contracts.is_empty() {
             return;
@@ -10943,16 +10943,7 @@ impl Settlement {
             if !self.private_land_live_agent(contract.worker) {
                 continue;
             }
-            let desired = if self.world.agent_carry_total(contract.worker) > 0 {
-                Task::GoDeposit(self.exchange)
-            } else {
-                let room = self.share_contract_harvest_room(contract.node);
-                if room == 0 {
-                    Task::Idle
-                } else {
-                    Task::GoHarvestWithRoom(contract.node, room, room)
-                }
-            };
+            let desired = self.share_contract_task(contract.worker, contract.node);
             if self.world.agent_task(contract.worker) != Some(desired) {
                 self.world.assign_task(contract.worker, desired);
             }
@@ -11156,16 +11147,7 @@ impl Settlement {
                 continue;
             }
             if let Some(contract) = self.share_contract_for_worker(id) {
-                let task = if self.world.agent_carry_total(id) > 0 {
-                    Task::GoDeposit(self.exchange)
-                } else {
-                    let room = self.share_contract_harvest_room(contract.node);
-                    if room == 0 {
-                        Task::Idle
-                    } else {
-                        Task::GoHarvestWithRoom(contract.node, room, room)
-                    }
-                };
+                let task = self.share_contract_task(id, contract.node);
                 self.world.assign_task(id, task);
                 continue;
             }
@@ -11523,10 +11505,7 @@ impl Settlement {
                 invalid.push((id, task));
                 continue;
             }
-            let share_worker_admitted = record.reserved_for == Some(id)
-                && self
-                    .share_contract_for_worker(id)
-                    .is_some_and(|contract| contract.node == node);
+            let share_worker_admitted = self.share_worker_admitted_to(id, node, &record);
             let owned_by_other_live = self.private_land_record_held_by_live_other(&record, id);
             let reserved_by_other = record.reserved_for.is_some_and(|owner| owner != id);
             if !share_worker_admitted && (owned_by_other_live || reserved_by_other) {
@@ -11657,10 +11636,8 @@ impl Settlement {
                     self.share_reservation_collision.saturating_add(1);
                 continue;
             }
-            let share_worker_admitted = record.reserved_for == Some(event.agent)
-                && self
-                    .share_contract_for_worker(event.agent)
-                    .is_some_and(|contract| contract.node == event.node);
+            let share_worker_admitted =
+                self.share_worker_admitted_to(event.agent, event.node, &record);
             // C1R latent-composition guard (review P3): the owner-exclusion above blocks only
             // `contract.owner`; on a PARTIBLE config a co-holder in `record.shares` would still
             // be admitted to a share-reserved plot. Inert on the impartible C1R base — trip
@@ -16379,9 +16356,23 @@ impl Settlement {
     }
 
     fn share_worker_has_contract(&self, worker: AgentId) -> bool {
-        self.share_contracts
-            .iter()
-            .any(|contract| contract.worker == worker)
+        self.share_contract_for_worker(worker).is_some()
+    }
+
+    /// A contracted share worker is admitted to exactly the plot its live contract reserves
+    /// for it: the record's reservation must name the worker AND the worker's contract must
+    /// be over this node. Shared by the pre-tick harvest validation and the worked-event
+    /// gate so the two admission seams can never drift apart.
+    fn share_worker_admitted_to(
+        &self,
+        agent: AgentId,
+        node: NodeId,
+        record: &LandPlotRecord,
+    ) -> bool {
+        record.reserved_for == Some(agent)
+            && self
+                .share_contract_for_worker(agent)
+                .is_some_and(|contract| contract.node == node)
     }
 
     fn share_contract_for_worker(&self, worker: AgentId) -> Option<ShareContract> {
@@ -22028,34 +22019,11 @@ impl Settlement {
         }
     }
 
-    pub fn share_contract_rows(&self) -> Vec<ShareContractRow> {
-        self.share_contracts
-            .iter()
-            .map(|contract| ShareContractRow {
-                id: contract.id,
-                owner: contract.owner.0,
-                worker: contract.worker.0,
-                node: contract.node.0,
-                share_bps: contract.share_bps,
-                term: contract.term,
-                opened_tick: contract.opened_tick,
-                renewals: contract.renewals,
-                cap_at_start: contract.cap_at_start,
-                grain_in_stock: contract.grain_in_stock,
-                split_remainder_bps: contract.split_remainder_bps,
-            })
-            .collect()
-    }
-
     pub fn share_worker_ids(&self) -> Vec<u64> {
         self.share_workers_ever
             .iter()
             .map(|worker| worker.0)
             .collect()
-    }
-
-    pub fn share_owner_ids_ever(&self) -> Vec<u64> {
-        self.share_owners_ever.iter().map(|owner| owner.0).collect()
     }
 
     pub fn wage_labor_escrow_balanced(&self) -> bool {
