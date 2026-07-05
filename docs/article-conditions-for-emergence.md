@@ -516,7 +516,17 @@ We state the scaffolds plainly; a hostile reader should attack these first.
   thin-capital economies), and the **accumulation horizon** (can a wages-fund form endogenously?). A state that
   hires and spends first, or a credit advance against future output, remain interesting *interventionist
   comparisons* — in the game, the state is an optional intervention the player can try, never a requirement — but
-  not the implied fix. C1 is preserved as a branch-only null, not merged.
+  not the implied fix. C1 is preserved as a branch-only null, not merged. The first of those voluntary levers has
+  since been *built* — **C1R, the output-share tenancy** — and it produced the strand's first partial positive:
+  **the no-advance contract clears voluntarily** (31–54 contracts per seed, real bread moving at exact split
+  ratios, the same-seed money-wage cell printing its null beside it — the advance/money-gap reading demonstrated,
+  not argued; zero uptake under an abundant commons, so contracting is a genuine scarcity phenomenon). But it
+  clears only as **transient scarcity relief**: no voluntary contract is ever renewed, because the contract feeds
+  the worker *out of the hungry eligibility pool* by term end, and share bread substitutes one-for-one for commons
+  draws — consumption is re-sourced, not raised, so no survival lift forms (`ShareClearsButNoLift`, honest and
+  traced to economics rather than wiring). The follow-ons it names: a forward-provisioning persistence probe
+  (renewal chosen *before* hunger returns), and in-kind wages from the **owner bread fund the share contracts have
+  now created** — the wages-fund whose absence made the money-wage market vacuous.
 - **Endogenous institution selection — the natural next frontier, now opened.** The study has shown that
   *specific* hand-designed institutions make or break emergence (which exchange rule, which exit-cost
   institution). The next question is not another hand-designed institution but whether agents or populations
