@@ -1445,6 +1445,9 @@ pub struct ChainConfig {
     pub share_tenancy: bool,
     /// C1R acceptance/scaffold mode. Ignored while `share_tenancy` is off.
     pub share_tenancy_mode: ShareTenancyMode,
+    /// P1.5 — forward-provisioning worker gate. Orthogonal to the C1R acceptance mode and inert
+    /// unless share tenancy itself composes on the S23e substrate.
+    pub share_forward_provisioning: bool,
     /// C1R worker share in basis points. Pinned/swept, never searched.
     pub share_bps: u16,
     /// C1R fixed contract term in econ ticks. Pinned/swept, never searched.
@@ -1874,6 +1877,7 @@ impl ChainConfig {
             wage_labor_mode: WageLaborMode::Voluntary,
             share_tenancy: false,
             share_tenancy_mode: ShareTenancyMode::Voluntary,
+            share_forward_provisioning: false,
             share_bps: SHARE_TENANCY_BPS_DEFAULT,
             share_term: SHARE_TENANCY_TERM_DEFAULT,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
@@ -2060,6 +2064,7 @@ impl ChainConfig {
             wage_labor_mode: WageLaborMode::Voluntary,
             share_tenancy: false,
             share_tenancy_mode: ShareTenancyMode::Voluntary,
+            share_forward_provisioning: false,
             share_bps: SHARE_TENANCY_BPS_DEFAULT,
             share_term: SHARE_TENANCY_TERM_DEFAULT,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
@@ -2226,6 +2231,7 @@ impl ChainConfig {
             wage_labor_mode: WageLaborMode::Voluntary,
             share_tenancy: false,
             share_tenancy_mode: ShareTenancyMode::Voluntary,
+            share_forward_provisioning: false,
             share_bps: SHARE_TENANCY_BPS_DEFAULT,
             share_term: SHARE_TENANCY_TERM_DEFAULT,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
@@ -6397,6 +6403,14 @@ pub struct Settlement {
     share_owner_bread_income: u64,
     share_worker_declined: u64,
     share_worker_unmatched: u64,
+    share_forward_only_eligibility: u64,
+    share_renewal_hints_total: u64,
+    share_renewal_fed_out: u64,
+    share_renewal_base_ineligible: u64,
+    share_renewal_owner_not_candidate: u64,
+    share_renewal_bread_declined: u64,
+    share_renewal_matched_elsewhere: u64,
+    share_owner_candidates_total: u64,
     share_owner_no_atcap_plot: u64,
     share_stock_opportunity_refusal: u64,
     share_reservation_collision: u64,
@@ -6926,6 +6940,7 @@ struct ChainRuntime {
     wage_labor_mode: WageLaborMode,
     share_tenancy: bool,
     share_tenancy_mode: ShareTenancyMode,
+    share_forward_provisioning: bool,
     share_bps: u16,
     share_term: u16,
     land_carrying_cost: u64,
@@ -7062,6 +7077,17 @@ pub struct ShareTenancyStats {
     /// evaluate — NOT a bread-acceptance decline (spec-review P2: `worker_declined` means
     /// the ordinal acceptance itself failed, nothing else).
     pub worker_unmatched: u64,
+    /// Worker-ticks admitted by the term forecast while the legacy instantaneous gate would have
+    /// said the commons covered the worker. Runtime-only diagnostic; never canonicalized.
+    pub forward_only_eligibility: u64,
+    pub renewal_hints_total: u64,
+    pub renewal_fed_out: u64,
+    pub renewal_base_ineligible: u64,
+    pub renewal_owner_not_candidate: u64,
+    pub renewal_bread_declined: u64,
+    pub renewal_matched_elsewhere: u64,
+    /// Count of at-cap owner plot candidates offered to the share matcher over the run.
+    pub owner_candidates_total: u64,
     pub owner_no_atcap_plot: u64,
     pub stock_opportunity_refusal: u64,
     pub reservation_collision: u64,
@@ -7137,6 +7163,25 @@ struct ShareOwnerCandidate {
     owner: AgentId,
     node: NodeId,
     cap_at_start: u32,
+}
+
+type RenewalHintKey = (AgentId, AgentId, NodeId);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RenewalFate {
+    FedOut,
+    BaseIneligible,
+    OwnerNotCandidate,
+    BreadDeclined,
+    MatchedElsewhere,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TermNeedMember {
+    agent: AgentId,
+    hunger: u16,
+    held_free_bread: u64,
+    held_total_bread: u64,
 }
 
 pub type SecureLandShareRow = (u32, u64, u32, u32, u32);
@@ -7767,6 +7812,9 @@ struct AcquisitionLedger {
     /// actually transact, distinguishing a genuine division-of-labor split from a commune whose
     /// non-cultivators are alive but never buy. Never digested.
     bought_credited_by_agent: BTreeMap<AgentId, u64>,
+    /// P1.5 (runtime-only): cumulative tracked food a given agent ever acquired through the
+    /// `Commons` channel. Mirrors `bought_credited_by_agent` for the substitution diagnostic.
+    commons_credited_by_agent: BTreeMap<AgentId, u64>,
     /// S23c (runtime-only): cumulative tracked food a given agent ever CONSUMED (ate), across
     /// every channel — the per-agent food-intake denominator. Lets a tenure-tier metric divide
     /// "bought food" (a subset of intake) and "owner-supplied production" by the food a specific
@@ -7792,6 +7840,8 @@ impl AcquisitionLedger {
         // `transfer_preserve` (not buying) and are excluded.
         if channel == FoodChannel::Bought {
             *self.bought_credited_by_agent.entry(agent).or_insert(0) += qty;
+        } else if channel == FoodChannel::Commons {
+            *self.commons_credited_by_agent.entry(agent).or_insert(0) += qty;
         }
     }
 
@@ -7960,6 +8010,14 @@ impl AcquisitionLedger {
     /// material-buyer signal). `0` for an agent that never bought.
     fn bought_credited_of(&self, agent: AgentId) -> u64 {
         self.bought_credited_by_agent
+            .get(&agent)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// P1.5: cumulative `Commons`-channel tracked food the agent ever acquired.
+    fn commons_credited_of(&self, agent: AgentId) -> u64 {
+        self.commons_credited_by_agent
             .get(&agent)
             .copied()
             .unwrap_or(0)
@@ -9247,6 +9305,7 @@ impl Settlement {
                 wage_labor_mode: chain.wage_labor_mode,
                 share_tenancy: chain.share_tenancy,
                 share_tenancy_mode: chain.share_tenancy_mode,
+                share_forward_provisioning: chain.share_forward_provisioning,
                 share_bps: chain.share_bps,
                 share_term: chain.share_term,
                 land_carrying_cost: chain.land_carrying_cost,
@@ -9344,6 +9403,14 @@ impl Settlement {
             share_owner_bread_income: 0,
             share_worker_declined: 0,
             share_worker_unmatched: 0,
+            share_forward_only_eligibility: 0,
+            share_renewal_hints_total: 0,
+            share_renewal_fed_out: 0,
+            share_renewal_base_ineligible: 0,
+            share_renewal_owner_not_candidate: 0,
+            share_renewal_bread_declined: 0,
+            share_renewal_matched_elsewhere: 0,
+            share_owner_candidates_total: 0,
             share_owner_no_atcap_plot: 0,
             share_stock_opportunity_refusal: 0,
             share_reservation_collision: 0,
@@ -9841,6 +9908,14 @@ impl Settlement {
             share_owner_bread_income: 0,
             share_worker_declined: 0,
             share_worker_unmatched: 0,
+            share_forward_only_eligibility: 0,
+            share_renewal_hints_total: 0,
+            share_renewal_fed_out: 0,
+            share_renewal_base_ineligible: 0,
+            share_renewal_owner_not_candidate: 0,
+            share_renewal_bread_declined: 0,
+            share_renewal_matched_elsewhere: 0,
+            share_owner_candidates_total: 0,
             share_owner_no_atcap_plot: 0,
             share_stock_opportunity_refusal: 0,
             share_reservation_collision: 0,
@@ -15820,23 +15895,44 @@ impl Settlement {
             return;
         }
         let renewal_hints = self.expire_share_contracts();
+        let hint_count = renewal_hints.len() as u64;
+        let mut renewal_fates = renewal_hints
+            .keys()
+            .copied()
+            .map(|key| (key, None))
+            .collect::<BTreeMap<_, _>>();
         let Some(bread) = self.provenance_bread_good() else {
+            for fate in renewal_fates.values_mut() {
+                *fate = Some(RenewalFate::BaseIneligible);
+            }
+            self.finalize_renewal_fates(renewal_fates, hint_count, 0);
             return;
         };
         let workers = self.share_worker_pool(bread);
         if workers.is_empty() {
+            self.classify_renewal_fates_without_workers(&mut renewal_fates, bread);
+            self.finalize_renewal_fates(renewal_fates, hint_count, 0);
             return;
         }
         let owners = self.share_owner_candidates(bread);
         if owners.is_empty() {
+            self.classify_renewal_fates_without_owners(&mut renewal_fates, &workers, bread);
             // Workers wanted a contract but no plot passed the cap-waste gate: unmatched,
             // not declined (spec-review P2 — `worker_declined` means acceptance failed).
             self.share_worker_unmatched = self
                 .share_worker_unmatched
                 .saturating_add(workers.len() as u64);
+            self.finalize_renewal_fates(renewal_fates, hint_count, 0);
             return;
         }
-        self.clear_share_tenancy_market(bread, workers, owners, renewal_hints);
+        let same_plot_renewed = self.clear_share_tenancy_market(
+            bread,
+            workers,
+            owners,
+            renewal_hints,
+            &mut renewal_fates,
+        );
+        self.finalize_renewal_fates(renewal_fates, hint_count, same_plot_renewed);
     }
 
     fn share_tenancy_mode(&self) -> ShareTenancyMode {
@@ -15962,18 +16058,38 @@ impl Settlement {
     /// the **contracted plot's** regen × term × budget (spec crux 3), so the match loop
     /// evaluates the ordinal acceptance per assigned candidate (review P1: evaluating the
     /// first sorted candidate as a proxy binds workers to plots they never accepted).
-    fn share_worker_pool(&self, bread: GoodId) -> Vec<AgentId> {
+    fn share_worker_pool(&mut self, bread: GoodId) -> Vec<AgentId> {
         let mode = self.share_tenancy_mode();
+        // The forward horizon is the Voluntary probe's candidacy knob (spec §3.2). It defers
+        // to the instantaneous gate for the other modes: `LineageWorker` because its outside
+        // option is the lineage-aware hunger threshold (the commons forecast — and the term
+        // forecast built on it — structurally skips `household.is_some()` colonists, so it
+        // cannot see a lineage worker at all), and `ForcedShare` because it evaluates no
+        // outside option below. Keeping the flag orthogonal to the mode (review R1).
+        let forward =
+            self.share_forward_provisioning_active() && mode == ShareTenancyMode::Voluntary;
         let mut pool = Vec::new();
         for &slot in &self.live_colonist_slots {
             let colonist = &self.colonists[slot];
             if !self.share_worker_base_eligible(colonist.id, mode) {
                 continue;
             }
-            if mode != ShareTenancyMode::ForcedShare
-                && !self.share_worker_outside_option_fails(colonist.id, bread, mode)
-            {
-                continue;
+            if mode != ShareTenancyMode::ForcedShare {
+                let instantaneous_fails =
+                    self.share_worker_instantaneous_outside_option_fails(colonist.id, bread, mode);
+                let gate_fails = if forward {
+                    let term = self.share_tenancy_terms().map_or(1, |(_, term)| term);
+                    self.forecast_term_need_unmet(colonist.id, bread, term) > 0
+                } else {
+                    instantaneous_fails
+                };
+                if !gate_fails {
+                    continue;
+                }
+                if forward && !instantaneous_fails {
+                    self.share_forward_only_eligibility =
+                        self.share_forward_only_eligibility.saturating_add(1);
+                }
             }
             pool.push(colonist.id);
         }
@@ -15988,8 +16104,25 @@ impl Settlement {
     /// forecast would report every lineage worker commons-sufficient and gate it out
     /// before acceptance ever ran — for lineage members the gate reduces to the same
     /// hunger threshold the forecast keys on, and homesteading (their REAL alternative)
-    /// stays open as exactly the choice the cell probes.
+    /// stays open as exactly the choice the cell probes. The forward horizon (spec §3.2)
+    /// applies only to `Voluntary` for the same reason: the term forecast is built on the
+    /// same lineage-blind commons roster, so it too must defer to the instantaneous
+    /// lineage-aware gate for `LineageWorker` (review R1) — leaving that diagnostic cell
+    /// byte-identical whether or not the forward flag is set.
     fn share_worker_outside_option_fails(
+        &self,
+        worker: AgentId,
+        bread: GoodId,
+        mode: ShareTenancyMode,
+    ) -> bool {
+        if self.share_forward_provisioning_active() && mode == ShareTenancyMode::Voluntary {
+            let term = self.share_tenancy_terms().map_or(1, |(_, term)| term);
+            return self.forecast_term_need_unmet(worker, bread, term) > 0;
+        }
+        self.share_worker_instantaneous_outside_option_fails(worker, bread, mode)
+    }
+
+    fn share_worker_instantaneous_outside_option_fails(
         &self,
         worker: AgentId,
         bread: GoodId,
@@ -16033,6 +16166,121 @@ impl Settlement {
         }
     }
 
+    fn renewal_fate_outside_pool(
+        &self,
+        worker: AgentId,
+        bread: GoodId,
+        mode: ShareTenancyMode,
+    ) -> RenewalFate {
+        if self.share_worker_base_eligible(worker, mode) {
+            debug_assert!(
+                !self.share_worker_outside_option_fails(worker, bread, mode),
+                "base-eligible renewal worker outside the pool should have passed its outside option"
+            );
+            RenewalFate::FedOut
+        } else {
+            RenewalFate::BaseIneligible
+        }
+    }
+
+    fn classify_renewal_fates_without_workers(
+        &self,
+        renewal_fates: &mut BTreeMap<RenewalHintKey, Option<RenewalFate>>,
+        bread: GoodId,
+    ) {
+        let mode = self.share_tenancy_mode();
+        for (&(worker, _, _), fate) in renewal_fates.iter_mut() {
+            *fate = Some(self.renewal_fate_outside_pool(worker, bread, mode));
+        }
+    }
+
+    fn classify_renewal_fates_without_owners(
+        &self,
+        renewal_fates: &mut BTreeMap<RenewalHintKey, Option<RenewalFate>>,
+        workers: &[AgentId],
+        bread: GoodId,
+    ) {
+        let mode = self.share_tenancy_mode();
+        for (&(worker, _, _), fate) in renewal_fates.iter_mut() {
+            *fate = Some(if workers.binary_search(&worker).is_ok() {
+                RenewalFate::OwnerNotCandidate
+            } else {
+                self.renewal_fate_outside_pool(worker, bread, mode)
+            });
+        }
+    }
+
+    fn set_renewal_fate(
+        renewal_fates: &mut BTreeMap<RenewalHintKey, Option<RenewalFate>>,
+        key: RenewalHintKey,
+        fate: RenewalFate,
+    ) {
+        if let Some(slot) = renewal_fates.get_mut(&key) {
+            *slot = Some(fate);
+        }
+    }
+
+    fn finalize_renewal_fates(
+        &mut self,
+        renewal_fates: BTreeMap<RenewalHintKey, Option<RenewalFate>>,
+        hint_count: u64,
+        same_plot_renewed: u64,
+    ) {
+        if hint_count == 0 {
+            return;
+        }
+        let mut fate_total = 0u64;
+        self.share_renewal_hints_total = self.share_renewal_hints_total.saturating_add(hint_count);
+        for fate in renewal_fates.into_values() {
+            debug_assert!(fate.is_some(), "renewal fate left pending at finalization");
+            let Some(fate) = fate else {
+                self.share_renewal_base_ineligible =
+                    self.share_renewal_base_ineligible.saturating_add(1);
+                fate_total = fate_total.saturating_add(1);
+                continue;
+            };
+            fate_total = fate_total.saturating_add(1);
+            match fate {
+                RenewalFate::FedOut => {
+                    self.share_renewal_fed_out = self.share_renewal_fed_out.saturating_add(1)
+                }
+                RenewalFate::BaseIneligible => {
+                    self.share_renewal_base_ineligible =
+                        self.share_renewal_base_ineligible.saturating_add(1)
+                }
+                RenewalFate::OwnerNotCandidate => {
+                    self.share_renewal_owner_not_candidate =
+                        self.share_renewal_owner_not_candidate.saturating_add(1)
+                }
+                RenewalFate::BreadDeclined => {
+                    self.share_renewal_bread_declined =
+                        self.share_renewal_bread_declined.saturating_add(1)
+                }
+                RenewalFate::MatchedElsewhere => {
+                    self.share_renewal_matched_elsewhere =
+                        self.share_renewal_matched_elsewhere.saturating_add(1)
+                }
+            }
+        }
+        debug_assert_eq!(
+            fate_total.saturating_add(same_plot_renewed),
+            hint_count,
+            "renewal fates must sum to hints minus same-plot renewals"
+        );
+        let cumulative_fates = self
+            .share_renewal_fed_out
+            .saturating_add(self.share_renewal_base_ineligible)
+            .saturating_add(self.share_renewal_owner_not_candidate)
+            .saturating_add(self.share_renewal_bread_declined)
+            .saturating_add(self.share_renewal_matched_elsewhere);
+        debug_assert_eq!(
+            cumulative_fates,
+            self.share_renewal_hints_total
+                .saturating_sub(self.share_renewals_total),
+            "cumulative renewal fate counts must stay internally consistent"
+        );
+    }
+
     /// The worker's bread-denominated ordinal acceptance (spec §3.1), evaluated against
     /// the exact plot being matched: does adding `floor(N̂ · share_bps / 10_000)` bread —
     /// N̂ derived from THIS `node`'s digested state — newly provision a `Good(BREAD)` want
@@ -16053,6 +16301,23 @@ impl Settlement {
         if agent.stock.get(bread).checked_add(expected_share).is_none() {
             return false;
         }
+        if self.share_worker_accepts_bread_now(worker, bread, expected_share) {
+            return true;
+        }
+        self.share_forward_provisioning_active()
+            && self.forecast_term_need_unmet(worker, bread, term) > 0
+            && self.share_forward_leisure_guard(worker, bread)
+    }
+
+    fn share_worker_accepts_bread_now(
+        &self,
+        worker: AgentId,
+        bread: GoodId,
+        expected_share: u32,
+    ) -> bool {
+        let Some(agent) = self.society.agents.get(worker) else {
+            return false;
+        };
         let before_endowment = TemporalEndowment {
             stock: &agent.stock,
             gold: agent.gold,
@@ -16089,8 +16354,59 @@ impl Settlement {
         preserved_provisioning_above(&before, &after, target)
     }
 
+    fn share_forward_leisure_guard(&self, worker: AgentId, bread: GoodId) -> bool {
+        let Some(slot) = self.slot_for_id(worker) else {
+            return false;
+        };
+        let Some(agent) = self.society.agents.get(worker) else {
+            return false;
+        };
+        let threshold = self
+            .chain
+            .as_ref()
+            .map_or(0, |chain| chain.emergency_hunger_threshold);
+        if threshold == 0 {
+            return false;
+        }
+        let before_endowment = TemporalEndowment {
+            stock: &agent.stock,
+            gold: agent.gold,
+            receivables: &[],
+            payables: &[],
+            tick: Tick(self.econ_tick),
+        };
+        let before = provisioning_bitmap_for_money(&agent.scale, &before_endowment, GOLD);
+        let leisure_rank = agent.scale.iter().enumerate().find_map(|(index, want)| {
+            (want.kind == WantKind::Leisure
+                && matches!(want.horizon, Horizon::Now)
+                && !before.get(index).copied().unwrap_or(false))
+            .then_some(index)
+        });
+        let Some(leisure_rank) = leisure_rank else {
+            return true;
+        };
+        let mut need = self.colonists[slot].need;
+        need.hunger = threshold.min(self.dynamics.need_max);
+        let deep_savings = self
+            .chain
+            .as_ref()
+            .is_some_and(|chain| chain.per_agent_capital);
+        let scale = if deep_savings {
+            regenerate_scale_for_capital(&need, &self.colonists[slot].culture, &self.known)
+        } else {
+            regenerate_scale(&need, &self.colonists[slot].culture, &self.known)
+        };
+        scale
+            .iter()
+            .position(|want| want.kind == WantKind::Good(bread) && want.horizon == Horizon::Now)
+            .is_some_and(|rank| rank < leisure_rank)
+    }
+
     fn share_owner_candidates(&mut self, bread: GoodId) -> Vec<ShareOwnerCandidate> {
         let candidates = self.share_owner_candidate_plots(bread);
+        self.share_owner_candidates_total = self
+            .share_owner_candidates_total
+            .saturating_add(candidates.len() as u64);
         let mut owners_with_candidate = BTreeSet::new();
         for candidate in &candidates {
             owners_with_candidate.insert(candidate.owner);
@@ -16223,10 +16539,18 @@ impl Settlement {
         bread: GoodId,
         workers: Vec<AgentId>,
         mut owners: Vec<ShareOwnerCandidate>,
-        renewal_hints: BTreeMap<(AgentId, AgentId, NodeId), u16>,
-    ) {
+        renewal_hints: BTreeMap<RenewalHintKey, u16>,
+        renewal_fates: &mut BTreeMap<RenewalHintKey, Option<RenewalFate>>,
+    ) -> u64 {
         let forced = self.share_tenancy_mode() == ShareTenancyMode::ForcedShare;
+        let mode = self.share_tenancy_mode();
         let mut matched: BTreeSet<AgentId> = BTreeSet::new();
+        let hint_by_worker: BTreeMap<AgentId, RenewalHintKey> = renewal_hints
+            .keys()
+            .copied()
+            .map(|key @ (worker, _, _)| (worker, key))
+            .collect();
+        let mut same_plot_renewed = 0u64;
         // Incumbent-first renewal (S22f: persistence must come from RE-CHOOSING): an
         // expiring pair is offered ITS OWN plot before the general pass, both sides
         // re-deciding from fresh state — the plot is in `owners` only if it passes the
@@ -16237,19 +16561,36 @@ impl Settlement {
         // that fails either side falls through to the general pass as a fresh candidate.
         for (&(worker, owner, node), &renewals) in &renewal_hints {
             if matched.contains(&worker) || workers.binary_search(&worker).is_err() {
+                Self::set_renewal_fate(
+                    renewal_fates,
+                    (worker, owner, node),
+                    self.renewal_fate_outside_pool(worker, bread, mode),
+                );
                 continue;
             }
             let Some(position) = owners
                 .iter()
                 .position(|candidate| candidate.owner == owner && candidate.node == node)
             else {
+                Self::set_renewal_fate(
+                    renewal_fates,
+                    (worker, owner, node),
+                    RenewalFate::OwnerNotCandidate,
+                );
                 continue;
             };
             if !forced && !self.share_worker_accepts_bread(worker, bread, node) {
+                Self::set_renewal_fate(
+                    renewal_fates,
+                    (worker, owner, node),
+                    RenewalFate::BreadDeclined,
+                );
                 continue;
             }
             let candidate = owners.remove(position);
             self.open_share_contract(worker, candidate, renewals);
+            renewal_fates.remove(&(worker, owner, node));
+            same_plot_renewed = same_plot_renewed.saturating_add(1);
             matched.insert(worker);
         }
         for worker in workers {
@@ -16260,6 +16601,9 @@ impl Settlement {
                 // Not a decline: no candidate was left to evaluate (spec-review P2 —
                 // `worker_declined` means the bread acceptance itself failed).
                 self.share_worker_unmatched = self.share_worker_unmatched.saturating_add(1);
+                if let Some(&key) = hint_by_worker.get(&worker) {
+                    Self::set_renewal_fate(renewal_fates, key, RenewalFate::OwnerNotCandidate);
+                }
                 continue;
             }
             // Greedy deterministic: the first candidate (owner-id, node order) whose
@@ -16272,12 +16616,25 @@ impl Settlement {
                 Some(position) => {
                     let candidate = owners.remove(position);
                     self.open_share_contract(worker, candidate, 0);
+                    if let Some(&key) = hint_by_worker.get(&worker) {
+                        if key.2 != candidate.node {
+                            Self::set_renewal_fate(
+                                renewal_fates,
+                                key,
+                                RenewalFate::MatchedElsewhere,
+                            );
+                        }
+                    }
                 }
                 None => {
                     self.share_worker_declined = self.share_worker_declined.saturating_add(1);
+                    if let Some(&key) = hint_by_worker.get(&worker) {
+                        Self::set_renewal_fate(renewal_fates, key, RenewalFate::BreadDeclined);
+                    }
                 }
             }
         }
+        same_plot_renewed
     }
 
     fn open_share_contract(
@@ -16692,6 +17049,108 @@ impl Settlement {
             }
         }
         true
+    }
+
+    fn forecast_term_need_unmet(&self, target_agent: AgentId, bread: GoodId, term: u16) -> u64 {
+        if !self.rival_subsistence_commons_active() || term == 0 {
+            return 0;
+        }
+        let threshold = self
+            .chain
+            .as_ref()
+            .map_or(0, |chain| chain.emergency_hunger_threshold);
+        if threshold == 0 || self.dynamics.hunger_per_food == 0 {
+            return 0;
+        }
+        let target_hunger = threshold.saturating_sub(1);
+        let mut members = Vec::new();
+        for &slot in &self.live_colonist_slots {
+            let colonist = &self.colonists[slot];
+            if colonist.household.is_some()
+                || !matches!(colonist.vocation, Vocation::Consumer | Vocation::Gatherer)
+            {
+                continue;
+            }
+            let held_total = self
+                .society
+                .agents
+                .get(colonist.id)
+                .map_or(0, |agent| u64::from(agent.stock.get(bread)));
+            members.push(TermNeedMember {
+                agent: colonist.id,
+                hunger: colonist.need.hunger,
+                held_free_bread: u64::from(
+                    self.society
+                        .free_stock_after_all_reserves(colonist.id, bread),
+                ),
+                held_total_bread: held_total,
+            });
+        }
+        if !members.iter().any(|member| member.agent == target_agent) {
+            return 0;
+        }
+
+        let mut commons_stock = self.subsistence_commons_stock;
+        let mut target_unmet = 0u64;
+        for _ in 0..term {
+            let mut requests = Vec::new();
+            for (index, member) in members.iter_mut().enumerate() {
+                let needed = u64::from(food_needed_to_reach_hunger(
+                    member.hunger,
+                    self.dynamics.hunger_deplete,
+                    self.dynamics.hunger_per_food,
+                    target_hunger,
+                ));
+                if needed == 0 {
+                    member.hunger = advance_hunger_after_food(
+                        member.hunger,
+                        self.dynamics.hunger_deplete,
+                        self.dynamics.hunger_per_food,
+                        self.dynamics.need_max,
+                        0,
+                    );
+                    continue;
+                }
+                let held_eat = member.held_free_bread.min(needed);
+                member.held_free_bread = member.held_free_bread.saturating_sub(held_eat);
+                member.held_total_bread = member.held_total_bread.saturating_sub(held_eat);
+                let need = needed.saturating_sub(held_eat);
+                if need > 0 {
+                    requests.push((member.hunger, member.agent, index, held_eat, need));
+                } else {
+                    member.hunger = advance_hunger_after_food(
+                        member.hunger,
+                        self.dynamics.hunger_deplete,
+                        self.dynamics.hunger_per_food,
+                        self.dynamics.need_max,
+                        held_eat,
+                    );
+                }
+            }
+
+            let mut available = commons_stock
+                .saturating_add(self.subsistence_commons_regen)
+                .min(self.subsistence_commons_cap);
+            requests.sort_by_key(|&(hunger, agent, _, _, _)| (std::cmp::Reverse(hunger), agent.0));
+            for (_, agent, index, held_eat, need) in requests {
+                let headroom = u64::from(u32::MAX).saturating_sub(members[index].held_total_bread);
+                let draw = need.min(available).min(headroom);
+                available = available.saturating_sub(draw);
+                let unmet = need.saturating_sub(draw);
+                members[index].hunger = advance_hunger_after_food(
+                    members[index].hunger,
+                    self.dynamics.hunger_deplete,
+                    self.dynamics.hunger_per_food,
+                    self.dynamics.need_max,
+                    held_eat.saturating_add(draw),
+                );
+                if agent == target_agent {
+                    target_unmet = target_unmet.saturating_add(unmet);
+                }
+            }
+            commons_stock = available;
+        }
+        target_unmet
     }
 
     fn wage_hire_candidates(&self, recipe: &Recipe) -> Vec<WageHireCandidate> {
@@ -18531,6 +18990,13 @@ impl Settlement {
         self.chain
             .as_ref()
             .is_some_and(chain_runtime_share_tenancy_active)
+            && self.provenance_bread_good().is_some()
+    }
+
+    fn share_forward_provisioning_active(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(chain_runtime_share_forward_provisioning_active)
             && self.provenance_bread_good().is_some()
     }
 
@@ -21787,6 +22253,14 @@ impl Settlement {
             .map_or(0, |c| self.acquisition.bought_credited_of(c.id))
     }
 
+    /// P1.5 (read-only): cumulative tracked food (bread) the colonist at generation `index`
+    /// acquired through the finite rival-commons channel. Runtime-only; not digested.
+    pub fn commons_food_of(&self, index: usize) -> u64 {
+        self.colonists
+            .get(index)
+            .map_or(0, |c| self.acquisition.commons_credited_of(c.id))
+    }
+
     /// S23c (read-only): cumulative tracked food (bread) the colonist at `index` has CONSUMED
     /// (eaten) across every acquisition channel over the run — the per-agent food-intake basis a
     /// tenure-tier metric divides by. `0` off the acquisition-ledger path. Runtime-only; not
@@ -22010,6 +22484,14 @@ impl Settlement {
             owner_bread_income: self.share_owner_bread_income,
             worker_declined: self.share_worker_declined,
             worker_unmatched: self.share_worker_unmatched,
+            forward_only_eligibility: self.share_forward_only_eligibility,
+            renewal_hints_total: self.share_renewal_hints_total,
+            renewal_fed_out: self.share_renewal_fed_out,
+            renewal_base_ineligible: self.share_renewal_base_ineligible,
+            renewal_owner_not_candidate: self.share_renewal_owner_not_candidate,
+            renewal_bread_declined: self.share_renewal_bread_declined,
+            renewal_matched_elsewhere: self.share_renewal_matched_elsewhere,
+            owner_candidates_total: self.share_owner_candidates_total,
             owner_no_atcap_plot: self.share_owner_no_atcap_plot,
             stock_opportunity_refusal: self.share_stock_opportunity_refusal,
             reservation_collision: self.share_reservation_collision,
@@ -24278,6 +24760,10 @@ impl Settlement {
                     }
                 }
             }
+            if self.share_forward_provisioning_active() {
+                out.push(24);
+                out.push(u8::from(chain.share_forward_provisioning));
+            }
             // S23b: the post-money land market extends S23a's registry with an endogenous-price
             // state, listings, last-sale anchors, and the non-agent fee sink. Emitted only when the
             // market composes on active private land tenure; with the flag off every S23a and older
@@ -25553,6 +26039,10 @@ fn chain_runtime_share_tenancy_active(chain: &ChainRuntime) -> bool {
     chain.share_tenancy && chain_runtime_rival_subsistence_commons_active(chain)
 }
 
+fn chain_runtime_share_forward_provisioning_active(chain: &ChainRuntime) -> bool {
+    chain.share_forward_provisioning && chain_runtime_share_tenancy_active(chain)
+}
+
 /// S22b: bounded cultivation skill is active iff the flag is on AND the S22a
 /// endogenous-cultivation-entry path is active (it composes strictly on it). Off (every existing
 /// config) it is `false`, so the grain-haul lever, the skill accumulate/decay, and the ON-only
@@ -25773,6 +26263,19 @@ fn food_needed_to_reach_hunger(
     let deficit = projected - target;
     let per_food = u32::from(hunger_per_food);
     deficit.saturating_add(per_food - 1) / per_food
+}
+
+fn advance_hunger_after_food(
+    hunger: u16,
+    deplete: u16,
+    hunger_per_food: u16,
+    need_max: u16,
+    food: u64,
+) -> u16 {
+    let raised = u128::from(u32::from(hunger).saturating_add(u32::from(deplete)));
+    let replenished = u128::from(hunger_per_food).saturating_mul(u128::from(food));
+    let lowered = raised.saturating_sub(replenished);
+    u16::try_from(lowered.min(u128::from(need_max))).unwrap_or(need_max)
 }
 
 /// S14: the good a birth endows (parent gate + debit, newborn seed, founder seed) —
@@ -29769,6 +30272,68 @@ mod tests {
         chain.wage_labor = true;
         chain.wage_labor_mode = mode;
         cfg
+    }
+
+    fn single_term_forecast_member() -> (Settlement, AgentId, GoodId) {
+        let mut s = Settlement::generate(3, &wage_labor_test_config(WageLaborMode::Voluntary));
+        let bread = s.provenance_bread_good().expect("commons base has bread");
+        let threshold = s
+            .chain
+            .as_ref()
+            .expect("commons base has a chain")
+            .emergency_hunger_threshold;
+        assert!(threshold > 2, "test needs room below the emergency trigger");
+        let target_slot = *s
+            .live_colonist_slots
+            .first()
+            .expect("commons base has a live colonist");
+        let slots = s.live_colonist_slots.clone();
+        for slot in slots {
+            s.colonists[slot].vocation = Vocation::Unassigned;
+        }
+        let worker = s.colonists[target_slot].id;
+        s.colonists[target_slot].vocation = Vocation::Consumer;
+        s.colonists[target_slot].household = None;
+        s.colonists[target_slot].need.hunger = threshold - 2;
+        let agent = s.society.agents.get_mut(worker).expect("worker is live");
+        let held = agent.stock.get(bread);
+        if held > 0 {
+            assert!(agent.stock.remove(bread, held));
+        }
+        s.subsistence_commons_stock = 0;
+        s.subsistence_commons_regen = 0;
+        s.subsistence_commons_cap = 0;
+        (s, worker, bread)
+    }
+
+    #[test]
+    fn term_forecast_advances_hunger_after_simulated_held_bread() {
+        let (mut s, worker, bread) = single_term_forecast_member();
+        s.society
+            .agents
+            .get_mut(worker)
+            .expect("worker is live")
+            .stock
+            .add(bread, 1);
+
+        assert_eq!(
+            s.forecast_term_need_unmet(worker, bread, 2),
+            0,
+            "held bread eaten in the first simulated tick must lower hunger before the next one"
+        );
+    }
+
+    #[test]
+    fn term_forecast_advances_hunger_after_simulated_commons_draw() {
+        let (mut s, worker, bread) = single_term_forecast_member();
+        s.subsistence_commons_stock = 1;
+        s.subsistence_commons_cap = 1;
+
+        assert_eq!(
+            s.forecast_term_need_unmet(worker, bread, 2),
+            0,
+            "commons bread drawn in the first simulated tick must lower hunger before the next one"
+        );
     }
 
     fn same_household_pair(s: &Settlement) -> (usize, AgentId) {

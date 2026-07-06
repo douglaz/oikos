@@ -19,6 +19,7 @@ const RUN_TICKS: u64 = 1_600;
 const FINAL_WINDOW: u64 = RIVAL_COMMONS_BASELINE_FINAL_WINDOW_TICKS;
 const MIN_CONTRACTS: u64 = 1;
 const MIN_RENEWALS: u64 = 1;
+const MIN_FINAL_OPEN_CONTRACTS: u64 = 1;
 const MIN_SHARE_FUNDED_CONSUMPTION_BPS: u64 = 1_000;
 const MIN_OWNER_GAIN: u64 = 1;
 const MIN_SURVIVAL_LIFT: i64 = 1;
@@ -27,6 +28,7 @@ const MIN_SURVIVAL_LIFT: i64 = 1;
 enum ScenarioMode {
     NoContract,
     Voluntary,
+    ForwardProvisioning,
     ForcedShare,
     WageComparative,
     LineageWorker,
@@ -41,6 +43,10 @@ enum Verdict {
     ShareVacuous,
     ShareTenancyClears,
     ShareClearsButNoLift,
+    ForwardGateInert,
+    RenewalStillDeclined,
+    StandingTenancyNoLift,
+    StandingTenancyLifts,
     /// The matched `NoContract` control: the S23e/C1 null shape (the lever is off by
     /// construction, so "share-vacuous" would mislabel it).
     SubsistenceBoundDespiteScarcity,
@@ -82,10 +88,30 @@ struct Metrics {
     final_owner_income: u64,
     final_wage_hires: u64,
     stats: ShareTenancyStats,
+    worker_ids: Vec<u64>,
+    commons_by_id: BTreeMap<u64, u64>,
+    alive_by_id: BTreeMap<u64, bool>,
     wage_hires_post_promotion: u64,
 }
 
 impl Metrics {
+    fn renewal_fate_total(&self) -> u64 {
+        self.stats
+            .renewal_fed_out
+            .saturating_add(self.stats.renewal_base_ineligible)
+            .saturating_add(self.stats.renewal_owner_not_candidate)
+            .saturating_add(self.stats.renewal_bread_declined)
+            .saturating_add(self.stats.renewal_matched_elsewhere)
+    }
+
+    fn renewal_fates_consistent(&self) -> bool {
+        self.renewal_fate_total()
+            == self
+                .stats
+                .renewal_hints_total
+                .saturating_sub(self.stats.renewals_total)
+    }
+
     fn verdict(&self) -> Verdict {
         if self.extinct {
             return Verdict::BaseUnviable;
@@ -93,6 +119,7 @@ impl Metrics {
         if !self.conserved
             || !self.commons_ok
             || !self.money_ok
+            || !self.renewal_fates_consistent()
             || self.stats.share_stock_drawdown > 0
             || self.stats.unattributed_share_deposit > 0
         {
@@ -120,6 +147,21 @@ impl Metrics {
         }
         if self.mode == ScenarioMode::NoContract {
             return Verdict::SubsistenceBoundDespiteScarcity;
+        }
+        if self.mode == ScenarioMode::ForwardProvisioning {
+            if self.stats.forward_only_eligibility == 0 {
+                return Verdict::ForwardGateInert;
+            }
+            if self.stats.renewals_total < MIN_RENEWALS
+                || (self.stats.open_contracts as u64) < MIN_FINAL_OPEN_CONTRACTS
+            {
+                return Verdict::RenewalStillDeclined;
+            }
+            return if self.survival_lift >= MIN_SURVIVAL_LIFT {
+                Verdict::StandingTenancyLifts
+            } else {
+                Verdict::StandingTenancyNoLift
+            };
         }
         // Voluntary (headline) and LineageWorker (diagnostic) cells classify by the §2
         // rules. Vacuity is WHOLE-RUN (spec §2: "< MIN_CONTRACTS voluntary contracts EVER
@@ -153,6 +195,9 @@ impl Metrics {
              worker_share_bps={} worker_consumed={} worker_income={} owner_income={} \
              worker_income_total={} owner_income_total={} owner_grain_settled={} \
              open_contracts={} total_contracts={} voluntary={} forced={} renewals_total={} \
+             forward_only={} renewal_hints={} fate_total={} fates_consistent={} \
+             renewal_fed_out={} renewal_base_ineligible={} renewal_owner_not_candidate={} \
+             renewal_bread_declined={} renewal_matched_elsewhere={} owner_candidates={} \
              distinct_workers={} distinct_owners={} worker_declined={} worker_unmatched={} \
              owner_no_atcap={} stock_refusal={} reservation_collision={} \
              share_stock_drawdown={} unattributed_share_deposit={} \
@@ -189,6 +234,16 @@ impl Metrics {
             self.stats.voluntary_contracts_total,
             self.stats.forced_contracts_total,
             self.stats.renewals_total,
+            self.stats.forward_only_eligibility,
+            self.stats.renewal_hints_total,
+            self.renewal_fate_total(),
+            self.renewal_fates_consistent(),
+            self.stats.renewal_fed_out,
+            self.stats.renewal_base_ineligible,
+            self.stats.renewal_owner_not_candidate,
+            self.stats.renewal_bread_declined,
+            self.stats.renewal_matched_elsewhere,
+            self.stats.owner_candidates_total,
             self.stats.distinct_workers,
             self.stats.distinct_owners,
             self.stats.worker_declined,
@@ -227,8 +282,10 @@ fn scenario_config(
     let chain = cfg.chain.as_mut().expect("C1R base carries a chain");
     chain.rival_subsistence_commons = true;
     chain.rival_subsistence_commons_phi_bps = phi_bps;
+    chain.acquisition_ledger = true;
     chain.share_bps = share_bps;
     chain.share_term = share_term;
+    chain.share_forward_provisioning = false;
     match mode {
         ScenarioMode::NoContract => {
             chain.share_tenancy = false;
@@ -238,6 +295,12 @@ fn scenario_config(
         ScenarioMode::Voluntary => {
             chain.share_tenancy = true;
             chain.share_tenancy_mode = ShareTenancyMode::Voluntary;
+            chain.wage_labor = false;
+        }
+        ScenarioMode::ForwardProvisioning => {
+            chain.share_tenancy = true;
+            chain.share_tenancy_mode = ShareTenancyMode::Voluntary;
+            chain.share_forward_provisioning = true;
             chain.wage_labor = false;
         }
         ScenarioMode::ForcedShare => {
@@ -272,6 +335,21 @@ fn consumed_by_id(s: &Settlement) -> BTreeMap<u64, u64> {
         .collect()
 }
 
+fn commons_by_id(s: &Settlement) -> BTreeMap<u64, u64> {
+    (0..s.population())
+        .filter_map(|index| {
+            s.colonist_id(index)
+                .map(|id| (id.0, s.commons_food_of(index)))
+        })
+        .collect()
+}
+
+fn alive_by_id(s: &Settlement) -> BTreeMap<u64, bool> {
+    (0..s.population())
+        .filter_map(|index| s.colonist_id(index).map(|id| (id.0, s.is_alive(index))))
+        .collect()
+}
+
 fn worker_consumed(
     worker_ids: &[u64],
     start: &BTreeMap<u64, u64>,
@@ -286,6 +364,63 @@ fn worker_consumed(
                 .saturating_sub(start.get(id).copied().unwrap_or(0))
         })
         .sum()
+}
+
+fn cohort_sum(cohort: &[u64], values: &BTreeMap<u64, u64>) -> u64 {
+    cohort
+        .iter()
+        .map(|id| values.get(id).copied().unwrap_or(0))
+        .sum()
+}
+
+fn dead_ids(cohort: &[u64], alive: &BTreeMap<u64, bool>) -> Vec<u64> {
+    cohort
+        .iter()
+        .copied()
+        .filter(|id| !alive.get(id).copied().unwrap_or(false))
+        .collect()
+}
+
+fn substitution_line(seed: u64, voluntary: &Metrics, no_contract: &Metrics) -> String {
+    let cohort = &voluntary.worker_ids;
+    let voluntary_commons = cohort_sum(cohort, &voluntary.commons_by_id);
+    let no_contract_commons = cohort_sum(cohort, &no_contract.commons_by_id);
+    let commons_reduction = no_contract_commons.saturating_sub(voluntary_commons);
+    let substitution_bps = commons_reduction
+        .saturating_mul(10_000)
+        .checked_div(voluntary.stats.worker_bread_income)
+        .unwrap_or(0);
+    let voluntary_dead = dead_ids(cohort, &voluntary.alive_by_id);
+    let no_contract_dead = dead_ids(cohort, &no_contract.alive_by_id);
+    format!(
+        "C1R substitution seed={seed} cohort={} voluntary_commons={} \
+         no_contract_commons={} commons_reduction={} share_income={} \
+         substitution_bps={} dead_voluntary_ids={:?} dead_no_contract_ids={:?}",
+        cohort.len(),
+        voluntary_commons,
+        no_contract_commons,
+        commons_reduction,
+        voluntary.stats.worker_bread_income,
+        substitution_bps,
+        voluntary_dead,
+        no_contract_dead
+    )
+}
+
+fn new_contracts_total(stats: &ShareTenancyStats) -> u64 {
+    stats.contracts_total.saturating_sub(stats.renewals_total)
+}
+
+fn matched_volume_line(seed: u64, forward: &Metrics, forward_off: &Metrics) -> String {
+    format!(
+        "P1.5 matched_volume seed={seed} forward_new_contracts={} \
+         forward_off_new_contracts={} forward_owner_candidates={} \
+         forward_off_owner_candidates={}",
+        new_contracts_total(&forward.stats),
+        new_contracts_total(&forward_off.stats),
+        forward.stats.owner_candidates_total,
+        forward_off.stats.owner_candidates_total
+    )
 }
 
 fn anti_title_ok(s: &Settlement) -> bool {
@@ -430,6 +565,8 @@ fn run_metrics_cell(
         .map(|baseline| final_non_lineage as i64 - baseline as i64)
         .unwrap_or(0);
     let wage_stats = s.wage_labor_stats();
+    let commons_by_id = commons_by_id(&s);
+    let alive_by_id = alive_by_id(&s);
 
     Metrics {
         seed,
@@ -467,6 +604,9 @@ fn run_metrics_cell(
             .hires_post_promotion
             .saturating_sub(wage_stats_start.hires_post_promotion),
         stats,
+        worker_ids,
+        commons_by_id,
+        alive_by_id,
         wage_hires_post_promotion: wage_stats.hires_post_promotion,
     }
 }
@@ -479,6 +619,7 @@ fn precondition_no_contract_reproduces_marginal_null() {
         assert_eq!(metrics.verdict(), Verdict::SubsistenceBoundDespiteScarcity);
         assert_eq!(metrics.stats.contracts_total, 0);
         assert_eq!(metrics.stats.open_contracts, 0);
+        assert!(metrics.renewal_fates_consistent());
     }
 }
 
@@ -490,12 +631,14 @@ fn verdict_prints_without_asserting_success() {
             run_metrics_with_baseline(seed, ScenarioMode::Voluntary, no_contract.final_non_lineage);
         eprintln!("{}", no_contract.line());
         eprintln!("{}", voluntary.line());
+        eprintln!("{}", substitution_line(seed, &voluntary, &no_contract));
         assert_ne!(voluntary.verdict(), Verdict::ConservationBroken);
         assert_ne!(voluntary.verdict(), Verdict::RegistryBroken);
         // §6 hard guards, every run: the split's regen bound, the deposit attribution, and
         // the S23d owner-identity invariants (no contracted worker ever acquires title).
         assert_eq!(voluntary.stats.share_stock_drawdown, 0);
         assert_eq!(voluntary.stats.unattributed_share_deposit, 0);
+        assert!(voluntary.renewal_fates_consistent());
         assert_eq!(voluntary.immortal_owned_plot_ticks, 0);
         assert_eq!(voluntary.non_lineage_owner_plot_ticks, 0);
         assert!(voluntary.anti_title_ok);
@@ -514,10 +657,55 @@ fn verdict_prints_without_asserting_success() {
 }
 
 #[test]
+fn forward_provisioning_verdict_prints_without_asserting_success() {
+    for seed in SEEDS {
+        let no_contract = run_metrics(seed, ScenarioMode::NoContract);
+        let forward_off =
+            run_metrics_with_baseline(seed, ScenarioMode::Voluntary, no_contract.final_non_lineage);
+        let forward = run_metrics_with_baseline(
+            seed,
+            ScenarioMode::ForwardProvisioning,
+            no_contract.final_non_lineage,
+        );
+        eprintln!("{}", no_contract.line());
+        eprintln!("{}", forward_off.line());
+        eprintln!("{}", forward.line());
+        eprintln!("{}", substitution_line(seed, &forward_off, &no_contract));
+        eprintln!("{}", substitution_line(seed, &forward, &no_contract));
+        eprintln!("{}", matched_volume_line(seed, &forward, &forward_off));
+
+        assert_eq!(forward_off.verdict(), Verdict::ShareClearsButNoLift);
+        assert_eq!(forward_off.stats.forward_only_eligibility, 0);
+        assert_ne!(forward.verdict(), Verdict::ConservationBroken);
+        assert_ne!(forward.verdict(), Verdict::RegistryBroken);
+        assert_eq!(forward.stats.share_stock_drawdown, 0);
+        assert_eq!(forward.stats.unattributed_share_deposit, 0);
+        assert_eq!(forward.immortal_owned_plot_ticks, 0);
+        assert_eq!(forward.non_lineage_owner_plot_ticks, 0);
+        assert!(forward.anti_title_ok);
+        assert!(forward.renewal_fates_consistent());
+
+        if forward.stats.forward_only_eligibility == 0 {
+            assert_eq!(forward.verdict(), Verdict::ForwardGateInert);
+        } else if forward.stats.renewals_total < MIN_RENEWALS {
+            assert_eq!(forward.verdict(), Verdict::RenewalStillDeclined);
+        } else {
+            assert!(matches!(
+                forward.verdict(),
+                Verdict::RenewalStillDeclined
+                    | Verdict::StandingTenancyNoLift
+                    | Verdict::StandingTenancyLifts
+            ));
+        }
+    }
+}
+
+#[test]
 fn forced_share_classifies_before_vacuity() {
     let metrics = run_metrics(SEEDS[0], ScenarioMode::ForcedShare);
     eprintln!("{}", metrics.line());
     assert_eq!(metrics.verdict(), Verdict::ShareScaffoldOnly);
+    assert!(metrics.renewal_fates_consistent());
 }
 
 #[test]
@@ -534,6 +722,8 @@ fn wage_comparative_printed_beside_share_cell() {
         );
         assert_ne!(share.verdict(), Verdict::ConservationBroken);
         assert_ne!(wage.verdict(), Verdict::ConservationBroken);
+        assert!(share.renewal_fates_consistent());
+        assert!(wage.renewal_fates_consistent());
         // The wage cell prints a C1 WAGE classification (review P2) — the expected shape
         // is WageMarketVacuous; the mapping (not the outcome) is what's asserted.
         assert!(matches!(
@@ -549,6 +739,7 @@ fn lineage_worker_diagnostic_prints() {
     eprintln!("{}", metrics.line());
     assert_ne!(metrics.verdict(), Verdict::ConservationBroken);
     assert_ne!(metrics.verdict(), Verdict::RegistryBroken);
+    assert!(metrics.renewal_fates_consistent());
 }
 
 #[test]
@@ -560,6 +751,7 @@ fn phi_share_and_term_sweeps_reported() {
     ];
     for (label, phi) in phis {
         let mut clears = 0usize;
+        let mut forward_counts = BTreeMap::<Verdict, usize>::new();
         for seed in SEEDS {
             let base = run_metrics_cell(
                 seed,
@@ -581,12 +773,25 @@ fn phi_share_and_term_sweeps_reported() {
             if metrics.verdict() == Verdict::ShareTenancyClears {
                 clears += 1;
             }
+            let forward = run_metrics_cell(
+                seed,
+                ScenarioMode::ForwardProvisioning,
+                phi,
+                SHARE_TENANCY_BPS_DEFAULT,
+                SHARE_TENANCY_TERM_DEFAULT,
+                Some(base.final_non_lineage),
+            );
+            eprintln!("P1.5 phi={label} {}", forward.line());
+            eprintln!("{}", matched_volume_line(seed, &forward, &metrics));
+            *forward_counts.entry(forward.verdict()).or_insert(0) += 1;
         }
         eprintln!("C1R phi_sweep phi={label} clears={clears}/{}", SEEDS.len());
+        eprintln!("P1.5 phi_sweep phi={label} verdicts={forward_counts:?}");
     }
 
     for share_bps in [2_500, SHARE_TENANCY_BPS_DEFAULT, 7_500] {
         let mut clears = 0usize;
+        let mut forward_counts = BTreeMap::<Verdict, usize>::new();
         for seed in SEEDS {
             let base = run_metrics_cell(
                 seed,
@@ -608,15 +813,28 @@ fn phi_share_and_term_sweeps_reported() {
             if metrics.verdict() == Verdict::ShareTenancyClears {
                 clears += 1;
             }
+            let forward = run_metrics_cell(
+                seed,
+                ScenarioMode::ForwardProvisioning,
+                RIVAL_COMMONS_PHI_MARGINAL_BPS,
+                share_bps,
+                SHARE_TENANCY_TERM_DEFAULT,
+                Some(base.final_non_lineage),
+            );
+            eprintln!("P1.5 share_sweep share_bps={share_bps} {}", forward.line());
+            eprintln!("{}", matched_volume_line(seed, &forward, &metrics));
+            *forward_counts.entry(forward.verdict()).or_insert(0) += 1;
         }
         eprintln!(
             "C1R share_sweep share_bps={share_bps} clears={clears}/{}",
             SEEDS.len()
         );
+        eprintln!("P1.5 share_sweep share_bps={share_bps} verdicts={forward_counts:?}");
     }
 
     for term in [6, SHARE_TENANCY_TERM_DEFAULT, 24] {
         let mut clears = 0usize;
+        let mut forward_counts = BTreeMap::<Verdict, usize>::new();
         for seed in SEEDS {
             let base = run_metrics_cell(
                 seed,
@@ -638,8 +856,20 @@ fn phi_share_and_term_sweeps_reported() {
             if metrics.verdict() == Verdict::ShareTenancyClears {
                 clears += 1;
             }
+            let forward = run_metrics_cell(
+                seed,
+                ScenarioMode::ForwardProvisioning,
+                RIVAL_COMMONS_PHI_MARGINAL_BPS,
+                SHARE_TENANCY_BPS_DEFAULT,
+                term,
+                Some(base.final_non_lineage),
+            );
+            eprintln!("P1.5 term_sweep term={term} {}", forward.line());
+            eprintln!("{}", matched_volume_line(seed, &forward, &metrics));
+            *forward_counts.entry(forward.verdict()).or_insert(0) += 1;
         }
         eprintln!("C1R term_sweep term={term} clears={clears}/{}", SEEDS.len());
+        eprintln!("P1.5 term_sweep term={term} verdicts={forward_counts:?}");
     }
 }
 
@@ -691,6 +921,46 @@ fn canonical_bytes_include_share_terms_only_when_active() {
     assert_eq!(
         Settlement::generate(7, &on_a).canonical_bytes(),
         Settlement::generate(7, &off_b).canonical_bytes()
+    );
+}
+
+#[test]
+fn canonical_bytes_split_for_share_forward_provisioning() {
+    let forward_off = Settlement::generate(7, &marginal_config(ScenarioMode::Voluntary));
+    let explicit_forward_off = {
+        let mut cfg = marginal_config(ScenarioMode::Voluntary);
+        cfg.chain
+            .as_mut()
+            .expect("C1R base carries a chain")
+            .share_forward_provisioning = false;
+        Settlement::generate(7, &cfg)
+    };
+    assert_eq!(
+        forward_off.canonical_bytes(),
+        explicit_forward_off.canonical_bytes(),
+        "forward-off must reproduce the C1R share-tenancy bytes"
+    );
+
+    let forward_on = Settlement::generate(7, &marginal_config(ScenarioMode::ForwardProvisioning));
+    assert_ne!(
+        forward_off.canonical_bytes(),
+        forward_on.canonical_bytes(),
+        "forward-on must split canonical bytes under tag 24"
+    );
+
+    let forward_flag_without_share = {
+        let mut cfg = marginal_config(ScenarioMode::NoContract);
+        cfg.chain
+            .as_mut()
+            .expect("C1R base carries a chain")
+            .share_forward_provisioning = true;
+        Settlement::generate(7, &cfg)
+    };
+    let no_contract = Settlement::generate(7, &marginal_config(ScenarioMode::NoContract));
+    assert_eq!(
+        no_contract.canonical_bytes(),
+        forward_flag_without_share.canonical_bytes(),
+        "the forward sub-flag is inert unless share tenancy is active"
     );
 }
 
