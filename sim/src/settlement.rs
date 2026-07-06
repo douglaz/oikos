@@ -13654,6 +13654,14 @@ impl Settlement {
         let mut deaths = 0;
         for id in dying {
             self.record_owner_death_telemetry(id);
+            // C1R death seam, old-age leg: starvation deaths route through `settle_death`,
+            // which settles share tenancy BEFORE land transfer and estate routing (the dying
+            // agent's society entry is still present, so a dead owner is credited its pending
+            // (1 − s) contract-grain share and the estate carries it to the heir). This estate
+            // path skipped that settle, so an owner's old-age death mid-contract left the
+            // worker holding 100% of the pending contract grain. Inert unless share contracts
+            // exist (empty-vec early return), so every non-share config is byte-unchanged.
+            self.settle_share_tenancy_for_death(id);
             if let Some((_, true, inherit_eligible)) = secure_owner_death_snapshot
                 .iter()
                 .find(|&&(owner, _, _)| owner == id)
@@ -32719,6 +32727,81 @@ mod tests {
             "the worker keeps the exact floor share"
         );
         assert_eq!(s.share_owner_grain_settled, 2);
+    }
+
+    #[test]
+    fn share_contract_settles_on_owner_old_age_death() {
+        let cfg = SettlementConfig::frontier_mortal_landowner_demography();
+        let grain = cfg.chain.as_ref().expect("chain").content.grain();
+        let mut s = Settlement::generate(7, &cfg);
+        let owner_slot = s
+            .live_colonist_slots
+            .iter()
+            .copied()
+            .find(|&slot| s.colonists[slot].lifespan.is_some())
+            .expect("demography config has mortal householders");
+        let owner = s.colonists[owner_slot].id;
+        let worker = s
+            .live_colonist_slots
+            .iter()
+            .copied()
+            .map(|slot| s.colonists[slot].id)
+            .find(|&id| id != owner)
+            .expect("a second colonist exists");
+        let node = s.grain_node().expect("cultivation config has grain");
+
+        s.society
+            .agents
+            .get_mut(worker)
+            .expect("worker exists")
+            .stock
+            .add(grain, 4);
+        let worker_before = s
+            .society
+            .agents
+            .get(worker)
+            .expect("worker exists")
+            .stock
+            .get(grain);
+        s.share_contracts.push(ShareContract {
+            id: 1,
+            owner,
+            worker,
+            node,
+            share_bps: SHARE_TENANCY_BPS_DEFAULT,
+            term: SHARE_TENANCY_TERM_DEFAULT,
+            opened_tick: s.econ_tick,
+            renewals: 0,
+            cap_at_start: 0,
+            grain_in_stock: 4,
+            split_remainder_bps: 0,
+        });
+        let lifespan = s.colonists[owner_slot].lifespan.expect("owner is mortal");
+        s.colonists[owner_slot].age = lifespan;
+
+        let mut report = EconTickReport::default();
+        let mut wage_labor_used = Vec::new();
+        let deaths = s.age_and_remove_elderly(&mut report, &mut wage_labor_used);
+
+        assert!(deaths >= 1, "the aged owner must die of old age");
+        assert!(
+            s.share_contracts.is_empty(),
+            "the dead owner's contract must dissolve at the old-age seam"
+        );
+        assert_eq!(
+            s.share_owner_grain_settled, 2,
+            "the (1 - s) pending-grain share must settle at the old-age seam, not lapse to the worker"
+        );
+        assert_eq!(
+            s.society
+                .agents
+                .get(worker)
+                .expect("worker exists")
+                .stock
+                .get(grain),
+            worker_before - 2,
+            "the worker keeps exactly the floor share"
+        );
     }
 
     #[test]
