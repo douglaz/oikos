@@ -526,7 +526,22 @@ We state the scaffolds plainly; a hostile reader should attack these first.
   draws — consumption is re-sourced, not raised, so no survival lift forms (`ShareClearsButNoLift`, honest and
   traced to economics rather than wiring). The follow-ons it names: a forward-provisioning persistence probe
   (renewal chosen *before* hunger returns), and in-kind wages from the **owner bread fund the share contracts have
-  now created** — the wages-fund whose absence made the money-wage market vacuous.
+  now created** — the wages-fund whose absence made the money-wage market vacuous. The persistence probe has since
+  been built — **P1.5, forward provisioning**: the worker's outside-option question extended from *this tick* to a
+  **term-horizon pure forecast of its own deterministic need** (the engine's need law is closed-form, so the
+  forecast is derived from digested state, never configured — no new want, no history, no self-justifying income).
+  Its telemetry first *measured* the C1R null (fed-out is ~100% of renewal fates) and *corrected* part of its story
+  (substitution is ~3–37%, not 1:1 — the missing lift was income magnitude, not crowd-out). Its headline answers
+  "was it myopia?" with **no — and removing the myopia still does not create tenure**: the fed-out fate *survives*
+  the forward gate, because one term's share income rationally covers the next term's forecast need. What forms
+  instead is a **standing rotational labor market** — near-universal participation, 4–10× contract volume, ~10×
+  worker income, doubled consumption, a real survival lift (+8 colonists) in pockets, and exactly one
+  threshold-marginal `StandingTenancyLifts` cell at the pre-declared bars — plus a second named wall: **tenure is
+  mortality-bounded** (most contracts end at an owner's death, not at a renewal decision; term=24: 1,172 contracts,
+  55 live-live expiries). Provisioning for the future, handed to the worker as a derived faculty, *reshaped* the
+  institution rather than perpetuating its pairings — rotational labor, not tenure. Contiguous tenancy now has two
+  named preconditions this base lacks: a reason to prefer the *same* counterparty, and **succession across owner
+  death** — the heir assuming the live contract, the next probe the traces name alongside C1N in-kind wages.
 - **Endogenous institution selection — the natural next frontier, now opened.** The study has shown that
   *specific* hand-designed institutions make or break emergence (which exchange rule, which exit-cost
   institution). The next question is not another hand-designed institution but whether agents or populations
