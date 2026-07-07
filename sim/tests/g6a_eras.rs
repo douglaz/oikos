@@ -377,6 +377,10 @@ fn era_is_read_only() {
             "settlement/wage_labor.rs",
             include_str!("../src/settlement/wage_labor.rs"),
         ),
+        (
+            "settlement/rival_commons.rs",
+            include_str!("../src/settlement/rival_commons.rs"),
+        ),
         ("region.rs", include_str!("../src/region.rs")),
         ("demography.rs", include_str!("../src/demography.rs")),
         ("content.rs", include_str!("../src/content.rs")),
