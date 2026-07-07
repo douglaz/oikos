@@ -365,7 +365,14 @@ fn era_is_read_only() {
         concat!("Era", "::"),
     ];
     for (module, source) in [
-        ("settlement.rs", include_str!("../src/settlement.rs")),
+        (
+            "settlement/mod.rs",
+            include_str!("../src/settlement/mod.rs"),
+        ),
+        (
+            "settlement/share_tenancy.rs",
+            include_str!("../src/settlement/share_tenancy.rs"),
+        ),
         ("region.rs", include_str!("../src/region.rs")),
         ("demography.rs", include_str!("../src/demography.rs")),
         ("content.rs", include_str!("../src/content.rs")),
