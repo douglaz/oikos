@@ -116,6 +116,7 @@ impl Settlement {
         if labor_qty == 0
             || self.private_land_agent_holds_any_plot(worker)
             || self.share_worker_has_contract(worker)
+            || self.in_kind_worker_has_contract(worker)
             || self
                 .wage_escrows
                 .iter()

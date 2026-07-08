@@ -1448,6 +1448,10 @@ pub struct ChainConfig {
     /// P1.5 — forward-provisioning worker gate. Orthogonal to the C1R acceptance mode and inert
     /// unless share tenancy itself composes on the S23e substrate.
     pub share_forward_provisioning: bool,
+    /// C1N — fixed in-kind bread wage on C1R's share-tenancy substrate. The owner advances
+    /// bread up front out of self-produced stock and receives 100% of the contract product.
+    /// Inert unless share tenancy is active.
+    pub in_kind_wage: bool,
     /// C1R worker share in basis points. Pinned/swept, never searched.
     pub share_bps: u16,
     /// C1R fixed contract term in econ ticks. Pinned/swept, never searched.
@@ -1878,6 +1882,7 @@ impl ChainConfig {
             share_tenancy: false,
             share_tenancy_mode: ShareTenancyMode::Voluntary,
             share_forward_provisioning: false,
+            in_kind_wage: false,
             share_bps: SHARE_TENANCY_BPS_DEFAULT,
             share_term: SHARE_TENANCY_TERM_DEFAULT,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
@@ -2065,6 +2070,7 @@ impl ChainConfig {
             share_tenancy: false,
             share_tenancy_mode: ShareTenancyMode::Voluntary,
             share_forward_provisioning: false,
+            in_kind_wage: false,
             share_bps: SHARE_TENANCY_BPS_DEFAULT,
             share_term: SHARE_TENANCY_TERM_DEFAULT,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
@@ -2232,6 +2238,7 @@ impl ChainConfig {
             share_tenancy: false,
             share_tenancy_mode: ShareTenancyMode::Voluntary,
             share_forward_provisioning: false,
+            in_kind_wage: false,
             share_bps: SHARE_TENANCY_BPS_DEFAULT,
             share_term: SHARE_TENANCY_TERM_DEFAULT,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
@@ -2547,6 +2554,8 @@ pub struct SettlementConfig {
     /// [`SettlementConfig::tax_in_specie`].
     pub tax: Option<TaxPolicy>,
 }
+
+mod in_kind_wage;
 
 mod share_tenancy;
 
@@ -6225,6 +6234,10 @@ struct Colonist {
     /// after a same-plot renewal remains worker-owned instead of being attached to the
     /// new term.
     carried_share_contract_id: Option<u64>,
+    /// C1N: the live in-kind wage contract id that sourced the currently carried/pending grain.
+    /// Kept separate from C1R so a same-node wage/share transition cannot attach old carry to
+    /// the wrong contract form.
+    carried_in_kind_contract_id: Option<u64>,
 }
 
 /// A settlement of generated colonists driven over a real `world` + `econ`.
@@ -6423,6 +6436,28 @@ pub struct Settlement {
     share_stock_drawdown: u64,
     share_unattributed_share_deposit: u64,
     share_owner_grain_settled: u64,
+    /// C1N: live fixed-bread-wage contracts over at-cap owned plots. The wage advance is
+    /// paid up front; the worker's realized own-use output is transferred 100% to the employer.
+    in_kind_contracts: Vec<InKindWageContract>,
+    next_in_kind_contract_id: u64,
+    in_kind_workers_ever: BTreeSet<AgentId>,
+    in_kind_employers_ever: BTreeSet<AgentId>,
+    in_kind_hires_total: u64,
+    in_kind_worker_advance_bread: u64,
+    in_kind_employer_bread_income: u64,
+    in_kind_expected_output_total: u64,
+    in_kind_worker_declined: u64,
+    in_kind_worker_unmatched: u64,
+    in_kind_owner_candidates_total: u64,
+    in_kind_owner_no_atcap_plot: u64,
+    in_kind_owner_insufficient_fund: u64,
+    in_kind_productivity_declined: u64,
+    in_kind_reservation_collision: u64,
+    in_kind_stock_drawdown: u64,
+    in_kind_unattributed_deposit: u64,
+    in_kind_employer_grain_settled: u64,
+    in_kind_endowment_funded_hires: u64,
+    in_kind_term_starvations: u64,
     /// S23e runtime-only owner/surplus telemetry used by the scarcity classifier.
     ever_landowner_ids: BTreeSet<AgentId>,
     owner_first_claim_tick: BTreeMap<AgentId, u64>,
@@ -6947,6 +6982,7 @@ struct ChainRuntime {
     share_tenancy: bool,
     share_tenancy_mode: ShareTenancyMode,
     share_forward_provisioning: bool,
+    in_kind_wage: bool,
     share_bps: u16,
     share_term: u16,
     land_carrying_cost: u64,
@@ -7104,6 +7140,29 @@ pub struct ShareTenancyStats {
     pub owner_grain_settled: u64,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InKindWageStats {
+    pub open_contracts: usize,
+    pub hires_total: u64,
+    pub distinct_workers: usize,
+    pub distinct_employers: usize,
+    pub worker_advance_bread: u64,
+    pub employer_bread_income: u64,
+    pub expected_output_total: u64,
+    pub worker_declined: u64,
+    pub worker_unmatched: u64,
+    pub owner_candidates_total: u64,
+    pub owner_no_atcap_plot: u64,
+    pub owner_insufficient_fund: u64,
+    pub productivity_declined: u64,
+    pub reservation_collision: u64,
+    pub stock_drawdown: u64,
+    pub unattributed_deposit: u64,
+    pub employer_grain_settled: u64,
+    pub endowment_funded_hires: u64,
+    pub term_starvations: u64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ShareContract {
     id: u64,
@@ -7125,6 +7184,19 @@ struct ShareContract {
     /// evaluator uses. `Cultivate` books ONE loaf per application, so flooring each batch
     /// independently would zero the worker's share at any `share_bps < 10_000` (review P1).
     /// Digested: it steers every future split.
+    split_remainder_bps: u16,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct InKindWageContract {
+    id: u64,
+    employer: AgentId,
+    worker: AgentId,
+    node: NodeId,
+    wage_bread: u32,
+    term: u16,
+    opened_tick: u64,
+    grain_in_stock: u32,
     split_remainder_bps: u16,
 }
 
@@ -7576,6 +7648,116 @@ impl BreadProvenance {
         lots
     }
 
+    /// A filtered TRANSFER debit for C1N wage advances: move only self-produced lots
+    /// (`producer == from`) from `from` to `to`. Unlike [`Self::transfer`], this never draws
+    /// produced bread the sender bought or inherited from someone else.
+    fn transfer_self_produced(&mut self, from: AgentId, to: AgentId, qty: u64) -> u64 {
+        if qty == 0 {
+            return 0;
+        }
+        let mut remaining = qty;
+        let mut moved = Vec::new();
+        let queue_empty = {
+            let Some(queue) = self.produced_lots.get_mut(&from) else {
+                return 0;
+            };
+            let mut kept = VecDeque::new();
+            while let Some(mut lot) = queue.pop_front() {
+                if lot.producer == from && remaining > 0 {
+                    let take = lot.qty.min(remaining);
+                    moved.push(ProducedLot {
+                        producer: lot.producer,
+                        lineage: lot.lineage,
+                        qty: take,
+                    });
+                    lot.qty -= take;
+                    remaining -= take;
+                }
+                if lot.qty > 0 {
+                    kept.push_back(lot);
+                }
+            }
+            *queue = kept;
+            queue.is_empty()
+        };
+        if queue_empty {
+            self.produced_lots.remove(&from);
+        }
+        let moved_qty: u64 = moved.iter().map(|lot| lot.qty).sum();
+        if moved_qty == 0 {
+            return 0;
+        }
+        let held = self.produced.get(&from).copied().unwrap_or(0);
+        let remaining_held = held.saturating_sub(moved_qty);
+        if remaining_held == 0 {
+            self.produced.remove(&from);
+        } else {
+            self.produced.insert(from, remaining_held);
+        }
+        *self.produced.entry(to).or_insert(0) += moved_qty;
+        self.produced_lots.entry(to).or_default().extend(moved);
+        moved_qty
+    }
+
+    /// Move the newest self-produced lots from `from` to `to`. C1N uses this immediately
+    /// after own-use conversion credits the worker's contract crop, so the split transfers
+    /// the newly produced product rather than older produced bread the worker already held.
+    fn transfer_recent_self_produced(&mut self, from: AgentId, to: AgentId, qty: u64) -> u64 {
+        if qty == 0 {
+            return 0;
+        }
+        let mut remaining = qty;
+        let mut moved = Vec::new();
+        let queue_empty = {
+            let Some(queue) = self.produced_lots.get_mut(&from) else {
+                return 0;
+            };
+            while remaining > 0 {
+                let pop_empty = {
+                    let Some(back) = queue.back_mut() else {
+                        break;
+                    };
+                    if back.producer != from {
+                        break;
+                    }
+                    let take = back.qty.min(remaining);
+                    moved.push(ProducedLot {
+                        producer: back.producer,
+                        lineage: back.lineage,
+                        qty: take,
+                    });
+                    back.qty -= take;
+                    remaining -= take;
+                    back.qty == 0
+                };
+                if pop_empty {
+                    queue.pop_back();
+                }
+            }
+            queue.is_empty()
+        };
+        if queue_empty {
+            self.produced_lots.remove(&from);
+        }
+        let moved_qty: u64 = moved.iter().map(|lot| lot.qty).sum();
+        if moved_qty == 0 {
+            return 0;
+        }
+        let held = self.produced.get(&from).copied().unwrap_or(0);
+        let remaining_held = held.saturating_sub(moved_qty);
+        if remaining_held == 0 {
+            self.produced.remove(&from);
+        } else {
+            self.produced.insert(from, remaining_held);
+        }
+        *self.produced.entry(to).or_insert(0) += moved_qty;
+        let queue = self.produced_lots.entry(to).or_default();
+        for lot in moved.into_iter().rev() {
+            queue.push_back(lot);
+        }
+        moved_qty
+    }
+
     /// Attribute a cleared bread→medium trade by STOCK ORIGIN: the `drawn_lots` the seller's
     /// debit drew are PRODUCED, the residual `qty - Σ drawn_lots` is MINTED (seeded buffer / a
     /// hearth mint). Accumulates the run-total split, the pre-promotion-only split (the
@@ -7951,6 +8133,96 @@ impl AcquisitionLedger {
         if !drawn.is_empty() {
             self.lots.entry(to).or_default().extend(drawn);
         }
+    }
+
+    /// Move up to `qty` of the sender's self-produced tracked-food channel to `to`, leaving
+    /// older seeded/bought lots in place. This mirrors the in-kind wage advance's
+    /// producer-filtered bread-provenance transfer at the coarser acquisition-channel level.
+    fn transfer_self_produced(&mut self, from: AgentId, to: AgentId, qty: u64) -> u64 {
+        if qty == 0 {
+            return 0;
+        }
+        let mut remaining = qty;
+        let mut moved = VecDeque::new();
+        let queue_empty = {
+            let Some(queue) = self.lots.get_mut(&from) else {
+                return 0;
+            };
+            let mut kept = VecDeque::new();
+            while let Some(mut lot) = queue.pop_front() {
+                if lot.channel == FoodChannel::SelfProduced && remaining > 0 {
+                    let take = lot.qty.min(remaining);
+                    moved.push_back(FoodLot {
+                        channel: lot.channel,
+                        qty: take,
+                    });
+                    lot.qty -= take;
+                    remaining -= take;
+                }
+                if lot.qty > 0 {
+                    kept.push_back(lot);
+                }
+            }
+            *queue = kept;
+            queue.is_empty()
+        };
+        if queue_empty {
+            self.lots.remove(&from);
+        }
+        let moved_qty: u64 = moved.iter().map(|lot| lot.qty).sum();
+        if moved_qty > 0 {
+            self.lots.entry(to).or_default().extend(moved);
+        }
+        moved_qty
+    }
+
+    /// Move the newest self-produced tracked-food lots from `from` to `to`. This is the
+    /// acquisition-channel twin of `BreadProvenance::transfer_recent_self_produced` for the
+    /// C1N crop split, which runs immediately after the worker's conversion credit.
+    fn transfer_recent_self_produced(&mut self, from: AgentId, to: AgentId, qty: u64) -> u64 {
+        if qty == 0 {
+            return 0;
+        }
+        let mut remaining = qty;
+        let mut moved = Vec::new();
+        let queue_empty = {
+            let Some(queue) = self.lots.get_mut(&from) else {
+                return 0;
+            };
+            while remaining > 0 {
+                let pop_empty = {
+                    let Some(back) = queue.back_mut() else {
+                        break;
+                    };
+                    if back.channel != FoodChannel::SelfProduced {
+                        break;
+                    }
+                    let take = back.qty.min(remaining);
+                    moved.push(FoodLot {
+                        channel: back.channel,
+                        qty: take,
+                    });
+                    back.qty -= take;
+                    remaining -= take;
+                    back.qty == 0
+                };
+                if pop_empty {
+                    queue.pop_back();
+                }
+            }
+            queue.is_empty()
+        };
+        if queue_empty {
+            self.lots.remove(&from);
+        }
+        let moved_qty: u64 = moved.iter().map(|lot| lot.qty).sum();
+        if moved_qty > 0 {
+            let queue = self.lots.entry(to).or_default();
+            for lot in moved.into_iter().rev() {
+                queue.push_back(lot);
+            }
+        }
+        moved_qty
     }
 
     /// Drop every lot a removed agent still holds to the sink (the estate→commons exit when its
@@ -8710,6 +8982,7 @@ impl Settlement {
                 commitment_norm_observations: VecDeque::new(),
                 carried_grain_source: None,
                 carried_share_contract_id: None,
+                carried_in_kind_contract_id: None,
             });
         }
 
@@ -8813,6 +9086,7 @@ impl Settlement {
                         commitment_norm_observations: VecDeque::new(),
                         carried_grain_source: None,
                         carried_share_contract_id: None,
+                        carried_in_kind_contract_id: None,
                     });
                 }
             }
@@ -9312,6 +9586,7 @@ impl Settlement {
                 share_tenancy: chain.share_tenancy,
                 share_tenancy_mode: chain.share_tenancy_mode,
                 share_forward_provisioning: chain.share_forward_provisioning,
+                in_kind_wage: chain.in_kind_wage,
                 share_bps: chain.share_bps,
                 share_term: chain.share_term,
                 land_carrying_cost: chain.land_carrying_cost,
@@ -9423,6 +9698,26 @@ impl Settlement {
             share_stock_drawdown: 0,
             share_unattributed_share_deposit: 0,
             share_owner_grain_settled: 0,
+            in_kind_contracts: Vec::new(),
+            next_in_kind_contract_id: 0,
+            in_kind_workers_ever: BTreeSet::new(),
+            in_kind_employers_ever: BTreeSet::new(),
+            in_kind_hires_total: 0,
+            in_kind_worker_advance_bread: 0,
+            in_kind_employer_bread_income: 0,
+            in_kind_expected_output_total: 0,
+            in_kind_worker_declined: 0,
+            in_kind_worker_unmatched: 0,
+            in_kind_owner_candidates_total: 0,
+            in_kind_owner_no_atcap_plot: 0,
+            in_kind_owner_insufficient_fund: 0,
+            in_kind_productivity_declined: 0,
+            in_kind_reservation_collision: 0,
+            in_kind_stock_drawdown: 0,
+            in_kind_unattributed_deposit: 0,
+            in_kind_employer_grain_settled: 0,
+            in_kind_endowment_funded_hires: 0,
+            in_kind_term_starvations: 0,
             ever_landowner_ids: BTreeSet::new(),
             owner_first_claim_tick: BTreeMap::new(),
             owner_age_at_first_claim: BTreeMap::new(),
@@ -9912,6 +10207,26 @@ impl Settlement {
             share_stock_drawdown: 0,
             share_unattributed_share_deposit: 0,
             share_owner_grain_settled: 0,
+            in_kind_contracts: Vec::new(),
+            next_in_kind_contract_id: 0,
+            in_kind_workers_ever: BTreeSet::new(),
+            in_kind_employers_ever: BTreeSet::new(),
+            in_kind_hires_total: 0,
+            in_kind_worker_advance_bread: 0,
+            in_kind_employer_bread_income: 0,
+            in_kind_expected_output_total: 0,
+            in_kind_worker_declined: 0,
+            in_kind_worker_unmatched: 0,
+            in_kind_owner_candidates_total: 0,
+            in_kind_owner_no_atcap_plot: 0,
+            in_kind_owner_insufficient_fund: 0,
+            in_kind_productivity_declined: 0,
+            in_kind_reservation_collision: 0,
+            in_kind_stock_drawdown: 0,
+            in_kind_unattributed_deposit: 0,
+            in_kind_employer_grain_settled: 0,
+            in_kind_endowment_funded_hires: 0,
+            in_kind_term_starvations: 0,
             ever_landowner_ids: BTreeSet::new(),
             owner_first_claim_tick: BTreeMap::new(),
             owner_age_at_first_claim: BTreeMap::new(),
@@ -10227,13 +10542,19 @@ impl Settlement {
         // byte-identical.
         self.set_project_input_bid_overrides();
 
-        // ---- 4f. SHARE TENANCY (C1R): before the goods market, expire due contracts and
+        // ---- 4f. IN-KIND WAGE (C1N): before the share match, expire due bread-wage
+        // contracts and match owner-funded fixed-advance hires over the same at-cap plots.
+        // Newly opened contracts reserve their plot, so the C1R share phase below cannot
+        // double-contract it in the same tick.
+        self.run_in_kind_wage_phase();
+
+        // ---- 4g. SHARE TENANCY (C1R): before the goods market, expire due contracts and
         // match new no-advance output-share contracts. Newly opened contracts steer the next
         // fast loop; live contracts from prior ticks have already hauled in this tick's fast
         // loop and split in the own-use cultivation phase below.
         self.run_share_tenancy_phase();
 
-        // ---- 4g. WAGE LABOR (C1): after all pre-market bids are prepared but before the
+        // ---- 4h. WAGE LABOR (C1): after all pre-market bids are prepared but before the
         // goods market, release any due wage escrows from prior matches (worker labor produces
         // the owner's bread, wage escrow pays the worker), then match new owner-funded hires.
         // The phase is post-promotion-only and default-off, so existing runs never see it.
@@ -10814,7 +11135,8 @@ impl Settlement {
         for &slot in &self.live_colonist_slots {
             let colonist = &self.colonists[slot];
             let flagged = Self::carry_is_forage_attributed(colonist)
-                || self.share_worker_has_contract(colonist.id);
+                || self.share_worker_has_contract(colonist.id)
+                || self.in_kind_worker_has_contract(colonist.id);
             let carrying =
                 cultivation_active && !flagged && self.world.agent_carry_total(colonist.id) > 0;
             if flagged || carrying {
@@ -10863,11 +11185,25 @@ impl Settlement {
                 share_prev.insert((worker, good), self.world.agent_carry(worker, good));
             }
         }
+        let in_kind_scan: Vec<AgentId> = self
+            .in_kind_contracts
+            .iter()
+            .map(|contract| contract.worker)
+            .filter(|&worker| self.private_land_live_agent(worker))
+            .collect();
+        let mut in_kind_prev: BTreeMap<(AgentId, GoodId), u32> = BTreeMap::new();
+        let mut in_kind_drops: BTreeMap<(AgentId, GoodId), u32> = BTreeMap::new();
+        for &worker in &in_kind_scan {
+            for &good in &self.goods {
+                in_kind_prev.insert((worker, good), self.world.agent_carry(worker, good));
+            }
+        }
 
         self.idle_open_wage_workers();
         for _ in 0..FAST_TICKS_PER_ECON_TICK {
             self.assign_idle_gatherer_tasks();
             self.steer_share_contract_workers();
+            self.steer_in_kind_contract_workers();
             self.private_land_validate_harvest_tasks();
             let land_harvest_before = self.private_land_harvest_snapshot();
             if detect_forage {
@@ -10893,10 +11229,12 @@ impl Settlement {
             self.private_land_apply_worked_events(&worked_land);
             self.private_land_advance_idle_counters(&worked_land);
             self.check_share_stock_drawdown(&worked_land);
+            self.check_in_kind_stock_drawdown(&worked_land);
             for &slot in &self.live_colonist_slots {
                 let colonist = &self.colonists[slot];
                 if !Self::carry_is_forage_attributed(colonist)
                     && !self.share_worker_has_contract(colonist.id)
+                    && !self.in_kind_worker_has_contract(colonist.id)
                     && !carrying_ids.contains(&colonist.id)
                 {
                     continue;
@@ -10921,6 +11259,15 @@ impl Settlement {
                     }
                 }
             }
+            for &worker in &in_kind_scan {
+                for &good in &self.goods {
+                    let now = self.world.agent_carry(worker, good);
+                    let prev = in_kind_prev.insert((worker, good), now).unwrap_or(0);
+                    if now < prev {
+                        *in_kind_drops.entry((worker, good)).or_insert(0) += prev - now;
+                    }
+                }
+            }
         }
 
         // C1R: any contracted worker's carry drop the attribution scan did not record is an
@@ -10931,6 +11278,14 @@ impl Settlement {
             if dropped > recorded {
                 self.share_unattributed_share_deposit = self
                     .share_unattributed_share_deposit
+                    .saturating_add(u64::from(dropped - recorded));
+            }
+        }
+        for (&(worker, good), &dropped) in &in_kind_drops {
+            let recorded = deposited.get(&(worker, good)).copied().unwrap_or(0);
+            if dropped > recorded {
+                self.in_kind_unattributed_deposit = self
+                    .in_kind_unattributed_deposit
                     .saturating_add(u64::from(dropped - recorded));
             }
         }
@@ -11016,6 +11371,7 @@ impl Settlement {
                 assert_eq!(removed, take, "exchange must hold every credited unit");
                 if Some(good) == share_input {
                     self.credit_share_contract_grain(agent, removed);
+                    self.credit_in_kind_contract_grain(agent, removed);
                 }
                 if qty > take {
                     remaining.insert((agent, good), qty - take);
@@ -11043,6 +11399,7 @@ impl Settlement {
             let id = self.colonists[slot].id;
             if self.colonists[slot].carried_grain_source.is_none() {
                 self.colonists[slot].carried_share_contract_id = None;
+                self.colonists[slot].carried_in_kind_contract_id = None;
                 continue;
             }
             let carry_empty = self.world.agent_carry(id, grain) == 0;
@@ -11055,6 +11412,7 @@ impl Settlement {
             if carry_empty && pending_empty {
                 self.colonists[slot].carried_grain_source = None;
                 self.colonists[slot].carried_share_contract_id = None;
+                self.colonists[slot].carried_in_kind_contract_id = None;
             }
         }
     }
@@ -11160,6 +11518,11 @@ impl Settlement {
             }
             if let Some(contract) = self.share_contract_for_worker(id) {
                 let task = self.share_contract_task(id, contract.node);
+                self.world.assign_task(id, task);
+                continue;
+            }
+            if let Some(contract) = self.in_kind_contract_for_worker(id) {
+                let task = self.in_kind_contract_task(id, contract.node);
                 self.world.assign_task(id, task);
                 continue;
             }
@@ -11449,6 +11812,7 @@ impl Settlement {
             .filter(|&(&node, record)| {
                 self.private_land_plot_has_stock(node)
                     && !self.share_plot_reserved_against_owner(agent, node)
+                    && !self.in_kind_plot_reserved_against_owner(agent, node)
                     && (Self::private_land_record_agent_holds(record, agent)
                         || record.reserved_for == Some(agent))
                     && self.private_land_harvest_room_for(agent, node, 1) > 0
@@ -11517,7 +11881,14 @@ impl Settlement {
                 invalid.push((id, task));
                 continue;
             }
-            let share_worker_admitted = self.share_worker_admitted_to(id, node, &record);
+            if self.in_kind_plot_reserved_against_owner(id, node) {
+                self.in_kind_reservation_collision =
+                    self.in_kind_reservation_collision.saturating_add(1);
+                invalid.push((id, task));
+                continue;
+            }
+            let share_worker_admitted = self.share_worker_admitted_to(id, node, &record)
+                || self.in_kind_worker_admitted_to(id, node, &record);
             let owned_by_other_live = self.private_land_record_held_by_live_other(&record, id);
             let reserved_by_other = record.reserved_for.is_some_and(|owner| owner != id);
             if !share_worker_admitted && (owned_by_other_live || reserved_by_other) {
@@ -11634,10 +12005,15 @@ impl Settlement {
                 .share_contract_for_worker(event.agent)
                 .filter(|contract| contract.node == event.node)
                 .map(|contract| contract.id);
+            let carried_in_kind_contract_id = self
+                .in_kind_contract_for_worker(event.agent)
+                .filter(|contract| contract.node == event.node)
+                .map(|contract| contract.id);
             if let Some(&slot) = self.colonist_slot_by_id.get(&event.agent) {
                 if self.colonists[slot].alive {
                     self.colonists[slot].carried_grain_source = Some(event.node);
                     self.colonists[slot].carried_share_contract_id = carried_share_contract_id;
+                    self.colonists[slot].carried_in_kind_contract_id = carried_in_kind_contract_id;
                 }
             }
             let Some(record) = self.land_plots.get(&event.node).cloned() else {
@@ -11648,8 +12024,14 @@ impl Settlement {
                     self.share_reservation_collision.saturating_add(1);
                 continue;
             }
+            if self.in_kind_plot_reserved_against_owner(event.agent, event.node) {
+                self.in_kind_reservation_collision =
+                    self.in_kind_reservation_collision.saturating_add(1);
+                continue;
+            }
             let share_worker_admitted =
-                self.share_worker_admitted_to(event.agent, event.node, &record);
+                self.share_worker_admitted_to(event.agent, event.node, &record)
+                    || self.in_kind_worker_admitted_to(event.agent, event.node, &record);
             // C1R latent-composition guard (review P3): the owner-exclusion above blocks only
             // `contract.owner`; on a PARTIBLE config a co-holder in `record.shares` would still
             // be admitted to a share-reserved plot. Inert on the impartible C1R base — trip
@@ -12596,6 +12978,7 @@ impl Settlement {
         wage_labor_used: &mut Vec<(AgentId, u32)>,
     ) -> bool {
         self.record_owner_death_telemetry(id);
+        self.settle_in_kind_wage_for_starvation_death(id);
         self.settle_share_tenancy_for_death(id);
         self.transfer_private_land_on_death(id);
         if self.demography.is_some() {
@@ -13407,6 +13790,7 @@ impl Settlement {
         // dead agent's reservation here too, GATED on the share flag so the off path keeps
         // the base's exact dead-owner clearing (review P3: no ungated off-path change).
         let share_active = self.share_tenancy_active();
+        let in_kind_active = self.in_kind_wage_active();
         let dead_reserved: BTreeSet<AgentId> = self
             .land_plots
             .values()
@@ -13414,6 +13798,7 @@ impl Settlement {
             .filter(|&agent| {
                 dead_owners.contains(&agent)
                     || (share_active && !self.private_land_live_agent(agent))
+                    || (in_kind_active && !self.private_land_live_agent(agent))
             })
             .collect();
         for record in self.land_plots.values_mut() {
@@ -13459,12 +13844,15 @@ impl Settlement {
         // C1R: same share-gated dead-reservation clearing as the secure path above (the
         // liveness clause of the registry invariant is checked per death settlement).
         let share_active = self.share_tenancy_active();
+        let in_kind_active = self.in_kind_wage_active();
         let dead_reserved: BTreeSet<AgentId> = self
             .land_plots
             .values()
             .filter_map(|record| record.reserved_for)
             .filter(|&agent| {
-                heirs.contains_key(&agent) || (share_active && !self.private_land_live_agent(agent))
+                heirs.contains_key(&agent)
+                    || (share_active && !self.private_land_live_agent(agent))
+                    || (in_kind_active && !self.private_land_live_agent(agent))
             })
             .collect();
         let mut inherited_titles = Vec::new();
@@ -13598,6 +13986,7 @@ impl Settlement {
             // path skipped that settle, so an owner's old-age death mid-contract left the
             // worker holding 100% of the pending contract grain. Inert unless share contracts
             // exist (empty-vec early return), so every non-share config is byte-unchanged.
+            self.settle_in_kind_wage_for_death(id);
             self.settle_share_tenancy_for_death(id);
             if let Some((_, true, inherit_eligible)) = secure_owner_death_snapshot
                 .iter()
@@ -13894,6 +14283,7 @@ impl Settlement {
                 commitment_norm_observations: VecDeque::new(),
                 carried_grain_source: None,
                 carried_share_contract_id: None,
+                carried_in_kind_contract_id: None,
             });
             let child_slot = self.colonists.len() - 1;
             self.live_colonist_slots.push(child_slot);
@@ -14830,7 +15220,12 @@ impl Settlement {
                 )
             };
             let share_contract = self.share_contract_for_worker(id);
-            if !cultivating && !stock_pending && share_contract.is_none() {
+            let in_kind_contract = self.in_kind_contract_for_worker(id);
+            if !cultivating
+                && !stock_pending
+                && share_contract.is_none()
+                && in_kind_contract.is_none()
+            {
                 continue;
             }
             // PRODUCE: convert held grain into bread up to this tick's own-labor budget.
@@ -14891,6 +15286,7 @@ impl Settlement {
                         .filter(|(good, _)| Some(*good) == input_good)
                         .map_or(0, |(_, qty)| qty);
                     self.split_share_output(id, u64::from(out_qty), input_qty);
+                    self.split_in_kind_output(id, u64::from(out_qty), input_qty);
                 }
             }
             // S22b: a tick with realized cultivation output (grain hauled AND converted to bread)
@@ -14918,6 +15314,7 @@ impl Settlement {
                 input_good.is_some_and(|input| self.cultivation_input_in_flight(id, input));
             self.colonists[slot].cultivation_stock_pending = cultivating
                 || share_contract.is_some()
+                || in_kind_contract.is_some()
                 || has_remaining_input
                 || has_input_in_flight;
             // CONSUME (own-use): eat up to `consume` of the cultivator's OWN bread through
@@ -20649,6 +21046,14 @@ impl Settlement {
                 return false;
             }
         }
+        if self.in_kind_wage_active()
+            && self
+                .in_kind_contracts
+                .iter()
+                .any(|contract| self.share_contract_for_node(contract.node).is_some())
+        {
+            return false;
+        }
         for (&node, record) in &self.land_plots {
             if !self.world.node(node).is_some_and(|plot| plot.good == grain) {
                 return false;
@@ -22629,6 +23034,34 @@ impl Settlement {
                 out.push(24);
                 out.push(u8::from(chain.share_forward_provisioning));
             }
+            if self.in_kind_wage_active() {
+                out.push(25);
+                out.push(u8::from(chain.in_kind_wage));
+                out.extend_from_slice(&self.next_in_kind_contract_id.to_le_bytes());
+                out.extend_from_slice(&(self.in_kind_contracts.len() as u32).to_le_bytes());
+                for contract in &self.in_kind_contracts {
+                    out.extend_from_slice(&contract.id.to_le_bytes());
+                    out.extend_from_slice(&contract.employer.0.to_le_bytes());
+                    out.extend_from_slice(&contract.worker.0.to_le_bytes());
+                    out.extend_from_slice(&contract.node.0.to_le_bytes());
+                    out.extend_from_slice(&contract.wage_bread.to_le_bytes());
+                    out.extend_from_slice(&contract.term.to_le_bytes());
+                    out.extend_from_slice(&contract.opened_tick.to_le_bytes());
+                    out.extend_from_slice(&contract.grain_in_stock.to_le_bytes());
+                    out.extend_from_slice(&contract.split_remainder_bps.to_le_bytes());
+                }
+                out.extend_from_slice(&(self.colonists.len() as u32).to_le_bytes());
+                for colonist in &self.colonists {
+                    out.extend_from_slice(&colonist.id.0.to_le_bytes());
+                    match colonist.carried_in_kind_contract_id {
+                        Some(contract_id) => {
+                            out.push(1);
+                            out.extend_from_slice(&contract_id.to_le_bytes());
+                        }
+                        None => out.push(0),
+                    }
+                }
+            }
             // S23b: the post-money land market extends S23a's registry with an endogenous-price
             // state, listings, last-sale anchors, and the non-agent fee sink. Emitted only when the
             // market composes on active private land tenure; with the flag off every S23a and older
@@ -23902,6 +24335,10 @@ fn chain_runtime_wage_labor_active(chain: &ChainRuntime) -> bool {
 
 fn chain_runtime_share_tenancy_active(chain: &ChainRuntime) -> bool {
     chain.share_tenancy && chain_runtime_rival_subsistence_commons_active(chain)
+}
+
+fn chain_runtime_in_kind_wage_active(chain: &ChainRuntime) -> bool {
+    chain.in_kind_wage && chain_runtime_share_tenancy_active(chain)
 }
 
 fn chain_runtime_share_forward_provisioning_active(chain: &ChainRuntime) -> bool {
@@ -29514,10 +29951,43 @@ mod tests {
     }
 
     #[test]
+    fn bread_provenance_transfer_self_produced_filters_other_producers() {
+        let mut bp = BreadProvenance::default();
+        let (owner, other, worker) = (AgentId(1), AgentId(2), AgentId(3));
+
+        bp.credit_produced(owner, 3, true);
+        bp.credit_produced(other, 4, false);
+        bp.transfer(other, owner, 4);
+
+        assert_eq!(bp.produced.get(&owner).copied(), Some(7));
+        assert_eq!(bp.transfer_self_produced(owner, worker, 2), 2);
+        assert_eq!(bp.produced.get(&worker).copied(), Some(2));
+        assert_eq!(bp.produced.get(&owner).copied(), Some(5));
+
+        assert_eq!(
+            bp.transfer_self_produced(owner, worker, 5),
+            1,
+            "only the remaining lot whose producer is the owner may fund the advance"
+        );
+        assert_eq!(bp.produced.get(&worker).copied(), Some(3));
+        assert_eq!(bp.produced.get(&owner).copied(), Some(4));
+        let owner_other_produced: u64 = bp
+            .produced_lots
+            .get(&owner)
+            .expect("owner still holds the other producer's lots")
+            .iter()
+            .filter(|lot| lot.producer == other)
+            .map(|lot| lot.qty)
+            .sum();
+        assert_eq!(owner_other_produced, 4);
+        assert_eq!(bp.produced_credited, bp.produced_sunk + bp.total_held());
+    }
+
+    #[test]
     fn acquisition_transfer_preserve_keeps_fifo_lot_order() {
-        // Origin-preserving moves (birth, inheritance, in-kind advance) must keep the donor's
-        // actual FIFO order. If the recipient consumes only part of a mixed transfer, older seeded
-        // food must be debited before newer bought food.
+        // Origin-preserving moves (birth, inheritance) must keep the donor's actual FIFO order.
+        // If the recipient consumes only part of a mixed transfer, older seeded food must be
+        // debited before newer bought food.
         let mut ledger = AcquisitionLedger::default();
         let (donor, recipient) = (AgentId(1), AgentId(2));
 
@@ -29542,6 +30012,40 @@ mod tests {
             ledger.consumed_by_channel[FoodChannel::Bought.index()],
             1,
             "after the seeded lot is exhausted, the transferred bought lot is next"
+        );
+    }
+
+    #[test]
+    fn acquisition_transfer_self_produced_skips_older_channels() {
+        let mut ledger = AcquisitionLedger::default();
+        let (donor, recipient) = (AgentId(1), AgentId(2));
+
+        ledger.credit(donor, FoodChannel::SeededMinted, 2);
+        ledger.credit(donor, FoodChannel::Bought, 3);
+        ledger.credit(donor, FoodChannel::SelfProduced, 4);
+
+        assert_eq!(ledger.transfer_self_produced(donor, recipient, 3), 3);
+        assert_eq!(
+            ledger.held_by_agent_channel(donor, FoodChannel::SeededMinted),
+            2
+        );
+        assert_eq!(ledger.held_by_agent_channel(donor, FoodChannel::Bought), 3);
+        assert_eq!(
+            ledger.held_by_agent_channel(donor, FoodChannel::SelfProduced),
+            1
+        );
+        assert_eq!(
+            ledger.held_by_agent_channel(recipient, FoodChannel::SelfProduced),
+            3,
+            "an in-kind advance must not record older seeded/bought lots as the wage"
+        );
+        assert_eq!(
+            ledger.held_by_agent_channel(recipient, FoodChannel::SeededMinted),
+            0
+        );
+        assert_eq!(
+            ledger.held_by_agent_channel(recipient, FoodChannel::Bought),
+            0
         );
     }
 
@@ -30495,6 +30999,299 @@ mod tests {
         assert_eq!(s.share_owner_bread_income, 1);
         assert_eq!(s.share_worker_bread_income, 1);
         assert_eq!(s.share_contracts[0].grain_in_stock, 0);
+    }
+
+    #[test]
+    fn in_kind_split_transfers_full_contract_output_to_employer() {
+        let mut cfg = SettlementConfig::frontier_cultivation();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.cultivation_sells_surplus = true;
+            chain.acquisition_ledger = true;
+        }
+        let grain = cfg.chain.as_ref().expect("chain").content.grain();
+        let bread = cfg.chain.as_ref().expect("chain").content.bread();
+        let mut s = Settlement::generate(7, &cfg);
+        s.chain.as_mut().expect("chain").cultivate_consume = 0;
+        let employer_slot = s.live_colonist_slots[0];
+        let worker_slot = s.live_colonist_slots[1];
+        let employer = s.colonists[employer_slot].id;
+        let worker = s.colonists[worker_slot].id;
+        let node = s.grain_node().expect("cultivation config has grain");
+
+        s.colonists[worker_slot].need.hunger = 0;
+        s.colonists[worker_slot].cultivating = true;
+        s.in_kind_contracts.push(InKindWageContract {
+            id: 1,
+            employer,
+            worker,
+            node,
+            wage_bread: 2,
+            term: SHARE_TENANCY_TERM_DEFAULT,
+            opened_tick: s.econ_tick,
+            grain_in_stock: 2,
+            split_remainder_bps: 0,
+        });
+        assert!(s.society.credit_stock(employer, bread, 2));
+        s.bread_provenance.credit_produced(employer, 2, true);
+        s.acquisition.credit(employer, FoodChannel::SelfProduced, 2);
+        assert!(s.society.debit_stock(employer, bread, 2));
+        assert!(s.society.credit_stock(worker, bread, 2));
+        assert_eq!(
+            s.bread_provenance
+                .transfer_self_produced(employer, worker, 2),
+            2
+        );
+        s.acquisition.transfer_preserve(employer, worker, 2);
+        s.acquisition.credit(worker, FoodChannel::Bought, 1);
+        s.society
+            .agents
+            .get_mut(worker)
+            .expect("worker exists")
+            .stock
+            .add(grain, 2);
+        s.society
+            .agents
+            .get_mut(worker)
+            .expect("worker exists")
+            .stock
+            .add(bread, 1);
+
+        let mut report = EconTickReport::default();
+        s.run_own_use_cultivation(&mut report);
+
+        assert_eq!(report.produced_of(bread), 2);
+        assert_eq!(report.consumed_as_input_of(grain), 2);
+        assert_eq!(
+            s.society
+                .agents
+                .get(employer)
+                .expect("employer exists")
+                .stock
+                .get(bread),
+            2,
+            "C1N product goes 100% to the employer"
+        );
+        assert_eq!(
+            s.society
+                .agents
+                .get(worker)
+                .expect("worker exists")
+                .stock
+                .get(bread),
+            3,
+            "the worker keeps the old advance and bought bread, but no product share"
+        );
+        let employer_product_lots: u64 = s
+            .bread_provenance
+            .produced_lots
+            .get(&employer)
+            .expect("employer receives the worker-produced crop")
+            .iter()
+            .filter(|lot| lot.producer == worker)
+            .map(|lot| lot.qty)
+            .sum();
+        assert_eq!(
+            employer_product_lots, 2,
+            "the employer must receive the newly produced crop provenance, not its own advance back"
+        );
+        let worker_advance_lots: u64 = s
+            .bread_provenance
+            .produced_lots
+            .get(&worker)
+            .expect("worker keeps the old wage-advance provenance")
+            .iter()
+            .filter(|lot| lot.producer == employer)
+            .map(|lot| lot.qty)
+            .sum();
+        assert_eq!(
+            worker_advance_lots, 2,
+            "the generic FIFO transfer would return this advance provenance to the employer"
+        );
+        let employer_acquired_self_produced: u64 = s
+            .acquisition
+            .lots
+            .get(&employer)
+            .expect("employer receives the crop acquisition lot")
+            .iter()
+            .filter(|lot| lot.channel == FoodChannel::SelfProduced)
+            .map(|lot| lot.qty)
+            .sum();
+        assert_eq!(employer_acquired_self_produced, 2);
+        let worker_bought_lots: u64 = s
+            .acquisition
+            .lots
+            .get(&worker)
+            .expect("worker keeps the older non-product lots")
+            .iter()
+            .filter(|lot| lot.channel == FoodChannel::Bought)
+            .map(|lot| lot.qty)
+            .sum();
+        assert_eq!(
+            worker_bought_lots, 1,
+            "the crop split must not transfer older bought bread channels"
+        );
+        assert_eq!(s.in_kind_employer_bread_income, 2);
+        assert_eq!(s.in_kind_contracts[0].grain_in_stock, 0);
+    }
+
+    fn harvest_one_carried_grain(s: &mut Settlement, worker: AgentId, node: NodeId, grain: GoodId) {
+        assert!(s.world.assign_task(worker, Task::GoHarvest(node, 1)));
+        for _ in 0..64 {
+            s.world.tick();
+            if s.world.agent_carry(worker, grain) > 0 {
+                return;
+            }
+        }
+        panic!("worker never harvested carried grain");
+    }
+
+    #[test]
+    fn in_kind_dissolution_settles_carried_contract_grain() {
+        let cfg = SettlementConfig::frontier_cultivation();
+        let grain = cfg.chain.as_ref().expect("chain").content.grain();
+        let mut s = Settlement::generate(7, &cfg);
+        let employer_slot = s.live_colonist_slots[0];
+        let worker_slot = s.live_colonist_slots[1];
+        let employer = s.colonists[employer_slot].id;
+        let worker = s.colonists[worker_slot].id;
+        let node = s.grain_node().expect("cultivation config has grain");
+
+        harvest_one_carried_grain(&mut s, worker, node, grain);
+        s.colonists[worker_slot].carried_grain_source = Some(node);
+        s.colonists[worker_slot].carried_in_kind_contract_id = Some(7);
+        let employer_before = s
+            .society
+            .agents
+            .get(employer)
+            .expect("employer exists")
+            .stock
+            .get(grain);
+        let contract = InKindWageContract {
+            id: 7,
+            employer,
+            worker,
+            node,
+            wage_bread: 1,
+            term: SHARE_TENANCY_TERM_DEFAULT,
+            opened_tick: s.econ_tick,
+            grain_in_stock: 0,
+            split_remainder_bps: 0,
+        };
+
+        s.settle_in_kind_contract_grain(&contract);
+
+        assert_eq!(s.world.agent_carry(worker, grain), 0);
+        assert_eq!(
+            s.society
+                .agents
+                .get(employer)
+                .expect("employer exists")
+                .stock
+                .get(grain),
+            employer_before + 1,
+            "carried contract grain must settle to the employer before the contract closes"
+        );
+        assert_eq!(s.in_kind_employer_grain_settled, 1);
+        assert_eq!(s.colonists[worker_slot].carried_grain_source, None);
+        assert_eq!(s.colonists[worker_slot].carried_in_kind_contract_id, None);
+    }
+
+    #[test]
+    fn in_kind_dissolution_settles_pending_contract_grain() {
+        let cfg = SettlementConfig::frontier_cultivation();
+        let grain = cfg.chain.as_ref().expect("chain").content.grain();
+        let mut s = Settlement::generate(7, &cfg);
+        let employer_slot = s.live_colonist_slots[0];
+        let worker_slot = s.live_colonist_slots[1];
+        let employer = s.colonists[employer_slot].id;
+        let worker = s.colonists[worker_slot].id;
+        let node = s.grain_node().expect("cultivation config has grain");
+
+        harvest_one_carried_grain(&mut s, worker, node, grain);
+        assert!(s.world.assign_task(worker, Task::GoDeposit(s.exchange)));
+        for _ in 0..64 {
+            s.world.tick();
+            if s.world.agent_carry(worker, grain) == 0 {
+                break;
+            }
+        }
+        assert_eq!(s.world.agent_carry(worker, grain), 0);
+        assert_eq!(s.world.stockpile_get(s.exchange, grain), 1);
+        s.pending_deposits.insert((worker, grain), 1);
+        s.colonists[worker_slot].carried_grain_source = Some(node);
+        s.colonists[worker_slot].carried_in_kind_contract_id = Some(8);
+        let employer_before = s
+            .society
+            .agents
+            .get(employer)
+            .expect("employer exists")
+            .stock
+            .get(grain);
+        let contract = InKindWageContract {
+            id: 8,
+            employer,
+            worker,
+            node,
+            wage_bread: 1,
+            term: SHARE_TENANCY_TERM_DEFAULT,
+            opened_tick: s.econ_tick,
+            grain_in_stock: 0,
+            split_remainder_bps: 0,
+        };
+
+        s.settle_in_kind_contract_grain(&contract);
+
+        assert_eq!(s.world.stockpile_get(s.exchange, grain), 0);
+        assert!(
+            !s.pending_deposits.contains_key(&(worker, grain)),
+            "pending contract grain must not survive contract dissolution"
+        );
+        assert_eq!(
+            s.society
+                .agents
+                .get(employer)
+                .expect("employer exists")
+                .stock
+                .get(grain),
+            employer_before + 1,
+            "pending contract grain must settle to the employer before the contract closes"
+        );
+        assert_eq!(s.in_kind_employer_grain_settled, 1);
+        assert_eq!(s.colonists[worker_slot].carried_grain_source, None);
+        assert_eq!(s.colonists[worker_slot].carried_in_kind_contract_id, None);
+    }
+
+    #[test]
+    fn in_kind_candidates_ignore_share_residual_bps() {
+        let mut cfg = SettlementConfig::frontier_mortal_landowner_demography();
+        let chain = cfg.chain.as_mut().expect("chain");
+        chain.share_tenancy = true;
+        chain.share_bps = SHARE_TENANCY_BPS_DEFAULT;
+        let bread = chain.content.bread();
+        let mut s = Settlement::generate(7, &cfg);
+        let mut share_candidates = Vec::new();
+        for _ in 0..300 {
+            share_candidates = s.share_owner_candidate_plots(bread);
+            if !share_candidates.is_empty() {
+                break;
+            }
+            let _ = s.econ_tick();
+        }
+        assert!(
+            !share_candidates.is_empty(),
+            "test setup needs at least one cap-waste candidate"
+        );
+
+        s.chain.as_mut().expect("chain").share_bps = 10_000;
+        assert!(
+            s.share_owner_candidate_plots(bread).is_empty(),
+            "a 100% worker share still disables ordinary share-tenancy offers"
+        );
+        assert_eq!(
+            s.in_kind_owner_candidate_plots(),
+            share_candidates,
+            "fixed-wage candidates reuse plot constraints, not share residual economics"
+        );
     }
 
     #[test]

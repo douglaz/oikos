@@ -272,6 +272,7 @@ impl Settlement {
         if self.private_land_agent_holds_any_plot(worker)
             || self.wage_worker_has_open_escrow(worker)
             || self.share_worker_has_contract(worker)
+            || self.in_kind_worker_has_contract(worker)
         {
             return false;
         }
@@ -411,6 +412,33 @@ impl Settlement {
         if share_bps >= 10_000 {
             return Vec::new();
         }
+        self.cap_waste_owner_candidate_plots()
+            .into_iter()
+            .filter(|candidate| {
+                let expected = self
+                    .share_expected_term_output(candidate.node, term)
+                    .unwrap_or(0);
+                let owner_share = expected.saturating_sub(share_bps_floor(expected, share_bps));
+                if owner_share == 0 || owner_share > u64::from(u32::MAX) {
+                    return false;
+                }
+                let Some(agent) = self.society.agents.get(candidate.owner) else {
+                    return false;
+                };
+                agent
+                    .stock
+                    .get(bread)
+                    .checked_add(owner_share as u32)
+                    .is_some()
+            })
+            .collect()
+    }
+
+    pub(super) fn in_kind_owner_candidate_plots(&self) -> Vec<ShareOwnerCandidate> {
+        self.cap_waste_owner_candidate_plots()
+    }
+
+    fn cap_waste_owner_candidate_plots(&self) -> Vec<ShareOwnerCandidate> {
         let no_reserved: BTreeSet<NodeId> = BTreeSet::new();
         let mut owner_targets: BTreeMap<AgentId, Option<NodeId>> = BTreeMap::new();
         let mut candidates = Vec::new();
@@ -421,6 +449,7 @@ impl Settlement {
             if !self.private_land_live_agent(owner)
                 || record.reserved_for.is_some()
                 || self.share_contract_for_node(node).is_some()
+                || self.in_kind_contract_for_node(node).is_some()
                 || self.share_plot_currently_owner_targeted(owner, node)
             {
                 continue;
@@ -435,22 +464,6 @@ impl Settlement {
                 continue;
             };
             if plot.stock != plot.cap || plot.regen_per_tick == 0 {
-                continue;
-            }
-            let expected = self.share_expected_term_output(node, term).unwrap_or(0);
-            let owner_share = expected.saturating_sub(share_bps_floor(expected, share_bps));
-            if owner_share == 0 || owner_share > u64::from(u32::MAX) {
-                continue;
-            }
-            let Some(agent) = self.society.agents.get(owner) else {
-                continue;
-            };
-            if agent
-                .stock
-                .get(bread)
-                .checked_add(owner_share as u32)
-                .is_none()
-            {
                 continue;
             }
             candidates.push(ShareOwnerCandidate {
@@ -482,6 +495,7 @@ impl Settlement {
             record.owner == Some(owner)
                 && record.reserved_for.is_none()
                 && self.share_contract_for_node(node).is_none()
+                && self.in_kind_contract_for_node(node).is_none()
                 && target != Some(node)
                 && !self.share_plot_currently_owner_targeted(owner, node)
                 && self

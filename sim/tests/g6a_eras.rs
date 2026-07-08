@@ -374,6 +374,10 @@ fn era_is_read_only() {
             include_str!("../src/settlement/share_tenancy.rs"),
         ),
         (
+            "settlement/in_kind_wage.rs",
+            include_str!("../src/settlement/in_kind_wage.rs"),
+        ),
+        (
             "settlement/wage_labor.rs",
             include_str!("../src/settlement/wage_labor.rs"),
         ),
