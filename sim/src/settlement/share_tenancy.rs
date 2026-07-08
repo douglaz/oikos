@@ -92,7 +92,7 @@ impl Settlement {
         Some((share_bps, term))
     }
 
-    pub(super) fn expire_share_contracts(&mut self) -> BTreeMap<(AgentId, AgentId, NodeId), u16> {
+    pub(super) fn expire_share_contracts(&mut self) -> BTreeMap<RenewalHintKey, ShareRenewalHint> {
         let mut renewal_hints = BTreeMap::new();
         if self.share_contracts.is_empty() {
             return renewal_hints;
@@ -106,6 +106,7 @@ impl Settlement {
                 .saturating_add(u64::from(contract.term))
                 <= self.econ_tick;
             if !owner_live || !worker_live || due {
+                let from_succeeded = self.share_succeeded_live_ids.remove(&contract.id);
                 if owner_live && worker_live {
                     // Term-boundary settle (review P1): this tick's haul is already in the
                     // worker's stock (the deposit transfer runs before this phase) but only
@@ -120,7 +121,10 @@ impl Settlement {
                 if owner_live && worker_live && due {
                     renewal_hints.insert(
                         (contract.worker, contract.owner, contract.node),
-                        contract.renewals.saturating_add(1),
+                        ShareRenewalHint {
+                            renewals: contract.renewals.saturating_add(1),
+                            from_succeeded,
+                        },
                     );
                 }
             } else {
@@ -520,7 +524,7 @@ impl Settlement {
         bread: GoodId,
         workers: Vec<AgentId>,
         mut owners: Vec<ShareOwnerCandidate>,
-        renewal_hints: BTreeMap<RenewalHintKey, u16>,
+        renewal_hints: BTreeMap<RenewalHintKey, ShareRenewalHint>,
         renewal_fates: &mut BTreeMap<RenewalHintKey, Option<RenewalFate>>,
     ) -> u64 {
         let forced = self.share_tenancy_mode() == ShareTenancyMode::ForcedShare;
@@ -540,7 +544,7 @@ impl Settlement {
         // order-based greedy essentially never re-forms the exact (worker, owner, node)
         // triple, leaving the §2.1-2 renewal clause dead machinery (review P3). A pair
         // that fails either side falls through to the general pass as a fresh candidate.
-        for (&(worker, owner, node), &renewals) in &renewal_hints {
+        for (&(worker, owner, node), hint) in &renewal_hints {
             if matched.contains(&worker) || workers.binary_search(&worker).is_err() {
                 Self::set_renewal_fate(
                     renewal_fates,
@@ -569,7 +573,7 @@ impl Settlement {
                 continue;
             }
             let candidate = owners.remove(position);
-            self.open_share_contract(worker, candidate, renewals);
+            self.open_share_contract(worker, candidate, hint.renewals, hint.from_succeeded);
             renewal_fates.remove(&(worker, owner, node));
             same_plot_renewed = same_plot_renewed.saturating_add(1);
             matched.insert(worker);
@@ -596,7 +600,7 @@ impl Settlement {
             match accepted {
                 Some(position) => {
                     let candidate = owners.remove(position);
-                    self.open_share_contract(worker, candidate, 0);
+                    self.open_share_contract(worker, candidate, 0, false);
                     if let Some(&key) = hint_by_worker.get(&worker) {
                         if key.2 != candidate.node {
                             Self::set_renewal_fate(
@@ -623,6 +627,7 @@ impl Settlement {
         worker: AgentId,
         candidate: ShareOwnerCandidate,
         renewals: u16,
+        from_succeeded: bool,
     ) {
         let Some((share_bps, term)) = self.share_tenancy_terms() else {
             return;
@@ -660,6 +665,11 @@ impl Settlement {
         if renewals > 0 {
             self.share_renewals_total = self.share_renewals_total.saturating_add(1);
         }
+        if from_succeeded {
+            self.share_succeeded_live_ids.insert(id);
+            self.share_post_succession_renewals =
+                self.share_post_succession_renewals.saturating_add(1);
+        }
         self.share_workers_ever.insert(worker);
         self.share_owners_ever.insert(candidate.owner);
     }
@@ -672,24 +682,152 @@ impl Settlement {
         }
     }
 
-    pub(super) fn settle_share_tenancy_for_death(&mut self, dead: AgentId) {
+    fn can_succeed_share_contract_on_owner_death(&self, contract: &ShareContract) -> bool {
+        self.share_contract_succession_active()
+            && self.private_land_live_agent(contract.worker)
+            && self
+                .chain
+                .as_ref()
+                .is_some_and(|chain| chain.inheritance_regime == InheritanceRegime::Impartible)
+            && self
+                .secure_land_universal_heir_for(contract.owner)
+                .is_some()
+            && self.land_plots.get(&contract.node).is_some_and(|record| {
+                // Normally the plot still reads `owner == contract.owner`. But when several
+                // share-contract owners die in one death batch, `transfer_private_land_on_death`
+                // for the first-processed death eagerly reassigns EVERY currently-dead owner's
+                // plot to its heir (review R1/R2), so a later dead owner's plot already reads
+                // `owner == heir` by the time its own `settle_share_tenancy_for_death` runs.
+                // Accept the transferred heir too, so succession is not silently capped at one
+                // per batch — which would under-count and suppress a standing-tenure signal
+                // exactly under the clustered deaths (scarce-φ die-offs) where it is most likely.
+                // The heir is deterministic and owner-stable across the batch (a dead owner is
+                // never a live heir), and `finalize` reads whoever owns the plot now, so a
+                // pre-transferred plot finalizes identically.
+                record.owner == Some(contract.owner)
+                    || record.owner == self.secure_land_universal_heir_for(contract.owner)
+            })
+    }
+
+    pub(super) fn settle_share_tenancy_for_death(
+        &mut self,
+        dead: AgentId,
+    ) -> Vec<PendingShareSuccession> {
+        let mut pending_successions = Vec::new();
         if self.share_contracts.is_empty() {
-            return;
+            return pending_successions;
         }
         let contracts = std::mem::take(&mut self.share_contracts);
         for contract in contracts {
-            if contract.owner == dead || contract.worker == dead {
+            if contract.worker == dead {
+                self.share_succeeded_live_ids.remove(&contract.id);
                 // Death dissolution (spec §3.4): the realized split stands; the pending
                 // contract-sourced grain settles exactly as expiry does (review P1 — the
                 // death seam had the same final-haul leak). The dying agent's society entry
-                // is still present here (the wage-escrow death pattern): a dead owner is
-                // credited and the estate carries the grain to the heir; a dead worker's
+                // is still present here (the wage-escrow death pattern): a dead worker's
                 // settle pays the living owner before the estate routes the rest.
                 self.settle_share_contract_grain(&contract);
                 self.clear_share_reservation(&contract);
+            } else if contract.owner == dead {
+                if self.can_succeed_share_contract_on_owner_death(&contract) {
+                    self.share_succeeded_live_ids.remove(&contract.id);
+                    pending_successions.push(PendingShareSuccession { contract });
+                } else {
+                    self.share_succeeded_live_ids.remove(&contract.id);
+                    // Death dissolution (spec §3.4): the realized split stands; the pending
+                    // contract-sourced grain settles exactly as expiry does (review P1 — the
+                    // death seam had the same final-haul leak). The dying agent's society entry
+                    // is still present here (the wage-escrow death pattern): a dead owner is
+                    // credited and the estate carries the grain to the heir.
+                    self.settle_share_contract_grain(&contract);
+                    self.clear_share_reservation(&contract);
+                }
             } else {
                 self.share_contracts.push(contract);
             }
+        }
+        pending_successions
+    }
+
+    pub(super) fn finalize_share_contract_successions(
+        &mut self,
+        pending_successions: Vec<PendingShareSuccession>,
+    ) {
+        if pending_successions.is_empty() {
+            return;
+        }
+        let Some(bread) = self.provenance_bread_good() else {
+            for PendingShareSuccession { contract } in pending_successions {
+                self.settle_share_contract_grain(&contract);
+                self.clear_share_reservation(&contract);
+                self.share_succession_heir_declined =
+                    self.share_succession_heir_declined.saturating_add(1);
+            }
+            return;
+        };
+
+        for PendingShareSuccession { mut contract } in pending_successions {
+            let Some(heir) = self
+                .land_plots
+                .get(&contract.node)
+                .and_then(|record| record.owner)
+                .filter(|&owner| self.private_land_live_agent(owner))
+            else {
+                self.settle_share_contract_grain(&contract);
+                self.clear_share_reservation(&contract);
+                self.share_succession_heir_declined =
+                    self.share_succession_heir_declined.saturating_add(1);
+                continue;
+            };
+            let heir_accepts = self
+                .share_owner_candidate_plots(bread)
+                .into_iter()
+                .any(|candidate| candidate.owner == heir && candidate.node == contract.node);
+            if !heir_accepts {
+                self.settle_share_contract_grain(&contract);
+                self.clear_share_reservation(&contract);
+                self.share_succession_heir_declined =
+                    self.share_succession_heir_declined.saturating_add(1);
+                continue;
+            }
+            if !self.private_land_live_agent(contract.worker)
+                || !self.share_worker_accepts_bread(contract.worker, bread, contract.node)
+            {
+                // Death dissolution (spec §3.4): the realized split stands; the pending
+                // contract-sourced grain settles exactly as expiry does (review P1 — the
+                // death seam had the same final-haul leak). The contract's owner is still the
+                // dead owner, so its estate receives the owner grain exactly as dissolution did.
+                self.settle_share_contract_grain(&contract);
+                self.clear_share_reservation(&contract);
+                self.share_succession_worker_re_declined =
+                    self.share_succession_worker_re_declined.saturating_add(1);
+                continue;
+            }
+
+            let reservation_reestablished =
+                if let Some(record) = self.land_plots.get_mut(&contract.node) {
+                    if record.owner == Some(heir) && record.reserved_for.is_none() {
+                        record.reserved_for = Some(contract.worker);
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+            if !reservation_reestablished {
+                self.settle_share_contract_grain(&contract);
+                self.clear_share_reservation(&contract);
+                self.share_succession_heir_declined =
+                    self.share_succession_heir_declined.saturating_add(1);
+                continue;
+            }
+
+            contract.owner = heir;
+            self.share_contracts.push(contract);
+            self.share_successions_total = self.share_successions_total.saturating_add(1);
+            self.share_succeeded_live_ids.insert(contract.id);
+            self.share_owners_ever.insert(heir);
         }
     }
 
@@ -1028,6 +1166,15 @@ impl Settlement {
             share_stock_drawdown: self.share_stock_drawdown,
             unattributed_share_deposit: self.share_unattributed_share_deposit,
             owner_grain_settled: self.share_owner_grain_settled,
+            successions_total: self.share_successions_total,
+            heir_declined: self.share_succession_heir_declined,
+            worker_re_declined: self.share_succession_worker_re_declined,
+            post_succession_renewals: self.share_post_succession_renewals,
+            final_open_succeeded: self
+                .share_contracts
+                .iter()
+                .filter(|contract| self.share_succeeded_live_ids.contains(&contract.id))
+                .count() as u64,
         }
     }
 
@@ -1036,5 +1183,28 @@ impl Settlement {
             .iter()
             .map(|worker| worker.0)
             .collect()
+    }
+
+    pub fn share_succession_registry_invariant_holds(&self) -> bool {
+        let live_succeeded: BTreeSet<u64> = self
+            .share_contracts
+            .iter()
+            .filter(|contract| self.share_succeeded_live_ids.contains(&contract.id))
+            .map(|contract| contract.id)
+            .collect();
+        if live_succeeded != self.share_succeeded_live_ids {
+            return false;
+        }
+        self.share_contracts
+            .iter()
+            .filter(|contract| self.share_succeeded_live_ids.contains(&contract.id))
+            .all(|contract| {
+                self.private_land_live_agent(contract.owner)
+                    && self.private_land_live_agent(contract.worker)
+                    && self.land_plots.get(&contract.node).is_some_and(|record| {
+                        record.owner == Some(contract.owner)
+                            && record.reserved_for == Some(contract.worker)
+                    })
+            })
     }
 }

@@ -29,6 +29,8 @@ enum ScenarioMode {
     NoContract,
     Voluntary,
     ForwardProvisioning,
+    Succession,
+    SuccessionVoluntary,
     ForcedShare,
     WageComparative,
     LineageWorker,
@@ -47,6 +49,10 @@ enum Verdict {
     RenewalStillDeclined,
     StandingTenancyNoLift,
     StandingTenancyLifts,
+    SuccessionInert,
+    SuccessionButStillTransient,
+    StandingTenureForms,
+    StandingTenureLifts,
     /// The matched `NoContract` control: the S23e/C1 null shape (the lever is off by
     /// construction, so "share-vacuous" would mislabel it).
     SubsistenceBoundDespiteScarcity,
@@ -69,6 +75,7 @@ struct Metrics {
     registry_ok: bool,
     commons_ok: bool,
     money_ok: bool,
+    succession_registry_ok: bool,
     anti_title_ok: bool,
     /// S23d owner-identity hard guards, accumulated per tick (spec §6 / review P2): the
     /// end-of-run disjointness check alone would miss a worker that transiently acquired
@@ -112,6 +119,14 @@ impl Metrics {
                 .saturating_sub(self.stats.renewals_total)
     }
 
+    fn succession_mark_consistent(&self) -> bool {
+        self.stats.final_open_succeeded <= self.stats.open_contracts as u64
+            && self.stats.post_succession_renewals <= self.stats.renewals_total
+            && (self.stats.successions_total > 0
+                || (self.stats.final_open_succeeded == 0
+                    && self.stats.post_succession_renewals == 0))
+    }
+
     fn verdict(&self) -> Verdict {
         if self.extinct {
             return Verdict::BaseUnviable;
@@ -120,12 +135,14 @@ impl Metrics {
             || !self.commons_ok
             || !self.money_ok
             || !self.renewal_fates_consistent()
+            || !self.succession_mark_consistent()
             || self.stats.share_stock_drawdown > 0
             || self.stats.unattributed_share_deposit > 0
         {
             return Verdict::ConservationBroken;
         }
         if !self.registry_ok
+            || !self.succession_registry_ok
             || !self.anti_title_ok
             || !self.owner_identity_ok
             || self.immortal_owned_plot_ticks > 0
@@ -163,6 +180,24 @@ impl Metrics {
                 Verdict::StandingTenancyNoLift
             };
         }
+        if matches!(
+            self.mode,
+            ScenarioMode::Succession | ScenarioMode::SuccessionVoluntary
+        ) {
+            if self.stats.successions_total == 0 {
+                return Verdict::SuccessionInert;
+            }
+            if self.stats.final_open_succeeded < MIN_FINAL_OPEN_CONTRACTS
+                && self.stats.post_succession_renewals < MIN_RENEWALS
+            {
+                return Verdict::SuccessionButStillTransient;
+            }
+            return if self.survival_lift >= MIN_SURVIVAL_LIFT {
+                Verdict::StandingTenureLifts
+            } else {
+                Verdict::StandingTenureForms
+            };
+        }
         // Voluntary (headline) and LineageWorker (diagnostic) cells classify by the §2
         // rules. Vacuity is WHOLE-RUN (spec §2: "< MIN_CONTRACTS voluntary contracts EVER
         // clear"), not the final window: contracts that clear early then stop are the
@@ -195,6 +230,8 @@ impl Metrics {
              worker_share_bps={} worker_consumed={} worker_income={} owner_income={} \
              worker_income_total={} owner_income_total={} owner_grain_settled={} \
              open_contracts={} total_contracts={} voluntary={} forced={} renewals_total={} \
+             successions={} heir_declined={} worker_re_declined={} \
+             post_succession_renewals={} final_open_succeeded={} succession_registry={} \
              forward_only={} renewal_hints={} fate_total={} fates_consistent={} \
              renewal_fed_out={} renewal_base_ineligible={} renewal_owner_not_candidate={} \
              renewal_bread_declined={} renewal_matched_elsewhere={} owner_candidates={} \
@@ -234,6 +271,12 @@ impl Metrics {
             self.stats.voluntary_contracts_total,
             self.stats.forced_contracts_total,
             self.stats.renewals_total,
+            self.stats.successions_total,
+            self.stats.heir_declined,
+            self.stats.worker_re_declined,
+            self.stats.post_succession_renewals,
+            self.stats.final_open_succeeded,
+            self.succession_registry_ok,
             self.stats.forward_only_eligibility,
             self.stats.renewal_hints_total,
             self.renewal_fate_total(),
@@ -286,6 +329,7 @@ fn scenario_config(
     chain.share_bps = share_bps;
     chain.share_term = share_term;
     chain.share_forward_provisioning = false;
+    chain.share_contract_succession = false;
     match mode {
         ScenarioMode::NoContract => {
             chain.share_tenancy = false;
@@ -301,6 +345,19 @@ fn scenario_config(
             chain.share_tenancy = true;
             chain.share_tenancy_mode = ShareTenancyMode::Voluntary;
             chain.share_forward_provisioning = true;
+            chain.wage_labor = false;
+        }
+        ScenarioMode::Succession => {
+            chain.share_tenancy = true;
+            chain.share_tenancy_mode = ShareTenancyMode::Voluntary;
+            chain.share_forward_provisioning = true;
+            chain.share_contract_succession = true;
+            chain.wage_labor = false;
+        }
+        ScenarioMode::SuccessionVoluntary => {
+            chain.share_tenancy = true;
+            chain.share_tenancy_mode = ShareTenancyMode::Voluntary;
+            chain.share_contract_succession = true;
             chain.wage_labor = false;
         }
         ScenarioMode::ForcedShare => {
@@ -513,6 +570,7 @@ fn run_metrics_cell(
     let mut registry_ok = true;
     let mut commons_ok = true;
     let mut money_ok = true;
+    let mut succession_registry_ok = true;
     let mut owner_identity_ok = true;
     let mut immortal_owned_plot_ticks = 0u64;
     let mut non_lineage_owner_plot_ticks = 0u64;
@@ -532,6 +590,7 @@ fn run_metrics_cell(
         conserved &= report.conserves();
         registry_ok &= s.private_land_registry_invariant_holds()
             && s.private_land_plot_count() == initial_plot_count;
+        succession_registry_ok &= s.share_succession_registry_invariant_holds();
         commons_ok &= report.subsistence_commons_conserves();
         money_ok &= report.money_conserves();
         owner_identity_ok &= observe_owner_residue(
@@ -578,6 +637,7 @@ fn run_metrics_cell(
         registry_ok,
         commons_ok,
         money_ok,
+        succession_registry_ok,
         // The disjointness guard is scoped to cells whose workers are non-lineage: in the
         // LineageWorker diagnostic a lineage EX-worker homesteading the frontier is the
         // legitimate outside option the cell probes, not contract-conferred title (the
@@ -701,6 +761,65 @@ fn forward_provisioning_verdict_prints_without_asserting_success() {
 }
 
 #[test]
+fn succession_verdict_prints_without_asserting_success() {
+    for seed in SEEDS {
+        let no_contract = run_metrics(seed, ScenarioMode::NoContract);
+        let forward = run_metrics_with_baseline(
+            seed,
+            ScenarioMode::ForwardProvisioning,
+            no_contract.final_non_lineage,
+        );
+        let succession_voluntary = run_metrics_with_baseline(
+            seed,
+            ScenarioMode::SuccessionVoluntary,
+            no_contract.final_non_lineage,
+        );
+        let succession = run_metrics_with_baseline(
+            seed,
+            ScenarioMode::Succession,
+            no_contract.final_non_lineage,
+        );
+        eprintln!("{}", no_contract.line());
+        eprintln!("{}", forward.line());
+        eprintln!("{}", succession_voluntary.line());
+        eprintln!("{}", succession.line());
+        eprintln!("{}", matched_volume_line(seed, &succession, &forward));
+
+        assert!(matches!(
+            forward.verdict(),
+            Verdict::ForwardGateInert
+                | Verdict::RenewalStillDeclined
+                | Verdict::StandingTenancyNoLift
+                | Verdict::StandingTenancyLifts
+        ));
+        for metrics in [&succession_voluntary, &succession] {
+            assert_ne!(metrics.verdict(), Verdict::ConservationBroken);
+            assert_ne!(metrics.verdict(), Verdict::RegistryBroken);
+            assert_eq!(metrics.stats.share_stock_drawdown, 0);
+            assert_eq!(metrics.stats.unattributed_share_deposit, 0);
+            assert_eq!(metrics.immortal_owned_plot_ticks, 0);
+            assert_eq!(metrics.non_lineage_owner_plot_ticks, 0);
+            assert!(metrics.anti_title_ok);
+            assert!(metrics.renewal_fates_consistent());
+            assert!(metrics.succession_mark_consistent());
+            assert!(metrics.succession_registry_ok);
+            if metrics.stats.successions_total == 0 {
+                assert_eq!(metrics.verdict(), Verdict::SuccessionInert);
+            } else if metrics.stats.final_open_succeeded < MIN_FINAL_OPEN_CONTRACTS
+                && metrics.stats.post_succession_renewals < MIN_RENEWALS
+            {
+                assert_eq!(metrics.verdict(), Verdict::SuccessionButStillTransient);
+            } else {
+                assert!(matches!(
+                    metrics.verdict(),
+                    Verdict::StandingTenureForms | Verdict::StandingTenureLifts
+                ));
+            }
+        }
+    }
+}
+
+#[test]
 fn forced_share_classifies_before_vacuity() {
     let metrics = run_metrics(SEEDS[0], ScenarioMode::ForcedShare);
     eprintln!("{}", metrics.line());
@@ -752,6 +871,7 @@ fn phi_share_and_term_sweeps_reported() {
     for (label, phi) in phis {
         let mut clears = 0usize;
         let mut forward_counts = BTreeMap::<Verdict, usize>::new();
+        let mut succession_counts = BTreeMap::<Verdict, usize>::new();
         for seed in SEEDS {
             let base = run_metrics_cell(
                 seed,
@@ -784,9 +904,20 @@ fn phi_share_and_term_sweeps_reported() {
             eprintln!("P1.5 phi={label} {}", forward.line());
             eprintln!("{}", matched_volume_line(seed, &forward, &metrics));
             *forward_counts.entry(forward.verdict()).or_insert(0) += 1;
+            let succession = run_metrics_cell(
+                seed,
+                ScenarioMode::Succession,
+                phi,
+                SHARE_TENANCY_BPS_DEFAULT,
+                SHARE_TENANCY_TERM_DEFAULT,
+                Some(base.final_non_lineage),
+            );
+            eprintln!("C1S phi={label} {}", succession.line());
+            *succession_counts.entry(succession.verdict()).or_insert(0) += 1;
         }
         eprintln!("C1R phi_sweep phi={label} clears={clears}/{}", SEEDS.len());
         eprintln!("P1.5 phi_sweep phi={label} verdicts={forward_counts:?}");
+        eprintln!("C1S phi_sweep phi={label} verdicts={succession_counts:?}");
     }
 
     for share_bps in [2_500, SHARE_TENANCY_BPS_DEFAULT, 7_500] {
@@ -961,6 +1092,47 @@ fn canonical_bytes_split_for_share_forward_provisioning() {
         no_contract.canonical_bytes(),
         forward_flag_without_share.canonical_bytes(),
         "the forward sub-flag is inert unless share tenancy is active"
+    );
+}
+
+#[test]
+fn canonical_bytes_split_for_share_contract_succession() {
+    let succession_off = Settlement::generate(7, &marginal_config(ScenarioMode::Voluntary));
+    let explicit_succession_off = {
+        let mut cfg = marginal_config(ScenarioMode::Voluntary);
+        cfg.chain
+            .as_mut()
+            .expect("C1R base carries a chain")
+            .share_contract_succession = false;
+        Settlement::generate(7, &cfg)
+    };
+    assert_eq!(
+        succession_off.canonical_bytes(),
+        explicit_succession_off.canonical_bytes(),
+        "succession-off must reproduce the C1R share-tenancy bytes"
+    );
+
+    let succession_on =
+        Settlement::generate(7, &marginal_config(ScenarioMode::SuccessionVoluntary));
+    assert_ne!(
+        succession_off.canonical_bytes(),
+        succession_on.canonical_bytes(),
+        "succession-on must split canonical bytes under tag 26"
+    );
+
+    let succession_flag_without_share = {
+        let mut cfg = marginal_config(ScenarioMode::NoContract);
+        cfg.chain
+            .as_mut()
+            .expect("C1R base carries a chain")
+            .share_contract_succession = true;
+        Settlement::generate(7, &cfg)
+    };
+    let no_contract = Settlement::generate(7, &marginal_config(ScenarioMode::NoContract));
+    assert_eq!(
+        no_contract.canonical_bytes(),
+        succession_flag_without_share.canonical_bytes(),
+        "the succession sub-flag is inert unless share tenancy is active"
     );
 }
 

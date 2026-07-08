@@ -1448,6 +1448,9 @@ pub struct ChainConfig {
     /// P1.5 — forward-provisioning worker gate. Orthogonal to the C1R acceptance mode and inert
     /// unless share tenancy itself composes on the S23e substrate.
     pub share_forward_provisioning: bool,
+    /// P1.6 — owner-death succession for live share contracts. Inert unless share tenancy
+    /// itself composes on the S23e substrate.
+    pub share_contract_succession: bool,
     /// C1N — fixed in-kind bread wage on C1R's share-tenancy substrate. The owner advances
     /// bread up front out of self-produced stock and receives 100% of the contract product.
     /// Inert unless share tenancy is active.
@@ -1882,6 +1885,7 @@ impl ChainConfig {
             share_tenancy: false,
             share_tenancy_mode: ShareTenancyMode::Voluntary,
             share_forward_provisioning: false,
+            share_contract_succession: false,
             in_kind_wage: false,
             share_bps: SHARE_TENANCY_BPS_DEFAULT,
             share_term: SHARE_TENANCY_TERM_DEFAULT,
@@ -2070,6 +2074,7 @@ impl ChainConfig {
             share_tenancy: false,
             share_tenancy_mode: ShareTenancyMode::Voluntary,
             share_forward_provisioning: false,
+            share_contract_succession: false,
             in_kind_wage: false,
             share_bps: SHARE_TENANCY_BPS_DEFAULT,
             share_term: SHARE_TENANCY_TERM_DEFAULT,
@@ -2238,6 +2243,7 @@ impl ChainConfig {
             share_tenancy: false,
             share_tenancy_mode: ShareTenancyMode::Voluntary,
             share_forward_provisioning: false,
+            share_contract_succession: false,
             in_kind_wage: false,
             share_bps: SHARE_TENANCY_BPS_DEFAULT,
             share_term: SHARE_TENANCY_TERM_DEFAULT,
@@ -6436,6 +6442,11 @@ pub struct Settlement {
     share_stock_drawdown: u64,
     share_unattributed_share_deposit: u64,
     share_owner_grain_settled: u64,
+    share_successions_total: u64,
+    share_succession_heir_declined: u64,
+    share_succession_worker_re_declined: u64,
+    share_post_succession_renewals: u64,
+    share_succeeded_live_ids: BTreeSet<u64>,
     /// C1N: live fixed-bread-wage contracts over at-cap owned plots. The wage advance is
     /// paid up front; the worker's realized own-use output is transferred 100% to the employer.
     in_kind_contracts: Vec<InKindWageContract>,
@@ -6982,6 +6993,7 @@ struct ChainRuntime {
     share_tenancy: bool,
     share_tenancy_mode: ShareTenancyMode,
     share_forward_provisioning: bool,
+    share_contract_succession: bool,
     in_kind_wage: bool,
     share_bps: u16,
     share_term: u16,
@@ -7138,6 +7150,11 @@ pub struct ShareTenancyStats {
     /// Un-converted contract-sourced grain the owner received in kind at dissolution
     /// (the term-boundary settle that closes the final-haul leak).
     pub owner_grain_settled: u64,
+    pub successions_total: u64,
+    pub heir_declined: u64,
+    pub worker_re_declined: u64,
+    pub post_succession_renewals: u64,
+    pub final_open_succeeded: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -7244,6 +7261,17 @@ struct ShareOwnerCandidate {
 }
 
 type RenewalHintKey = (AgentId, AgentId, NodeId);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ShareRenewalHint {
+    renewals: u16,
+    from_succeeded: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PendingShareSuccession {
+    contract: ShareContract,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RenewalFate {
@@ -9586,6 +9614,7 @@ impl Settlement {
                 share_tenancy: chain.share_tenancy,
                 share_tenancy_mode: chain.share_tenancy_mode,
                 share_forward_provisioning: chain.share_forward_provisioning,
+                share_contract_succession: chain.share_contract_succession,
                 in_kind_wage: chain.in_kind_wage,
                 share_bps: chain.share_bps,
                 share_term: chain.share_term,
@@ -9698,6 +9727,11 @@ impl Settlement {
             share_stock_drawdown: 0,
             share_unattributed_share_deposit: 0,
             share_owner_grain_settled: 0,
+            share_successions_total: 0,
+            share_succession_heir_declined: 0,
+            share_succession_worker_re_declined: 0,
+            share_post_succession_renewals: 0,
+            share_succeeded_live_ids: BTreeSet::new(),
             in_kind_contracts: Vec::new(),
             next_in_kind_contract_id: 0,
             in_kind_workers_ever: BTreeSet::new(),
@@ -10207,6 +10241,11 @@ impl Settlement {
             share_stock_drawdown: 0,
             share_unattributed_share_deposit: 0,
             share_owner_grain_settled: 0,
+            share_successions_total: 0,
+            share_succession_heir_declined: 0,
+            share_succession_worker_re_declined: 0,
+            share_post_succession_renewals: 0,
+            share_succeeded_live_ids: BTreeSet::new(),
             in_kind_contracts: Vec::new(),
             next_in_kind_contract_id: 0,
             in_kind_workers_ever: BTreeSet::new(),
@@ -12979,8 +13018,9 @@ impl Settlement {
     ) -> bool {
         self.record_owner_death_telemetry(id);
         self.settle_in_kind_wage_for_starvation_death(id);
-        self.settle_share_tenancy_for_death(id);
+        let pending_share_successions = self.settle_share_tenancy_for_death(id);
         self.transfer_private_land_on_death(id);
+        self.finalize_share_contract_successions(pending_share_successions);
         if self.demography.is_some() {
             self.settle_estate_to_heirs(id, report, wage_labor_used)
         } else {
@@ -13987,7 +14027,7 @@ impl Settlement {
             // worker holding 100% of the pending contract grain. Inert unless share contracts
             // exist (empty-vec early return), so every non-share config is byte-unchanged.
             self.settle_in_kind_wage_for_death(id);
-            self.settle_share_tenancy_for_death(id);
+            let pending_share_successions = self.settle_share_tenancy_for_death(id);
             if let Some((_, true, inherit_eligible)) = secure_owner_death_snapshot
                 .iter()
                 .find(|&&(owner, _, _)| owner == id)
@@ -14012,6 +14052,7 @@ impl Settlement {
             if self.land_market_active() || self.secure_land_tenure_active() {
                 self.transfer_private_land_on_death(id);
             }
+            self.finalize_share_contract_successions(pending_share_successions);
             deaths += u32::from(self.settle_estate_to_heirs(id, report, wage_labor_used));
         }
         self.old_age_deaths_total = self.old_age_deaths_total.saturating_add(u64::from(deaths));
@@ -17403,6 +17444,13 @@ impl Settlement {
         self.chain
             .as_ref()
             .is_some_and(chain_runtime_share_forward_provisioning_active)
+            && self.provenance_bread_good().is_some()
+    }
+
+    fn share_contract_succession_active(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(chain_runtime_share_contract_succession_active)
             && self.provenance_bread_good().is_some()
     }
 
@@ -23062,6 +23110,10 @@ impl Settlement {
                     }
                 }
             }
+            if self.share_contract_succession_active() {
+                out.push(26);
+                out.push(u8::from(chain.share_contract_succession));
+            }
             // S23b: the post-money land market extends S23a's registry with an endogenous-price
             // state, listings, last-sale anchors, and the non-agent fee sink. Emitted only when the
             // market composes on active private land tenure; with the flag off every S23a and older
@@ -24343,6 +24395,10 @@ fn chain_runtime_in_kind_wage_active(chain: &ChainRuntime) -> bool {
 
 fn chain_runtime_share_forward_provisioning_active(chain: &ChainRuntime) -> bool {
     chain.share_forward_provisioning && chain_runtime_share_tenancy_active(chain)
+}
+
+fn chain_runtime_share_contract_succession_active(chain: &ChainRuntime) -> bool {
+    chain.share_contract_succession && chain_runtime_share_tenancy_active(chain)
 }
 
 /// S22b: bounded cultivation skill is active iff the flag is on AND the S22a
@@ -31456,6 +31512,296 @@ mod tests {
             worker_before - 2,
             "the worker keeps exactly the floor share"
         );
+    }
+
+    /// Build a live share contract on the mortal-landowner base whose owner is a mortal
+    /// with a resolvable, re-consenting heir and a re-accepting worker — the exact
+    /// precondition for a voluntary owner-death succession. Shared by the single-death
+    /// transfer test and the same-batch multi-owner-death regression (review R1/R2), which
+    /// differ only in whether the plot is already transferred when the owner is settled.
+    fn setup_owner_death_succession(
+        seed: u64,
+    ) -> (Settlement, NodeId, usize, AgentId, AgentId, AgentId, u64) {
+        let mut cfg = SettlementConfig::frontier_mortal_landowner_demography();
+        let chain = cfg.chain.as_mut().expect("chain");
+        chain.rival_subsistence_commons = true;
+        chain.rival_subsistence_commons_phi_bps = RIVAL_COMMONS_PHI_MARGINAL_BPS;
+        chain.acquisition_ledger = true;
+        chain.share_forward_provisioning = true;
+        chain.share_bps = SHARE_TENANCY_BPS_DEFAULT;
+        chain.share_term = SHARE_TENANCY_TERM_DEFAULT;
+        let bread = chain.content.bread();
+        let mut s = Settlement::generate(seed, &cfg);
+
+        let mut setup = None;
+        for _ in 0..300 {
+            let candidates = s.share_owner_candidate_plots(bread);
+            'candidate: for candidate in candidates {
+                let owner = candidate.owner;
+                let Some(owner_slot) = s.slot_for_id(owner) else {
+                    continue;
+                };
+                if s.colonists[owner_slot].lifespan.is_none() {
+                    continue;
+                }
+                for heir_slot in s.live_colonist_slots.clone() {
+                    let heir = s.colonists[heir_slot].id;
+                    if heir == owner || !s.private_land_heir_eligible(heir) {
+                        continue;
+                    }
+                    for heir_plot in s.land_plots.keys().copied().collect::<Vec<_>>() {
+                        if heir_plot == candidate.node || !s.private_land_plot_has_stock(heir_plot)
+                        {
+                            continue;
+                        }
+                        let original_parent = s.colonists[heir_slot].parent;
+                        let original_household = s.colonists[heir_slot].household;
+                        let original_record = s
+                            .land_plots
+                            .get(&heir_plot)
+                            .expect("candidate plot exists")
+                            .clone();
+                        let original_candidate_record = s
+                            .land_plots
+                            .get(&candidate.node)
+                            .expect("contract plot exists")
+                            .clone();
+                        s.colonists[heir_slot].parent = Some(owner);
+                        s.colonists[heir_slot].household = s.colonists[owner_slot].household;
+                        if let Some(record) = s.land_plots.get_mut(&heir_plot) {
+                            record.owner = Some(heir);
+                            record.reserved_for = None;
+                            record.shares.clear();
+                            record.stranded_regen = 0;
+                            record.stranded_cap = 0;
+                        }
+                        if let Some(record) = s.land_plots.get_mut(&candidate.node) {
+                            record.owner = Some(heir);
+                            record.reserved_for = None;
+                        }
+                        let heir_stays_heir = s.secure_land_universal_heir_for(owner) == Some(heir);
+                        let heir_accepts_after_transfer = s
+                            .share_owner_candidate_plots(bread)
+                            .into_iter()
+                            .any(|post| post.owner == heir && post.node == candidate.node);
+                        s.land_plots
+                            .insert(candidate.node, original_candidate_record);
+                        if !heir_stays_heir || !heir_accepts_after_transfer {
+                            s.colonists[heir_slot].parent = original_parent;
+                            s.colonists[heir_slot].household = original_household;
+                            s.land_plots.insert(heir_plot, original_record);
+                            continue;
+                        }
+                        let worker = s.live_colonist_slots.iter().copied().find_map(|slot| {
+                            let worker = s.colonists[slot].id;
+                            (worker != owner
+                                && worker != heir
+                                && !s.private_land_agent_holds_any_plot(worker)
+                                && s.share_worker_accepts_bread(worker, bread, candidate.node))
+                            .then_some(worker)
+                        });
+                        let Some(worker) = worker else {
+                            s.colonists[heir_slot].parent = original_parent;
+                            s.colonists[heir_slot].household = original_household;
+                            s.land_plots.insert(heir_plot, original_record);
+                            continue;
+                        };
+                        setup = Some((candidate, owner_slot, owner, heir, worker));
+                        break 'candidate;
+                    }
+                }
+            }
+            if setup.is_some() {
+                break;
+            }
+            let _ = s.econ_tick();
+        }
+
+        let (candidate, owner_slot, owner, heir, worker) =
+            setup.expect("test setup finds a voluntary succession candidate");
+        {
+            let chain = s.chain.as_mut().expect("chain");
+            chain.share_tenancy = true;
+            chain.share_forward_provisioning = true;
+            chain.share_contract_succession = true;
+        }
+        let contract_id = 77;
+        if let Some(record) = s.land_plots.get_mut(&candidate.node) {
+            record.owner = Some(owner);
+            record.reserved_for = Some(worker);
+        }
+        s.share_contracts.push(ShareContract {
+            id: contract_id,
+            owner,
+            worker,
+            node: candidate.node,
+            share_bps: SHARE_TENANCY_BPS_DEFAULT,
+            term: SHARE_TENANCY_TERM_DEFAULT,
+            opened_tick: s.econ_tick,
+            renewals: 0,
+            cap_at_start: candidate.cap_at_start,
+            grain_in_stock: 0,
+            split_remainder_bps: 0,
+        });
+        s.next_share_contract_id = contract_id + 1;
+
+        (
+            s,
+            candidate.node,
+            owner_slot,
+            owner,
+            heir,
+            worker,
+            contract_id,
+        )
+    }
+
+    /// Slice A DoD: a single owner-death succession conserves (goods + provenance) and
+    /// leaves a live contract owned by the heir with the worker admitted. Here the plot is
+    /// transferred AFTER the dying owner is settled (the ordinary lone-death ordering).
+    #[test]
+    fn owner_death_succession_retains_finalizes_and_conserves() {
+        let (mut s, node, owner_slot, owner, heir, worker, contract_id) =
+            setup_owner_death_succession(7);
+
+        let before_goods: Vec<_> = s
+            .goods
+            .iter()
+            .map(|&good| (good, s.whole_system_total(good)))
+            .collect();
+        assert!(s.bread_provenance_conserves());
+        s.mark_colonist_dead(owner_slot);
+        let pending = s.settle_share_tenancy_for_death(owner);
+        assert_eq!(
+            pending.len(),
+            1,
+            "owner death should tentatively retain the contract"
+        );
+        assert_eq!(
+            s.land_plots
+                .get(&node)
+                .and_then(|record| record.reserved_for),
+            Some(worker),
+            "tentative retain must not clear the worker reservation before land transfer"
+        );
+        s.transfer_private_land_on_death(owner);
+        assert_eq!(
+            s.land_plots.get(&node).and_then(|record| record.owner),
+            Some(heir),
+            "the staged heir must inherit the contracted plot"
+        );
+        assert_eq!(
+            s.land_plots
+                .get(&node)
+                .and_then(|record| record.reserved_for),
+            None,
+            "the land transfer wipes the reservation before succession finalizes"
+        );
+        s.finalize_share_contract_successions(pending);
+
+        let stats = s.share_tenancy_stats();
+        assert_eq!(stats.successions_total, 1);
+        assert_eq!(stats.heir_declined, 0);
+        assert_eq!(stats.worker_re_declined, 0);
+        assert_eq!(stats.final_open_succeeded, 1);
+        assert_eq!(stats.owner_grain_settled, 0);
+        let contract = s
+            .share_contracts
+            .iter()
+            .find(|contract| contract.id == contract_id)
+            .expect("succeeded contract stays live under the same id");
+        assert_eq!(contract.owner, heir);
+        assert_eq!(contract.worker, worker);
+        assert_eq!(contract.node, node);
+        let record = s
+            .land_plots
+            .get(&node)
+            .expect("succeeded plot remains registered");
+        assert_eq!(record.owner, Some(heir));
+        assert_eq!(record.reserved_for, Some(worker));
+        assert!(s.share_worker_admitted_to(worker, node, record));
+        assert!(s.private_land_registry_invariant_holds());
+        assert!(s.share_succession_registry_invariant_holds());
+        assert!(s.bread_provenance_conserves());
+        for (good, before) in before_goods {
+            assert_eq!(
+                s.whole_system_total(good),
+                before,
+                "succession must not move or mint goods"
+            );
+        }
+    }
+
+    /// Same-batch multi-owner-death regression (review R1/R2): when several share-contract
+    /// owners die in one death batch, an earlier-processed death's
+    /// `transfer_private_land_on_death` bulk-reassigns EVERY currently-dead owner's plot to
+    /// its heir before this owner's own `settle_share_tenancy_for_death` runs — so the plot
+    /// already reads `owner == heir` when its contract is settled. Emulate that by
+    /// transferring before settling: the succession must still stage and finalize (not
+    /// dissolve), so successions are never silently capped at one per death batch (which
+    /// would under-count exactly under the clustered scarce-phi die-offs where standing
+    /// tenure is most plausible).
+    #[test]
+    fn same_batch_owner_death_before_transfer_still_succeeds() {
+        let (mut s, node, owner_slot, owner, heir, worker, contract_id) =
+            setup_owner_death_succession(7);
+
+        let before_goods: Vec<_> = s
+            .goods
+            .iter()
+            .map(|&good| (good, s.whole_system_total(good)))
+            .collect();
+        s.mark_colonist_dead(owner_slot);
+        // Emulate the earlier-death bulk transfer already moving THIS owner's plot to the
+        // heir before its own contract is settled (the same-batch case).
+        s.transfer_private_land_on_death(owner);
+        assert_eq!(
+            s.land_plots.get(&node).and_then(|record| record.owner),
+            Some(heir),
+            "the emulated earlier-death transfer moves the plot to the heir first"
+        );
+        let pending = s.settle_share_tenancy_for_death(owner);
+        assert_eq!(
+            pending.len(),
+            1,
+            "a pre-transferred plot (owner already == heir) must still stage succession \
+             rather than dissolve — succession is not capped at one per death batch"
+        );
+        s.finalize_share_contract_successions(pending);
+
+        let stats = s.share_tenancy_stats();
+        assert_eq!(
+            stats.successions_total, 1,
+            "the same-batch succession finalizes exactly as a lone owner death"
+        );
+        assert_eq!(stats.heir_declined, 0);
+        assert_eq!(stats.worker_re_declined, 0);
+        assert_eq!(stats.owner_grain_settled, 0);
+        let contract = s
+            .share_contracts
+            .iter()
+            .find(|contract| contract.id == contract_id)
+            .expect("succeeded contract stays live under the same id");
+        assert_eq!(contract.owner, heir);
+        assert_eq!(contract.worker, worker);
+        assert_eq!(contract.node, node);
+        let record = s
+            .land_plots
+            .get(&node)
+            .expect("succeeded plot remains registered");
+        assert_eq!(record.owner, Some(heir));
+        assert_eq!(record.reserved_for, Some(worker));
+        assert!(s.share_worker_admitted_to(worker, node, record));
+        assert!(s.private_land_registry_invariant_holds());
+        assert!(s.share_succession_registry_invariant_holds());
+        assert!(s.bread_provenance_conserves());
+        for (good, before) in before_goods {
+            assert_eq!(
+                s.whole_system_total(good),
+                before,
+                "succession must not move or mint goods"
+            );
+        }
     }
 
     #[test]
