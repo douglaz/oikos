@@ -541,7 +541,20 @@ We state the scaffolds plainly; a hostile reader should attack these first.
   55 live-live expiries). Provisioning for the future, handed to the worker as a derived faculty, *reshaped* the
   institution rather than perpetuating its pairings — rotational labor, not tenure. Contiguous tenancy now has two
   named preconditions this base lacks: a reason to prefer the *same* counterparty, and **succession across owner
-  death** — the heir assuming the live contract, the next probe the traces name alongside C1N in-kind wages.
+  death** — the heir assuming the live contract, the next probe the traces name alongside C1N in-kind wages. That
+  wage probe has since been built — **C1N, in-kind (bread) wages**: the fixed-advance twin of the share contract,
+  where the owner advances a bread wage *up front* out of its own realized cultivation surplus and takes the whole
+  product. Its result completes the wage/share strand's central claim: on the same base and seed where the **money**
+  wage clears zero, the **in-kind** advance clears real contracts (3–47 hires a seed), because the in-kind fund
+  exists and the money fund does not — the wages-fund doctrine (a wage is an advance of prior saving) confirmed a
+  third time, now in its sharpest form, with the binding margin the *size of the fund* exactly as the doctrine
+  predicts (the dominant decline is the owner lacking enough saved bread to advance). Its persistence is
+  scarcity-dependent: at the scarce commons it sustains and *raises survival* (the first advance-based labor to lift
+  the survival needle), at the marginal commons it clears then fades, at the abundant commons it never forms. So the
+  honest close on voluntary labor is layered rather than flat: **the exchange itself clears** — money-wage nulls
+  were a *fund* gap, not a labor-exchange gap, and both the share and the fixed-wage form prove it — but **continuity
+  does not**, for the same reason across all three probes (the fund exhausts, the mortal counterparties die), which
+  is why the arc turns next to succession across death, not to another contract form.
 - **Endogenous institution selection — the natural next frontier, now opened.** The study has shown that
   *specific* hand-designed institutions make or break emergence (which exchange rule, which exit-cost
   institution). The next question is not another hand-designed institution but whether agents or populations
