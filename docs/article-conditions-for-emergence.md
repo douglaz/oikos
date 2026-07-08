@@ -554,7 +554,25 @@ We state the scaffolds plainly; a hostile reader should attack these first.
   honest close on voluntary labor is layered rather than flat: **the exchange itself clears** — money-wage nulls
   were a *fund* gap, not a labor-exchange gap, and both the share and the fixed-wage form prove it — but **continuity
   does not**, for the same reason across all three probes (the fund exhausts, the mortal counterparties die), which
-  is why the arc turns next to succession across death, not to another contract form.
+  is why the arc turns next to succession across death, not to another contract form. That final probe has since
+  been built — **C1S, tenure succession**: on a mortal owner's death the heir who inherits the plot assumes the
+  owner side of the live contract, if heir and worker both re-consent — and it is the arc's *closing* result. The
+  mechanism works: contracts genuinely survive their owner's death into the heir's ownership (dozens a run), heirs
+  sometimes decline to keep working the plot themselves and workers sometimes decline to continue, both as free
+  choices. But **standing tenure still does not form** — not a single succeeded relationship persists into the final
+  window on any seed — because the renewal ledger shows the worker is fed out of the pool at *every* term boundary,
+  exactly as before. Removing the mortality bound changed the cause of dissolution but not the outcome: the
+  owner-death seam was never the binding constraint; the worker's satiation exit is. This closes the strand as a
+  clean sequence of eliminations. The occupation levers (S22) each failed because they left the hunger/profit *exit*
+  intact; the contract probes then ruled out, one at a time, the candidate fixes for the exit itself — the output
+  share (fed out), the term-horizon forecast (myopia is not it — the market only rotates faster), the in-kind
+  advance (the money gap is not it — it clears and still fades), and succession (mortality is not it). Every
+  voluntary institution that leaves the worker free to stop contracting once its present need is met **clears but
+  does not persist**. The single located binding constraint on a standing occupational institution in this model is
+  therefore the **worker's satiation exit** — the freedom to exit when fed. What would override it is, by
+  construction, an institution that *removes* that freedom (coercion, debt-bondage, an exogenous standing
+  obligation) — which this study declines to smuggle in under the voluntary banner. Naming that boundary precisely,
+  rather than crossing it, is where the voluntary-labor arc honestly ends.
 - **Endogenous institution selection — the natural next frontier, now opened.** The study has shown that
   *specific* hand-designed institutions make or break emergence (which exchange rule, which exit-cost
   institution). The next question is not another hand-designed institution but whether agents or populations
