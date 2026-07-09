@@ -1,11 +1,112 @@
 # impl-63 — C3R.b: Capital Inheritance for Mortal Chain-Producers (does the mill passing to an heir lift the C3R.a collapse?)
 
-Status (spec): **SPEC-READY** (Codex xhigh, 1 round: no P0/P1 — the central "add households, let estate + S7
-fire" claim verified against the branch; P2/P3 polish folded — 6×1-cap-2 made primary since a multi-producer
-house would let `heir_for`'s slot-order scan stack a dead producer's tool onto another incumbent producer
-before reaching a child; "stationary" corrected to "bounded ≤12"; a NARROW `heir_tool_adoptions` counter
-added distinct from C3R.a's broad `role_readoptions`; `producer_tool_inheritances` covers mill AND oven;
-"no NEW recipe nudge" clarified). The second slice of C3R (the keystone: a mortal production chain). Build base: branch **`feat/mortal-producers-impl-rb` @ `d8e0ddc`** (C3R.a — mortal
+Status (spec): **v2 — SPEC-READY** (revised after the v1 result-review REJECT; Codex v2-review NEEDS-REVISION →
+4 P1s folded into the authoritative `## −0` section: sweep `{0,1,2,3}` × cap `{1,2,3}`; producer-house-scoped +
+demand-side + bread-per-staffed-tick telemetry; split verdict `StructurePersistsUnderInheritance`/`FlowCapped`
+with the `ControlDidNotCollapse` disqualifier removed; food_provision as a test-level axis, cushion RETAINED,
+byte-identity verified against the OLD bases directly). The v1 build
+landed mechanically-clean but the result-review rejected it as a scientific gate: the producer-household
+**hearth floods bread demand** and floors the chain to bread=0 *before* inheritance can be evaluated (a
+`producer_house` `food_provision=3` mints so much free food that the market dies). Diagnostic sweep proved
+it — at `food_provision=1` the chain **runs** (`InheritanceCell` → `ChainPersistsUnderInheritance`,
+both-stage-staffed 1489 ticks; `Control` bread 1869). And it surfaced the real finding — an **inversion**:
+inheritance buys continuous *staffing* but demand-capped *output* (bread 9), because inheritance sustains
+the producer households → they reproduce heavily (357 newborns vs the control's 16) → the newborns' hearth
+floods demand → output stays capped; re-building (control) lets the households die back → less flood → real
+output (1869). So v2 (a) makes the hearth subsidy a **swept** parameter (classify-not-tune, the v1 sin was
+pinning `food_provision=3`), (b) adds telemetry to characterize the **structure-vs-flow inversion**
+(hearth-food minted, per-producer output, producer tenure, population trajectory), and (c) revises the
+verdict ladder to be subsidy-dependent. **v1 status (superseded): SPEC-READY** (Codex xhigh, 1 round, no
+P0/P1 on the mechanism; the confound was a scientific-inference gap the *result*-review caught, not a code
+defect). The second slice of C3R (the keystone: a mortal production chain).
+
+## −1. The v1→v2 pivot (the confound and what it revealed)
+
+**v1 was confounded, not wrong.** The estate→heir→re-adopt mechanism works perfectly (v1: 294/294 tools
+inherit, 0 heirless, ~291 heir-adoptions) — but on the v1 base the chain was already dead (bread=0) from the
+household hearth flooding demand, so "inheritance is insufficient" was unattributable. The diagnostic (drop
+`food_provision` 3→1) recovered the chain, proving the hearth subsidy — not inheritance — was the
+response-variable floor. This is the program's recurring demand-side lesson (a free-food subsidy large
+enough to flood demand kills the market — S23d/S23e) reappearing inside the keystone.
+
+**The real finding (v2's target): a structure-vs-flow inversion.** At a viable subsidy, inheritance
+*sustains the chain's structure* (both milling and baking stages continuously staffed — the keystone's first
+positive) yet caps its *flow* (output), because the mechanism is self-loading on the demand side: inheritance
+keeps the producer households populated → they keep reproducing → the newborns are hearth-fed Consumers who
+flood bread demand → output is suppressed. Re-building (the inheritance-denied control) lets the producer
+households die back, so it produces *more* bread but staffs the stages only intermittently. Having capital
+continuously (inheritance preserves tool + role) is not the same as using it productively (Böhm-Bawerk):
+inherited tenure sustains occupancy but the demographic subsidy it rides caps output. v2 characterizes this
+across the subsidy sweep.
+
+## −0. v2 acceptance shape (AUTHORITATIVE — supersedes §2/§4/§7 below wherever they conflict; folds Codex v2-review P1s)
+
+**Two swept axes (classify-not-tune — both pinned sets, reported, NOT searched; the v1 sin was pinning
+`food_provision=3`):**
+- `producer_house_food_provision ∈ {0, 1, 2, 3}` — the per-member hearth subsidy. `0` = the no-producer-hearth
+  bracket (producers fed only by the retained cushion — see below); if `0` starves producers or prevents heirs
+  it classifies `BaseUnviable`/no-hearth, NOT a failed tuning point. Included because `food_provision=1` still
+  left inheritance bread ≈ 9 (partial flood), so the bracket must reach the un-subsidised end.
+- `producer_house_cap ∈ {1, 2, 3}` — the reproduction/population axis, to separate population-flood from
+  per-capita subsidy. **`cap=1` is a no-heir / no-reproduction control** (a producer with no room for a
+  child-heir → no births → no population flood; the mill sinks to commons on death, so the chain can only
+  re-build); `cap=2` is the minimal inheritance-capable case; `cap=3` widens population at fixed subsidy.
+- **Source of truth = a TEST-LEVEL axis** that mutates the appended producer `HouseholdSpec`s'
+  `food_provision` and the producer-house cap per cell — NOT new `ChainConfig` fields. Demography config bytes
+  already serialize `food_provision` (mod.rs:27166) and the cap rides tag 28, so no digest-layout change; each
+  (food_provision, cap) pair is simply a distinct scenario. **Cushion note:** because `food_provision=0` must
+  not starve producers, v2 KEEPS `producer_subsistence` (diagnostic ruled it out as the confound — restoring it
+  did not recover the chain at high subsidy) instead of zeroing it; the double-provision it was zeroed to avoid
+  is itself a *subsidy* now measured by the sweep (at `food_provision=0` only the cushion feeds; at 3 both do).
+
+**Per-cell triad** (C3R.a baseline / inheritance-denied control / inheritance cell) at each (subsidy, cap)
+point; `SEEDS=[3,7,11,19,23]`.
+
+**Verdict ladder (v2 — split structure from flow; the `ControlDidNotCollapse` DISQUALIFIER of §2/§4/§7 is
+REMOVED):**
+```
+Preconditions: BaseUnviable (deaths==0, or food_provision=0 starves) / ReservoirOpen (immortal_producer_count>0)
+               / ConservationBroken / RegistryBroken
+Subsidy regime:
+  SubsidyFloodsChainDies — the hearth demand-flood floors bread≈0 across cells regardless of inheritance
+                           (the v1 food_provision=3 regime). A demand-side finding, not an inheritance one.
+Viable-subsidy reading (STRUCTURE and FLOW reported SEPARATELY, not collapsed to one pass/fail):
+  StructurePersistsUnderInheritance — both milling+baking stages stay jointly staffed to the final window in
+                           the inheritance cell (the keystone's first structural positive). Does NOT require
+                           non-trivial output.
+  FlowCapped / FlowRuns — an ORTHOGONAL axis on producer_bread_output (and bread-per-staffed-tick): FlowCapped
+                           when structure persists but output is demand-suppressed (the inversion); FlowRuns
+                           when output is non-trivial.
+```
+The control is a MATCHED COMPARISON, not a disqualifier: a control with high *output* but weak *structure*
+(re-building: bread high, staffing intermittent) is the informative contrast to the cell's structure-high /
+flow-capped; the control only undercuts a structural claim if it *also* structurally persists without
+inheritance. The headline is the **structure-vs-flow inversion reported across the (subsidy, cap) grid** —
+explicitly meaning "inheritance keeps the stages staffed but the subsidised households it sustains suppress
+market demand, capping output" — not a single verdict.
+
+**Telemetry (v2 — runtime-only, OUT of canonical_bytes; folds the P1 telemetry gap):**
+- Subsidy magnitude, producer-house-scoped: `producer_house_hearth_food_minted` (NOT the global endowment) +
+  `non_producer_hearth_food_minted` (the lineage baseline) — the actual injected free food.
+- Demand side: bread late-window realized price / trade count, `bread_consumed`, `bread_bought` — to show
+  demand is suppressed by the flood.
+- Flow denominator: `producer_bread_output`, `both_stage_staffed_ticks`, `producer_role_ticks`, and
+  **bread-per-staffed-tick** (output normalized by staffing — the direct inversion metric).
+- Population/reproduction: cumulative `producer_house_births` / `producer_house_deaths` /
+  `producer_house_person_ticks`, `producer_mean_tenure` (ticks holding the role before death/handoff) — to
+  tie low output to sustained population (the 357-vs-16 newborn gap).
+- Rejection accounting: recipe-pay / build / adoption rejection counts — to show WHY output is low (demand
+  gate), not a wiring failure.
+- Carried forward: `producer_tool_inheritances`, `heirless_producer_deaths`, `heir_tool_adoptions`,
+  `immortal_producer_count` (guard=0), `mortal_producer_old_age_deaths`, era.
+
+**Byte-identity (v2 — folds the P1 evidence fix):** verify the OLD bases DIRECTLY — `frontier`,
+`frontier_capital`, `frontier_mortal_producers` bytes unchanged (do NOT use the flag-off heritable base as
+byte-identity evidence, since it carries the appended producer households). Tag-28 canonical-split test stands.
+
+**Everything below (§1–§9) stands as the v1 mechanism spec** (households, estate seam, S7 re-adopt, the
+matched control, tag 28) — v2 only adds the two-axis sweep + the inversion telemetry + the split verdict on
+top, and RETAINS `producer_subsistence` (does not zero it). Build base: branch **`feat/mortal-producers-impl-rb` @ `d8e0ddc`** (C3R.a — mortal
 chain-producers, the landed `ChainCollapsesOnProducerDeath` null). Flag **`mortal_producer_inheritance`**
 (bool on `ChainConfig`), gated `mortal_producer_inheritance_active() = flag && demography.is_some() &&
 chain.is_some() && mortal_chain_producers` (composes ON TOP of C3R.a's mortality). Digest **tag 28**

@@ -134,6 +134,10 @@ pub const SHARE_TENANCY_BPS_DEFAULT: u16 = 5_000;
 pub const SHARE_TENANCY_TERM_DEFAULT: u16 = 12;
 /// C3R.a — keep mortal producer seed derivation in a disjoint founder-index band.
 const MORTAL_CHAIN_PRODUCER_SEED_OFFSET: usize = 1_000_000;
+/// C3R.b — dedicated one-producer households for the mortal mill/bake seed band.
+const MORTAL_PRODUCER_HOUSEHOLDS: usize = 6;
+/// C3R.b — one producer plus one child-heir slot per producer household.
+const MORTAL_PRODUCER_HOUSE_CAP_DEFAULT: u8 = 2;
 
 /// S22b — pinned **cultivation-skill** magnitudes (the bounded accumulate/decay scalar that
 /// raises a skilled cultivator's per-trip grain haul). Modest, house-style, NOT tuned to a
@@ -1462,6 +1466,18 @@ pub struct ChainConfig {
     /// latent mill/bake producers lifespan-only mortals and closes producer formation to
     /// mortal agents; it does not add households, inheritance, or new goods flows.
     pub mortal_chain_producers: bool,
+    /// C3R.b — bounded producer households for the mortal chain producers. Active only
+    /// on top of C3R.a (`mortal_chain_producers`) with demography and a chain; when
+    /// active, the six seeded producer subjects are assigned to six dedicated
+    /// reproducing households and the existing estate/S7 seams can carry tools to heirs.
+    pub mortal_producer_inheritance: bool,
+    /// C3R.b matched control switch. Defaults to `true` so the heritable base uses the
+    /// existing estate heir route; tests flip it to `false` to force mill/oven tools to
+    /// commons while leaving the producer households unchanged.
+    pub mortal_producer_tool_inheritance: bool,
+    /// C3R.b per-producer-house birth cap. Serialized only under tag 28 and applied
+    /// only to the dedicated producer households, never to the lineage cap.
+    pub producer_house_cap: u8,
     /// C1R worker share in basis points. Pinned/swept, never searched.
     pub share_bps: u16,
     /// C1R fixed contract term in econ ticks. Pinned/swept, never searched.
@@ -1895,6 +1911,9 @@ impl ChainConfig {
             share_contract_succession: false,
             in_kind_wage: false,
             mortal_chain_producers: false,
+            mortal_producer_inheritance: false,
+            mortal_producer_tool_inheritance: true,
+            producer_house_cap: MORTAL_PRODUCER_HOUSE_CAP_DEFAULT,
             share_bps: SHARE_TENANCY_BPS_DEFAULT,
             share_term: SHARE_TENANCY_TERM_DEFAULT,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
@@ -2085,6 +2104,9 @@ impl ChainConfig {
             share_contract_succession: false,
             in_kind_wage: false,
             mortal_chain_producers: false,
+            mortal_producer_inheritance: false,
+            mortal_producer_tool_inheritance: true,
+            producer_house_cap: MORTAL_PRODUCER_HOUSE_CAP_DEFAULT,
             share_bps: SHARE_TENANCY_BPS_DEFAULT,
             share_term: SHARE_TENANCY_TERM_DEFAULT,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
@@ -2255,6 +2277,9 @@ impl ChainConfig {
             share_contract_succession: false,
             in_kind_wage: false,
             mortal_chain_producers: false,
+            mortal_producer_inheritance: false,
+            mortal_producer_tool_inheritance: true,
+            producer_house_cap: MORTAL_PRODUCER_HOUSE_CAP_DEFAULT,
             share_bps: SHARE_TENANCY_BPS_DEFAULT,
             share_term: SHARE_TENANCY_TERM_DEFAULT,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
@@ -3964,6 +3989,39 @@ impl SettlementConfig {
             chain.mortal_chain_producers = true;
         }
         debug_assert!(config_mortal_chain_producers_active(&cfg));
+        cfg
+    }
+
+    /// C3R.b — C3R.a's mortal producer chain plus bounded reproducing producer
+    /// households. The six latent producer subjects are assigned one-per-house at
+    /// generation, so completed mill/oven tools can pass through the existing estate
+    /// heir route and the heir can re-adopt through the existing S7 tool-holder path.
+    pub fn frontier_mortal_producers_heritable() -> Self {
+        let mut cfg = Self::frontier_capital();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.mortal_chain_producers = true;
+            chain.mortal_producer_inheritance = true;
+            chain.mortal_producer_tool_inheritance = true;
+            chain.producer_house_cap = MORTAL_PRODUCER_HOUSE_CAP_DEFAULT;
+            // Producers are now household members fed by the hearth; keeping the
+            // producer cushion would double-provision this new base.
+            chain.producer_subsistence = 0;
+        }
+        let tp_base = cfg.consumer_time_preference_base_bps;
+        if let Some(demo) = cfg.demography.as_mut() {
+            for _ in 0..MORTAL_PRODUCER_HOUSEHOLDS {
+                demo.households.push(HouseholdSpec {
+                    founders: 0,
+                    time_preference_base_bps: tp_base,
+                    food_provision: 3,
+                    wood_provision: 3,
+                    starting_gold: 0,
+                    starting_food: 0,
+                    starting_wood: 0,
+                });
+            }
+        }
+        debug_assert!(config_mortal_producer_inheritance_active(&cfg));
         cfg
     }
 
@@ -6364,6 +6422,18 @@ pub struct Settlement {
     /// C3R.a runtime-only telemetry: fresh mill/oven units completed by mortal
     /// builders. Diagnostic only; not serialized.
     mortal_capital_builds: u64,
+    /// C3R.b runtime-only telemetry: mill/oven units from a dead producer's estate
+    /// that were credited to a living heir. Counts mill and oven units.
+    producer_tool_inheritances: u64,
+    /// C3R.b runtime-only telemetry: producer deaths whose mill/oven tools fell to
+    /// commons because no living household heir existed.
+    heirless_producer_deaths: u64,
+    /// C3R.b runtime-only telemetry: inherited-tool holders that later adopted
+    /// Miller/Baker through the ordinary S7 tool-holder role-choice path.
+    heir_tool_adoptions: u64,
+    /// C3R.b runtime-only attribution: `(heir, inherited_tool)` pairs created by
+    /// producer estate settlement, used only to make `heir_tool_adoptions` narrow.
+    producer_tool_inheritors: BTreeSet<(AgentId, GoodId)>,
     /// S10 observability (read-only, NOT serialized): the per-agent build decisions the
     /// LAST per-agent capital-formation phase recorded — one per eligible candidate, with
     /// accept/reject, the target savings want rank, and the decline reason. Cleared and
@@ -7029,6 +7099,9 @@ struct ChainRuntime {
     share_contract_succession: bool,
     in_kind_wage: bool,
     mortal_chain_producers: bool,
+    mortal_producer_inheritance: bool,
+    mortal_producer_tool_inheritance: bool,
+    producer_house_cap: u8,
     share_bps: u16,
     share_term: u16,
     land_carrying_cost: u64,
@@ -8869,6 +8942,16 @@ impl Settlement {
         // `AgentId`s match econ `AgentId`s by construction (assigned in this order).
         let colonist_id_base = num_traders as u64;
         let mortal_chain_producers = config_mortal_chain_producers_active(config);
+        let mortal_producer_inheritance = config_mortal_producer_inheritance_active(config);
+        let producer_household_start = if mortal_producer_inheritance {
+            config.demography.as_ref().and_then(|demo| {
+                demo.households
+                    .len()
+                    .checked_sub(MORTAL_PRODUCER_HOUSEHOLDS)
+            })
+        } else {
+            None
+        };
         // S18: the woodcutter→WOOD-node seam. With the multi-good money path on, every
         // non-lineage gatherer is pinned to the WOOD node (the lowest-id WOOD-yielding node
         // in `config.nodes`, matched into `node_ids` by build order); `None` off the flag,
@@ -9023,6 +9106,14 @@ impl Settlement {
                 } else {
                     (0, None, 0)
                 };
+            let producer_household = producer_household_start.and_then(|start| {
+                (index >= producer_band_start && index < latent_end)
+                    .then(|| index - producer_band_start)
+                    .and_then(|producer_offset| {
+                        (producer_offset < MORTAL_PRODUCER_HOUSEHOLDS)
+                            .then(|| start + producer_offset)
+                    })
+            });
             let culture = draw_culture(
                 &mut rng,
                 tp_base,
@@ -9046,10 +9137,9 @@ impl Settlement {
                 critical_streak: 0,
                 alive: true,
                 latent,
-                // Pre-G4b colonists carry no demography state (no household, no
-                // aging, no old-age mortality), so a no-demography settlement is
-                // byte-identical to G3/G4a.
-                household: None,
+                // Pre-G4b colonists carry no household; C3R.b is the narrow exception
+                // that tags the seeded producer band into dedicated producer houses.
+                household: producer_household,
                 parent: None,
                 age,
                 lifespan,
@@ -9678,6 +9768,9 @@ impl Settlement {
                 share_contract_succession: chain.share_contract_succession,
                 in_kind_wage: chain.in_kind_wage,
                 mortal_chain_producers: chain.mortal_chain_producers,
+                mortal_producer_inheritance: chain.mortal_producer_inheritance,
+                mortal_producer_tool_inheritance: chain.mortal_producer_tool_inheritance,
+                producer_house_cap: chain.producer_house_cap,
                 share_bps: chain.share_bps,
                 share_term: chain.share_term,
                 land_carrying_cost: chain.land_carrying_cost,
@@ -9732,6 +9825,10 @@ impl Settlement {
             mortal_producer_old_age_deaths: 0,
             role_readoptions: 0,
             mortal_capital_builds: 0,
+            producer_tool_inheritances: 0,
+            heirless_producer_deaths: 0,
+            heir_tool_adoptions: 0,
+            producer_tool_inheritors: BTreeSet::new(),
             last_capital_decisions: Vec::new(),
             peak_pre_promotion_hunger: 0,
             critical_ticks_pre_promotion: 0,
@@ -10249,6 +10346,10 @@ impl Settlement {
             mortal_producer_old_age_deaths: 0,
             role_readoptions: 0,
             mortal_capital_builds: 0,
+            producer_tool_inheritances: 0,
+            heirless_producer_deaths: 0,
+            heir_tool_adoptions: 0,
+            producer_tool_inheritors: BTreeSet::new(),
             last_capital_decisions: Vec::new(),
             peak_pre_promotion_hunger: 0,
             critical_ticks_pre_promotion: 0,
@@ -13237,6 +13338,14 @@ impl Settlement {
         if !self.society.can_remove_agent(id) {
             return false;
         }
+        let producer_subject = self.mortal_producer_inheritance_active()
+            && self
+                .slot_for_id(id)
+                .is_some_and(|slot| self.mortal_chain_producer_subject(slot));
+        let producer_tools = self
+            .chain
+            .as_ref()
+            .map(|chain| [chain.content.mill(), chain.content.oven()]);
         if let Some(slot) = self.slot_for_id(id) {
             self.mark_colonist_dead(slot);
         }
@@ -13247,6 +13356,26 @@ impl Settlement {
             household: self.colonist_household(id).unwrap_or_default(),
             heir,
         });
+        let producer_tool_units = producer_tools.map_or(0, |tools| {
+            tools
+                .iter()
+                .map(|tool| stock.get(tool).copied().unwrap_or(0))
+                .sum()
+        });
+        if producer_subject && destination.is_none() && producer_tool_units > 0 {
+            self.heirless_producer_deaths = self.heirless_producer_deaths.saturating_add(1);
+        }
+        let forced_commons_producer_tools =
+            if producer_subject && !self.mortal_producer_tool_inheritance_active() {
+                producer_tools.map(|tools| {
+                    tools.map(|tool| {
+                        let qty = stock.remove(&tool).unwrap_or(0);
+                        (tool, qty)
+                    })
+                })
+            } else {
+                None
+            };
         // S22e: the plow estate-routing SWITCH (the genuinely new primitive). When the
         // endowed-cultivation-capital gate is active AND inheritance is OFF, FORCE any plows in the
         // estate to the commons even when the rest of the estate goes to the heir. Implemented as a
@@ -13312,6 +13441,14 @@ impl Settlement {
                         bread_placed_with_heir += placed;
                         bread_placed_with_commons += qty - placed;
                     }
+                    if producer_subject
+                        && placed > 0
+                        && producer_tools.is_some_and(|tools| tools.contains(&good))
+                    {
+                        self.producer_tool_inheritances =
+                            self.producer_tool_inheritances.saturating_add(placed);
+                        self.producer_tool_inheritors.insert((heir, good));
+                    }
                     // S22e (runtime diagnostic): a plow that lands with a LIVING heir is a real
                     // inheritance transfer (conserved, never a mint — the tool-stock total is
                     // unchanged). Record the count + the heir id so the non-vacuity test can confirm
@@ -13342,6 +13479,13 @@ impl Settlement {
         if forced_commons_plows > 0 {
             if let Some(plow) = plow_good {
                 *self.commons_stock.entry(plow).or_insert(0) += forced_commons_plows;
+            }
+        }
+        if let Some(forced_tools) = forced_commons_producer_tools {
+            for (tool, qty) in forced_tools {
+                if qty > 0 {
+                    *self.commons_stock.entry(tool).or_insert(0) += qty;
+                }
             }
         }
         if self.current_or_ever_landowner(id) {
@@ -14212,6 +14356,19 @@ impl Settlement {
         }
     }
 
+    fn birth_cap_for_household(&self, household: usize, lineage_cap: u16) -> usize {
+        let producer_cap = self
+            .producer_household_start()
+            .filter(|&start| household >= start && household < start + MORTAL_PRODUCER_HOUSEHOLDS)
+            .and_then(|_| self.chain.as_ref().map(|chain| chain.producer_house_cap))
+            .unwrap_or(0);
+        if producer_cap > 0 {
+            usize::from(producer_cap)
+        } else {
+            usize::from(lineage_cap)
+        }
+    }
+
     /// BIRTHS phase (G4b): each food-secure household, under its size cap and past its
     /// birth interval, bears one child. The newborn inherits its chosen parent's
     /// **mutated** culture (deterministic — a hash of the parent's culture and the
@@ -14251,7 +14408,7 @@ impl Settlement {
             if member_slots.is_empty() {
                 continue; // extinct (no living member) — not a birth block, nothing to count
             }
-            if member_slots.len() >= usize::from(demo.max_household_size) {
+            if member_slots.len() >= self.birth_cap_for_household(h, demo.max_household_size) {
                 // At the size cap (the blowup bound / the artificial knob). On the
                 // forage-commons path this should NOT be the binding stall — the hunger
                 // ceiling should be — so this counter is the control diagnostic.
@@ -16673,6 +16830,27 @@ impl Settlement {
                 {
                     self.role_readoptions = self.role_readoptions.saturating_add(1);
                 }
+                if self.mortal_producer_inheritance_active()
+                    && !matches!(previous, Vocation::Miller | Vocation::Baker)
+                    && matches!(next, Vocation::Miller | Vocation::Baker)
+                {
+                    let inherited_tool = match next {
+                        Vocation::Miller => {
+                            self.producer_tool_inheritors.contains(&(id, mill_good))
+                        }
+                        Vocation::Baker => self.producer_tool_inheritors.contains(&(id, oven_good)),
+                        _ => false,
+                    };
+                    let still_holds_tool =
+                        self.society.agents.get(id).is_some_and(|agent| match next {
+                            Vocation::Miller => agent.stock.get(mill_good) > 0,
+                            Vocation::Baker => agent.stock.get(oven_good) > 0,
+                            _ => false,
+                        });
+                    if inherited_tool && still_holds_tool {
+                        self.heir_tool_adoptions = self.heir_tool_adoptions.saturating_add(1);
+                    }
+                }
                 self.colonists[slot].vocation = next;
                 changed = true;
             }
@@ -17388,6 +17566,32 @@ impl Settlement {
                 .chain
                 .as_ref()
                 .is_some_and(chain_runtime_mortal_chain_producers_active)
+    }
+
+    fn mortal_producer_inheritance_active(&self) -> bool {
+        self.demography.is_some()
+            && self
+                .chain
+                .as_ref()
+                .is_some_and(chain_runtime_mortal_producer_inheritance_active)
+    }
+
+    fn mortal_producer_tool_inheritance_active(&self) -> bool {
+        self.mortal_producer_inheritance_active()
+            && self
+                .chain
+                .as_ref()
+                .is_some_and(|chain| chain.mortal_producer_tool_inheritance)
+    }
+
+    fn producer_household_start(&self) -> Option<usize> {
+        self.mortal_producer_inheritance_active()
+            .then(|| {
+                self.households
+                    .len()
+                    .checked_sub(MORTAL_PRODUCER_HOUSEHOLDS)
+            })
+            .flatten()
     }
 
     /// S7.2: whether the per-builder capital-formation phase is active — its appraisal
@@ -21898,6 +22102,25 @@ impl Settlement {
         self.mortal_capital_builds
     }
 
+    /// C3R.b runtime-only telemetry: mill/oven units from dead producer estates that
+    /// reached a living heir. Counts both mill and oven tools; excluded from
+    /// canonical bytes.
+    pub fn producer_tool_inheritances(&self) -> u64 {
+        self.producer_tool_inheritances
+    }
+
+    /// C3R.b runtime-only telemetry: producer deaths whose mill/oven tools went to
+    /// commons because no live household heir existed.
+    pub fn heirless_producer_deaths(&self) -> u64 {
+        self.heirless_producer_deaths
+    }
+
+    /// C3R.b runtime-only telemetry: inherited-tool holders that adopted Miller/Baker
+    /// through the ordinary S7 role-choice path while still holding that tool.
+    pub fn heir_tool_adoptions(&self) -> u64 {
+        self.heir_tool_adoptions
+    }
+
     /// C3R.a population-artifact guard: live mortal agents that can currently build
     /// or adopt a chain producer role under the same mortality gate.
     pub fn mortal_builder_adopter_pool(&self) -> usize {
@@ -23332,6 +23555,12 @@ impl Settlement {
                 out.push(27);
                 out.push(u8::from(chain.mortal_chain_producers));
             }
+            if self.mortal_producer_inheritance_active() {
+                out.push(28);
+                out.push(u8::from(chain.mortal_producer_inheritance));
+                out.push(u8::from(chain.mortal_producer_tool_inheritance));
+                out.push(chain.producer_house_cap);
+            }
             // S23b: the post-money land market extends S23a's registry with an endogenous-price
             // state, listings, last-sale anchors, and the non-agent fee sink. Emitted only when the
             // market composes on active private land tenure; with the flag off every S23a and older
@@ -24429,6 +24658,14 @@ fn config_mortal_chain_producers_active(config: &SettlementConfig) -> bool {
             .is_some_and(chain_config_mortal_chain_producers_active)
 }
 
+fn config_mortal_producer_inheritance_active(config: &SettlementConfig) -> bool {
+    config.demography.is_some()
+        && config
+            .chain
+            .as_ref()
+            .is_some_and(chain_config_mortal_producer_inheritance_active)
+}
+
 fn own_labor_subsistence_fields_active(own_labor_subsistence: bool, forage_present: bool) -> bool {
     own_labor_subsistence && forage_present
 }
@@ -24515,6 +24752,10 @@ fn chain_config_mortal_landowner_demography_active(chain: &ChainConfig) -> bool 
 
 fn chain_config_mortal_chain_producers_active(chain: &ChainConfig) -> bool {
     chain.mortal_chain_producers
+}
+
+fn chain_config_mortal_producer_inheritance_active(chain: &ChainConfig) -> bool {
+    chain.mortal_producer_inheritance && chain_config_mortal_chain_producers_active(chain)
 }
 
 fn chain_config_rival_subsistence_commons_active(chain: &ChainConfig) -> bool {
@@ -24607,6 +24848,10 @@ fn chain_runtime_mortal_landowner_demography_active(chain: &ChainRuntime) -> boo
 
 fn chain_runtime_mortal_chain_producers_active(chain: &ChainRuntime) -> bool {
     chain.mortal_chain_producers
+}
+
+fn chain_runtime_mortal_producer_inheritance_active(chain: &ChainRuntime) -> bool {
+    chain.mortal_producer_inheritance && chain_runtime_mortal_chain_producers_active(chain)
 }
 
 fn chain_runtime_rival_subsistence_commons_active(chain: &ChainRuntime) -> bool {
