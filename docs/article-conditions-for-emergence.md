@@ -595,6 +595,30 @@ We state the scaffolds plainly; a hostile reader should attack these first.
   signal that sees past local welfare — a market-mediated or global payoff, explicit contribution accounting,
   or group-level reproduction/selection — each a genuinely new mechanism, and the honest boundary at which this
   study leaves the emergence of the institutional layer itself.
+- **The mortal production chain — the keystone the whole study was built toward, now opened.** Every result
+  above shared a quiet exemption: the *producers* — the miller and baker who own the mill and oven and turn
+  grain into flour into bread — were **immortal**. The economy that emerged, and every labor institution
+  probed on it, rested on practitioners who never died. C3R makes them mortal and asks the civilization
+  question directly: can a division of labor in *production* survive its practitioners dying? Its first slice
+  introduces producer mortality and **nothing else** — no succession, no inheritance — with one companion
+  guard: producer *formation* (building the tool, or adopting the role) is restricted to mortal agents, so
+  the immortal gatherers and consumers of the surrounding economy cannot quietly rebuild the chain and fake a
+  recovery (the immortal-producer count is provably zero). The result is uniform and unambiguous across every
+  seed: **the chain collapses.** And the collapse is instrumented to be *honest* rather than an artifact — it
+  is not a hidden immortal reservoir (zero), not a thin-population artifact (the eligible mortal pool stays
+  healthy), not apathy (agents re-adopt the vacated role a hundred and fifty times a run), and not an
+  investment freeze (mortal builders do complete the payback-16 mill, two or three times). The chain churns
+  through frantic re-adoption and the occasional rebuild but never *stabilizes*: a producer dies before its
+  capital has paid back, each dead producer's mill sinks to the commons where no one can use it, and the next
+  mortal must begin the roundabout investment from nothing — two or three builds against a hundred and fifty
+  deaths, the payback horizon biting exactly as Böhm-Bawerk's theory of capital predicts. Notably, the
+  satiation exit that closed the voluntary-labor arc does *not* govern here — a chain producer is
+  profitability-locked, not satiation-gated — so the constraint the keystone exposes is genuinely new:
+  **mortality and the payback horizon**, not the freedom to stop once fed. The finding names its own next two
+  probes precisely: the *role* is refilled only by ad-hoc re-adoption, never smooth transfer (role
+  succession), and the *capital* is destroyed to the commons on every death instead of being carried across
+  the generational gap (capital inheritance). This is where the study turns from *whether an economy can be
+  more than subsistence* to *whether it can stay that way once everyone in it is mortal*.
 
 ---
 
