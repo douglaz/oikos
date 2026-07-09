@@ -146,13 +146,27 @@ wages-fund now form endogenously (accumulation across a lifetime, lifespan swept
 Then the Austrian sequencing test proper: money wages stay vacuous *before* reserves accumulate and
 clear voluntarily *after* — the C1 re-run with its precondition finally present.
 
-**P4 — `C3R`: the mortal economy (the true keystone).** Compose the winning voluntary income mechanism
-with mortal owner-households and the S23c inheritance engine into a **generational living base** — and
-then extend mortality to the *real* economy: chain producers who age and die, mill/oven inheritance, and
-role succession (the long-deferred S7 follow-on). Falsifiable bar: born-in-sim households own, work or
-contract, buy or receive earned output, reproduce, and pass estates *in a living market*; production
-survives the death of producers. This is where the S23c generational-tenure study finally re-runs with
-meaning, and it is the base the civ game actually needs.
+**P4 — `C3R`: the mortal economy (the true keystone).** Extend mortality to the *real* economy: chain
+producers who age and die, mill/oven inheritance, and role succession (the long-deferred S7 follow-on).
+Falsifiable bar: production survives the death of producers.
+
+> **STATUS (2026-07-09) — decomposed into a 3-slice sub-sequence; slice 1 landed.** The original framing
+> (compose "the winning voluntary income mechanism" into a generational base) is superseded: the
+> voluntary-labor arc CLOSED without a standing-institution winner (§26 — the binding constraint is the
+> worker's satiation exit), so C3R does not compose it. Instead C3R isolates producer mortality on the
+> existing `frontier_capital` base, decomposed (per two research maps + 4 xhigh spec-review rounds) into:
+> **C3R.a** producer mortality, no succession (the motivating null) → **C3R.b** role succession → **C3R.c**
+> capital (mill/oven) inheritance.
+> - **C3R.a — LANDED (impl-62, spec `docs/impl-mortal-producers.md`).** Verdict `ChainCollapsesOnProducerDeath`
+>   ×5: the chain dies with its producers. Instrumented honest (reservoir provably closed
+>   `immortal_producer_count=0`; not a thin-pool artifact; ~150 re-adoptions/run + 2–3 mortal builds/run — the
+>   chain churns but never stabilizes; the payback horizon bites). Flag `mortal_chain_producers`, tag 27.
+>   rb-lite clean in 6 rounds; RoR ACCEPT-AS-HONEST-FINDING no P0/P1. Report §27 + appendix. Preserved on
+>   **`feat/mortal-producers-impl-rb`** (tip `d8e0ddc`).
+> - **C3R.b / C3R.c — NEXT.** C3R.a names them precisely: the role is refilled only by frantic ad-hoc
+>   re-adoption (→ role succession), and capital sinks to the commons on every death (→ capital inheritance,
+>   the Böhm-Bawerk payback-across-generations question). Scoping decision (b-first vs c-first, or bundled)
+>   pending — C3R.a's total collapse is itself an input to whether role succession alone can lift it.
 
 **P5+ — re-derive the institutional stack on the living base.** Firms (C2R) and rent/factor markets
 (C4R) once solvent counterparties exist; the classes/mobility measurement (C9) over whatever forms;
