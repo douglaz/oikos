@@ -132,6 +132,8 @@ const OWN_USE_CULTIVATION_LABOR_BUDGET: u32 = 48;
 pub const SHARE_TENANCY_BPS_DEFAULT: u16 = 5_000;
 /// C1R — pinned headline contract term in econ ticks, swept by the acceptance suite.
 pub const SHARE_TENANCY_TERM_DEFAULT: u16 = 12;
+/// C3R.a — keep mortal producer seed derivation in a disjoint founder-index band.
+const MORTAL_CHAIN_PRODUCER_SEED_OFFSET: usize = 1_000_000;
 
 /// S22b — pinned **cultivation-skill** magnitudes (the bounded accumulate/decay scalar that
 /// raises a skilled cultivator's per-trip grain haul). Modest, house-style, NOT tuned to a
@@ -1455,6 +1457,11 @@ pub struct ChainConfig {
     /// bread up front out of self-produced stock and receives 100% of the contract product.
     /// Inert unless share tenancy is active.
     pub in_kind_wage: bool,
+    /// C3R.a — mortal production-chain producers, with no role/capital succession.
+    /// Active only when paired with demography and a chain. The flag makes the seeded
+    /// latent mill/bake producers lifespan-only mortals and closes producer formation to
+    /// mortal agents; it does not add households, inheritance, or new goods flows.
+    pub mortal_chain_producers: bool,
     /// C1R worker share in basis points. Pinned/swept, never searched.
     pub share_bps: u16,
     /// C1R fixed contract term in econ ticks. Pinned/swept, never searched.
@@ -1887,6 +1894,7 @@ impl ChainConfig {
             share_forward_provisioning: false,
             share_contract_succession: false,
             in_kind_wage: false,
+            mortal_chain_producers: false,
             share_bps: SHARE_TENANCY_BPS_DEFAULT,
             share_term: SHARE_TENANCY_TERM_DEFAULT,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
@@ -2076,6 +2084,7 @@ impl ChainConfig {
             share_forward_provisioning: false,
             share_contract_succession: false,
             in_kind_wage: false,
+            mortal_chain_producers: false,
             share_bps: SHARE_TENANCY_BPS_DEFAULT,
             share_term: SHARE_TENANCY_TERM_DEFAULT,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
@@ -2245,6 +2254,7 @@ impl ChainConfig {
             share_forward_provisioning: false,
             share_contract_succession: false,
             in_kind_wage: false,
+            mortal_chain_producers: false,
             share_bps: SHARE_TENANCY_BPS_DEFAULT,
             share_term: SHARE_TENANCY_TERM_DEFAULT,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
@@ -3941,6 +3951,19 @@ impl SettlementConfig {
         // builders' WOOD (and the warmth battery) supplied as capital is committed.
         cfg.consumers = 44;
         cfg.gatherers = 24;
+        cfg
+    }
+
+    /// C3R.a — the capital frontier with mortal seeded chain producers and no
+    /// succession. This is exactly [`Self::frontier_capital`] plus the mortality gate:
+    /// seeded latent mill/bake producers get lifespan-only demography state, and only
+    /// mortal agents may form producer roles or build fresh chain capital.
+    pub fn frontier_mortal_producers() -> Self {
+        let mut cfg = Self::frontier_capital();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.mortal_chain_producers = true;
+        }
+        debug_assert!(config_mortal_chain_producers_active(&cfg));
         cfg
     }
 
@@ -6331,6 +6354,16 @@ pub struct Settlement {
     /// built via S7.2 over the run — lets a test assert new capital entered the chain
     /// (acceptance tests 4/6). Diagnostic only; no phase reads it.
     tools_built: u64,
+    /// C3R.a runtime-only telemetry: old-age deaths among mortal chain-producer
+    /// subjects (active or latent mill/bake/tool-holder). Diagnostic only; not
+    /// serialized and never consulted by production or inheritance paths.
+    mortal_producer_old_age_deaths: u64,
+    /// C3R.a runtime-only telemetry: mortal S7 role re-adoptions after a producer
+    /// old-age death. Diagnostic only; not serialized.
+    role_readoptions: u64,
+    /// C3R.a runtime-only telemetry: fresh mill/oven units completed by mortal
+    /// builders. Diagnostic only; not serialized.
+    mortal_capital_builds: u64,
     /// S10 observability (read-only, NOT serialized): the per-agent build decisions the
     /// LAST per-agent capital-formation phase recorded — one per eligible candidate, with
     /// accept/reject, the target savings want rank, and the decline reason. Cleared and
@@ -6995,6 +7028,7 @@ struct ChainRuntime {
     share_forward_provisioning: bool,
     share_contract_succession: bool,
     in_kind_wage: bool,
+    mortal_chain_producers: bool,
     share_bps: u16,
     share_term: u16,
     land_carrying_cost: u64,
@@ -8834,6 +8868,7 @@ impl Settlement {
         // in G2b and every existing config and golden is byte-identical. World
         // `AgentId`s match econ `AgentId`s by construction (assigned in this order).
         let colonist_id_base = num_traders as u64;
+        let mortal_chain_producers = config_mortal_chain_producers_active(config);
         // S18: the woodcutter→WOOD-node seam. With the multi-good money path on, every
         // non-lineage gatherer is pinned to the WOOD node (the lowest-id WOOD-yielding node
         // in `config.nodes`, matched into `node_ids` by build order); `None` off the flag,
@@ -8962,6 +8997,32 @@ impl Settlement {
                     None,
                 )
             };
+            // C3R.a: EVERY seeded chain producer becomes a lifespan-only mortal under
+            // the flag — the active miller/baker band `[producer_band_start, seeded_end)`
+            // AND the latent mill/bake pool `[seeded_end, latent_end)`. Covering the
+            // whole producer band (not just the latent tail) makes the reservoir-closed
+            // invariant `immortal_producer_count == 0` structural for any flag-on config,
+            // not incidental to the millers=bakers=0 frontier. Byte-identical on that
+            // frontier, where `producer_band_start == seeded_end`.
+            let producer_band_start = consumers + gatherers;
+            let (age, lifespan, colonist_seed) =
+                if mortal_chain_producers && index >= producer_band_start && index < latent_end {
+                    let demo = config
+                        .demography
+                        .as_ref()
+                        .expect("active mortal_chain_producers requires demography");
+                    let producer_seed = founder_seed(
+                        seed,
+                        MORTAL_CHAIN_PRODUCER_SEED_OFFSET + (index - producer_band_start),
+                    );
+                    (
+                        demo.founder_start_age_ticks(producer_seed),
+                        Some(demo.lifespan_ticks(producer_seed)),
+                        producer_seed,
+                    )
+                } else {
+                    (0, None, 0)
+                };
             let culture = draw_culture(
                 &mut rng,
                 tp_base,
@@ -8990,9 +9051,9 @@ impl Settlement {
                 // byte-identical to G3/G4a.
                 household: None,
                 parent: None,
-                age: 0,
-                lifespan: None,
-                seed: 0,
+                age,
+                lifespan,
+                seed: colonist_seed,
                 estate_destination: None,
                 acquired_tool: false,
                 foraging: false,
@@ -9616,6 +9677,7 @@ impl Settlement {
                 share_forward_provisioning: chain.share_forward_provisioning,
                 share_contract_succession: chain.share_contract_succession,
                 in_kind_wage: chain.in_kind_wage,
+                mortal_chain_producers: chain.mortal_chain_producers,
                 share_bps: chain.share_bps,
                 share_term: chain.share_term,
                 land_carrying_cost: chain.land_carrying_cost,
@@ -9667,6 +9729,9 @@ impl Settlement {
             capital_builds: Vec::new(),
             next_capital_project_id: 0,
             tools_built: 0,
+            mortal_producer_old_age_deaths: 0,
+            role_readoptions: 0,
+            mortal_capital_builds: 0,
             last_capital_decisions: Vec::new(),
             peak_pre_promotion_hunger: 0,
             critical_ticks_pre_promotion: 0,
@@ -10181,6 +10246,9 @@ impl Settlement {
             capital_builds: Vec::new(),
             next_capital_project_id: 0,
             tools_built: 0,
+            mortal_producer_old_age_deaths: 0,
+            role_readoptions: 0,
+            mortal_capital_builds: 0,
             last_capital_decisions: Vec::new(),
             peak_pre_promotion_hunger: 0,
             critical_ticks_pre_promotion: 0,
@@ -13997,6 +14065,17 @@ impl Settlement {
             .into_iter()
             .filter(|&id| self.society.can_remove_agent(id))
             .collect();
+        let mortal_producer_deaths = if self.mortal_chain_producers_active() {
+            dying
+                .iter()
+                .filter(|&&id| {
+                    self.slot_for_id(id)
+                        .is_some_and(|slot| self.mortal_chain_producer_subject(slot))
+                })
+                .count() as u64
+        } else {
+            0
+        };
         for &id in &dying {
             if let Some(slot) = self.slot_for_id(id) {
                 self.mark_colonist_dead(slot);
@@ -14056,6 +14135,9 @@ impl Settlement {
             deaths += u32::from(self.settle_estate_to_heirs(id, report, wage_labor_used));
         }
         self.old_age_deaths_total = self.old_age_deaths_total.saturating_add(u64::from(deaths));
+        self.mortal_producer_old_age_deaths = self
+            .mortal_producer_old_age_deaths
+            .saturating_add(mortal_producer_deaths);
         deaths
     }
 
@@ -16457,11 +16539,15 @@ impl Settlement {
         // S11: route each colonist's per-agent fallible OUTPUT-price forecast into the
         // adopt appraisal instead of the raw realized price (input price stays observed).
         let entrepreneurial = chain.entrepreneurial_forecasts;
+        let mortal_only = self.mortal_chain_producers_active();
         let tick = self.society.tick.0;
         let mut changed = false;
 
         for &slot in &self.live_colonist_slots {
             let colonist = &self.colonists[slot];
+            if mortal_only && colonist.lifespan.is_none() {
+                continue;
+            }
             // The recipe(s) this colonist may (re)appraise this tick, in deterministic
             // mill-before-oven order. A seeded `latent` yields exactly its one specialty
             // (the pre-S7 path; with the gate off this is the only branch, so role-choice
@@ -16575,8 +16661,17 @@ impl Settlement {
                 },
             };
             if self.colonists[slot].vocation != next {
-                if !self.role_choice_switch_ready(id, self.colonists[slot].vocation, next) {
+                let previous = self.colonists[slot].vocation;
+                if !self.role_choice_switch_ready(id, previous, next) {
                     continue;
+                }
+                if mortal_only
+                    && self.mortal_producer_old_age_deaths > 0
+                    && self.colonists[slot].lifespan.is_some()
+                    && !matches!(previous, Vocation::Miller | Vocation::Baker)
+                    && matches!(next, Vocation::Miller | Vocation::Baker)
+                {
+                    self.role_readoptions = self.role_readoptions.saturating_add(1);
                 }
                 self.colonists[slot].vocation = next;
                 changed = true;
@@ -16773,6 +16868,7 @@ impl Settlement {
         let build_labor = chain.tool_build_labor;
         let hunger_max = chain.capital_build_hunger_max;
         let per_agent = chain.per_agent_capital;
+        let mortal_only = self.mortal_chain_producers_active();
         let tick = self.society.tick.0;
 
         let mut built = false;
@@ -16820,6 +16916,7 @@ impl Settlement {
             if completed {
                 *report.produced.entry(tool).or_insert(0) += u64::from(qty);
                 self.tools_built = self.tools_built.saturating_add(u64::from(qty));
+                self.record_mortal_capital_build_completion(slot, qty);
                 // Tie the produced tool to its formerly-non-latent builder (test 6).
                 if slot < self.colonists.len() && self.colonists[slot].latent.is_none() {
                     self.colonists[slot].acquired_tool = true;
@@ -16968,6 +17065,9 @@ impl Settlement {
             let colonist = &self.colonists[slot];
             // Formerly-non-latent builders only (a seeded latent/producer already holds
             // a tool); only a fed colonist in a survival/idle role (not a producer).
+            if mortal_only && colonist.lifespan.is_none() {
+                continue;
+            }
             if colonist.latent.is_some() {
                 continue;
             }
@@ -17026,6 +17126,7 @@ impl Settlement {
                     let qty = project.output_qty;
                     *report.produced.entry(project.output_good).or_insert(0) += u64::from(qty);
                     self.tools_built = self.tools_built.saturating_add(u64::from(qty));
+                    self.record_mortal_capital_build_completion(slot, qty);
                     self.colonists[slot].acquired_tool = true;
                     built = true;
                 } else {
@@ -17071,6 +17172,7 @@ impl Settlement {
         // observed (a build still requires real current demand), and the INPUT price stays
         // observed — only the output-revenue estimate is forecast.
         let entrepreneurial = self.entrepreneurial_can_run();
+        let mortal_only = self.mortal_chain_producers_active();
         // The two tool candidates with their RECENT realized recipe prices, ordered by net
         // margin DESC so each colonist prefers the more rewarding roundabout investment
         // (Menger's imputation — a per-agent choice, not a global stage choice); ties by tool
@@ -17117,7 +17219,8 @@ impl Settlement {
             let colonist = &self.colonists[slot];
             // The S7 eligibility filter (unchanged): a fed, non-latent colonist in a
             // survival/idle role with no in-flight build of its own.
-            if colonist.latent.is_some()
+            if (mortal_only && colonist.lifespan.is_none())
+                || colonist.latent.is_some()
                 || !matches!(
                     colonist.vocation,
                     Vocation::Gatherer | Vocation::Consumer | Vocation::Unassigned
@@ -17236,6 +17339,7 @@ impl Settlement {
                 let qty = project.output_qty;
                 *report.produced.entry(project.output_good).or_insert(0) += u64::from(qty);
                 self.tools_built = self.tools_built.saturating_add(u64::from(qty));
+                self.record_mortal_capital_build_completion(slot, qty);
                 self.colonists[slot].acquired_tool = true;
                 built = true;
             } else {
@@ -17276,6 +17380,14 @@ impl Settlement {
         self.chain
             .as_ref()
             .is_some_and(|chain| chain.tool_acquisition_eligibility)
+    }
+
+    fn mortal_chain_producers_active(&self) -> bool {
+        self.demography.is_some()
+            && self
+                .chain
+                .as_ref()
+                .is_some_and(chain_runtime_mortal_chain_producers_active)
     }
 
     /// S7.2: whether the per-builder capital-formation phase is active — its appraisal
@@ -19700,6 +19812,25 @@ impl Settlement {
             .count() as u64
     }
 
+    fn mortal_chain_producer_subject(&self, slot: usize) -> bool {
+        self.colonists.get(slot).is_some_and(|colonist| {
+            matches!(colonist.vocation, Vocation::Miller | Vocation::Baker)
+                || matches!(colonist.latent, Some(RecipeId::Mill) | Some(RecipeId::Bake))
+                || colonist.acquired_tool
+        })
+    }
+
+    fn record_mortal_capital_build_completion(&mut self, slot: usize, qty: u32) {
+        if self.mortal_chain_producers_active()
+            && self
+                .colonists
+                .get(slot)
+                .is_some_and(|colonist| colonist.lifespan.is_some())
+        {
+            self.mortal_capital_builds = self.mortal_capital_builds.saturating_add(u64::from(qty));
+        }
+    }
+
     /// Units of `good` held in the settlement commons — the conserved sink for
     /// dead colonists' settled estates (G4a). Zero until the first death.
     pub fn commons_stock_of(&self, good: GoodId) -> u64 {
@@ -21704,6 +21835,9 @@ impl Settlement {
         let Some(colonist) = self.colonists.get(index) else {
             return false;
         };
+        if self.mortal_chain_producers_active() && colonist.lifespan.is_none() {
+            return false;
+        }
         if colonist.latent.is_some() {
             return true;
         }
@@ -21731,6 +21865,86 @@ impl Settlement {
     /// completes; never decreases (tools are durable). Read-only.
     pub fn tools_built(&self) -> u64 {
         self.tools_built
+    }
+
+    /// C3R.a runtime-only telemetry: old-age deaths among mortal chain-producer
+    /// subjects. Excluded from canonical bytes.
+    pub fn mortal_producer_old_age_deaths(&self) -> u64 {
+        self.mortal_producer_old_age_deaths
+    }
+
+    /// C3R.a reservoir guard: live active producer vocations that have no lifespan.
+    /// Under `mortal_chain_producers`, this must stay zero.
+    pub fn immortal_producer_count(&self) -> usize {
+        self.live_colonist_slots
+            .iter()
+            .filter(|&&slot| {
+                let colonist = &self.colonists[slot];
+                colonist.lifespan.is_none()
+                    && matches!(colonist.vocation, Vocation::Miller | Vocation::Baker)
+            })
+            .count()
+    }
+
+    /// C3R.a runtime-only telemetry: mortal agents adopting a chain producer role
+    /// after at least one mortal producer old-age death.
+    pub fn role_readoptions(&self) -> u64 {
+        self.role_readoptions
+    }
+
+    /// C3R.a runtime-only telemetry: fresh mill/oven units completed by mortal
+    /// builders, excluding the pre-seeded latent tools.
+    pub fn mortal_capital_builds(&self) -> u64 {
+        self.mortal_capital_builds
+    }
+
+    /// C3R.a population-artifact guard: live mortal agents that can currently build
+    /// or adopt a chain producer role under the same mortality gate.
+    pub fn mortal_builder_adopter_pool(&self) -> usize {
+        if !self.mortal_chain_producers_active() {
+            return 0;
+        }
+        let Some(chain) = &self.chain else {
+            return 0;
+        };
+        let mill = chain.content.mill();
+        let oven = chain.content.oven();
+        let tool_eligibility = chain.tool_acquisition_eligibility;
+        let producible_capital = chain.producible_capital;
+        let wood_qty = chain.tool_build_wood;
+        let hunger_max = chain.capital_build_hunger_max;
+        self.live_colonist_slots
+            .iter()
+            .filter(|&&slot| {
+                let colonist = &self.colonists[slot];
+                if colonist.lifespan.is_none() {
+                    return false;
+                }
+                if matches!(colonist.latent, Some(RecipeId::Mill) | Some(RecipeId::Bake)) {
+                    return true;
+                }
+                let Some(agent) = self.society.agents.get(colonist.id) else {
+                    return false;
+                };
+                if tool_eligibility && (agent.stock.get(mill) > 0 || agent.stock.get(oven) > 0) {
+                    return true;
+                }
+                producible_capital
+                    && colonist.latent.is_none()
+                    && matches!(
+                        colonist.vocation,
+                        Vocation::Gatherer | Vocation::Consumer | Vocation::Unassigned
+                    )
+                    && colonist.need.hunger <= hunger_max
+                    && !self
+                        .capital_builds
+                        .iter()
+                        .any(|build| build.builder == colonist.id)
+                    && agent.stock.get(mill) == 0
+                    && agent.stock.get(oven) == 0
+                    && agent.stock.get(WOOD) >= wood_qty
+            })
+            .count()
     }
 
     /// S7.2: the number of in-flight per-builder capital projects right now (a build is
@@ -23114,6 +23328,10 @@ impl Settlement {
                 out.push(26);
                 out.push(u8::from(chain.share_contract_succession));
             }
+            if self.mortal_chain_producers_active() {
+                out.push(27);
+                out.push(u8::from(chain.mortal_chain_producers));
+            }
             // S23b: the post-money land market extends S23a's registry with an endogenous-price
             // state, listings, last-sale anchors, and the non-agent fee sink. Emitted only when the
             // market composes on active private land tenure; with the flag off every S23a and older
@@ -24203,6 +24421,14 @@ fn config_forage_commons_active(config: &SettlementConfig) -> bool {
         .is_some_and(chain_config_forage_commons_active)
 }
 
+fn config_mortal_chain_producers_active(config: &SettlementConfig) -> bool {
+    config.demography.is_some()
+        && config
+            .chain
+            .as_ref()
+            .is_some_and(chain_config_mortal_chain_producers_active)
+}
+
 fn own_labor_subsistence_fields_active(own_labor_subsistence: bool, forage_present: bool) -> bool {
     own_labor_subsistence && forage_present
 }
@@ -24285,6 +24511,10 @@ fn chain_config_mortal_landowner_demography_active(chain: &ChainConfig) -> bool 
     chain.mortal_landowner_demography
         && chain_config_secure_land_tenure_active(chain)
         && !chain_config_land_market_active(chain)
+}
+
+fn chain_config_mortal_chain_producers_active(chain: &ChainConfig) -> bool {
+    chain.mortal_chain_producers
 }
 
 fn chain_config_rival_subsistence_commons_active(chain: &ChainConfig) -> bool {
@@ -24373,6 +24603,10 @@ fn chain_runtime_mortal_landowner_demography_active(chain: &ChainRuntime) -> boo
     chain.mortal_landowner_demography
         && chain_runtime_secure_land_tenure_active(chain)
         && !chain_runtime_land_market_active(chain)
+}
+
+fn chain_runtime_mortal_chain_producers_active(chain: &ChainRuntime) -> bool {
+    chain.mortal_chain_producers
 }
 
 fn chain_runtime_rival_subsistence_commons_active(chain: &ChainRuntime) -> bool {
