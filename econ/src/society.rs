@@ -3265,6 +3265,41 @@ impl Society {
         }
     }
 
+    /// Cancel live offers where `agent` has earmarked `good` as outgoing stock.
+    ///
+    /// Driver phases that must move a specific conserved stock lot before the market
+    /// clears use this to release spot-ask and barter reservations first; bids reserve
+    /// money, so they are intentionally left alone.
+    pub fn cancel_live_stock_offers_for_agent(&mut self, agent: AgentId, good: GoodId) -> bool {
+        if self.agents.position_of(agent).is_none() {
+            return false;
+        }
+
+        let mut cancelled = false;
+        let mut index = 0;
+        while index < self.live_quotes.len() {
+            let quote = self.live_quotes[index];
+            if quote.agent == agent && quote.side == OrderSide::Ask && quote.good == good {
+                self.cancel_existing(Some(index));
+                cancelled = true;
+            } else {
+                index += 1;
+            }
+        }
+
+        let barter_seqs = self
+            .barter_book
+            .live_offers()
+            .iter()
+            .filter(|offer| offer.agent == agent && offer.give_good == good)
+            .map(|offer| offer.seq)
+            .collect::<Vec<_>>();
+        for seq in barter_seqs {
+            cancelled |= self.barter_book.cancel_offer(seq);
+        }
+        cancelled
+    }
+
     fn live_quote_changed(&self, quote_index: usize) -> bool {
         let quote = self.live_quotes[quote_index];
         let Some(money_good) = self.money.current_money_good() else {
@@ -11016,6 +11051,41 @@ mod tests {
         assert_eq!(society.live_quotes.len(), 1);
 
         society.apply_event_kind(EventKind::ResetPublicSpotBook, ApplyMode::Event);
+
+        assert!(society.live_quotes.is_empty());
+        assert_eq!(society.books[0].live_order_counts().1, 0);
+        assert_eq!(society.reservations.reserved_stock(AgentId(1), FOOD), 0);
+    }
+
+    #[test]
+    fn cancel_live_stock_offers_for_agent_releases_only_outgoing_stock() {
+        let mut seller = redemption_agent(1, Gold::ZERO);
+        seller.stock.add(FOOD, 1);
+        seller.scale = vec![Want {
+            kind: WantKind::Good(GOLD),
+            horizon: crate::good::Horizon::Next,
+            qty: 1,
+            satisfied: false,
+        }];
+        let mut society = test_m3_society(seller, GOLD, Vec::new());
+
+        let mut filled = Vec::new();
+        society.ensure_order(
+            QuotePlan {
+                agent_index: 0,
+                side: OrderSide::Ask,
+                good: FOOD,
+                reservation: Gold(1),
+                limit: Gold(1),
+                existing: None,
+            },
+            &mut filled,
+        );
+        assert!(filled.is_empty());
+        assert_eq!(society.live_quotes.len(), 1);
+        assert_eq!(society.reservations.reserved_stock(AgentId(1), FOOD), 1);
+
+        assert!(society.cancel_live_stock_offers_for_agent(AgentId(1), FOOD));
 
         assert!(society.live_quotes.is_empty());
         assert_eq!(society.books[0].live_order_counts().1, 0);

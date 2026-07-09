@@ -96,15 +96,21 @@ pub use era::{
 pub use region::{Region, RegionConfig, RegionTickReport, RoadPlan, Route};
 pub use settlement::{
     capital_build_outcome_for_culture, capital_build_outcome_with_forecast, recipe_adoption_pays,
-    recipe_adoption_pays_for_money, AcquisitionChannels, BankConfig, BarterConfig, BenchSurface,
-    BootstrapTraceSummary, CandidateAcceptances, CapitalBuildOutcome, CapitalDecision,
-    CapitalDeclineReason, ChainConfig, CycleConfig, CycleKind, DirectIndirectAcceptances,
-    EconTickReport, EntrantClassSale, EstateDestination, ForageCommons, LandMarketSaleRow,
-    LineageStats, NodeSpec, OrderStat, ProducerCash, ProducerRole, Settlement, SettlementConfig,
-    TaxLevy, TaxPolicy, TenderBench, TenderPolicy, TraderEndowment, Vocation, ECON_TICKS_PER_YEAR,
-    FAST_TICKS_PER_ECON_TICK, LAND_CARRYING_PERIOD, LAND_FORECLOSE_DISCOUNT_BPS, LAND_LIST_IDLE,
-    LAND_MIN_RENT_HISTORY, LAND_PRICE_MIN, LAND_RENT_WINDOW, LAND_SALE_HISTORY_K,
-    LAND_SALE_HISTORY_WEIGHT_BPS, LAND_VIABLE_CAP_FLOOR, LAND_VIABLE_REGEN_FLOOR,
+    recipe_adoption_pays_for_money, rival_subsistence_commons_regen_for_phi, AcquisitionChannels,
+    BankConfig, BarterConfig, BenchSurface, BootstrapTraceSummary, CandidateAcceptances,
+    CapitalBuildOutcome, CapitalDecision, CapitalDeclineReason, ChainConfig, CycleConfig,
+    CycleKind, DirectIndirectAcceptances, EconTickReport, EntrantClassSale, EstateDestination,
+    ForageCommons, InKindWageStats, InheritanceRegime, LandMarketSaleRow, LineageStats,
+    MortalLandownerOwnerRow, NodeSpec, OrderStat, OwnerSurplusTelemetry, ProducerCash,
+    ProducerRole, RivalSubsistenceCommonsState, Settlement, SettlementConfig, ShareTenancyMode,
+    ShareTenancyStats, TaxLevy, TaxPolicy, TenderBench, TenderPolicy, TraderEndowment, Vocation,
+    WageLaborMode, WageLaborStats, ECON_TICKS_PER_YEAR, FAST_TICKS_PER_ECON_TICK,
+    LAND_CARRYING_PERIOD, LAND_FORECLOSE_DISCOUNT_BPS, LAND_LIST_IDLE, LAND_MIN_RENT_HISTORY,
+    LAND_PRICE_MIN, LAND_RENT_WINDOW, LAND_SALE_HISTORY_K, LAND_SALE_HISTORY_WEIGHT_BPS,
+    LAND_VIABLE_CAP_FLOOR, LAND_VIABLE_REGEN_FLOOR, RIVAL_COMMONS_BASELINE_EMERGENCY_DRAW,
+    RIVAL_COMMONS_BASELINE_FINAL_WINDOW_TICKS, RIVAL_COMMONS_K_TICKS,
+    RIVAL_COMMONS_PHI_ABUNDANT_BPS, RIVAL_COMMONS_PHI_MARGINAL_BPS, RIVAL_COMMONS_PHI_SCARCE_BPS,
+    SHARE_TENANCY_BPS_DEFAULT, SHARE_TENANCY_TERM_DEFAULT,
 };
 
 /// Read-only re-exports of the `econ`/`life` types that make up the settlement's
