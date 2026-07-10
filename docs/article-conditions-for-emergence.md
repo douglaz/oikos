@@ -618,7 +618,25 @@ We state the scaffolds plainly; a hostile reader should attack these first.
   probes precisely: the *role* is refilled only by ad-hoc re-adoption, never smooth transfer (role
   succession), and the *capital* is destroyed to the commons on every death instead of being carried across
   the generational gap (capital inheritance). This is where the study turns from *whether an economy can be
-  more than subsistence* to *whether it can stay that way once everyone in it is mortal*.
+  more than subsistence* to *whether it can stay that way once everyone in it is mortal*. The capital-inheritance
+  probe has since been built — **C3R.b**: give the mortal producers reproducing households so a dead producer's
+  mill passes to a live heir who re-adopts the role, all through machinery the engine already had. Its result is
+  the study's sharpest illustration of the difference between *having* capital and *using* it. Fixing the capital
+  destruction is not sufficient: in a narrow, honestly-reported window (and only four of five seeds) inheritance
+  does keep both stages of the chain continuously staffed — the first time the structure of a production chain
+  survives its mortal producers — yet in every one of those runs the chain produces almost no bread. The reason is
+  an intrinsic bind, and the model measures rather than asserts it: inheritance can sustain the chain's structure
+  only by keeping the producer households populated, and populated households reproduce; but the very reproduction
+  that supplies the heirs carries a household food subsidy that floods the market and collapses the demand for
+  bread, so the continuously-staffed chain has nothing to produce *for*. The matched control makes the trade-off
+  visible from the other side — deny the inheritance and the households die back, so the chain runs instead on
+  constant re-building, which produces real bread but cannot hold its stations manned. Continuity of capital, in
+  other words, buys structure at the cost of flow; rebuilding buys flow at the cost of structure. This is
+  Böhm-Bawerk's point turned inside out: capital that is continuously *possessed* is not thereby continuously
+  *used*, once the demographic machinery that carries it across the generations is itself a subsidy that suppresses
+  the market. And it moves the keystone's open question off the supply side entirely — the next binding constraint
+  is not how a role or a tool passes to the next generation (the engine already does that) but how a mortal economy
+  can reproduce its producers *without* the very act of reproduction drowning the demand they exist to serve.
 
 ---
 
