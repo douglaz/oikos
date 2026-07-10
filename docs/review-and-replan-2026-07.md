@@ -177,12 +177,28 @@ Falsifiable bar: production survives the death of producers.
 >   **v2 swept the subsidy `{0,1,2,3}` × cap `{1,2,3}` + split structure/flow verdict** → rb-lite clean 2
 >   rounds, RoR ACCEPT-AS-HONEST-FINDING. Report §28 + appendix. Preserved on
 >   **`feat/mortal-producer-inheritance-v2-impl-rb`** (tip `395d11b`).
-> - **C3R.c — NEXT, now pointed at the DEMAND SIDE (not role succession).** C3R.b redirected the keystone:
->   role succession is NOT the binding lever (inherited tools already reach heirs and re-adopt in the viable
->   cell); the wall is the **reproduction↔hearth-subsidy coupling** — the very reproduction that supplies heirs
->   floods bread demand and caps output. C3R.c must break that coupling: heirs *without* a demand-flooding
->   hearth (e.g. heir provisioning that doesn't mint into the food market, or a demand side that can absorb the
->   subsidy). Scoping pending.
+> - **C3R.c — LANDED (impl-64, spec `docs/impl-earned-provisioning.md`).** Earned provisioning: both
+>   producer-side mints retired; producer households provisioned from the producer's externally-earned bread
+>   revenue (P0 ledger — cross-household only, buyer-class split, genuine external = consumers+gatherers+
+>   lineage, producer-class recirculation excluded; conserved gold transfers on unprovided wants; no pool/
+>   override/nudge). Formal classifier **`EarnedIncomeInsufficient`** every headline cell; **causal finding:
+>   income feeds the LIVING but never funds REPRODUCTION** — nobody starves (the transfer mechanism executed
+>   ZERO times in 15 eligible runs: at the floored price, birth-gift gold suffices), but births collapse
+>   357→1–5 because the birth gate debits FOUR SAVED food units from parent stock and present-hunger buying
+>   never saves → no heirs → the structure dies. The prior-saving problem relocates from the wages-fund (C1)
+>   to the **family provisioning fund**: a mortal economy whose agents demand only against present need
+>   cannot fund its own reproduction. Also: the price never recovers (surround mint → floored-but-active;
+>   reduced → the late market dies outright); the **gatherers are 87% of genuine external revenue** (the
+>   recurring-income class, not the depleting consumers). Flag `earned_provisioning`, tag 29. rb-lite clean
+>   in 2 rounds; RoR ACCEPT-AS-HONEST-FINDING (formal label retained; causal headline reframed; zero-
+>   activation prominently disclosed; dormant ledger provenance gap flagged for repair before any positive
+>   run). Report §29 + appendix. Preserved on **`feat/earned-provisioning-impl-rb`** (tip `ec3417d`).
+> - **C3R.d — NEXT (RoR-endorsed): individual saving ahead of need.** The keystone's remaining question is
+>   now BEHAVIORAL, not institutional: a parent-facing future-bread motive that purchases and RETAINS the
+>   four-loaf birth stock through the existing market machinery (purchased stock already passes the birth
+>   gate — nothing structural is missing; direct conserved birth-stock provisioning as a sufficiency
+>   control). Prerequisite repair: the dormant ledger provenance gap. After intergenerational continuity is
+>   restored, re-run the recurring-vs-depleting demand question. Scoping pending user.
 
 **P5+ — re-derive the institutional stack on the living base.** Firms (C2R) and rent/factor markets
 (C4R) once solvent counterparties exist; the classes/mobility measurement (C9) over whatever forms;
