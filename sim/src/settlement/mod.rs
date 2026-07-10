@@ -18276,10 +18276,7 @@ impl Settlement {
             let Some(payment) = gold_mul_qty(trade.price, trade.qty) else {
                 continue;
             };
-            self.debit_earned_provisioning_gold(trade.buyer, payment);
-            if trade.good != bread {
-                continue;
-            }
+            let (buyer_lots, untracked) = self.debit_earned_provisioning_lots(trade.buyer, payment);
             let Some(seller_household) = self.colonist_household(trade.seller) else {
                 continue;
             };
@@ -18287,7 +18284,32 @@ impl Settlement {
                 continue;
             }
             let buyer_household = self.colonist_household(trade.buyer);
+            if trade.good != bread {
+                if buyer_household == Some(seller_household) {
+                    assert_eq!(
+                        untracked,
+                        Gold::ZERO,
+                        "intra-household sale payment must be fully tracked by the earned-provisioning ledger"
+                    );
+                    self.credit_earned_provisioning_lots(trade.seller, buyer_lots);
+                } else {
+                    self.credit_earned_provisioning_lot(
+                        trade.seller,
+                        EarnedGoldLot {
+                            source: EarnedGoldSource::Earned,
+                            amount: payment,
+                        },
+                    );
+                }
+                continue;
+            }
             if buyer_household == Some(seller_household) {
+                assert_eq!(
+                    untracked,
+                    Gold::ZERO,
+                    "intra-household sale payment must be fully tracked by the earned-provisioning ledger"
+                );
+                self.credit_earned_provisioning_lots(trade.seller, buyer_lots);
                 self.earned_provisioning.stats.intra_household_sales = self
                     .earned_provisioning
                     .stats
@@ -31669,6 +31691,86 @@ mod tests {
         );
         assert!(bp.nonlineage_salt_producers.contains(&nonlineage_producer));
         assert_eq!(bp.lineage_salt_producers.len(), 1);
+    }
+
+    #[test]
+    fn intra_household_sale_reattaches_earned_gold_lots_to_seller() {
+        let cfg = SettlementConfig::frontier_mortal_producers_earned();
+        let mut s = Settlement::generate(7, &cfg);
+        let bread = s.provenance_bread_good().expect("chain bread");
+        let household = s
+            .producer_household_start()
+            .expect("earned base has producer households");
+        let seller = s
+            .live_colonist_slots
+            .iter()
+            .find_map(|&slot| {
+                (s.colonists[slot].household == Some(household)).then_some(s.colonists[slot].id)
+            })
+            .expect("producer household has a founder");
+        let buyer = s
+            .society
+            .agents
+            .iter()
+            .map(|agent| agent.id)
+            .find(|&id| id != seller)
+            .expect("earned base has another agent");
+        let buyer_slot = s.slot_for_id(buyer).expect("buyer is a colonist");
+        s.colonists[buyer_slot].household = Some(household);
+
+        s.earned_provisioning.buckets.remove(&buyer);
+        s.earned_provisioning.buckets.remove(&seller);
+        s.credit_earned_provisioning_lot(
+            buyer,
+            EarnedGoldLot {
+                source: EarnedGoldSource::Earned,
+                amount: Gold(2),
+            },
+        );
+        s.credit_earned_provisioning_lot(
+            buyer,
+            EarnedGoldLot {
+                source: EarnedGoldSource::Endowed,
+                amount: Gold(3),
+            },
+        );
+        let spot_start = s.society.trades.len();
+        s.society.trades.push(econ::market::Trade {
+            tick: s.econ_tick,
+            good: bread,
+            buyer,
+            seller,
+            price: Gold(5),
+            qty: 1,
+        });
+
+        s.run_earned_provisioning_market_attribution(spot_start);
+
+        let (lots, untracked) = s.debit_earned_provisioning_lots(seller, Gold(5));
+        assert_eq!(
+            lots,
+            vec![
+                EarnedGoldLot {
+                    source: EarnedGoldSource::Earned,
+                    amount: Gold(2),
+                },
+                EarnedGoldLot {
+                    source: EarnedGoldSource::Endowed,
+                    amount: Gold(3),
+                },
+            ],
+            "an intra-household sale must preserve the buyer's earned/endowed labels"
+        );
+        assert_eq!(untracked, Gold::ZERO);
+        assert_eq!(s.earned_provisioning.stats.intra_household_sales, Gold(5));
+        assert_eq!(
+            s.earned_provisioning.stats.external_earned_revenue,
+            Gold::ZERO
+        );
+        assert_eq!(
+            s.earned_provisioning.stats.genuine_external_revenue,
+            Gold::ZERO
+        );
     }
 
     #[test]
