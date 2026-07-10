@@ -1478,6 +1478,17 @@ pub struct ChainConfig {
     /// C3R.b per-producer-house birth cap. Serialized only under tag 28 and applied
     /// only to the dedicated producer households, never to the lineage cap.
     pub producer_house_cap: u8,
+    /// C3R.c — earned provisioning for mortal producer households. Active only on
+    /// top of C3R.b inheritance. The producer-house food mints can be retired by
+    /// config, and this flag lets active producers transfer conserved GOLD from
+    /// their tracked bread-sale proceeds to hungry same-household members before
+    /// the market. The member then bids through the normal order machinery.
+    pub earned_provisioning: bool,
+    /// C3R.c stock-provisioning control. Active only on top of C3R.b inheritance:
+    /// active producers feed hungry same-household members from their own bread
+    /// stock by conserved stock transfer, with no GOLD transfer and no market bid.
+    /// This is a control cell, not a tuning parameter.
+    pub producer_stock_provisioning_control: bool,
     /// C1R worker share in basis points. Pinned/swept, never searched.
     pub share_bps: u16,
     /// C1R fixed contract term in econ ticks. Pinned/swept, never searched.
@@ -1914,6 +1925,8 @@ impl ChainConfig {
             mortal_producer_inheritance: false,
             mortal_producer_tool_inheritance: true,
             producer_house_cap: MORTAL_PRODUCER_HOUSE_CAP_DEFAULT,
+            earned_provisioning: false,
+            producer_stock_provisioning_control: false,
             share_bps: SHARE_TENANCY_BPS_DEFAULT,
             share_term: SHARE_TENANCY_TERM_DEFAULT,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
@@ -2107,6 +2120,8 @@ impl ChainConfig {
             mortal_producer_inheritance: false,
             mortal_producer_tool_inheritance: true,
             producer_house_cap: MORTAL_PRODUCER_HOUSE_CAP_DEFAULT,
+            earned_provisioning: false,
+            producer_stock_provisioning_control: false,
             share_bps: SHARE_TENANCY_BPS_DEFAULT,
             share_term: SHARE_TENANCY_TERM_DEFAULT,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
@@ -2280,6 +2295,8 @@ impl ChainConfig {
             mortal_producer_inheritance: false,
             mortal_producer_tool_inheritance: true,
             producer_house_cap: MORTAL_PRODUCER_HOUSE_CAP_DEFAULT,
+            earned_provisioning: false,
+            producer_stock_provisioning_control: false,
             share_bps: SHARE_TENANCY_BPS_DEFAULT,
             share_term: SHARE_TENANCY_TERM_DEFAULT,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
@@ -4019,6 +4036,33 @@ impl SettlementConfig {
             }
         }
         debug_assert!(config_mortal_producer_inheritance_active(&cfg));
+        cfg
+    }
+
+    /// C3R.c — earned provisioning headline. Derives from C3R.b's heritable
+    /// mortal producer base, retires the two producer-side FOOD mints, and turns
+    /// on conserved GOLD transfers from active producers to hungry same-household
+    /// members. The lineage surround remains unchanged.
+    pub fn frontier_mortal_producers_earned() -> Self {
+        let mut cfg = Self::frontier_mortal_producers_heritable();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.earned_provisioning = true;
+            chain.producer_subsistence = 0;
+        }
+        if let Some(demo) = cfg.demography.as_mut() {
+            let start = demo
+                .households
+                .len()
+                .checked_sub(MORTAL_PRODUCER_HOUSEHOLDS)
+                .expect("heritable base appends producer households");
+            for household in &mut demo.households[start..] {
+                household.food_provision = 0;
+            }
+        }
+        debug_assert!(cfg
+            .chain
+            .as_ref()
+            .is_some_and(chain_config_earned_provisioning_active));
         cfg
     }
 
@@ -6481,6 +6525,12 @@ pub struct Settlement {
     /// Maintained only while [`Self::acquisition_ledger_active`] holds; an empty default
     /// otherwise. NOT in `canonical_bytes`, so it shifts no digest (byte-identical goldens).
     acquisition: AcquisitionLedger,
+    /// C3R.c runtime-only earned-provisioning ledger. It observes C3R.b spot bread
+    /// sales, classifies external revenue by buyer class, and tracks producer-house
+    /// GOLD provenance buckets for earned-first provisioning. It is deliberately
+    /// absent from `canonical_bytes`; the only future-behavior switch is the chain
+    /// flag serialized under tag 29.
+    earned_provisioning: EarnedProvisioningLedger,
     /// S21d.2a: the runtime-only cross-tick bootstrap microtrace (see [`BootstrapTrace`]).
     /// Maintained only while [`Self::acquisition_ledger_active`] holds; an empty default
     /// otherwise. NOT in `canonical_bytes`, so it shifts no digest (byte-identical goldens).
@@ -7121,6 +7171,8 @@ struct ChainRuntime {
     mortal_producer_inheritance: bool,
     mortal_producer_tool_inheritance: bool,
     producer_house_cap: u8,
+    earned_provisioning: bool,
+    producer_stock_provisioning_control: bool,
     share_bps: u16,
     share_term: u16,
     land_carrying_cost: u64,
@@ -7304,6 +7356,117 @@ pub struct InKindWageStats {
     pub employer_grain_settled: u64,
     pub endowment_funded_hires: u64,
     pub term_starvations: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EarnedProvisioningStats {
+    pub from_immortal_consumers: Gold,
+    pub from_gatherers: Gold,
+    pub from_lineage: Gold,
+    pub from_other_producer_households: Gold,
+    pub external_earned_revenue: Gold,
+    pub genuine_external_revenue: Gold,
+    pub external_bread_trades: u64,
+    pub genuine_external_bread_trades: u64,
+    pub intra_household_sales: Gold,
+    pub intra_household_bread_trades: u64,
+    pub endowment_funded_provisioning: Gold,
+    pub provisioning_transfers: u64,
+    pub provisioning_gold: Gold,
+    pub members_fed_by_purchase: u64,
+    pub member_starvations: u64,
+    pub funded_but_unfilled: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EarnedBuyerClass {
+    ImmortalConsumer,
+    Gatherer,
+    Lineage,
+    OtherProducerHousehold,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EarnedGoldSource {
+    Earned,
+    Endowed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EarnedGoldLot {
+    source: EarnedGoldSource,
+    amount: Gold,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct EarnedGoldBuckets {
+    earned: VecDeque<Gold>,
+    endowed: VecDeque<Gold>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct EarnedProvisioningLedger {
+    stats: EarnedProvisioningStats,
+    per_seller_external: BTreeMap<AgentId, Gold>,
+    buckets: BTreeMap<AgentId, EarnedGoldBuckets>,
+}
+
+impl EarnedGoldBuckets {
+    fn credit(&mut self, lot: EarnedGoldLot) {
+        if lot.amount == Gold::ZERO {
+            return;
+        }
+        match lot.source {
+            EarnedGoldSource::Earned => self.earned.push_back(lot.amount),
+            EarnedGoldSource::Endowed => self.endowed.push_back(lot.amount),
+        }
+    }
+
+    fn debit(&mut self, mut amount: Gold) -> (Gold, Gold, Gold) {
+        let earned = Self::debit_queue(&mut self.earned, &mut amount);
+        let endowed = Self::debit_queue(&mut self.endowed, &mut amount);
+        (earned, endowed, amount)
+    }
+
+    fn debit_lots(&mut self, mut amount: Gold) -> (Vec<EarnedGoldLot>, Gold) {
+        let mut lots = Vec::new();
+        let earned = Self::debit_queue(&mut self.earned, &mut amount);
+        if earned > Gold::ZERO {
+            lots.push(EarnedGoldLot {
+                source: EarnedGoldSource::Earned,
+                amount: earned,
+            });
+        }
+        let endowed = Self::debit_queue(&mut self.endowed, &mut amount);
+        if endowed > Gold::ZERO {
+            lots.push(EarnedGoldLot {
+                source: EarnedGoldSource::Endowed,
+                amount: endowed,
+            });
+        }
+        (lots, amount)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.earned.is_empty() && self.endowed.is_empty()
+    }
+
+    fn debit_queue(queue: &mut VecDeque<Gold>, amount: &mut Gold) -> Gold {
+        let mut debited = Gold::ZERO;
+        while *amount > Gold::ZERO {
+            let Some(front) = queue.front_mut() else {
+                break;
+            };
+            let take = (*front).min(*amount);
+            *front = (*front).saturating_sub(take);
+            *amount = (*amount).saturating_sub(take);
+            debited = debited.saturating_add(take);
+            if *front == Gold::ZERO {
+                queue.pop_front();
+            }
+        }
+        debited
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -9790,6 +9953,8 @@ impl Settlement {
                 mortal_producer_inheritance: chain.mortal_producer_inheritance,
                 mortal_producer_tool_inheritance: chain.mortal_producer_tool_inheritance,
                 producer_house_cap: chain.producer_house_cap,
+                earned_provisioning: chain.earned_provisioning,
+                producer_stock_provisioning_control: chain.producer_stock_provisioning_control,
                 share_bps: chain.share_bps,
                 share_term: chain.share_term,
                 land_carrying_cost: chain.land_carrying_cost,
@@ -9862,6 +10027,7 @@ impl Settlement {
             bread_provenance: BreadProvenance::default(),
             multigood: MultigoodMoney::default(),
             acquisition: AcquisitionLedger::default(),
+            earned_provisioning: EarnedProvisioningLedger::default(),
             bootstrap_trace: BootstrapTrace::default(),
             bread_seller_trace: Vec::new(),
             seeded_surplus_trace: SeededSurplusTrace::default(),
@@ -10075,6 +10241,7 @@ impl Settlement {
         settlement.apply_endowed_cultivation_capital(seed, config);
         settlement.init_private_land_tenure();
         settlement.init_commitment_norm_seed(seed);
+        settlement.init_earned_provisioning_buckets();
         settlement
     }
 
@@ -10391,6 +10558,7 @@ impl Settlement {
             bread_provenance: BreadProvenance::default(),
             multigood: MultigoodMoney::default(),
             acquisition: AcquisitionLedger::default(),
+            earned_provisioning: EarnedProvisioningLedger::default(),
             bootstrap_trace: BootstrapTrace::default(),
             bread_seller_trace: Vec::new(),
             seeded_surplus_trace: SeededSurplusTrace::default(),
@@ -10752,6 +10920,14 @@ impl Settlement {
         // no-op unless enabled, so every other run is byte-identical.
         self.run_producer_subsistence(&mut report);
 
+        // ---- 4c'-C3R.c. EARNED / STOCK PRODUCER-HOUSE PROVISIONING: after scales
+        // and the existing pre-market provisions, before the market. The earned
+        // headline moves conserved GOLD from active producers to same-household
+        // members with unprovided Now bread wants; the control moves the producer's
+        // own bread stock instead. Both are no-ops off their gates.
+        let earned_funded_bid_members = self.run_earned_provisioning_transfers();
+        self.run_producer_stock_provisioning_control();
+
         // ---- 4c''. OWN-LABOR SUBSISTENCE (S12): with the food mints retired, give each
         // hungry, eligible, unprovisioned colonist with spare labor a labor-produced
         // FORAGE floor — credited to its OWN stock as `report.produced` (own labor), not
@@ -10912,6 +11088,11 @@ impl Settlement {
         let acquisition_consume_cursor = self
             .run_acquisition_market(provenance_barter_trades_start, provenance_spot_trades_start);
         self.run_wage_labor_market_attribution(provenance_spot_trades_start);
+        self.finalize_earned_provisioning_market(
+            provenance_spot_trades_start,
+            &earned_funded_bid_members,
+        );
+        self.run_earned_provisioning_market_attribution(provenance_spot_trades_start);
 
         // ---- 5b-bis''. LAND MARKET (S23b): after ordinary food/SALT trades, and only once
         // SALT has promoted, charge carrying costs and run the deterministic pairwise land sweep.
@@ -13199,6 +13380,16 @@ impl Settlement {
         }
         let mut deaths = 0;
         for id in dying {
+            if self
+                .colonist_household(id)
+                .is_some_and(|household| self.is_producer_household(household))
+            {
+                self.earned_provisioning.stats.member_starvations = self
+                    .earned_provisioning
+                    .stats
+                    .member_starvations
+                    .saturating_add(1);
+            }
             deaths += u32::from(self.settle_death(id, report, wage_labor_used));
         }
         // S17 — attribute the positive check: accumulate the starvation death count into
@@ -13338,6 +13529,7 @@ impl Settlement {
             return false;
         };
         self.commons_gold = self.commons_gold.saturating_add(gold);
+        self.earned_provisioning.buckets.remove(&id);
         for (good, qty) in stock {
             if qty > 0 {
                 *self.commons_stock.entry(good).or_insert(0) += qty;
@@ -13443,10 +13635,21 @@ impl Settlement {
         let mut bread_placed_with_commons = 0u64;
         match destination {
             Some(EstateDestination::Household { heir, .. }) => {
-                if !self.credit_estate_gold_to_heir(heir, gold) {
+                if self.credit_estate_gold_to_heir(heir, gold) {
+                    let (lots, untracked) = self.debit_earned_provisioning_lots(id, gold);
+                    self.credit_earned_provisioning_lots(heir, lots);
+                    self.credit_earned_provisioning_lot(
+                        heir,
+                        EarnedGoldLot {
+                            source: EarnedGoldSource::Endowed,
+                            amount: untracked,
+                        },
+                    );
+                } else {
                     // Defensive: an overflow at the heir, stale heir id, or future
                     // ledger-money estate routes the gold to the commons.
                     self.commons_gold = self.commons_gold.saturating_add(gold);
+                    self.earned_provisioning.buckets.remove(&id);
                 }
                 for (good, qty) in stock {
                     if qty == 0 {
@@ -13499,6 +13702,7 @@ impl Settlement {
             }
             Some(EstateDestination::Commons) | None => {
                 self.commons_gold = self.commons_gold.saturating_add(gold);
+                self.earned_provisioning.buckets.remove(&id);
                 for (good, qty) in stock {
                     if qty > 0 {
                         *self.commons_stock.entry(good).or_insert(0) += qty;
@@ -13509,6 +13713,7 @@ impl Settlement {
                 }
             }
         }
+        self.earned_provisioning.buckets.remove(&id);
         // S22e: place the {plows} partition the inheritance switch forced to the commons (a
         // conserved transfer — the same sink the heirless commons fallback uses). Empty unless the
         // gate is active with inheritance OFF, so this is inert (and goldens byte-identical) on
@@ -14577,6 +14782,16 @@ impl Settlement {
                     .society
                     .transfer_gold(parent_id, child_id, Gold(gold_endow));
                 debug_assert!(transferred, "the parent's gold gift must transfer");
+                if transferred {
+                    self.debit_earned_provisioning_gold(parent_id, Gold(gold_endow));
+                    self.credit_earned_provisioning_lot(
+                        child_id,
+                        EarnedGoldLot {
+                            source: EarnedGoldSource::Endowed,
+                            amount: Gold(gold_endow),
+                        },
+                    );
+                }
             }
             let fixed_commitment_norm =
                 self.fixed_commitment_norm_prevalence()
@@ -17657,6 +17872,28 @@ impl Settlement {
                 .is_some_and(|chain| chain.mortal_producer_tool_inheritance)
     }
 
+    fn earned_provisioning_active(&self) -> bool {
+        self.demography.is_some()
+            && self
+                .chain
+                .as_ref()
+                .is_some_and(chain_runtime_earned_provisioning_active)
+    }
+
+    fn producer_stock_provisioning_control_active(&self) -> bool {
+        self.demography.is_some()
+            && self
+                .chain
+                .as_ref()
+                .is_some_and(chain_runtime_producer_stock_provisioning_control_active)
+    }
+
+    fn earned_provisioning_ledger_active(&self) -> bool {
+        self.mortal_producer_inheritance_active()
+            && self.current_money_good() == Some(GOLD)
+            && self.provenance_bread_good().is_some()
+    }
+
     fn producer_household_start(&self) -> Option<usize> {
         self.mortal_producer_inheritance_active()
             .then(|| {
@@ -17696,6 +17933,478 @@ impl Settlement {
         {
             self.producer_house_deaths = self.producer_house_deaths.saturating_add(1);
         }
+    }
+
+    fn init_earned_provisioning_buckets(&mut self) {
+        if !self.earned_provisioning_ledger_active() {
+            return;
+        }
+        let ids: Vec<AgentId> = self
+            .live_colonist_slots
+            .iter()
+            .filter_map(|&slot| {
+                let colonist = &self.colonists[slot];
+                colonist
+                    .household
+                    .is_some_and(|household| self.is_producer_household(household))
+                    .then_some(colonist.id)
+            })
+            .collect();
+        for id in ids {
+            let gold = self
+                .society
+                .agents
+                .get(id)
+                .map_or(Gold::ZERO, |agent| agent.gold);
+            self.credit_earned_provisioning_lot(
+                id,
+                EarnedGoldLot {
+                    source: EarnedGoldSource::Endowed,
+                    amount: gold,
+                },
+            );
+        }
+    }
+
+    fn credit_earned_provisioning_lot(&mut self, agent: AgentId, lot: EarnedGoldLot) {
+        if lot.amount == Gold::ZERO || !self.earned_provisioning_ledger_active() {
+            return;
+        }
+        self.earned_provisioning
+            .buckets
+            .entry(agent)
+            .or_default()
+            .credit(lot);
+    }
+
+    fn credit_earned_provisioning_lots(
+        &mut self,
+        agent: AgentId,
+        lots: impl IntoIterator<Item = EarnedGoldLot>,
+    ) {
+        for lot in lots {
+            self.credit_earned_provisioning_lot(agent, lot);
+        }
+    }
+
+    fn debit_earned_provisioning_gold(
+        &mut self,
+        agent: AgentId,
+        amount: Gold,
+    ) -> (Gold, Gold, Gold) {
+        if amount == Gold::ZERO || !self.earned_provisioning_ledger_active() {
+            return (Gold::ZERO, Gold::ZERO, amount);
+        }
+        let Some(mut buckets) = self.earned_provisioning.buckets.remove(&agent) else {
+            return (Gold::ZERO, Gold::ZERO, amount);
+        };
+        let debited = buckets.debit(amount);
+        if !buckets.is_empty() {
+            self.earned_provisioning.buckets.insert(agent, buckets);
+        }
+        debited
+    }
+
+    fn debit_earned_provisioning_lots(
+        &mut self,
+        agent: AgentId,
+        amount: Gold,
+    ) -> (Vec<EarnedGoldLot>, Gold) {
+        if amount == Gold::ZERO || !self.earned_provisioning_ledger_active() {
+            return (Vec::new(), amount);
+        }
+        let Some(mut buckets) = self.earned_provisioning.buckets.remove(&agent) else {
+            return (Vec::new(), amount);
+        };
+        let debited = buckets.debit_lots(amount);
+        if !buckets.is_empty() {
+            self.earned_provisioning.buckets.insert(agent, buckets);
+        }
+        debited
+    }
+
+    fn earned_provisioning_transfer_gold_provenance(
+        &mut self,
+        from: AgentId,
+        to: AgentId,
+        amount: Gold,
+    ) -> (Gold, Gold, Gold) {
+        let (lots, untracked) = self.debit_earned_provisioning_lots(from, amount);
+        let mut earned = Gold::ZERO;
+        let mut endowed = Gold::ZERO;
+        for lot in &lots {
+            match lot.source {
+                EarnedGoldSource::Earned => earned = earned.saturating_add(lot.amount),
+                EarnedGoldSource::Endowed => endowed = endowed.saturating_add(lot.amount),
+            }
+        }
+        self.credit_earned_provisioning_lots(to, lots);
+        self.credit_earned_provisioning_lot(
+            to,
+            EarnedGoldLot {
+                source: EarnedGoldSource::Endowed,
+                amount: untracked,
+            },
+        );
+        (earned, endowed, untracked)
+    }
+
+    fn producer_house_producers(&self) -> Vec<(AgentId, usize)> {
+        let mut producers: Vec<_> = self
+            .live_colonist_slots
+            .iter()
+            .filter_map(|&slot| {
+                let colonist = &self.colonists[slot];
+                let household = colonist.household?;
+                (self.is_producer_household(household)
+                    && matches!(colonist.vocation, Vocation::Miller | Vocation::Baker))
+                .then_some((colonist.id, household))
+            })
+            .collect();
+        producers.sort_unstable_by_key(|&(id, household)| (id.0, household));
+        producers
+    }
+
+    fn producer_house_members(&self, household: usize) -> Vec<AgentId> {
+        let mut members: Vec<_> = self
+            .live_colonist_slots
+            .iter()
+            .filter_map(|&slot| {
+                let colonist = &self.colonists[slot];
+                (colonist.household == Some(household)).then_some(colonist.id)
+            })
+            .collect();
+        members.sort_unstable_by_key(|id| id.0);
+        members
+    }
+
+    fn free_agent_gold(&self, agent: AgentId) -> Gold {
+        let free = self.society.free_gold_after_all_reserves(agent);
+        let held = self
+            .society
+            .agents
+            .get(agent)
+            .map_or(Gold::ZERO, |agent| agent.gold);
+        free.min(held)
+    }
+
+    fn has_unprovided_now_bread_want(&self, member: AgentId, bread: GoodId) -> bool {
+        let Some(agent) = self.society.agents.get(member) else {
+            return false;
+        };
+        let mut available = agent.stock.get(bread);
+        for want in &agent.scale {
+            if want.kind != WantKind::Good(bread) || matches!(want.horizon, Horizon::Later(_)) {
+                continue;
+            }
+            let provided = available.min(want.qty);
+            if provided == want.qty {
+                available = available.saturating_sub(provided);
+                continue;
+            }
+            if matches!(want.horizon, Horizon::Now) && !want.satisfied {
+                return true;
+            }
+            available = 0;
+        }
+        false
+    }
+
+    fn run_earned_provisioning_transfers(&mut self) -> Vec<AgentId> {
+        if !self.earned_provisioning_active() {
+            return Vec::new();
+        }
+        let Some(bread) = self.provenance_bread_good() else {
+            return Vec::new();
+        };
+        let price = self.society.realized_price(bread).map_or(1, |g| g.0.max(1));
+        let producers = self.producer_house_producers();
+        let mut funded_bid_members = Vec::new();
+        for (producer, household) in producers {
+            let members = self.producer_house_members(household);
+            for member in members {
+                if member == producer || !self.has_unprovided_now_bread_want(member, bread) {
+                    continue;
+                }
+                let member_gold = self.free_agent_gold(member).0;
+                let gap = price.saturating_sub(member_gold);
+                if gap == 0 {
+                    continue;
+                }
+                let amount = Gold(gap).min(self.free_agent_gold(producer));
+                if amount == Gold::ZERO {
+                    continue;
+                }
+                let gold_before = self.total_gold();
+                if self.society.transfer_gold(producer, member, amount) {
+                    let (_, endowed, untracked) =
+                        self.earned_provisioning_transfer_gold_provenance(producer, member, amount);
+                    self.earned_provisioning.stats.endowment_funded_provisioning = self
+                        .earned_provisioning
+                        .stats
+                        .endowment_funded_provisioning
+                        .saturating_add(endowed)
+                        .saturating_add(untracked);
+                    self.earned_provisioning.stats.provisioning_transfers = self
+                        .earned_provisioning
+                        .stats
+                        .provisioning_transfers
+                        .saturating_add(1);
+                    self.earned_provisioning.stats.provisioning_gold = self
+                        .earned_provisioning
+                        .stats
+                        .provisioning_gold
+                        .saturating_add(amount);
+                    debug_assert_eq!(
+                        gold_before,
+                        self.total_gold(),
+                        "earned provisioning must conserve total GOLD"
+                    );
+                    funded_bid_members.push(member);
+                }
+            }
+        }
+        funded_bid_members
+    }
+
+    fn run_producer_stock_provisioning_control(&mut self) {
+        if !self.producer_stock_provisioning_control_active() {
+            return;
+        }
+        let Some(bread) = self.provenance_bread_good() else {
+            return;
+        };
+        let producers = self.producer_house_producers();
+        for (producer, household) in producers {
+            let members = self.producer_house_members(household);
+            for member in members {
+                if member == producer || !self.has_unprovided_now_bread_want(member, bread) {
+                    continue;
+                }
+                if self.stock_of_id(producer, bread) == 0 {
+                    break;
+                }
+                if !self.society.debit_stock(producer, bread, 1) {
+                    continue;
+                }
+                if self.society.credit_stock(member, bread, 1) {
+                    if self.bread_provenance_active() && Some(bread) == self.provenance_bread_good()
+                    {
+                        self.bread_provenance.transfer(producer, member, 1);
+                    }
+                    if self.acquisition_ledger_active()
+                        && Some(bread) == self.acquisition_food_good()
+                    {
+                        self.acquisition.transfer_preserve(producer, member, 1);
+                    }
+                } else {
+                    let credited_back = self.society.credit_stock(producer, bread, 1);
+                    debug_assert!(credited_back, "stock provisioning rollback must fit");
+                }
+            }
+        }
+    }
+
+    fn finalize_earned_provisioning_market(
+        &mut self,
+        spot_trades_start: usize,
+        funded_bid_members: &[AgentId],
+    ) {
+        if !self.earned_provisioning_ledger_active() {
+            return;
+        }
+        let Some(bread) = self.provenance_bread_good() else {
+            return;
+        };
+        let mut filled: BTreeSet<AgentId> = BTreeSet::new();
+        for trade in &self.society.trades[spot_trades_start..] {
+            if trade.good == bread {
+                if self
+                    .colonist_household(trade.buyer)
+                    .is_some_and(|household| self.is_producer_household(household))
+                {
+                    self.earned_provisioning.stats.members_fed_by_purchase = self
+                        .earned_provisioning
+                        .stats
+                        .members_fed_by_purchase
+                        .saturating_add(1);
+                }
+                filled.insert(trade.buyer);
+            }
+        }
+        for &member in funded_bid_members {
+            if !filled.contains(&member) {
+                self.earned_provisioning.stats.funded_but_unfilled = self
+                    .earned_provisioning
+                    .stats
+                    .funded_but_unfilled
+                    .saturating_add(1);
+            }
+        }
+    }
+
+    fn earned_buyer_class(
+        &self,
+        buyer: AgentId,
+        buyer_household: Option<usize>,
+    ) -> EarnedBuyerClass {
+        if let Some(household) = buyer_household {
+            if self.is_producer_household(household) {
+                return EarnedBuyerClass::OtherProducerHousehold;
+            }
+            return EarnedBuyerClass::Lineage;
+        }
+        match self
+            .slot_for_id(buyer)
+            .map(|slot| self.colonists[slot].vocation)
+        {
+            Some(Vocation::Gatherer) => EarnedBuyerClass::Gatherer,
+            Some(Vocation::Consumer) | None => EarnedBuyerClass::ImmortalConsumer,
+            Some(_) => EarnedBuyerClass::OtherProducerHousehold,
+        }
+    }
+
+    fn run_earned_provisioning_market_attribution(&mut self, spot_trades_start: usize) {
+        if !self.earned_provisioning_ledger_active() {
+            return;
+        }
+        let Some(bread) = self.provenance_bread_good() else {
+            return;
+        };
+        let trades: Vec<_> = self.society.trades[spot_trades_start..].to_vec();
+        for trade in trades {
+            let Some(payment) = gold_mul_qty(trade.price, trade.qty) else {
+                continue;
+            };
+            self.debit_earned_provisioning_gold(trade.buyer, payment);
+            if trade.good != bread {
+                continue;
+            }
+            let Some(seller_household) = self.colonist_household(trade.seller) else {
+                continue;
+            };
+            if !self.is_producer_household(seller_household) {
+                continue;
+            }
+            let buyer_household = self.colonist_household(trade.buyer);
+            if buyer_household == Some(seller_household) {
+                self.earned_provisioning.stats.intra_household_sales = self
+                    .earned_provisioning
+                    .stats
+                    .intra_household_sales
+                    .saturating_add(payment);
+                self.earned_provisioning.stats.intra_household_bread_trades = self
+                    .earned_provisioning
+                    .stats
+                    .intra_household_bread_trades
+                    .saturating_add(1);
+                continue;
+            }
+
+            let class = self.earned_buyer_class(trade.buyer, buyer_household);
+            match class {
+                EarnedBuyerClass::ImmortalConsumer => {
+                    self.earned_provisioning.stats.from_immortal_consumers = self
+                        .earned_provisioning
+                        .stats
+                        .from_immortal_consumers
+                        .saturating_add(payment);
+                    self.earned_provisioning.stats.genuine_external_revenue = self
+                        .earned_provisioning
+                        .stats
+                        .genuine_external_revenue
+                        .saturating_add(payment);
+                    self.earned_provisioning.stats.genuine_external_bread_trades = self
+                        .earned_provisioning
+                        .stats
+                        .genuine_external_bread_trades
+                        .saturating_add(1);
+                }
+                EarnedBuyerClass::Gatherer => {
+                    self.earned_provisioning.stats.from_gatherers = self
+                        .earned_provisioning
+                        .stats
+                        .from_gatherers
+                        .saturating_add(payment);
+                    self.earned_provisioning.stats.genuine_external_revenue = self
+                        .earned_provisioning
+                        .stats
+                        .genuine_external_revenue
+                        .saturating_add(payment);
+                    self.earned_provisioning.stats.genuine_external_bread_trades = self
+                        .earned_provisioning
+                        .stats
+                        .genuine_external_bread_trades
+                        .saturating_add(1);
+                }
+                EarnedBuyerClass::Lineage => {
+                    self.earned_provisioning.stats.from_lineage = self
+                        .earned_provisioning
+                        .stats
+                        .from_lineage
+                        .saturating_add(payment);
+                    self.earned_provisioning.stats.genuine_external_revenue = self
+                        .earned_provisioning
+                        .stats
+                        .genuine_external_revenue
+                        .saturating_add(payment);
+                    self.earned_provisioning.stats.genuine_external_bread_trades = self
+                        .earned_provisioning
+                        .stats
+                        .genuine_external_bread_trades
+                        .saturating_add(1);
+                }
+                EarnedBuyerClass::OtherProducerHousehold => {
+                    self.earned_provisioning
+                        .stats
+                        .from_other_producer_households = self
+                        .earned_provisioning
+                        .stats
+                        .from_other_producer_households
+                        .saturating_add(payment);
+                }
+            }
+            self.earned_provisioning.stats.external_earned_revenue = self
+                .earned_provisioning
+                .stats
+                .external_earned_revenue
+                .saturating_add(payment);
+            self.earned_provisioning.stats.external_bread_trades = self
+                .earned_provisioning
+                .stats
+                .external_bread_trades
+                .saturating_add(1);
+            let current = self
+                .earned_provisioning
+                .per_seller_external
+                .get(&trade.seller)
+                .copied()
+                .unwrap_or(Gold::ZERO);
+            self.earned_provisioning
+                .per_seller_external
+                .insert(trade.seller, current.saturating_add(payment));
+            self.credit_earned_provisioning_lot(
+                trade.seller,
+                EarnedGoldLot {
+                    source: EarnedGoldSource::Earned,
+                    amount: payment,
+                },
+            );
+        }
+        let stats = self.earned_provisioning.stats;
+        let split = stats
+            .from_immortal_consumers
+            .saturating_add(stats.from_gatherers)
+            .saturating_add(stats.from_lineage)
+            .saturating_add(stats.from_other_producer_households);
+        debug_assert_eq!(
+            split, stats.external_earned_revenue,
+            "earned-provisioning class split must equal total external producer-house revenue"
+        );
+        debug_assert!(
+            stats.genuine_external_revenue <= stats.external_earned_revenue,
+            "genuine external revenue must be a subset of external earned revenue"
+        );
     }
 
     /// S7.2: whether the per-builder capital-formation phase is active — its appraisal
@@ -22627,6 +23336,14 @@ impl Settlement {
         AcquisitionChannels::from_array(self.acquisition.consumed_by_channel)
     }
 
+    /// C3R.c runtime-only ledger for earned producer-house provisioning. It is
+    /// intentionally excluded from `canonical_bytes`; tag 29 serializes only the
+    /// behavior switch, while this reports the measured revenue classes and
+    /// provisioning outcomes.
+    pub fn earned_provisioning_stats(&self) -> EarnedProvisioningStats {
+        self.earned_provisioning.stats
+    }
+
     /// S21d.1 (read-only): tracked food (bread) currently HELD across living agents, split by
     /// channel — the live channel mix and the seed-depletion read (`seeded_minted → 0`).
     pub fn acquisition_held_by_channel(&self) -> AcquisitionChannels {
@@ -23704,6 +24421,14 @@ impl Settlement {
                 out.push(u8::from(chain.mortal_producer_inheritance));
                 out.push(u8::from(chain.mortal_producer_tool_inheritance));
                 out.push(chain.producer_house_cap);
+            }
+            if self.earned_provisioning_active() {
+                out.push(29);
+                out.push(u8::from(chain.earned_provisioning));
+            }
+            if self.producer_stock_provisioning_control_active() {
+                out.push(30);
+                out.push(u8::from(chain.producer_stock_provisioning_control));
             }
             // S23b: the post-money land market extends S23a's registry with an endogenous-price
             // state, listings, last-sale anchors, and the non-agent fee sink. Emitted only when the
@@ -24902,6 +25627,10 @@ fn chain_config_mortal_producer_inheritance_active(chain: &ChainConfig) -> bool 
     chain.mortal_producer_inheritance && chain_config_mortal_chain_producers_active(chain)
 }
 
+fn chain_config_earned_provisioning_active(chain: &ChainConfig) -> bool {
+    chain.earned_provisioning && chain_config_mortal_producer_inheritance_active(chain)
+}
+
 fn chain_config_rival_subsistence_commons_active(chain: &ChainConfig) -> bool {
     chain.rival_subsistence_commons
         && chain_config_mortal_landowner_demography_active(chain)
@@ -24996,6 +25725,15 @@ fn chain_runtime_mortal_chain_producers_active(chain: &ChainRuntime) -> bool {
 
 fn chain_runtime_mortal_producer_inheritance_active(chain: &ChainRuntime) -> bool {
     chain.mortal_producer_inheritance && chain_runtime_mortal_chain_producers_active(chain)
+}
+
+fn chain_runtime_earned_provisioning_active(chain: &ChainRuntime) -> bool {
+    chain.earned_provisioning && chain_runtime_mortal_producer_inheritance_active(chain)
+}
+
+fn chain_runtime_producer_stock_provisioning_control_active(chain: &ChainRuntime) -> bool {
+    chain.producer_stock_provisioning_control
+        && chain_runtime_mortal_producer_inheritance_active(chain)
 }
 
 fn chain_runtime_rival_subsistence_commons_active(chain: &ChainRuntime) -> bool {
