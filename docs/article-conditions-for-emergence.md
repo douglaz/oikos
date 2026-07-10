@@ -637,6 +637,24 @@ We state the scaffolds plainly; a hostile reader should attack these first.
   the market. And it moves the keystone's open question off the supply side entirely — the next binding constraint
   is not how a role or a tool passes to the next generation (the engine already does that) but how a mortal economy
   can reproduce its producers *without* the very act of reproduction drowning the demand they exist to serve.
+  That question has since been answered — **C3R.c, earned provisioning**: retire the subsidy entirely and let the
+  producers' externally-earned revenue provision their dependents through the market, with a strict ledger that
+  refuses to count self-dealing or producer-to-producer recirculation as genuine demand. The result reframed the
+  problem once more, and more fundamentally than any slice before it. Nobody starves: freed of the subsidy's price
+  flood, the adults feed themselves easily — so easily that the transfer mechanism built for the milestone never
+  fires at all, an economy that never demands the machinery designed for it (the same shape as the wage market
+  that never cleared). **What fails is reproduction.** Bearing a child in this model requires the parent to hand
+  over a small *saved* stock of food, and agents who buy only against present hunger eat every loaf they purchase:
+  income circulates, consumption is covered, and no one ever accumulates the four-loaf fund a birth requires — so
+  births collapse, heirs vanish, and the chain's structure dies of childlessness in an economy where everyone is
+  fed. The prior-saving problem, which the wage-labor null located in the employer's wages-fund, reappears here in
+  its most elemental form: **a mortal economy whose members demand only against present need cannot fund its own
+  reproduction.** Subsidize the family and the market drowns; unsubsidize it and the family disappears — unless
+  someone *saves ahead of need*, which no behavior in the model yet does. The keystone's remaining question is
+  therefore no longer institutional but behavioral, and it is the oldest one in capital theory: where does the
+  first act of saving come from? (One empirical gift along the way: the ledger's buyer-class split showed that the
+  only durable external demand in the economy comes from the one class with recurring *earned* income — the
+  gatherers — and not from the endowed consumers, whose one-time purse simply depletes.)
 
 ---
 
