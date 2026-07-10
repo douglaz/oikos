@@ -155,18 +155,34 @@ Falsifiable bar: production survives the death of producers.
 > voluntary-labor arc CLOSED without a standing-institution winner (§26 — the binding constraint is the
 > worker's satiation exit), so C3R does not compose it. Instead C3R isolates producer mortality on the
 > existing `frontier_capital` base, decomposed (per two research maps + 4 xhigh spec-review rounds) into:
-> **C3R.a** producer mortality, no succession (the motivating null) → **C3R.b** role succession → **C3R.c**
-> capital (mill/oven) inheritance.
+> **C3R.a** producer mortality, no succession (the motivating null) → **C3R.b** capital (mill/oven)
+> inheritance (chosen first over role succession — on this engine the tool GATES the role, so inheriting the
+> mill is the load-bearing mechanism and the existing S7 path re-adopts the role for free) → **C3R.c** the
+> demand-side constraint C3R.b exposed.
 > - **C3R.a — LANDED (impl-62, spec `docs/impl-mortal-producers.md`).** Verdict `ChainCollapsesOnProducerDeath`
 >   ×5: the chain dies with its producers. Instrumented honest (reservoir provably closed
 >   `immortal_producer_count=0`; not a thin-pool artifact; ~150 re-adoptions/run + 2–3 mortal builds/run — the
 >   chain churns but never stabilizes; the payback horizon bites). Flag `mortal_chain_producers`, tag 27.
 >   rb-lite clean in 6 rounds; RoR ACCEPT-AS-HONEST-FINDING no P0/P1. Report §27 + appendix. Preserved on
 >   **`feat/mortal-producers-impl-rb`** (tip `d8e0ddc`).
-> - **C3R.b / C3R.c — NEXT.** C3R.a names them precisely: the role is refilled only by frantic ad-hoc
->   re-adoption (→ role succession), and capital sinks to the commons on every death (→ capital inheritance,
->   the Böhm-Bawerk payback-across-generations question). Scoping decision (b-first vs c-first, or bundled)
->   pending — C3R.a's total collapse is itself an input to whether role succession alone can lift it.
+> - **C3R.b — LANDED (impl-63 v2, spec `docs/impl-mortal-producer-inheritance.md`).** Capital inheritance:
+>   the mill routes to a live heir via the existing estate seam, the heir re-adopts via the existing S7 path
+>   (no new succession code). Result: **inheritance preserves chain STRUCTURE in a narrow subsidy window
+>   (`food_provision=1, cap=2`, 4/5 seeds — both stages staffed ~1500/1600 ticks, the keystone's first
+>   structural positive) but every persisting seed is FLOW-CAPPED** (bread ≈9). The intrinsic bind (measured):
+>   inheritance sustains structure only by keeping the producer households populated → they reproduce → the
+>   reproduction carries the hearth subsidy that floods bread demand → output capped. Capital continuity ≠
+>   productive use. Flag `mortal_producer_inheritance`, tag 28. **v1 result-review REJECT** (the pinned hearth
+>   subsidy floored the response variable before inheritance was evaluable — classify-not-tune violation) →
+>   **v2 swept the subsidy `{0,1,2,3}` × cap `{1,2,3}` + split structure/flow verdict** → rb-lite clean 2
+>   rounds, RoR ACCEPT-AS-HONEST-FINDING. Report §28 + appendix. Preserved on
+>   **`feat/mortal-producer-inheritance-v2-impl-rb`** (tip `395d11b`).
+> - **C3R.c — NEXT, now pointed at the DEMAND SIDE (not role succession).** C3R.b redirected the keystone:
+>   role succession is NOT the binding lever (inherited tools already reach heirs and re-adopt in the viable
+>   cell); the wall is the **reproduction↔hearth-subsidy coupling** — the very reproduction that supplies heirs
+>   floods bread demand and caps output. C3R.c must break that coupling: heirs *without* a demand-flooding
+>   hearth (e.g. heir provisioning that doesn't mint into the food market, or a demand side that can absorb the
+>   subsidy). Scoping pending.
 
 **P5+ — re-derive the institutional stack on the living base.** Firms (C2R) and rent/factor markets
 (C4R) once solvent counterparties exist; the classes/mobility measurement (C9) over whatever forms;
