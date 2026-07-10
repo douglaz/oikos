@@ -4003,9 +4003,6 @@ impl SettlementConfig {
             chain.mortal_producer_inheritance = true;
             chain.mortal_producer_tool_inheritance = true;
             chain.producer_house_cap = MORTAL_PRODUCER_HOUSE_CAP_DEFAULT;
-            // Producers are now household members fed by the hearth; keeping the
-            // producer cushion would double-provision this new base.
-            chain.producer_subsistence = 0;
         }
         let tp_base = cfg.consumer_time_preference_base_bps;
         if let Some(demo) = cfg.demography.as_mut() {
@@ -6431,6 +6428,28 @@ pub struct Settlement {
     /// C3R.b runtime-only telemetry: inherited-tool holders that later adopted
     /// Miller/Baker through the ordinary S7 tool-holder role-choice path.
     heir_tool_adoptions: u64,
+    /// C3R.b v2 runtime-only telemetry: food hearth units actually credited to
+    /// dedicated producer-house members.
+    producer_house_hearth_food_minted: u64,
+    /// C3R.b v2 runtime-only telemetry: food hearth units actually credited to
+    /// every other demography household member.
+    non_producer_hearth_food_minted: u64,
+    /// C3R.b v2 runtime-only telemetry: births in the dedicated producer houses.
+    producer_house_births: u64,
+    /// C3R.b v2 runtime-only telemetry: deaths among producer-house members.
+    producer_house_deaths: u64,
+    /// C3R.b v2 runtime-only telemetry: live producer-house members sampled once
+    /// per economic tick.
+    producer_house_person_ticks: u64,
+    /// C3R.b v2 runtime-only telemetry: producer-role recipe appraisals that did
+    /// not pay.
+    producer_recipe_pay_rejections: u64,
+    /// C3R.b v2 runtime-only telemetry: producer capital-build opportunities that
+    /// did not clear the build appraisal/eligibility path.
+    producer_build_rejections: u64,
+    /// C3R.b v2 runtime-only telemetry: role-choice switches into producer roles
+    /// blocked by the ordinary switch-readiness guard.
+    producer_adoption_rejections: u64,
     /// C3R.b runtime-only attribution: `(heir, inherited_tool)` pairs created by
     /// producer estate settlement, used only to make `heir_tool_adoptions` narrow.
     producer_tool_inheritors: BTreeSet<(AgentId, GoodId)>,
@@ -9828,6 +9847,14 @@ impl Settlement {
             producer_tool_inheritances: 0,
             heirless_producer_deaths: 0,
             heir_tool_adoptions: 0,
+            producer_house_hearth_food_minted: 0,
+            non_producer_hearth_food_minted: 0,
+            producer_house_births: 0,
+            producer_house_deaths: 0,
+            producer_house_person_ticks: 0,
+            producer_recipe_pay_rejections: 0,
+            producer_build_rejections: 0,
+            producer_adoption_rejections: 0,
             producer_tool_inheritors: BTreeSet::new(),
             last_capital_decisions: Vec::new(),
             peak_pre_promotion_hunger: 0,
@@ -10349,6 +10376,14 @@ impl Settlement {
             producer_tool_inheritances: 0,
             heirless_producer_deaths: 0,
             heir_tool_adoptions: 0,
+            producer_house_hearth_food_minted: 0,
+            non_producer_hearth_food_minted: 0,
+            producer_house_births: 0,
+            producer_house_deaths: 0,
+            producer_house_person_ticks: 0,
+            producer_recipe_pay_rejections: 0,
+            producer_build_rejections: 0,
+            producer_adoption_rejections: 0,
             producer_tool_inheritors: BTreeSet::new(),
             last_capital_decisions: Vec::new(),
             peak_pre_promotion_hunger: 0,
@@ -10555,6 +10590,7 @@ impl Settlement {
             fast_ticks: FAST_TICKS_PER_ECON_TICK,
             ..EconTickReport::default()
         };
+        self.record_producer_house_person_ticks();
 
         // Snapshot the whole-system totals and the world-only totals before the
         // fast loop. The fast loop only adds goods via regen and only relocates
@@ -13342,6 +13378,7 @@ impl Settlement {
             && self
                 .slot_for_id(id)
                 .is_some_and(|slot| self.mortal_chain_producer_subject(slot));
+        self.record_producer_house_death(id);
         let producer_tools = self
             .chain
             .as_ref()
@@ -14318,15 +14355,22 @@ impl Settlement {
         for (id, h) in members {
             let spec = &demo.households[h];
             if mint_food {
-                self.deliver_demography_provision_unit(id, staple, spec.food_provision, report);
+                self.deliver_demography_provision_unit(
+                    id,
+                    Some(h),
+                    staple,
+                    spec.food_provision,
+                    report,
+                );
             }
-            self.deliver_demography_provision_unit(id, WOOD, spec.wood_provision, report);
+            self.deliver_demography_provision_unit(id, Some(h), WOOD, spec.wood_provision, report);
         }
     }
 
     fn deliver_demography_provision_unit(
         &mut self,
         id: AgentId,
+        household: Option<usize>,
         good: GoodId,
         provision: u32,
         report: &mut EconTickReport,
@@ -14345,6 +14389,17 @@ impl Settlement {
         let credited = provision.min(u32::MAX - held);
         if credited > 0 && self.society.credit_stock(id, good, credited) {
             *report.endowment.entry(good).or_insert(0) += u64::from(credited);
+            if good == self.known.hunger {
+                if household.is_some_and(|h| self.is_producer_household(h)) {
+                    self.producer_house_hearth_food_minted = self
+                        .producer_house_hearth_food_minted
+                        .saturating_add(u64::from(credited));
+                } else if household.is_some() {
+                    self.non_producer_hearth_food_minted = self
+                        .non_producer_hearth_food_minted
+                        .saturating_add(u64::from(credited));
+                }
+            }
             // S21d.1: a hearth MINT of the tracked food (the demographic `food_provision`
             // or the producer staple floor) enters as the `SeededMinted` channel — the very
             // term the open-survival probe retires, so its only effect here is on the
@@ -14587,6 +14642,9 @@ impl Settlement {
             }
             self.households[h].last_birth_tick = Some(self.econ_tick);
             self.births_total = self.births_total.saturating_add(1);
+            if self.is_producer_household(h) {
+                self.producer_house_births = self.producer_house_births.saturating_add(1);
+            }
             births += 1;
         }
         births
@@ -15047,7 +15105,7 @@ impl Settlement {
                     .get(id)
                     .map_or(0, |agent| agent.stock.get(good));
                 if held < target {
-                    self.deliver_demography_provision_unit(id, good, target - held, report);
+                    self.deliver_demography_provision_unit(id, None, good, target - held, report);
                 }
             }
         }
@@ -16697,6 +16755,7 @@ impl Settlement {
         // adopt appraisal instead of the raw realized price (input price stays observed).
         let entrepreneurial = chain.entrepreneurial_forecasts;
         let mortal_only = self.mortal_chain_producers_active();
+        let count_c3rb_rejections = self.mortal_producer_inheritance_active();
         let tick = self.society.tick.0;
         let mut changed = false;
 
@@ -16801,6 +16860,9 @@ impl Settlement {
                 if pays {
                     adoption = Some(adopted);
                     break;
+                } else if count_c3rb_rejections {
+                    self.producer_recipe_pay_rejections =
+                        self.producer_recipe_pay_rejections.saturating_add(1);
                 }
             }
             // When no candidate pays: a seeded latent or an adopted producer reverts to
@@ -16820,6 +16882,10 @@ impl Settlement {
             if self.colonists[slot].vocation != next {
                 let previous = self.colonists[slot].vocation;
                 if !self.role_choice_switch_ready(id, previous, next) {
+                    if count_c3rb_rejections && matches!(next, Vocation::Miller | Vocation::Baker) {
+                        self.producer_adoption_rejections =
+                            self.producer_adoption_rejections.saturating_add(1);
+                    }
                     continue;
                 }
                 if mortal_only
@@ -17225,6 +17291,9 @@ impl Settlement {
                 .map(|_| (mill_good, ProjectTemplateId::BuildMill))
         };
         let Some((tool, template_id)) = choice else {
+            if self.mortal_producer_inheritance_active() {
+                self.producer_build_rejections = self.producer_build_rejections.saturating_add(1);
+            }
             return built;
         };
 
@@ -17483,6 +17552,10 @@ impl Settlement {
             };
             self.last_capital_decisions.push(decision);
             let Some(chosen_index) = chosen else {
+                if self.mortal_producer_inheritance_active() {
+                    self.producer_build_rejections =
+                        self.producer_build_rejections.saturating_add(1);
+                }
                 continue;
             };
             let candidate = candidates[chosen_index];
@@ -17592,6 +17665,37 @@ impl Settlement {
                     .checked_sub(MORTAL_PRODUCER_HOUSEHOLDS)
             })
             .flatten()
+    }
+
+    fn is_producer_household(&self, household: usize) -> bool {
+        self.producer_household_start().is_some_and(|start| {
+            household >= start && household < start + MORTAL_PRODUCER_HOUSEHOLDS
+        })
+    }
+
+    fn record_producer_house_person_ticks(&mut self) {
+        let Some(start) = self.producer_household_start() else {
+            return;
+        };
+        let live = self
+            .live_colonist_slots
+            .iter()
+            .filter(|&&slot| {
+                self.colonists[slot].household.is_some_and(|household| {
+                    household >= start && household < start + MORTAL_PRODUCER_HOUSEHOLDS
+                })
+            })
+            .count() as u64;
+        self.producer_house_person_ticks = self.producer_house_person_ticks.saturating_add(live);
+    }
+
+    fn record_producer_house_death(&mut self, id: AgentId) {
+        if self
+            .colonist_household(id)
+            .is_some_and(|household| self.is_producer_household(household))
+        {
+            self.producer_house_deaths = self.producer_house_deaths.saturating_add(1);
+        }
     }
 
     /// S7.2: whether the per-builder capital-formation phase is active — its appraisal
@@ -22119,6 +22223,46 @@ impl Settlement {
     /// through the ordinary S7 role-choice path while still holding that tool.
     pub fn heir_tool_adoptions(&self) -> u64 {
         self.heir_tool_adoptions
+    }
+
+    /// C3R.b v2 runtime-only telemetry: producer-house-scoped food hearth units.
+    pub fn producer_house_hearth_food_minted(&self) -> u64 {
+        self.producer_house_hearth_food_minted
+    }
+
+    /// C3R.b v2 runtime-only telemetry: non-producer-house food hearth units.
+    pub fn non_producer_hearth_food_minted(&self) -> u64 {
+        self.non_producer_hearth_food_minted
+    }
+
+    /// C3R.b v2 runtime-only telemetry: births in dedicated producer households.
+    pub fn producer_house_births(&self) -> u64 {
+        self.producer_house_births
+    }
+
+    /// C3R.b v2 runtime-only telemetry: deaths among producer-house members.
+    pub fn producer_house_deaths(&self) -> u64 {
+        self.producer_house_deaths
+    }
+
+    /// C3R.b v2 runtime-only telemetry: live producer-house member-ticks.
+    pub fn producer_house_person_ticks(&self) -> u64 {
+        self.producer_house_person_ticks
+    }
+
+    /// C3R.b v2 runtime-only telemetry: role recipe appraisals that did not pay.
+    pub fn producer_recipe_pay_rejections(&self) -> u64 {
+        self.producer_recipe_pay_rejections
+    }
+
+    /// C3R.b v2 runtime-only telemetry: capital build appraisals/eligibility misses.
+    pub fn producer_build_rejections(&self) -> u64 {
+        self.producer_build_rejections
+    }
+
+    /// C3R.b v2 runtime-only telemetry: producer-role adoption switch rejections.
+    pub fn producer_adoption_rejections(&self) -> u64 {
+        self.producer_adoption_rejections
     }
 
     /// C3R.a population-artifact guard: live mortal agents that can currently build
