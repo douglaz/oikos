@@ -1009,6 +1009,21 @@ pub enum ShareTenancyMode {
     LineageWorker,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BirthStockSavingMode {
+    #[default]
+    Off,
+    Motive,
+    SufficiencyControl,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BirthStockInjectionRecord {
+    pub tick: u64,
+    pub household: usize,
+    pub birth_succeeded: bool,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChainConfig {
     /// The interned chain goods and recipes (built once at generation).
@@ -1489,6 +1504,11 @@ pub struct ChainConfig {
     /// stock by conserved stock transfer, with no GOLD transfer and no market bid.
     /// This is a control cell, not a tuning parameter.
     pub producer_stock_provisioning_control: bool,
+    /// C3R.d — future-bread saving motive for producer households. The bool is
+    /// serialized explicitly under tag 31; the mode keeps the headline and the
+    /// conserved sufficiency control mutually exclusive.
+    pub birth_stock_saving: bool,
+    pub birth_stock_saving_mode: BirthStockSavingMode,
     /// C1R worker share in basis points. Pinned/swept, never searched.
     pub share_bps: u16,
     /// C1R fixed contract term in econ ticks. Pinned/swept, never searched.
@@ -1927,6 +1947,8 @@ impl ChainConfig {
             producer_house_cap: MORTAL_PRODUCER_HOUSE_CAP_DEFAULT,
             earned_provisioning: false,
             producer_stock_provisioning_control: false,
+            birth_stock_saving: false,
+            birth_stock_saving_mode: BirthStockSavingMode::Off,
             share_bps: SHARE_TENANCY_BPS_DEFAULT,
             share_term: SHARE_TENANCY_TERM_DEFAULT,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
@@ -2122,6 +2144,8 @@ impl ChainConfig {
             producer_house_cap: MORTAL_PRODUCER_HOUSE_CAP_DEFAULT,
             earned_provisioning: false,
             producer_stock_provisioning_control: false,
+            birth_stock_saving: false,
+            birth_stock_saving_mode: BirthStockSavingMode::Off,
             share_bps: SHARE_TENANCY_BPS_DEFAULT,
             share_term: SHARE_TENANCY_TERM_DEFAULT,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
@@ -2297,6 +2321,8 @@ impl ChainConfig {
             producer_house_cap: MORTAL_PRODUCER_HOUSE_CAP_DEFAULT,
             earned_provisioning: false,
             producer_stock_provisioning_control: false,
+            birth_stock_saving: false,
+            birth_stock_saving_mode: BirthStockSavingMode::Off,
             share_bps: SHARE_TENANCY_BPS_DEFAULT,
             share_term: SHARE_TENANCY_TERM_DEFAULT,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
@@ -4063,6 +4089,21 @@ impl SettlementConfig {
             .chain
             .as_ref()
             .is_some_and(chain_config_earned_provisioning_active));
+        cfg
+    }
+
+    /// C3R.d — C3R.c plus a producer-household motive to save the existing
+    /// four-loaf child endowment through ordinary `Next`-horizon market wants.
+    pub fn frontier_mortal_producers_saving() -> Self {
+        let mut cfg = Self::frontier_mortal_producers_earned();
+        if let Some(chain) = cfg.chain.as_mut() {
+            chain.birth_stock_saving = true;
+            chain.birth_stock_saving_mode = BirthStockSavingMode::Motive;
+        }
+        debug_assert!(cfg
+            .chain
+            .as_ref()
+            .is_some_and(chain_config_birth_stock_saving_active));
         cfg
     }
 
@@ -6531,6 +6572,18 @@ pub struct Settlement {
     /// absent from `canonical_bytes`; the only future-behavior switch is the chain
     /// flag serialized under tag 29.
     earned_provisioning: EarnedProvisioningLedger,
+    /// C3R.d runtime-only saving/control diagnostics. None steer a future tick;
+    /// tag 31 and the live value scales carry the behavioral identity.
+    birth_stock_wants_emitted: u64,
+    birth_stock_attributable_purchases: u64,
+    birth_stock_reached_agents: BTreeSet<AgentId>,
+    birth_stock_held_max: u32,
+    birth_stock_held_at_death: u32,
+    birth_stock_eligible_opportunities: u64,
+    birth_stock_injections_completed: u64,
+    birth_stock_source_shortfalls: u64,
+    birth_stock_injection_records: Vec<BirthStockInjectionRecord>,
+    birth_stock_births_by_household: Vec<u64>,
     /// S21d.2a: the runtime-only cross-tick bootstrap microtrace (see [`BootstrapTrace`]).
     /// Maintained only while [`Self::acquisition_ledger_active`] holds; an empty default
     /// otherwise. NOT in `canonical_bytes`, so it shifts no digest (byte-identical goldens).
@@ -7173,6 +7226,8 @@ struct ChainRuntime {
     producer_house_cap: u8,
     earned_provisioning: bool,
     producer_stock_provisioning_control: bool,
+    birth_stock_saving: bool,
+    birth_stock_saving_mode: BirthStockSavingMode,
     share_bps: u16,
     share_term: u16,
     land_carrying_cost: u64,
@@ -8956,6 +9011,15 @@ impl Settlement {
                 chain.operating_cost >= 1,
                 "chain operating_cost must be at least 1"
             );
+            assert!(
+                matches!(
+                    (chain.birth_stock_saving, chain.birth_stock_saving_mode),
+                    (false, BirthStockSavingMode::Off)
+                        | (true, BirthStockSavingMode::Motive)
+                        | (false, BirthStockSavingMode::SufficiencyControl)
+                ),
+                "birth-stock motive and sufficiency control must be mutually exclusive"
+            );
             if let Some(prevalence) = chain.fixed_commitment_norm_prevalence {
                 assert!(
                     prevalence.is_finite() && (0.0..=1.0).contains(&prevalence),
@@ -9955,6 +10019,8 @@ impl Settlement {
                 producer_house_cap: chain.producer_house_cap,
                 earned_provisioning: chain.earned_provisioning,
                 producer_stock_provisioning_control: chain.producer_stock_provisioning_control,
+                birth_stock_saving: chain.birth_stock_saving,
+                birth_stock_saving_mode: chain.birth_stock_saving_mode,
                 share_bps: chain.share_bps,
                 share_term: chain.share_term,
                 land_carrying_cost: chain.land_carrying_cost,
@@ -10028,6 +10094,16 @@ impl Settlement {
             multigood: MultigoodMoney::default(),
             acquisition: AcquisitionLedger::default(),
             earned_provisioning: EarnedProvisioningLedger::default(),
+            birth_stock_wants_emitted: 0,
+            birth_stock_attributable_purchases: 0,
+            birth_stock_reached_agents: BTreeSet::new(),
+            birth_stock_held_max: 0,
+            birth_stock_held_at_death: 0,
+            birth_stock_eligible_opportunities: 0,
+            birth_stock_injections_completed: 0,
+            birth_stock_source_shortfalls: 0,
+            birth_stock_injection_records: Vec::new(),
+            birth_stock_births_by_household: vec![0; households.len()],
             bootstrap_trace: BootstrapTrace::default(),
             bread_seller_trace: Vec::new(),
             seeded_surplus_trace: SeededSurplusTrace::default(),
@@ -10559,6 +10635,16 @@ impl Settlement {
             multigood: MultigoodMoney::default(),
             acquisition: AcquisitionLedger::default(),
             earned_provisioning: EarnedProvisioningLedger::default(),
+            birth_stock_wants_emitted: 0,
+            birth_stock_attributable_purchases: 0,
+            birth_stock_reached_agents: BTreeSet::new(),
+            birth_stock_held_max: 0,
+            birth_stock_held_at_death: 0,
+            birth_stock_eligible_opportunities: 0,
+            birth_stock_injections_completed: 0,
+            birth_stock_source_shortfalls: 0,
+            birth_stock_injection_records: Vec::new(),
+            birth_stock_births_by_household: Vec::new(),
             bootstrap_trace: BootstrapTrace::default(),
             bread_seller_trace: Vec::new(),
             seeded_surplus_trace: SeededSurplusTrace::default(),
@@ -10996,6 +11082,7 @@ impl Settlement {
         // gold society mints equals the physical units it removed — recorded in
         // `report.promoted` so the whole-system ledger balances across the phase
         // transition (and the gold checkpoints account the minted gold).
+        let birth_stock_attribution_snapshot = self.birth_stock_attribution_snapshot();
         let money_good_before = self.society.current_money_good();
         let society_gold_before = self.society.total_gold();
         // S16: the produced-bread provenance ledger reads THIS tick's market trades as
@@ -11093,6 +11180,10 @@ impl Settlement {
             &earned_funded_bid_members,
         );
         self.run_earned_provisioning_market_attribution(provenance_spot_trades_start);
+        self.record_birth_stock_attributable_purchases(
+            provenance_spot_trades_start,
+            &birth_stock_attribution_snapshot,
+        );
 
         // ---- 5b-bis''. LAND MARKET (S23b): after ordinary food/SALT trades, and only once
         // SALT has promoted, charge carrying costs and run the deterministic pairwise land sweep.
@@ -11191,7 +11282,10 @@ impl Settlement {
         // after the market so the newborn does not trade the tick it is born, and
         // before the after-snapshot so its (transferred-in) holdings balance the
         // parent's debit. A no-op without a demography overlay; draws no randomness.
+        let birth_stock_injections = self.run_birth_stock_sufficiency_control();
+        self.observe_birth_stock_holdings();
         report.births = self.run_births();
+        self.record_birth_stock_control_results(&birth_stock_injections);
 
         // ---- 7. READ-BACK happens at the top of the next tick's NEEDS phase.
 
@@ -14857,6 +14951,8 @@ impl Settlement {
             }
             self.households[h].last_birth_tick = Some(self.econ_tick);
             self.births_total = self.births_total.saturating_add(1);
+            self.birth_stock_births_by_household[h] =
+                self.birth_stock_births_by_household[h].saturating_add(1);
             if self.is_producer_household(h) {
                 self.producer_house_births = self.producer_house_births.saturating_add(1);
             }
@@ -14875,6 +14971,23 @@ impl Settlement {
     /// no RNG is drawn here.
     fn regenerate_scales(&mut self) {
         let mut rewritten = Vec::new();
+        let birth_stock_saving = self.birth_stock_saving_active();
+        let child_food_endowment = self
+            .demography
+            .as_ref()
+            .map_or(0, |demo| demo.child_food_endowment);
+        let birth_stock_max_household_size = self
+            .demography
+            .as_ref()
+            .map_or(0, |demo| demo.max_household_size);
+        let mut birth_stock_household_sizes = vec![0; self.households.len()];
+        if birth_stock_saving {
+            for &slot in &self.live_colonist_slots {
+                if let Some(household) = self.colonists[slot].household {
+                    birth_stock_household_sizes[household] += 1;
+                }
+            }
+        }
         // S10: in the per-agent-capital path the savings ladder spans MULTIPLE future
         // horizons (depth set by each colonist's own time preference), so a built tool's
         // late-due receipts can provision a patient colonist's deep savings want. Gated,
@@ -14901,6 +15014,17 @@ impl Settlement {
                     colonist.vocation,
                     Vocation::CycleA | Vocation::CycleB | Vocation::CycleC
                 );
+            if colonist.household.is_some_and(|household| {
+                birth_stock_saving
+                    && self.is_producer_household(household)
+                    && birth_stock_household_sizes[household]
+                        < self.birth_cap_for_household(household, birth_stock_max_household_size)
+            }) {
+                medium_scale_extension(&mut scale, self.known.hunger, child_food_endowment);
+                self.birth_stock_wants_emitted = self
+                    .birth_stock_wants_emitted
+                    .saturating_add(u64::from(child_food_endowment));
+            }
             if let Some(chain) = &self.chain {
                 // A producer's tool/input wants follow its production specialty —
                 // its adopted vocation (Miller/Baker, seeded or chosen) or, for a
@@ -17880,6 +18004,22 @@ impl Settlement {
                 .is_some_and(chain_runtime_earned_provisioning_active)
     }
 
+    fn birth_stock_saving_active(&self) -> bool {
+        self.demography.is_some()
+            && self
+                .chain
+                .as_ref()
+                .is_some_and(chain_runtime_birth_stock_saving_active)
+    }
+
+    fn birth_stock_control_active(&self) -> bool {
+        self.demography.is_some()
+            && self
+                .chain
+                .as_ref()
+                .is_some_and(chain_runtime_birth_stock_control_active)
+    }
+
     fn producer_stock_provisioning_control_active(&self) -> bool {
         self.demography.is_some()
             && self
@@ -17931,6 +18071,13 @@ impl Settlement {
             .colonist_household(id)
             .is_some_and(|household| self.is_producer_household(household))
         {
+            if let (true, Some(staple)) = (
+                self.birth_stock_saving_active() || self.birth_stock_control_active(),
+                self.provenance_bread_good(),
+            ) {
+                let held = self.society.free_stock_after_all_reserves(id, staple);
+                self.birth_stock_held_at_death = self.birth_stock_held_at_death.max(held);
+            }
             self.producer_house_deaths = self.producer_house_deaths.saturating_add(1);
         }
     }
@@ -18202,6 +18349,243 @@ impl Settlement {
                     debug_assert!(credited_back, "stock provisioning rollback must fit");
                 }
             }
+        }
+    }
+
+    fn birth_stock_attribution_snapshot(&self) -> BTreeSet<AgentId> {
+        if !self.birth_stock_saving_active() {
+            return BTreeSet::new();
+        }
+        let Some(staple) = self.provenance_bread_good() else {
+            return BTreeSet::new();
+        };
+        self.live_colonist_slots
+            .iter()
+            .filter_map(|&slot| {
+                let colonist = &self.colonists[slot];
+                let household = colonist.household?;
+                if !self.is_producer_household(household)
+                    || self.has_unprovided_now_bread_want(colonist.id, staple)
+                {
+                    return None;
+                }
+                self.society
+                    .agents
+                    .get(colonist.id)
+                    .is_some_and(|agent| {
+                        agent.scale.iter().any(|want| {
+                            want.kind == WantKind::Good(staple)
+                                && matches!(want.horizon, Horizon::Next)
+                        })
+                    })
+                    .then_some(colonist.id)
+            })
+            .collect()
+    }
+
+    fn record_birth_stock_attributable_purchases(
+        &mut self,
+        spot_trades_start: usize,
+        snapshot: &BTreeSet<AgentId>,
+    ) {
+        if snapshot.is_empty() {
+            return;
+        }
+        let Some(staple) = self.provenance_bread_good() else {
+            return;
+        };
+        let purchased = self.society.trades[spot_trades_start..]
+            .iter()
+            .filter(|trade| trade.good == staple && snapshot.contains(&trade.buyer))
+            .map(|trade| u64::from(trade.qty))
+            .sum::<u64>();
+        self.birth_stock_attributable_purchases = self
+            .birth_stock_attributable_purchases
+            .saturating_add(purchased);
+    }
+
+    fn observe_birth_stock_holdings(&mut self) {
+        if !self.birth_stock_saving_active() && !self.birth_stock_control_active() {
+            return;
+        }
+        let (Some(staple), Some(demo)) = (self.provenance_bread_good(), self.demography.as_ref())
+        else {
+            return;
+        };
+        let target = demo.child_food_endowment;
+        for slot_index in 0..self.live_colonist_slots.len() {
+            let slot = self.live_colonist_slots[slot_index];
+            let colonist = &self.colonists[slot];
+            if !colonist
+                .household
+                .is_some_and(|household| self.is_producer_household(household))
+            {
+                continue;
+            }
+            let agent = colonist.id;
+            let held = self.society.free_stock_after_all_reserves(agent, staple);
+            self.birth_stock_held_max = self.birth_stock_held_max.max(held);
+            if held >= target {
+                self.birth_stock_reached_agents.insert(agent);
+            }
+        }
+    }
+
+    fn transfer_birth_stock(
+        &mut self,
+        donor: AgentId,
+        recipient: AgentId,
+        staple: GoodId,
+        qty: u32,
+    ) -> bool {
+        let recipient_held = self
+            .society
+            .agents
+            .get(recipient)
+            .map(|agent| agent.stock.get(staple));
+        if !self.society.debit_stock(donor, staple, qty) {
+            return false;
+        }
+        let credited = self.society.credit_stock(recipient, staple, qty);
+        let credited_qty = recipient_held
+            .and_then(|before| {
+                self.society
+                    .agents
+                    .get(recipient)
+                    .map(|agent| agent.stock.get(staple).saturating_sub(before))
+            })
+            .unwrap_or(0);
+        if !credited || credited_qty != qty {
+            if credited_qty > 0 {
+                let removed = self.society.debit_stock(recipient, staple, credited_qty);
+                assert!(removed, "partial birth-stock credit rollback must fit");
+            }
+            let rolled_back = self.society.credit_stock(donor, staple, qty);
+            assert!(
+                rolled_back,
+                "birth-stock injection rollback must fit the donor"
+            );
+            return false;
+        }
+        if Some(staple) == self.provenance_bread_good() {
+            self.bread_provenance
+                .transfer(donor, recipient, u64::from(qty));
+        }
+        if Some(staple) == self.acquisition_food_good() {
+            self.acquisition
+                .transfer_preserve(donor, recipient, u64::from(qty));
+        }
+        true
+    }
+
+    fn run_birth_stock_sufficiency_control(&mut self) -> Vec<usize> {
+        if !self.birth_stock_control_active() {
+            return Vec::new();
+        }
+        let Some((household_count, birth_interval, max_household_size, hunger_ceiling, target)) =
+            self.demography.as_ref().map(|demo| {
+                (
+                    demo.households.len(),
+                    demo.birth_interval,
+                    demo.max_household_size,
+                    demo.birth_hunger_ceiling,
+                    demo.child_food_endowment,
+                )
+            })
+        else {
+            return Vec::new();
+        };
+        let staple = self.known.hunger;
+        let mut injected = Vec::new();
+        let mut injected_recipients = BTreeSet::new();
+        for household in 0..household_count {
+            if !self.is_producer_household(household) {
+                continue;
+            }
+            let next_eligible = self.households[household]
+                .last_birth_tick
+                .map_or(birth_interval, |tick| tick + birth_interval);
+            if self.econ_tick < next_eligible {
+                continue;
+            }
+            let member_slots: Vec<_> = self
+                .live_colonist_slots
+                .iter()
+                .copied()
+                .filter(|&slot| self.colonists[slot].household == Some(household))
+                .collect();
+            if member_slots.is_empty()
+                || member_slots.len() >= self.birth_cap_for_household(household, max_household_size)
+                || !member_slots
+                    .iter()
+                    .all(|&slot| self.colonists[slot].need.hunger <= hunger_ceiling)
+                || member_slots.iter().any(|&slot| {
+                    self.society
+                        .free_stock_after_all_reserves(self.colonists[slot].id, staple)
+                        >= target
+                })
+            {
+                continue;
+            }
+            self.birth_stock_eligible_opportunities =
+                self.birth_stock_eligible_opportunities.saturating_add(1);
+            let recipient_slot = member_slots
+                .iter()
+                .copied()
+                .max_by_key(|&slot| {
+                    let id = self.colonists[slot].id;
+                    (
+                        self.society.free_gold_after_all_reserves(id).0,
+                        std::cmp::Reverse(slot),
+                    )
+                })
+                .expect("eligible household has a member");
+            let donor = self
+                .live_colonist_slots
+                .iter()
+                .copied()
+                .filter(|&slot| {
+                    self.colonists[slot].household != Some(household)
+                        && !injected_recipients.contains(&self.colonists[slot].id)
+                })
+                .map(|slot| {
+                    let id = self.colonists[slot].id;
+                    (
+                        self.society.free_stock_after_all_reserves(id, staple),
+                        std::cmp::Reverse(slot),
+                        id,
+                    )
+                })
+                .max_by_key(|&(held, slot, _)| (held, slot));
+            let Some((held, _, donor)) = donor.filter(|&(held, _, _)| held >= target) else {
+                self.birth_stock_source_shortfalls =
+                    self.birth_stock_source_shortfalls.saturating_add(1);
+                continue;
+            };
+            debug_assert!(held >= target);
+            let recipient = self.colonists[recipient_slot].id;
+            if self.transfer_birth_stock(donor, recipient, staple, target) {
+                self.birth_stock_injections_completed =
+                    self.birth_stock_injections_completed.saturating_add(1);
+                injected.push(household);
+                injected_recipients.insert(recipient);
+            } else {
+                self.birth_stock_source_shortfalls =
+                    self.birth_stock_source_shortfalls.saturating_add(1);
+            }
+        }
+        injected
+    }
+
+    fn record_birth_stock_control_results(&mut self, injected: &[usize]) {
+        for &household in injected {
+            self.birth_stock_injection_records
+                .push(BirthStockInjectionRecord {
+                    tick: self.econ_tick,
+                    household,
+                    birth_succeeded: self.households[household].last_birth_tick
+                        == Some(self.econ_tick),
+                });
         }
     }
 
@@ -23366,6 +23750,46 @@ impl Settlement {
         self.earned_provisioning.stats
     }
 
+    pub fn birth_stock_wants_emitted(&self) -> u64 {
+        self.birth_stock_wants_emitted
+    }
+
+    pub fn birth_stock_attributable_purchases(&self) -> u64 {
+        self.birth_stock_attributable_purchases
+    }
+
+    pub fn birth_stock_reached_four_count(&self) -> usize {
+        self.birth_stock_reached_agents.len()
+    }
+
+    pub fn birth_stock_held_max(&self) -> u32 {
+        self.birth_stock_held_max
+    }
+
+    pub fn birth_stock_held_at_death(&self) -> u32 {
+        self.birth_stock_held_at_death
+    }
+
+    pub fn birth_stock_eligible_opportunities(&self) -> u64 {
+        self.birth_stock_eligible_opportunities
+    }
+
+    pub fn birth_stock_injections_completed(&self) -> u64 {
+        self.birth_stock_injections_completed
+    }
+
+    pub fn birth_stock_source_shortfalls(&self) -> u64 {
+        self.birth_stock_source_shortfalls
+    }
+
+    pub fn birth_stock_injection_records(&self) -> &[BirthStockInjectionRecord] {
+        &self.birth_stock_injection_records
+    }
+
+    pub fn births_by_household(&self) -> &[u64] {
+        &self.birth_stock_births_by_household
+    }
+
     /// S21d.1 (read-only): tracked food (bread) currently HELD across living agents, split by
     /// channel — the live channel mix and the seed-depletion read (`seeded_minted → 0`).
     pub fn acquisition_held_by_channel(&self) -> AcquisitionChannels {
@@ -24451,6 +24875,11 @@ impl Settlement {
             if self.producer_stock_provisioning_control_active() {
                 out.push(30);
                 out.push(u8::from(chain.producer_stock_provisioning_control));
+            }
+            if self.birth_stock_saving_active() || self.birth_stock_control_active() {
+                out.push(31);
+                out.push(u8::from(chain.birth_stock_saving));
+                out.push(birth_stock_saving_mode_tag(chain.birth_stock_saving_mode));
             }
             // S23b: the post-money land market extends S23a's registry with an endogenous-price
             // state, listings, last-sale anchors, and the non-agent fee sink. Emitted only when the
@@ -25614,6 +26043,14 @@ fn share_tenancy_mode_tag(mode: ShareTenancyMode) -> u8 {
     }
 }
 
+fn birth_stock_saving_mode_tag(mode: BirthStockSavingMode) -> u8 {
+    match mode {
+        BirthStockSavingMode::Off => 0,
+        BirthStockSavingMode::Motive => 1,
+        BirthStockSavingMode::SufficiencyControl => 2,
+    }
+}
+
 fn share_bps_floor(qty: u64, bps: u16) -> u64 {
     (u128::from(qty) * u128::from(bps) / 10_000) as u64
 }
@@ -25651,6 +26088,12 @@ fn chain_config_mortal_producer_inheritance_active(chain: &ChainConfig) -> bool 
 
 fn chain_config_earned_provisioning_active(chain: &ChainConfig) -> bool {
     chain.earned_provisioning && chain_config_mortal_producer_inheritance_active(chain)
+}
+
+fn chain_config_birth_stock_saving_active(chain: &ChainConfig) -> bool {
+    chain.birth_stock_saving
+        && chain.birth_stock_saving_mode == BirthStockSavingMode::Motive
+        && chain_config_earned_provisioning_active(chain)
 }
 
 fn chain_config_rival_subsistence_commons_active(chain: &ChainConfig) -> bool {
@@ -25751,6 +26194,18 @@ fn chain_runtime_mortal_producer_inheritance_active(chain: &ChainRuntime) -> boo
 
 fn chain_runtime_earned_provisioning_active(chain: &ChainRuntime) -> bool {
     chain.earned_provisioning && chain_runtime_mortal_producer_inheritance_active(chain)
+}
+
+fn chain_runtime_birth_stock_saving_active(chain: &ChainRuntime) -> bool {
+    chain.birth_stock_saving
+        && chain.birth_stock_saving_mode == BirthStockSavingMode::Motive
+        && chain_runtime_earned_provisioning_active(chain)
+}
+
+fn chain_runtime_birth_stock_control_active(chain: &ChainRuntime) -> bool {
+    !chain.birth_stock_saving
+        && chain.birth_stock_saving_mode == BirthStockSavingMode::SufficiencyControl
+        && chain_runtime_earned_provisioning_active(chain)
 }
 
 fn chain_runtime_producer_stock_provisioning_control_active(chain: &ChainRuntime) -> bool {
@@ -31771,6 +32226,448 @@ mod tests {
             s.earned_provisioning.stats.genuine_external_revenue,
             Gold::ZERO
         );
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "birth-stock motive and sufficiency control must be mutually exclusive"
+    )]
+    fn birth_stock_modes_reject_coactivation() {
+        let mut cfg = SettlementConfig::frontier_mortal_producers_saving();
+        cfg.chain.as_mut().expect("chain").birth_stock_saving_mode =
+            BirthStockSavingMode::SufficiencyControl;
+        let _ = Settlement::generate(7, &cfg);
+    }
+
+    #[test]
+    fn birth_stock_motive_emits_the_full_target_below_cap() {
+        let cfg = SettlementConfig::frontier_mortal_producers_saving();
+        let mut s = Settlement::generate(7, &cfg);
+        s.regenerate_scales();
+        let staple = s.known.hunger;
+        let target = s
+            .demography
+            .as_ref()
+            .expect("demography")
+            .child_food_endowment;
+        let mut eligible = 0usize;
+        for &slot in &s.live_colonist_slots {
+            let colonist = &s.colonists[slot];
+            if !colonist
+                .household
+                .is_some_and(|household| s.is_producer_household(household))
+            {
+                continue;
+            }
+            eligible += 1;
+            let wants = s
+                .society
+                .agents
+                .get(colonist.id)
+                .expect("agent")
+                .scale
+                .iter()
+                .filter(|want| {
+                    want.kind == WantKind::Good(staple) && matches!(want.horizon, Horizon::Next)
+                })
+                .count();
+            assert_eq!(wants, target as usize, "the full target stays reserved");
+        }
+        assert!(eligible > 0);
+        assert_eq!(
+            s.birth_stock_wants_emitted,
+            (eligible as u64) * u64::from(target)
+        );
+    }
+
+    #[test]
+    fn birth_stock_motive_emits_nothing_at_the_household_cap() {
+        let mut cfg = SettlementConfig::frontier_mortal_producers_saving();
+        cfg.chain.as_mut().expect("chain").producer_house_cap = 1;
+        let mut s = Settlement::generate(7, &cfg);
+        s.regenerate_scales();
+        let staple = s.known.hunger;
+        let mut producer_members = 0;
+        for &slot in &s.live_colonist_slots {
+            let colonist = &s.colonists[slot];
+            if !colonist
+                .household
+                .is_some_and(|household| s.is_producer_household(household))
+            {
+                continue;
+            }
+            producer_members += 1;
+            assert!(!s
+                .society
+                .agents
+                .get(colonist.id)
+                .expect("agent")
+                .scale
+                .iter()
+                .any(|want| {
+                    want.kind == WantKind::Good(staple) && matches!(want.horizon, Horizon::Next)
+                }));
+        }
+        assert!(producer_members > 0);
+        assert_eq!(s.birth_stock_wants_emitted, 0);
+    }
+
+    #[test]
+    fn attribution_counts_next_bread_buys_but_not_unprovided_now_buys() {
+        let mut s = Settlement::generate(7, &SettlementConfig::frontier_mortal_producers_saving());
+        let staple = s.known.hunger;
+        let mut producer_ids = s
+            .live_colonist_slots
+            .iter()
+            .map(|&slot| &s.colonists[slot])
+            .filter(|colonist| {
+                colonist
+                    .household
+                    .is_some_and(|household| s.is_producer_household(household))
+            })
+            .map(|colonist| colonist.id);
+        let next_buyer = producer_ids.next().expect("first producer-house buyer");
+        let now_buyer = producer_ids.next().expect("second producer-house buyer");
+        let seller = s
+            .society
+            .agents
+            .iter()
+            .map(|agent| agent.id)
+            .find(|&id| id != next_buyer && id != now_buyer)
+            .expect("seller");
+        for (buyer, horizon) in [(next_buyer, Horizon::Next), (now_buyer, Horizon::Now)] {
+            let held = s.stock_of_id(buyer, staple);
+            assert!(s.society.debit_stock(
+                buyer,
+                staple,
+                u32::try_from(held).expect("test stock fits u32")
+            ));
+            s.society.agents.get_mut(buyer).expect("buyer").scale = vec![Want {
+                kind: WantKind::Good(staple),
+                horizon,
+                qty: 1,
+                satisfied: false,
+            }];
+        }
+        let snapshot = s.birth_stock_attribution_snapshot();
+        assert!(snapshot.contains(&next_buyer));
+        assert!(!snapshot.contains(&now_buyer));
+        let trade_start = s.society.trades.len();
+        for buyer in [next_buyer, now_buyer] {
+            s.society.trades.push(econ::market::Trade {
+                tick: s.econ_tick,
+                good: staple,
+                buyer,
+                seller,
+                price: Gold(1),
+                qty: 1,
+            });
+        }
+        s.record_birth_stock_attributable_purchases(trade_start, &snapshot);
+        assert_eq!(s.birth_stock_attributable_purchases, 1);
+    }
+
+    #[test]
+    fn project_input_override_leaves_birth_stock_bids_for_both_active_stages() {
+        let cfg = SettlementConfig::frontier_mortal_producers_saving();
+        let mut s = Settlement::generate(7, &cfg);
+        let chain = s.chain.as_ref().expect("chain");
+        let (grain, flour, bread) = (
+            chain.content.grain(),
+            chain.content.flour(),
+            chain.content.bread(),
+        );
+        fn seed_realized_price(s: &mut Settlement, good: GoodId, seller: AgentId, buyer: AgentId) {
+            let ids = s
+                .society
+                .agents
+                .iter()
+                .map(|agent| agent.id)
+                .collect::<Vec<_>>();
+            for &id in &ids {
+                s.society.agents.get_mut(id).expect("agent").scale = vec![Want {
+                    kind: WantKind::Leisure,
+                    horizon: Horizon::Now,
+                    qty: 1,
+                    satisfied: false,
+                }];
+            }
+            let seller_agent = s.society.agents.get_mut(seller).expect("seller");
+            let held = seller_agent.stock.get(good);
+            assert!(seller_agent.stock.remove(good, held));
+            seller_agent.stock.add(good, 1);
+            seller_agent.gold = Gold::ZERO;
+            seller_agent.scale = vec![Want {
+                kind: WantKind::Good(GOLD),
+                horizon: Horizon::Later(4),
+                qty: 1,
+                satisfied: false,
+            }];
+            let buyer_agent = s.society.agents.get_mut(buyer).expect("buyer");
+            let held = buyer_agent.stock.get(good);
+            assert!(buyer_agent.stock.remove(good, held));
+            buyer_agent.gold = Gold(10);
+            buyer_agent.scale = vec![Want {
+                kind: WantKind::Good(good),
+                horizon: Horizon::Next,
+                qty: 1,
+                satisfied: false,
+            }];
+            s.society.cancel_changed_live_quotes_for_agents(&ids);
+            s.society.step();
+            assert!(s.society.realized_price(good).is_some());
+        }
+
+        let price_agents = s
+            .society
+            .agents
+            .iter()
+            .map(|agent| agent.id)
+            .take(2)
+            .collect::<Vec<_>>();
+        seed_realized_price(&mut s, flour, price_agents[0], price_agents[1]);
+        seed_realized_price(&mut s, bread, price_agents[0], price_agents[1]);
+        let miller_slot = s
+            .live_colonist_slots
+            .iter()
+            .copied()
+            .find(|&slot| s.colonists[slot].latent == Some(RecipeId::Mill))
+            .expect("latent Miller");
+        let baker_slot = s
+            .live_colonist_slots
+            .iter()
+            .copied()
+            .find(|&slot| s.colonists[slot].latent == Some(RecipeId::Bake))
+            .expect("latent Baker");
+        s.colonists[miller_slot].vocation = Vocation::Miller;
+        s.colonists[baker_slot].vocation = Vocation::Baker;
+        let (miller, baker) = (s.colonists[miller_slot].id, s.colonists[baker_slot].id);
+        s.chain.as_mut().expect("chain").producer_house_cap = u8::MAX;
+        for id in [miller, baker] {
+            let slot = s.slot_for_id(id).expect("active producer is a colonist");
+            s.colonists[slot].need.hunger = 0;
+            let agent = s.society.agents.get_mut(id).expect("active producer");
+            let held_bread = agent.stock.get(bread);
+            assert!(agent.stock.remove(bread, held_bread));
+            // Three input units reserve first at the seeded unit price, leaving only
+            // one gold for the lower-ranked birth-stock block. This makes the test
+            // sensitive to the real input-first reservation ordering.
+            agent.gold = Gold(4);
+        }
+        let miller_flour = s
+            .society
+            .agents
+            .get(miller)
+            .expect("miller")
+            .stock
+            .get(flour);
+        assert!(s.society.debit_stock(miller, flour, miller_flour));
+        let miller_grain = s
+            .society
+            .agents
+            .get(miller)
+            .expect("miller")
+            .stock
+            .get(grain);
+        assert!(s.society.debit_stock(miller, grain, miller_grain));
+        let baker_flour = s.society.agents.get(baker).expect("baker").stock.get(flour);
+        assert!(s.society.debit_stock(baker, flour, baker_flour));
+        let baker_bread = s.society.agents.get(baker).expect("baker").stock.get(bread);
+        assert!(s.society.debit_stock(baker, bread, baker_bread));
+        s.regenerate_scales();
+        s.set_project_input_bid_overrides();
+        let trade_start = s.society.trades.len();
+        s.society.step();
+        let posted_or_filled = |id, good| {
+            s.society.has_live_spot_bid(id, good)
+                || s.society.trades[trade_start..]
+                    .iter()
+                    .any(|trade| trade.buyer == id && trade.good == good)
+        };
+        assert!(
+            posted_or_filled(miller, grain),
+            "Miller input override must post"
+        );
+        assert!(
+            posted_or_filled(baker, flour),
+            "Baker input override must post"
+        );
+        assert!(
+            posted_or_filled(miller, bread),
+            "an active Miller must retain a birth-stock bid after input reservation"
+        );
+        assert!(
+            posted_or_filled(baker, bread),
+            "an active Baker must retain a birth-stock bid after input reservation"
+        );
+    }
+
+    #[test]
+    fn sufficiency_control_conserves_stock_and_records_the_immediate_birth() {
+        let mut cfg = SettlementConfig::frontier_mortal_producers_earned();
+        cfg.chain.as_mut().expect("chain").birth_stock_saving_mode =
+            BirthStockSavingMode::SufficiencyControl;
+        let mut s = Settlement::generate(7, &cfg);
+        let demo = s.demography.clone().expect("demography");
+        let household = s.producer_household_start().expect("producer houses");
+        s.econ_tick = demo.birth_interval;
+        for &slot in &s.live_colonist_slots.clone() {
+            s.colonists[slot].need.hunger = 0;
+            if s.colonists[slot].household == Some(household) {
+                let id = s.colonists[slot].id;
+                let held = s
+                    .society
+                    .agents
+                    .get(id)
+                    .expect("agent")
+                    .stock
+                    .get(s.known.hunger);
+                assert!(s.society.debit_stock(id, s.known.hunger, held));
+            }
+        }
+        let before = s.whole_system_total(s.known.hunger);
+        let injected = s.run_birth_stock_sufficiency_control();
+        let after = s.whole_system_total(s.known.hunger);
+        assert_eq!(before, after, "the control must move existing bread only");
+        assert_eq!(injected, vec![household]);
+        assert_eq!(s.birth_stock_eligible_opportunities, 1);
+        assert_eq!(s.birth_stock_injections_completed, 1);
+        let births = s.run_births();
+        s.record_birth_stock_control_results(&injected);
+        assert!(births > 0);
+        assert_eq!(s.households[household].last_birth_tick, Some(s.econ_tick));
+        assert_eq!(
+            s.birth_stock_injection_records,
+            vec![BirthStockInjectionRecord {
+                tick: s.econ_tick,
+                household,
+                birth_succeeded: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn birth_stock_transfer_preserves_both_bread_provenance_ledgers() {
+        let mut cfg = SettlementConfig::frontier_mortal_producers_earned();
+        cfg.chain.as_mut().expect("chain").birth_stock_saving_mode =
+            BirthStockSavingMode::SufficiencyControl;
+        let mut s = Settlement::generate(7, &cfg);
+        let staple = s.known.hunger;
+        let household = s.producer_household_start().expect("producer houses");
+        let recipient = s
+            .live_colonist_slots
+            .iter()
+            .map(|&slot| &s.colonists[slot])
+            .find(|colonist| colonist.household == Some(household))
+            .expect("producer-house recipient")
+            .id;
+        let donor = s
+            .live_colonist_slots
+            .iter()
+            .map(|&slot| &s.colonists[slot])
+            .find(|colonist| colonist.household != Some(household))
+            .expect("outside donor")
+            .id;
+        for id in [donor, recipient] {
+            let held = s.stock_of_id(id, staple);
+            assert!(s.society.debit_stock(
+                id,
+                staple,
+                u32::try_from(held).expect("test stock fits u32")
+            ));
+        }
+        assert!(s.society.credit_stock(donor, staple, 4));
+        s.bread_provenance = BreadProvenance::default();
+        s.bread_provenance.credit_produced(donor, 4, true);
+        s.acquisition = AcquisitionLedger::default();
+        s.acquisition.credit(donor, FoodChannel::Bought, 4);
+
+        assert!(s.transfer_birth_stock(donor, recipient, staple, 4));
+
+        assert_eq!(s.stock_of_id(donor, staple), 0);
+        assert_eq!(s.stock_of_id(recipient, staple), 4);
+        assert_eq!(s.bread_provenance.produced.get(&donor), None);
+        assert_eq!(s.bread_provenance.produced.get(&recipient), Some(&4));
+        assert!(!s.acquisition.lots.contains_key(&donor));
+        assert_eq!(
+            s.acquisition.lots.get(&recipient),
+            Some(&VecDeque::from([FoodLot {
+                channel: FoodChannel::Bought,
+                qty: 4,
+            }]))
+        );
+    }
+
+    #[test]
+    fn failed_birth_stock_credit_rolls_back_the_donor() {
+        let mut cfg = SettlementConfig::frontier_mortal_producers_earned();
+        cfg.chain.as_mut().expect("chain").birth_stock_saving_mode =
+            BirthStockSavingMode::SufficiencyControl;
+        let mut s = Settlement::generate(7, &cfg);
+        let staple = s.known.hunger;
+        let donor = s
+            .society
+            .agents
+            .iter()
+            .map(|agent| agent.id)
+            .next()
+            .expect("donor");
+        let recipient = AgentId(u64::MAX);
+        let held = s
+            .society
+            .agents
+            .get(donor)
+            .expect("agent")
+            .stock
+            .get(staple);
+        assert!(s.society.debit_stock(donor, staple, held));
+        assert!(s.society.credit_stock(donor, staple, 4));
+        assert!(!s.transfer_birth_stock(donor, recipient, staple, 4));
+        assert_eq!(s.stock_of_id(donor, staple), 4);
+    }
+
+    #[test]
+    fn control_does_not_reuse_an_earlier_injection_as_a_later_donation() {
+        let mut cfg = SettlementConfig::frontier_mortal_producers_earned();
+        cfg.chain.as_mut().expect("chain").birth_stock_saving_mode =
+            BirthStockSavingMode::SufficiencyControl;
+        let mut s = Settlement::generate(7, &cfg);
+        let demo = s.demography.clone().expect("demography");
+        let staple = s.known.hunger;
+        s.econ_tick = demo.birth_interval;
+        for &slot in &s.live_colonist_slots.clone() {
+            s.colonists[slot].need.hunger = 0;
+            let id = s.colonists[slot].id;
+            let held = s.stock_of_id(id, staple);
+            assert!(s.society.debit_stock(
+                id,
+                staple,
+                u32::try_from(held).expect("test stock fits u32")
+            ));
+        }
+        let donor = s
+            .live_colonist_slots
+            .iter()
+            .map(|&slot| &s.colonists[slot])
+            .find(|colonist| {
+                !colonist
+                    .household
+                    .is_some_and(|household| s.is_producer_household(household))
+            })
+            .expect("non-producer donor")
+            .id;
+        assert!(s.society.credit_stock(donor, staple, 4));
+
+        let injected = s.run_birth_stock_sufficiency_control();
+
+        assert_eq!(injected.len(), 1);
+        assert_eq!(s.birth_stock_injections_completed, 1);
+        assert!(s.birth_stock_source_shortfalls > 0);
+        let injected_household = injected[0];
+        assert!(s.live_colonist_slots.iter().any(|&slot| {
+            s.colonists[slot].household == Some(injected_household)
+                && s.stock_of_id(s.colonists[slot].id, staple) >= 4
+        }));
     }
 
     #[test]
