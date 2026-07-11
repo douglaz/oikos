@@ -74,6 +74,7 @@ use econ::capital::{
 use econ::expect::PriceBelief;
 use econ::good::{Gold, GoodId, Horizon, Stock, FOOD, GOLD, NET, SALT, WOOD};
 use econ::ledger::BankId;
+use econ::market::OrderSide;
 use econ::marketability::{GoodMarketability, MarketabilityAcceptance, MarketabilityConfig};
 use econ::menger::MengerianEmergence;
 use econ::money::{
@@ -92,7 +93,9 @@ use econ::scenario::{
     builtin_market_scenario, Event, EventKind, MarketScenario, RedemptionRoute, ScenarioName,
 };
 use econ::shadow::run_credit_disabled_shadow;
-use econ::society::Society;
+use econ::society::{
+    AllocationExecutionStatus, AllocationRecord, QuoteOutcome, Society, TracedWant,
+};
 use econ::timemarket::{DebtContract, DebtId, DebtState};
 
 use life::{
@@ -1509,6 +1512,13 @@ pub struct ChainConfig {
     /// conserved sufficiency control mutually exclusive.
     pub birth_stock_saving: bool,
     pub birth_stock_saving_mode: BirthStockSavingMode,
+    /// C3R.e-obs (impl-66) — the PURE-OBSERVATION allocation-contest instrumentation.
+    /// Gated `saving_allocation_obs && birth_stock_saving_active()` (the motive must be on
+    /// to observe its bids). When active it enables the econ allocation trace and runs the
+    /// per-tick §2 loss-reason join; it changes NO behavior, so its ONLY digest footprint
+    /// is the ON-only tag-32 emission (`[32, 1]`). Off (and thus digest-absent) for every
+    /// existing config.
+    pub saving_allocation_obs: bool,
     /// C1R worker share in basis points. Pinned/swept, never searched.
     pub share_bps: u16,
     /// C1R fixed contract term in econ ticks. Pinned/swept, never searched.
@@ -1949,6 +1959,7 @@ impl ChainConfig {
             producer_stock_provisioning_control: false,
             birth_stock_saving: false,
             birth_stock_saving_mode: BirthStockSavingMode::Off,
+            saving_allocation_obs: false,
             share_bps: SHARE_TENANCY_BPS_DEFAULT,
             share_term: SHARE_TENANCY_TERM_DEFAULT,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
@@ -2146,6 +2157,7 @@ impl ChainConfig {
             producer_stock_provisioning_control: false,
             birth_stock_saving: false,
             birth_stock_saving_mode: BirthStockSavingMode::Off,
+            saving_allocation_obs: false,
             share_bps: SHARE_TENANCY_BPS_DEFAULT,
             share_term: SHARE_TENANCY_TERM_DEFAULT,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
@@ -2323,6 +2335,7 @@ impl ChainConfig {
             producer_stock_provisioning_control: false,
             birth_stock_saving: false,
             birth_stock_saving_mode: BirthStockSavingMode::Off,
+            saving_allocation_obs: false,
             share_bps: SHARE_TENANCY_BPS_DEFAULT,
             share_term: SHARE_TENANCY_TERM_DEFAULT,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
@@ -6409,6 +6422,657 @@ struct Colonist {
     carried_in_kind_contract_id: Option<u64>,
 }
 
+// ============================================================================
+// C3R.e-obs (impl-66): the allocation-contest instrumentation. PURE OBSERVATION —
+// every type below is runtime-only diagnostic, NEVER serialized. The §2 join assigns
+// exactly one outcome to each unfilled saving quote-opportunity by pinned precedence.
+// ============================================================================
+
+/// One saving quote-opportunity's outcome under the §2 pinned precedence (first match
+/// wins). `Filled` is tracked by the caller; this enum covers the UNFILLED cases.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SavingLossOutcome {
+    /// No live bid this tick (reservation None / gold clamp / over-reserve / post fail).
+    NoBidPosted,
+    /// Every staple ask in the window was the agent's own (≥1 self ask, no other).
+    SelfAskOnly,
+    /// A bid was live but no non-self staple ask existed anywhere in the window.
+    NoExecutableAskInWindow,
+    /// Non-self asks existed but every one's limit exceeded the saving bid's limit.
+    AllAsksAboveLimit,
+    /// A compatible non-self ask existed but its unit went to another buyer.
+    CompetitiveLoss {
+        basis: PriorityBasis,
+        winner_intent: WinnerIntent,
+    },
+    /// Overflow/invalid-settlement rejection or any unreconciled case — never silently
+    /// absorbed.
+    ExecutionResidual,
+}
+
+/// How a `CompetitiveLoss` was decided (the two orthogonal sub-dimensions).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PriorityBasis {
+    /// Consumed BEFORE the saving bid entered the book (quote-order artifact).
+    PreEntryOrder,
+    /// Consumed while the bid was live, by a strictly higher-limit winner (price contest).
+    HigherLimit,
+    /// Consumed while live, equal limits, arrival order decided.
+    EqualLimitEarlierSeq,
+    /// Consumed after the saving bid was cancelled/exited intra-pass.
+    PostExitConsumption,
+}
+
+/// The winner's first-unprovided want at its quote time — interpretive color only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum WinnerIntent {
+    HungryNow,
+    SavingNext,
+    ProducerInputNext,
+    Other,
+}
+
+// The five §2 diagnosis families (OfferScarcity / AllocationPriority / Microstructure /
+// GoldBind / Residual) are exposed as the per-family COUNT accessors on
+// `SavingAllocationObs` below (`offer_scarcity`, `allocation_priority`,
+// `microstructure_loss`, `gold_bind`, `residual`); the acceptance suite forms shares and
+// the >1/2 majority diagnosis from them. They partition `unfilled()` by construction.
+
+/// C3R.e-obs (§5): one money-priced spot tick's supply-side telemetry — the two spec
+/// series (`offerable_bread_series` + `posted_asks_series`) joined by tick. It lets a
+/// reader of the OfferScarcity family separate genuine offer scarcity (no offerable staple
+/// anywhere) from quote-generation failure (offerable staple is held but few/no asks are
+/// posted), which select DIFFERENT levers. Runtime-only diagnostic; NEVER serialized.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SavingSupplyTick {
+    pub tick: u64,
+    /// `offerable_bread_series` by seller class: potential sellers who COULD post a
+    /// ≥1-unit staple ask this tick — the pure `reservation_ask_for_money(staple, 1,
+    /// money_good)` predicate the live ask path uses (agent.rs:443), evaluated
+    /// counterfactually on the PRE-market state (ADVISORY per §3.2a, since the live path
+    /// evaluates an available_agent with other reserves removed). Split by whether the
+    /// seller is a member of this tick's C3R.d attribution snapshot.
+    pub offerable_sellers_member: u64,
+    pub offerable_sellers_other: u64,
+    /// `posted_asks_series`: distinct staple asks actually live in the window (the
+    /// post-cancellation pass-start book snapshot plus asks freshly posted during the pass,
+    /// deduped by seq) — trace-AUTHORITATIVE.
+    pub posted_asks: u64,
+}
+
+/// Runtime-only per-run accumulator for the §2 loss decomposition. NEVER serialized.
+#[derive(Clone, Debug, Default)]
+pub struct SavingAllocationObs {
+    /// Opportunities that Filled (a staple bought under the attribution predicate).
+    pub filled: u64,
+    pub no_bid_posted: u64,
+    pub self_ask_only: u64,
+    pub no_executable_ask_in_window: u64,
+    pub all_asks_above_limit: u64,
+    /// CompetitiveLoss cells keyed by (priority basis, winner intent).
+    competitive_loss: BTreeMap<(PriorityBasis, WinnerIntent), u64>,
+    pub execution_residual: u64,
+    /// Ticks with ≥1 eligible member but NO money-priced spot pass (excluded from the
+    /// opportunity domain; reported separately per §2).
+    pub no_spot_pass_ticks: u64,
+    /// Opportunities whose staple bid QuoteAttempt was absent from the trace (logged, not
+    /// silently absorbed — folded into ExecutionResidual for totality).
+    pub drops: u64,
+    /// Staple physical-stock reconciliation (§3.2c) — aggregate over the run.
+    pub phys_produced: u64,
+    pub phys_consumed: u64,
+    pub phys_net_delta: i64,
+    /// The post-reconciliation residual (produced − consumed vs the measured net delta):
+    /// the `WithinPhaseAmbiguous` term, reported never guessed.
+    pub phys_within_phase_ambiguous: i64,
+    /// Physical-stock and reservation deltas at the pinned settlement phase seams.
+    /// Reservations are diagnostic color only and never folded into physical stock.
+    pub death_phase: SavingStockPhaseObs,
+    pub pre_market_phase: SavingStockPhaseObs,
+    pub market_phase: SavingStockPhaseObs,
+    pub production_own_use_phase: SavingStockPhaseObs,
+    pub birth_phase: SavingStockPhaseObs,
+    pub end_of_tick_phase: SavingStockPhaseObs,
+    /// §5 supply-side series — per money-priced spot tick, the offerable staple supply
+    /// (`offerable_bread_series`, by seller class) joined with the posted asks
+    /// (`posted_asks_series`). Disambiguates the OfferScarcity family (true scarcity vs
+    /// quote-generation failure); read by the suite, printed never asserted. Runtime-only,
+    /// NEVER serialized.
+    pub supply_series: Vec<SavingSupplyTick>,
+}
+
+/// Aggregate physical-stock attribution for one pinned settlement phase.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SavingStockPhaseObs {
+    pub physical_delta: i64,
+    pub reservation_delta: i64,
+    pub attributed_delta: i64,
+    pub within_phase_ambiguous: i64,
+}
+
+impl SavingStockPhaseObs {
+    fn record(&mut self, physical_delta: i64, reservation_delta: i64, attributed_delta: i64) {
+        self.physical_delta += physical_delta;
+        self.reservation_delta += reservation_delta;
+        self.attributed_delta += attributed_delta;
+        self.within_phase_ambiguous += physical_delta - attributed_delta;
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SavingStockSnapshot {
+    physical: u64,
+    reserved: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SavingStockTick {
+    staple: GoodId,
+    previous: SavingStockSnapshot,
+    produced: u64,
+    endowment: u64,
+    consumed_as_input: u64,
+    market_consumed: u64,
+}
+
+#[derive(Clone, Copy)]
+enum SavingStockPhase {
+    Death,
+    PreMarket,
+    Market,
+    ProductionOwnUse,
+    Birth,
+    EndOfTick,
+}
+
+impl SavingAllocationObs {
+    fn record(&mut self, outcome: SavingLossOutcome) {
+        match outcome {
+            SavingLossOutcome::NoBidPosted => self.no_bid_posted += 1,
+            SavingLossOutcome::SelfAskOnly => self.self_ask_only += 1,
+            SavingLossOutcome::NoExecutableAskInWindow => self.no_executable_ask_in_window += 1,
+            SavingLossOutcome::AllAsksAboveLimit => self.all_asks_above_limit += 1,
+            SavingLossOutcome::CompetitiveLoss {
+                basis,
+                winner_intent,
+            } => {
+                *self
+                    .competitive_loss
+                    .entry((basis, winner_intent))
+                    .or_insert(0) += 1;
+            }
+            SavingLossOutcome::ExecutionResidual => self.execution_residual += 1,
+        }
+    }
+
+    /// The count of UNFILLED opportunities (the loss-decomposition denominator).
+    pub fn unfilled(&self) -> u64 {
+        self.no_bid_posted
+            + self.self_ask_only
+            + self.no_executable_ask_in_window
+            + self.all_asks_above_limit
+            + self.competitive_loss_total()
+            + self.execution_residual
+    }
+
+    pub fn competitive_loss_total(&self) -> u64 {
+        self.competitive_loss.values().sum()
+    }
+
+    /// CompetitiveLoss units whose basis is `HigherLimit` (the AllocationPriority family).
+    pub fn allocation_priority(&self) -> u64 {
+        self.competitive_loss
+            .iter()
+            .filter(|((basis, _), _)| *basis == PriorityBasis::HigherLimit)
+            .map(|(_, count)| *count)
+            .sum()
+    }
+
+    /// CompetitiveLoss units whose basis is EqualLimitEarlierSeq or PreEntryOrder.
+    pub fn microstructure_loss(&self) -> u64 {
+        self.competitive_loss
+            .iter()
+            .filter(|((basis, _), _)| {
+                matches!(
+                    basis,
+                    PriorityBasis::EqualLimitEarlierSeq | PriorityBasis::PreEntryOrder
+                )
+            })
+            .map(|(_, count)| *count)
+            .sum()
+    }
+
+    /// CompetitiveLoss units routed to Residual (PostExitConsumption).
+    pub fn post_exit_loss(&self) -> u64 {
+        self.competitive_loss
+            .iter()
+            .filter(|((basis, _), _)| *basis == PriorityBasis::PostExitConsumption)
+            .map(|(_, count)| *count)
+            .sum()
+    }
+
+    pub fn offer_scarcity(&self) -> u64 {
+        self.no_executable_ask_in_window + self.all_asks_above_limit
+    }
+
+    pub fn gold_bind(&self) -> u64 {
+        self.no_bid_posted
+    }
+
+    pub fn residual(&self) -> u64 {
+        self.execution_residual + self.self_ask_only + self.post_exit_loss()
+    }
+
+    /// The (priority_basis × winner_intent) CompetitiveLoss matrix, sorted for a stable
+    /// print. Interpretive color; never a rule input.
+    pub fn competitive_loss_matrix(&self) -> Vec<(PriorityBasis, WinnerIntent, u64)> {
+        let mut rows: Vec<_> = self
+            .competitive_loss
+            .iter()
+            .map(|((basis, intent), count)| (*basis, *intent, *count))
+            .collect();
+        rows.sort_by_key(|row| (row.0, row.1));
+        rows
+    }
+
+    /// §5 supply-side run totals over `supply_series`: the money-priced spot ticks
+    /// observed, the summed offerable-seller counts (member, other), the summed posted
+    /// staple asks, and the count of ticks where offerable staple supply existed but NO ask
+    /// was posted — the direct quote-generation-failure signal that keeps the OfferScarcity
+    /// family from being read as genuine scarcity. Interpretive; never a rule input.
+    pub fn supply_totals(&self) -> SavingSupplyTotals {
+        let mut totals = SavingSupplyTotals {
+            spot_ticks: self.supply_series.len() as u64,
+            ..SavingSupplyTotals::default()
+        };
+        for row in &self.supply_series {
+            totals.offerable_sellers_member += row.offerable_sellers_member;
+            totals.offerable_sellers_other += row.offerable_sellers_other;
+            totals.posted_asks += row.posted_asks;
+            if row.offerable_sellers_member + row.offerable_sellers_other > 0
+                && row.posted_asks == 0
+            {
+                totals.offerable_but_no_ask_ticks += 1;
+            }
+        }
+        totals
+    }
+}
+
+/// §5 supply-side run totals derived from [`SavingAllocationObs::supply_series`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SavingSupplyTotals {
+    pub spot_ticks: u64,
+    pub offerable_sellers_member: u64,
+    pub offerable_sellers_other: u64,
+    pub posted_asks: u64,
+    /// Money-priced spot ticks with ≥1 offerable seller but zero posted staple asks.
+    pub offerable_but_no_ask_ticks: u64,
+}
+
+/// C3R.e-obs (§5 `posted_asks_series`): the count of distinct staple asks live in the
+/// opportunity window — the post-cancellation pass-start book snapshot plus asks freshly
+/// posted during the pass, deduped by seq (a carried ask appears in both). Trace-
+/// authoritative; counts every seller's staple ask (self-asks included — this is the
+/// realized market ask supply, not a per-opportunity view).
+fn count_window_staple_asks(records: &[AllocationRecord], staple: GoodId) -> u64 {
+    let mut seqs: BTreeSet<u64> = BTreeSet::new();
+    for record in records {
+        match record {
+            AllocationRecord::BookSnapshot {
+                side: OrderSide::Ask,
+                good,
+                seq,
+                ..
+            } if *good == staple => {
+                seqs.insert(*seq);
+            }
+            AllocationRecord::QuoteAttempt {
+                good,
+                side: OrderSide::Ask,
+                outcome: QuoteOutcome::Posted { seq, .. },
+                ..
+            } if *good == staple => {
+                seqs.insert(*seq);
+            }
+            _ => {}
+        }
+    }
+    seqs.len() as u64
+}
+
+/// The §2 deterministic join for ONE saving quote-opportunity (a member's staple BID that
+/// did NOT fill). Pure over the drained trace + intent map: the classifier reads no engine
+/// state, so the whole join lives in this side-effect-free function (Risk #1). Returns the
+/// single §2 outcome by pinned precedence.
+fn classify_saving_opportunity(
+    records: &[AllocationRecord],
+    intent: &BTreeMap<u64, TracedWant>,
+    staple: GoodId,
+    member: AgentId,
+    input_goods: &BTreeSet<GoodId>,
+) -> SavingLossOutcome {
+    // The quote loop must account for this member/good even when no order results.
+    if !member_has_staple_bid_attempt(records, staple, member) {
+        // No staple bid attempt recorded — unreconciled; folded into the residual, logged.
+        return SavingLossOutcome::ExecutionResidual;
+    }
+    let bid_intervals = saving_bid_intervals(records, staple, member);
+    if bid_intervals.is_empty() {
+        return SavingLossOutcome::NoBidPosted;
+    }
+
+    // Every staple ask in the window: pass-start snapshot asks + asks posted during the
+    // pass (carried asks are already in the snapshot; dedupe by seq).
+    let mut asks: Vec<AskInWindow> = Vec::new();
+    for record in records {
+        match record {
+            AllocationRecord::BookSnapshot {
+                side: OrderSide::Ask,
+                agent,
+                good,
+                limit,
+                seq,
+                ..
+            } if *good == staple => asks.push(AskInWindow {
+                agent: *agent,
+                limit: *limit,
+                seq: *seq,
+            }),
+            AllocationRecord::QuoteAttempt {
+                agent,
+                good,
+                side: OrderSide::Ask,
+                outcome: QuoteOutcome::Posted { seq, limit, .. },
+                ..
+            } if *good == staple => asks.push(AskInWindow {
+                agent: *agent,
+                limit: *limit,
+                seq: *seq,
+            }),
+            _ => {}
+        }
+    }
+    asks.sort_by_key(|ask| ask.seq);
+    asks.dedup_by_key(|ask| ask.seq);
+    let has_self_ask = asks.iter().any(|ask| ask.agent == member);
+    asks.retain(|ask| ask.agent != member);
+
+    if asks.is_empty() {
+        // SelfAskOnly PRECEDES NoExecutable (round-2): ≥1 ask existed but all were self.
+        return if has_self_ask {
+            SavingLossOutcome::SelfAskOnly
+        } else {
+            SavingLossOutcome::NoExecutableAskInWindow
+        };
+    }
+
+    let compatible: Vec<&AskInWindow> = asks
+        .iter()
+        .filter(|ask| {
+            bid_intervals
+                .iter()
+                .any(|interval| ask.limit <= interval.limit)
+        })
+        .collect();
+    if compatible.is_empty() {
+        return SavingLossOutcome::AllAsksAboveLimit;
+    }
+
+    // For each compatible ask, find its consuming execution and classify the loss.
+    let mut lost: Vec<(Gold, u64, SavingLossOutcome)> = Vec::new();
+    for ask in &compatible {
+        let compatible_bids: Vec<&BidInterval> = bid_intervals
+            .iter()
+            .filter(|interval| ask.limit <= interval.limit)
+            .collect();
+        let consumed = records
+            .iter()
+            .enumerate()
+            .find_map(|(index, record)| match record {
+                AllocationRecord::Execution {
+                    incoming_seq,
+                    resting_seq,
+                    incoming_side,
+                    good,
+                    bid_limit,
+                    status: AllocationExecutionStatus::Succeeded,
+                    ..
+                } if *good == staple
+                    && ((*incoming_side == OrderSide::Bid && *resting_seq == ask.seq)
+                        || (*incoming_side == OrderSide::Ask && *incoming_seq == ask.seq)) =>
+                {
+                    Some((
+                        index,
+                        *incoming_seq,
+                        *resting_seq,
+                        *incoming_side,
+                        *bid_limit,
+                    ))
+                }
+                _ => None,
+            });
+        let Some((exec_idx, incoming_seq, resting_seq, incoming_side, winner_limit)) = consumed
+        else {
+            // Compatible ask never consumed (still resting / a rejection skip): not a
+            // loss to another buyer. Left for the residual reconciliation below.
+            continue;
+        };
+        let winner_seq = match incoming_side {
+            OrderSide::Bid => incoming_seq,
+            OrderSide::Ask => resting_seq,
+        };
+        let rejected_saving_cross = records[..exec_idx].iter().any(|record| match record {
+            AllocationRecord::Execution {
+                incoming_seq,
+                resting_seq,
+                incoming_side,
+                good,
+                status: AllocationExecutionStatus::Rejected,
+                ..
+            } if *good == staple => match incoming_side {
+                OrderSide::Bid => {
+                    *resting_seq == ask.seq
+                        && compatible_bids
+                            .iter()
+                            .any(|interval| interval.seq == *incoming_seq)
+                }
+                OrderSide::Ask => {
+                    *incoming_seq == ask.seq
+                        && compatible_bids
+                            .iter()
+                            .any(|interval| interval.seq == *resting_seq)
+                }
+            },
+            _ => false,
+        });
+        let live = compatible_bids.iter().find(|interval| {
+            interval.entered_at <= exec_idx && interval.exited_at.is_none_or(|exit| exec_idx < exit)
+        });
+        let basis = if rejected_saving_cross {
+            // This saving bid already reached the ask and failed settlement. A later
+            // successful consumer does not turn that execution failure into a price-
+            // or queue-priority loss.
+            None
+        } else if let Some(interval) = live {
+            if winner_limit > interval.limit {
+                Some(PriorityBasis::HigherLimit)
+            } else if winner_limit == interval.limit && winner_seq < interval.seq {
+                // Equal limits AND the winner arrived first: arrival order alone
+                // decided the loss (Microstructure).
+                Some(PriorityBasis::EqualLimitEarlierSeq)
+            } else {
+                // Either a lower-limit winner (cannot beat a live higher-limit
+                // saving bid) or an equal-limit winner whose seq is LATER than the
+                // saving bid's — the saving bid held queue priority and should have
+                // won, so the loss came from a settlement rejection, not arrival
+                // order. Route to ExecutionResidual rather than mislabel it
+                // EqualLimitEarlierSeq (which would spuriously inflate the
+                // Microstructure family, the trap-narrowing diagnosis).
+                None
+            }
+        } else if compatible_bids
+            .iter()
+            .any(|interval| interval.exited_at.is_some_and(|exit| exit < exec_idx))
+        {
+            Some(PriorityBasis::PostExitConsumption)
+        } else if compatible_bids
+            .iter()
+            .any(|interval| exec_idx < interval.entered_at)
+        {
+            Some(PriorityBasis::PreEntryOrder)
+        } else {
+            None
+        };
+        let outcome = match basis {
+            Some(basis) => SavingLossOutcome::CompetitiveLoss {
+                basis,
+                winner_intent: winner_intent_from(intent, winner_seq, staple, input_goods),
+            },
+            None => SavingLossOutcome::ExecutionResidual,
+        };
+        lost.push((ask.limit, ask.seq, outcome));
+    }
+
+    if lost.is_empty() {
+        // Compatible asks existed but none were lost to another buyer — unreconciled.
+        return SavingLossOutcome::ExecutionResidual;
+    }
+    // PAYLOAD RULE: the first compatible LOST unit in (limit, seq) order — deterministic.
+    lost.sort_by_key(|entry| (entry.0, entry.1));
+    lost[0].2
+}
+
+#[derive(Clone, Copy)]
+struct AskInWindow {
+    agent: AgentId,
+    limit: Gold,
+    seq: u64,
+}
+
+#[derive(Clone, Copy)]
+struct BidInterval {
+    seq: u64,
+    limit: Gold,
+    entered_at: usize,
+    exited_at: Option<usize>,
+}
+
+fn saving_bid_intervals(
+    records: &[AllocationRecord],
+    staple: GoodId,
+    member: AgentId,
+) -> Vec<BidInterval> {
+    let mut intervals = Vec::new();
+    for (index, record) in records.iter().enumerate() {
+        let bid = match record {
+            AllocationRecord::BookSnapshot {
+                side: OrderSide::Bid,
+                agent,
+                good,
+                limit,
+                seq,
+                ..
+            } if *agent == member && *good == staple => Some((*seq, *limit, 0)),
+            AllocationRecord::QuoteAttempt {
+                agent,
+                good,
+                side: OrderSide::Bid,
+                outcome: QuoteOutcome::Posted { seq, limit, .. },
+                ..
+            } if *agent == member && *good == staple => Some((
+                *seq,
+                *limit,
+                first_incoming_index(records, *seq)
+                    .unwrap_or(index)
+                    .min(index),
+            )),
+            _ => None,
+        };
+        let Some((seq, limit, entered_at)) = bid else {
+            continue;
+        };
+        let exited_at = records
+            .iter()
+            .enumerate()
+            .find_map(|(exit_index, exit)| match exit {
+                AllocationRecord::QuoteExit {
+                    agent,
+                    good,
+                    side: OrderSide::Bid,
+                    seq: exit_seq,
+                    ..
+                } if *agent == member
+                    && *good == staple
+                    && *exit_seq == seq
+                    && exit_index > entered_at =>
+                {
+                    Some(exit_index)
+                }
+                _ => None,
+            });
+        intervals.push(BidInterval {
+            seq,
+            limit,
+            entered_at,
+            exited_at,
+        });
+    }
+    intervals.sort_by_key(|interval| (interval.entered_at, interval.seq));
+    intervals.dedup_by_key(|interval| interval.seq);
+    intervals
+}
+
+fn first_incoming_index(records: &[AllocationRecord], seq: u64) -> Option<usize> {
+    records
+        .iter()
+        .enumerate()
+        .find_map(|(index, record)| match record {
+            AllocationRecord::Execution { incoming_seq, .. } if *incoming_seq == seq => Some(index),
+            _ => None,
+        })
+}
+
+/// Whether the member had ANY staple bid QuoteAttempt this pass (else it is a drop).
+fn member_has_staple_bid_attempt(
+    records: &[AllocationRecord],
+    staple: GoodId,
+    member: AgentId,
+) -> bool {
+    records.iter().any(|record| {
+        matches!(
+            record,
+            AllocationRecord::QuoteAttempt {
+                agent,
+                good,
+                side: OrderSide::Bid,
+                ..
+            } if *agent == member && *good == staple
+        )
+    })
+}
+
+/// Map the winner's captured first-unprovided want to a `WinnerIntent` by the pinned
+/// precedence Now-hunger > Next-saving > Next-input > Other.
+fn winner_intent_from(
+    intent: &BTreeMap<u64, TracedWant>,
+    seq: u64,
+    staple: GoodId,
+    input_goods: &BTreeSet<GoodId>,
+) -> WinnerIntent {
+    match intent.get(&seq) {
+        Some(want) => match (want.kind, want.horizon) {
+            (WantKind::Good(good), Horizon::Now) if good == staple => WinnerIntent::HungryNow,
+            (WantKind::Good(good), Horizon::Next) if good == staple => WinnerIntent::SavingNext,
+            (WantKind::Good(good), Horizon::Next) if input_goods.contains(&good) => {
+                WinnerIntent::ProducerInputNext
+            }
+            _ => WinnerIntent::Other,
+        },
+        None => WinnerIntent::Other,
+    }
+}
+
 /// A settlement of generated colonists driven over a real `world` + `econ`.
 pub struct Settlement {
     generation_seed: u64,
@@ -6589,6 +7253,20 @@ pub struct Settlement {
     birth_stock_source_shortfalls: u64,
     birth_stock_injection_records: Vec<BirthStockInjectionRecord>,
     birth_stock_births_by_household: Vec<u64>,
+    /// C3R.e-obs (impl-66 repair): the C3R.d attribution snapshot captured at the most
+    /// recent pre-market seam while allocation observation is active. Runtime-only, read-only
+    /// telemetry for independently recounting eligible opportunities; no decision path reads
+    /// it and it is NEVER serialized.
+    last_birth_stock_attribution_snapshot: BTreeSet<AgentId>,
+    /// C3R.e-obs (impl-66): the runtime-only §2 loss-decomposition accumulator. NEVER
+    /// serialized; populated only when `saving_allocation_obs_active()`.
+    saving_allocation_obs: SavingAllocationObs,
+    /// Current tick's runtime-only §3.2c stock seam cursor.
+    saving_obs_stock_tick: Option<SavingStockTick>,
+    /// C3R.e-obs (§3.2a/§5): this tick's PRE-market offerable-seller counts (member,
+    /// other), captured before `society.step()` and committed to `supply_series` by the §2
+    /// join iff the tick is a money-priced spot pass. Runtime-only; NEVER serialized.
+    saving_obs_pending_offerable: Option<(u64, u64)>,
     /// S21d.2a: the runtime-only cross-tick bootstrap microtrace (see [`BootstrapTrace`]).
     /// Maintained only while [`Self::acquisition_ledger_active`] holds; an empty default
     /// otherwise. NOT in `canonical_bytes`, so it shifts no digest (byte-identical goldens).
@@ -7233,6 +7911,7 @@ struct ChainRuntime {
     producer_stock_provisioning_control: bool,
     birth_stock_saving: bool,
     birth_stock_saving_mode: BirthStockSavingMode,
+    saving_allocation_obs: bool,
     share_bps: u16,
     share_term: u16,
     land_carrying_cost: u64,
@@ -10032,6 +10711,7 @@ impl Settlement {
                 producer_stock_provisioning_control: chain.producer_stock_provisioning_control,
                 birth_stock_saving: chain.birth_stock_saving,
                 birth_stock_saving_mode: chain.birth_stock_saving_mode,
+                saving_allocation_obs: chain.saving_allocation_obs,
                 share_bps: chain.share_bps,
                 share_term: chain.share_term,
                 land_carrying_cost: chain.land_carrying_cost,
@@ -10116,6 +10796,10 @@ impl Settlement {
             birth_stock_source_shortfalls: 0,
             birth_stock_injection_records: Vec::new(),
             birth_stock_births_by_household: vec![0; households.len()],
+            last_birth_stock_attribution_snapshot: BTreeSet::new(),
+            saving_allocation_obs: SavingAllocationObs::default(),
+            saving_obs_stock_tick: None,
+            saving_obs_pending_offerable: None,
             bootstrap_trace: BootstrapTrace::default(),
             bread_seller_trace: Vec::new(),
             seeded_surplus_trace: SeededSurplusTrace::default(),
@@ -10331,6 +11015,12 @@ impl Settlement {
         settlement.init_commitment_norm_seed(seed);
         settlement.init_earned_provisioning_buckets();
         settlement.init_birth_stock_reach_baseline();
+        // C3R.e-obs (impl-66): enable the econ allocation trace ONCE, iff the obs flag is
+        // on (and thus the motive is on). Record-only — no decision path reads it — so a
+        // settlement with it enabled steps byte-identically to one without.
+        if settlement.saving_allocation_obs_active() {
+            settlement.society.enable_allocation_trace();
+        }
         settlement
     }
 
@@ -10659,6 +11349,10 @@ impl Settlement {
             birth_stock_source_shortfalls: 0,
             birth_stock_injection_records: Vec::new(),
             birth_stock_births_by_household: Vec::new(),
+            last_birth_stock_attribution_snapshot: BTreeSet::new(),
+            saving_allocation_obs: SavingAllocationObs::default(),
+            saving_obs_stock_tick: None,
+            saving_obs_pending_offerable: None,
             bootstrap_trace: BootstrapTrace::default(),
             bread_seller_trace: Vec::new(),
             seeded_surplus_trace: SeededSurplusTrace::default(),
@@ -10930,6 +11624,8 @@ impl Settlement {
         // `Society::step` clears the tick-local labor log at entry. A due escrow can also be
         // released inside death settlement below, so the scratch log has to exist before deaths.
         let mut wage_labor_used = Vec::new();
+        // C3R.e-obs §3.2c: start/pre-death physical-stock and reservation seam.
+        self.saving_obs_begin_stock_tick();
 
         // ---- 3. NEEDS + real death (G4a): settle each starvation death's estate to
         // the household heir (G4b) or the commons (G4a fallback), free its arena
@@ -10942,6 +11638,7 @@ impl Settlement {
         // removal path; a no-op without a demography overlay. Deterministic — the
         // lifespan is a function of the stable seed, nothing is drawn.
         report.deaths += self.age_and_remove_elderly(&mut report, &mut wage_labor_used);
+        self.saving_obs_capture_death_phase();
 
         // ---- 4. SCALES.
         self.regenerate_scales();
@@ -11097,6 +11794,15 @@ impl Settlement {
         // `report.promoted` so the whole-system ledger balances across the phase
         // transition (and the gold checkpoints account the minted gold).
         let birth_stock_attribution_snapshot = self.birth_stock_attribution_snapshot();
+        if self.saving_allocation_obs_active() {
+            self.last_birth_stock_attribution_snapshot = birth_stock_attribution_snapshot.clone();
+        }
+        // C3R.e-obs: close the post-death/pre-market provisioning seam.
+        self.saving_obs_capture_pre_market(&report);
+        // C3R.e-obs (§3.2a/§5): capture the PRE-market offerable staple supply here — the
+        // live ask path evaluates this same state inside the step below. Committed to the
+        // supply series by the join iff this becomes a money-priced spot pass.
+        self.saving_obs_capture_offerable_supply(&birth_stock_attribution_snapshot);
         let money_good_before = self.society.current_money_good();
         let society_gold_before = self.society.total_gold();
         // S16: the produced-bread provenance ledger reads THIS tick's market trades as
@@ -11198,6 +11904,14 @@ impl Settlement {
             provenance_spot_trades_start,
             &birth_stock_attribution_snapshot,
         );
+        // C3R.e-obs (impl-66): the §2 loss-decomposition join over THIS tick's drained
+        // allocation trace. Runs right after the market so the trace batch is still fresh
+        // and the intent map is not yet pruned. A no-op unless the obs is active.
+        self.observe_saving_allocation(
+            provenance_spot_trades_start,
+            &birth_stock_attribution_snapshot,
+        );
+        self.saving_obs_capture_post_market(&report);
 
         // ---- 5b-bis''. LAND MARKET (S23b): after ordinary food/SALT trades, and only once
         // SALT has promoted, charge carrying costs and run the deterministic pairwise land sweep.
@@ -11288,6 +12002,7 @@ impl Settlement {
         // own-use bread consume (the consumed-log tail past the market pass) FIFO. No-op off path
         // (and inert in the probe — cultivation is off).
         self.run_acquisition_own_use(acquisition_consume_cursor);
+        self.saving_obs_capture_post_production(&report);
 
         // ---- 6b. BIRTHS (G4b): each food-secure household under its size cap and
         // past its birth interval bears one child — a new colonist with an inherited,
@@ -11300,6 +12015,7 @@ impl Settlement {
         self.observe_birth_stock_holdings();
         report.births = self.run_births();
         self.record_birth_stock_control_results(&birth_stock_injections);
+        self.saving_obs_capture_post_birth();
 
         // ---- 7. READ-BACK happens at the top of the next tick's NEEDS phase.
 
@@ -11322,6 +12038,8 @@ impl Settlement {
         // it decays end-of-tick holdings, before the whole-system snapshot so the
         // conservation identity accounts it. A no-op unless enabled.
         self.run_spoilage(&mut report);
+        // Close the post-birth/end-of-tick seam after the only later physical sink.
+        self.saving_obs_finish_stock_tick(&report);
         // ---- 7b. PROVENANCE FINALIZE (S16): record the first produced-surplus tick and
         // assert the provenance ledger conserves. A no-op off the path.
         self.finalize_bread_provenance();
@@ -18034,6 +18752,14 @@ impl Settlement {
                 .is_some_and(chain_runtime_birth_stock_control_active)
     }
 
+    fn saving_allocation_obs_active(&self) -> bool {
+        self.demography.is_some()
+            && self
+                .chain
+                .as_ref()
+                .is_some_and(chain_runtime_saving_allocation_obs_active)
+    }
+
     fn producer_stock_provisioning_control_active(&self) -> bool {
         self.demography.is_some()
             && self
@@ -18424,6 +19150,311 @@ impl Settlement {
         self.birth_stock_attributable_purchases = self
             .birth_stock_attributable_purchases
             .saturating_add(purchased);
+    }
+
+    /// C3R.e-obs (impl-66): the per-tick §2 loss-decomposition join. Runs after the market
+    /// step, draining this tick's allocation-trace batch and assigning EXACTLY ONE outcome
+    /// to each unfilled saving quote-opportunity (a snapshot member's staple bid). A no-op
+    /// unless the obs is active. Reads only the trace + intent map — never re-enables or
+    /// drains the (behavior-driving) consumption log.
+    fn observe_saving_allocation(
+        &mut self,
+        spot_trades_start: usize,
+        snapshot: &BTreeSet<AgentId>,
+    ) {
+        if !self.saving_allocation_obs_active() {
+            return;
+        }
+        let trace = self.society.take_allocation_trace();
+        let Some(staple) = self.provenance_bread_good() else {
+            return;
+        };
+        // No money-priced spot pass this tick (barter / pre-promotion): the trace is empty.
+        // Eligible members had no opportunity — excluded from the domain, counted separately.
+        if trace.is_empty() {
+            if !snapshot.is_empty() {
+                self.saving_allocation_obs.no_spot_pass_ticks += 1;
+            }
+            return;
+        }
+        if snapshot.is_empty() {
+            return;
+        }
+        let input_goods = self.saving_obs_input_goods();
+        // Filled uses the SAME attribution predicate as the denominator (bought ≥1 staple).
+        let mut filled_members: BTreeSet<AgentId> = BTreeSet::new();
+        for trade in &self.society.trades[spot_trades_start..] {
+            if trade.good == staple && snapshot.contains(&trade.buyer) {
+                filled_members.insert(trade.buyer);
+            }
+        }
+        let intent = self.society.allocation_intent();
+        let mut filled = 0u64;
+        let mut outcomes: Vec<(AgentId, SavingLossOutcome)> = Vec::new();
+        for &member in snapshot {
+            if filled_members.contains(&member) {
+                filled += 1;
+                continue;
+            }
+            outcomes.push((
+                member,
+                classify_saving_opportunity(&trace, intent, staple, member, &input_goods),
+            ));
+        }
+        // The `intent` borrow of `self.society` ends here; now mutate the accumulator.
+        self.saving_allocation_obs.filled += filled;
+        for (member, outcome) in outcomes {
+            if !member_has_staple_bid_attempt(&trace, staple, member) {
+                // A genuine drop (no staple bid attempt recorded) — logged for §6 honesty,
+                // NOT silently absorbed. It is still counted as ExecutionResidual so the
+                // totality invariant (one outcome per unfilled opportunity) holds.
+                self.saving_allocation_obs.drops += 1;
+            }
+            self.saving_allocation_obs.record(outcome);
+        }
+        // §5 supply-side series: this IS a money-priced spot pass (the trace was non-empty
+        // and the snapshot non-empty), so record the PRE-market offerable supply captured
+        // before the step against this tick's trace-authoritative posted-ask count. Lets a
+        // reader tell genuine scarcity from quote-generation failure within OfferScarcity.
+        let posted_asks = count_window_staple_asks(&trace, staple);
+        let (offerable_sellers_member, offerable_sellers_other) =
+            self.saving_obs_pending_offerable.take().unwrap_or((0, 0));
+        self.saving_allocation_obs
+            .supply_series
+            .push(SavingSupplyTick {
+                tick: self.econ_tick,
+                offerable_sellers_member,
+                offerable_sellers_other,
+                posted_asks,
+            });
+    }
+
+    /// C3R.e-obs (§3.2c): begin the corrected stock-phase timeline immediately before
+    /// deaths. Physical `agent.stock` and reservations are captured independently.
+    fn saving_obs_begin_stock_tick(&mut self) {
+        if !self.saving_allocation_obs_active() {
+            return;
+        }
+        let Some(staple) = self.provenance_bread_good() else {
+            return;
+        };
+        self.saving_obs_stock_tick = Some(SavingStockTick {
+            staple,
+            previous: self.saving_stock_snapshot(staple),
+            produced: 0,
+            endowment: 0,
+            consumed_as_input: 0,
+            market_consumed: 0,
+        });
+    }
+
+    fn saving_obs_capture_death_phase(&mut self) {
+        let Some(tick) = self.saving_obs_stock_tick else {
+            return;
+        };
+        let current = self.saving_stock_snapshot(tick.staple);
+        // This seam contains only death/estate handling, so its measured physical move
+        // is itself the named death-estate cause (including transfers to commons).
+        let attributed = current.physical as i64 - tick.previous.physical as i64;
+        self.saving_obs_record_stock_phase(SavingStockPhase::Death, current, attributed);
+    }
+
+    fn saving_obs_capture_pre_market(&mut self, report: &EconTickReport) {
+        let Some(tick) = self.saving_obs_stock_tick else {
+            return;
+        };
+        let produced = report.produced.get(&tick.staple).copied().unwrap_or(0);
+        let endowment = report.endowment.get(&tick.staple).copied().unwrap_or(0);
+        let consumed_as_input = report
+            .consumed_as_input
+            .get(&tick.staple)
+            .copied()
+            .unwrap_or(0);
+        let attributed = produced as i64 - tick.produced as i64 + endowment as i64
+            - tick.endowment as i64
+            - (consumed_as_input as i64 - tick.consumed_as_input as i64);
+        let current = self.saving_stock_snapshot(tick.staple);
+        self.saving_obs_record_stock_phase(SavingStockPhase::PreMarket, current, attributed);
+        if let Some(tick) = self.saving_obs_stock_tick.as_mut() {
+            tick.produced = produced;
+            tick.endowment = endowment;
+            tick.consumed_as_input = consumed_as_input;
+        }
+    }
+
+    /// C3R.e-obs (§3.2a/§5): capture this tick's offerable staple supply from the PRE-market
+    /// state the live ask path evaluates (post-death, before `society.step()`). Sums the
+    /// pure `reservation_ask_for_money(staple, 1, money_good)` counterfactual over every
+    /// potential seller, split by attribution-snapshot membership. Advisory (the live path
+    /// removes other reserves and restores the agent's own quote — §3.2a); the trace's
+    /// posted asks stay authoritative. Pure/read-only: no state moves, so this shifts no
+    /// digest. Stashed for the §2 join, which commits it only on money-priced spot passes.
+    fn saving_obs_capture_offerable_supply(&mut self, snapshot: &BTreeSet<AgentId>) {
+        if !self.saving_allocation_obs_active() {
+            return;
+        }
+        let Some(staple) = self.provenance_bread_good() else {
+            return;
+        };
+        let Some(money_good) = self.society.current_money_good() else {
+            // No money good yet (pre-promotion barter): not a money-priced spot pass, so the
+            // join discards this. Record zero offerable to keep the scratch fresh.
+            self.saving_obs_pending_offerable = Some((0, 0));
+            return;
+        };
+        let mut member = 0u64;
+        let mut other = 0u64;
+        for agent in self.society.agents.iter() {
+            if agent
+                .reservation_ask_for_money(staple, 1, money_good)
+                .is_some()
+            {
+                if snapshot.contains(&agent.id) {
+                    member += 1;
+                } else {
+                    other += 1;
+                }
+            }
+        }
+        self.saving_obs_pending_offerable = Some((member, other));
+    }
+
+    fn saving_obs_capture_post_market(&mut self, report: &EconTickReport) {
+        let Some(tick) = self.saving_obs_stock_tick else {
+            return;
+        };
+        let consumed = self.saving_obs_consumed_stock(tick.staple);
+        let promoted = report.promoted.get(&tick.staple).copied().unwrap_or(0);
+        let current = self.saving_stock_snapshot(tick.staple);
+        self.saving_obs_record_stock_phase(
+            SavingStockPhase::Market,
+            current,
+            -(consumed as i64) - promoted as i64,
+        );
+        if let Some(tick) = self.saving_obs_stock_tick.as_mut() {
+            tick.market_consumed = consumed;
+        }
+    }
+
+    fn saving_obs_capture_post_production(&mut self, report: &EconTickReport) {
+        let Some(tick) = self.saving_obs_stock_tick else {
+            return;
+        };
+        let produced = report.produced.get(&tick.staple).copied().unwrap_or(0);
+        let consumed_as_input = report
+            .consumed_as_input
+            .get(&tick.staple)
+            .copied()
+            .unwrap_or(0);
+        let consumed = self.saving_obs_consumed_stock(tick.staple);
+        let attributed = produced as i64
+            - tick.produced as i64
+            - (consumed_as_input as i64 - tick.consumed_as_input as i64)
+            - (consumed as i64 - tick.market_consumed as i64);
+        let current = self.saving_stock_snapshot(tick.staple);
+        self.saving_obs_record_stock_phase(SavingStockPhase::ProductionOwnUse, current, attributed);
+        if let Some(tick) = self.saving_obs_stock_tick.as_mut() {
+            tick.produced = produced;
+            tick.consumed_as_input = consumed_as_input;
+        }
+    }
+
+    fn saving_obs_capture_post_birth(&mut self) {
+        let Some(tick) = self.saving_obs_stock_tick else {
+            return;
+        };
+        // Birth stock is a parent debit/newborn credit; its named net physical cause is 0.
+        let current = self.saving_stock_snapshot(tick.staple);
+        self.saving_obs_record_stock_phase(SavingStockPhase::Birth, current, 0);
+    }
+
+    fn saving_obs_finish_stock_tick(&mut self, report: &EconTickReport) {
+        let Some(tick) = self.saving_obs_stock_tick else {
+            return;
+        };
+        let spoiled = report.spoiled.get(&tick.staple).copied().unwrap_or(0);
+        let current = self.saving_stock_snapshot(tick.staple);
+        self.saving_obs_record_stock_phase(SavingStockPhase::EndOfTick, current, -(spoiled as i64));
+        let consumed = self.saving_obs_consumed_stock(tick.staple);
+        let obs = &mut self.saving_allocation_obs;
+        obs.phys_produced = obs.phys_produced.saturating_add(tick.produced);
+        obs.phys_consumed = obs.phys_consumed.saturating_add(consumed);
+        self.saving_obs_stock_tick = None;
+    }
+
+    fn saving_obs_record_stock_phase(
+        &mut self,
+        phase: SavingStockPhase,
+        current: SavingStockSnapshot,
+        attributed_delta: i64,
+    ) {
+        let tick = self
+            .saving_obs_stock_tick
+            .as_mut()
+            .expect("stock observation phase requires a started tick");
+        let physical_delta = current.physical as i64 - tick.previous.physical as i64;
+        let reservation_delta = current.reserved as i64 - tick.previous.reserved as i64;
+        tick.previous = current;
+        let obs = &mut self.saving_allocation_obs;
+        let target = match phase {
+            SavingStockPhase::Death => &mut obs.death_phase,
+            SavingStockPhase::PreMarket => &mut obs.pre_market_phase,
+            SavingStockPhase::Market => &mut obs.market_phase,
+            SavingStockPhase::ProductionOwnUse => &mut obs.production_own_use_phase,
+            SavingStockPhase::Birth => &mut obs.birth_phase,
+            SavingStockPhase::EndOfTick => &mut obs.end_of_tick_phase,
+        };
+        target.record(physical_delta, reservation_delta, attributed_delta);
+        obs.phys_net_delta += physical_delta;
+        obs.phys_within_phase_ambiguous += physical_delta - attributed_delta;
+    }
+
+    fn saving_stock_snapshot(&self, staple: GoodId) -> SavingStockSnapshot {
+        let mut physical = 0u64;
+        let mut reserved = 0u64;
+        for agent in self.society.agents.iter() {
+            let held = agent.stock.get(staple);
+            physical = physical.saturating_add(u64::from(held));
+            let free = self.society.free_stock_after_all_reserves(agent.id, staple);
+            reserved = reserved.saturating_add(u64::from(held.saturating_sub(free)));
+        }
+        SavingStockSnapshot { physical, reserved }
+    }
+
+    fn saving_obs_consumed_stock(&self, staple: GoodId) -> u64 {
+        self.society
+            .consumption_log_last_tick()
+            .iter()
+            .filter(|(_, good, _)| *good == staple)
+            .map(|&(_, _, qty)| u64::from(qty))
+            .sum()
+    }
+
+    /// The producer recipe INPUT goods (grain, flour) used to tag a `ProducerInputNext`
+    /// winner intent. Empty without a chain.
+    fn saving_obs_input_goods(&self) -> BTreeSet<GoodId> {
+        let mut goods = BTreeSet::new();
+        if let Some(chain) = self.chain.as_ref() {
+            goods.insert(chain.content.grain());
+            goods.insert(chain.content.flour());
+        }
+        goods
+    }
+
+    /// The runtime-only C3R.e-obs loss-decomposition accumulator for this run (one seed).
+    /// NEVER serialized; read by the acceptance suite to print family shares + diagnosis.
+    pub fn saving_allocation_obs_report(&self) -> &SavingAllocationObs {
+        &self.saving_allocation_obs
+    }
+
+    /// C3R.e-obs (impl-66 repair): the C3R.d birth-stock attribution snapshot captured at the
+    /// most recent pre-market seam inside [`Self::econ_tick`] while allocation observation is
+    /// active. Runtime-only, read-only, NEVER serialized and NEVER read by a decision path.
+    /// The acceptance suite reads this after each tick so deaths and pre-market provisioning
+    /// cannot make a before/after recomputation drift from the opportunity domain the market
+    /// actually saw.
+    pub fn birth_stock_attribution_members(&self) -> &BTreeSet<AgentId> {
+        &self.last_birth_stock_attribution_snapshot
     }
 
     fn init_birth_stock_reach_baseline(&mut self) {
@@ -24958,6 +25989,15 @@ impl Settlement {
                 out.push(u8::from(chain.birth_stock_saving));
                 out.push(birth_stock_saving_mode_tag(chain.birth_stock_saving_mode));
             }
+            // C3R.e-obs (impl-66): pure observation. The ENTIRE digest footprint is these
+            // two bytes emitted ON-only — removing this block yields the OFF stream
+            // byte-for-byte (a dedicated test pins it). No counter, trace, or aggregate is
+            // ever serialized (avoiding the `birth_block_*` conditional-serialize
+            // anti-pattern).
+            if self.saving_allocation_obs_active() {
+                out.push(32);
+                out.push(u8::from(chain.saving_allocation_obs));
+            }
             // S23b: the post-money land market extends S23a's registry with an endogenous-price
             // state, listings, last-sale anchors, and the non-agent fee sink. Emitted only when the
             // market composes on active private land tenure; with the flag off every S23a and older
@@ -26283,6 +27323,11 @@ fn chain_runtime_birth_stock_control_active(chain: &ChainRuntime) -> bool {
     !chain.birth_stock_saving
         && chain.birth_stock_saving_mode == BirthStockSavingMode::SufficiencyControl
         && chain_runtime_earned_provisioning_active(chain)
+}
+
+fn chain_runtime_saving_allocation_obs_active(chain: &ChainRuntime) -> bool {
+    // The motive (mode 1) must be on to observe its bids.
+    chain.saving_allocation_obs && chain_runtime_birth_stock_saving_active(chain)
 }
 
 fn chain_runtime_producer_stock_provisioning_control_active(chain: &ChainRuntime) -> bool {
@@ -28716,6 +29761,1171 @@ fn belief_vec() -> Vec<PriceBelief> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use econ::society::NoQuoteReason;
+
+    #[test]
+    fn saving_join_uses_a_pass_start_bid_even_when_the_attempt_cancels_it() {
+        let member = AgentId(1);
+        let seller = AgentId(2);
+        let winner = AgentId(3);
+        let staple = GoodId(4);
+        let records = vec![
+            AllocationRecord::PassStart { tick: 1 },
+            AllocationRecord::BookSnapshot {
+                tick: 1,
+                side: OrderSide::Bid,
+                agent: member,
+                good: staple,
+                limit: Gold(5),
+                seq: 10,
+            },
+            AllocationRecord::BookSnapshot {
+                tick: 1,
+                side: OrderSide::Ask,
+                agent: seller,
+                good: staple,
+                limit: Gold(4),
+                seq: 20,
+            },
+            AllocationRecord::QuoteExit {
+                tick: 1,
+                agent: member,
+                good: staple,
+                side: OrderSide::Bid,
+                seq: 10,
+            },
+            AllocationRecord::QuoteAttempt {
+                tick: 1,
+                order_pos: 1,
+                agent: member,
+                good: staple,
+                side: OrderSide::Bid,
+                outcome: QuoteOutcome::NoQuote(NoQuoteReason::ClampZero),
+            },
+            AllocationRecord::QuoteAttempt {
+                tick: 1,
+                order_pos: 2,
+                agent: winner,
+                good: staple,
+                side: OrderSide::Bid,
+                outcome: QuoteOutcome::Posted {
+                    seq: 30,
+                    limit: Gold(6),
+                    reservation: Gold(6),
+                },
+            },
+            AllocationRecord::Execution {
+                tick: 1,
+                incoming_seq: 30,
+                resting_seq: 20,
+                incoming_side: OrderSide::Bid,
+                good: staple,
+                buyer: winner,
+                seller,
+                price: Gold(4),
+                qty: 1,
+                bid_limit: Gold(6),
+                ask_limit: Gold(4),
+                status: AllocationExecutionStatus::Succeeded,
+            },
+            AllocationRecord::PassEnd { tick: 1 },
+        ];
+
+        assert_eq!(
+            classify_saving_opportunity(
+                &records,
+                &BTreeMap::new(),
+                staple,
+                member,
+                &BTreeSet::new(),
+            ),
+            SavingLossOutcome::CompetitiveLoss {
+                basis: PriorityBasis::PostExitConsumption,
+                winner_intent: WinnerIntent::Other,
+            }
+        );
+    }
+
+    #[test]
+    fn saving_join_matches_consumed_asks_by_sequence() {
+        let member = AgentId(1);
+        let seller = AgentId(2);
+        let early_winner = AgentId(3);
+        let later_winner = AgentId(4);
+        let staple = GoodId(5);
+        let records = vec![
+            AllocationRecord::PassStart { tick: 1 },
+            AllocationRecord::BookSnapshot {
+                tick: 1,
+                side: OrderSide::Ask,
+                agent: seller,
+                good: staple,
+                limit: Gold(6),
+                seq: 20,
+            },
+            AllocationRecord::QuoteAttempt {
+                tick: 1,
+                order_pos: 0,
+                agent: early_winner,
+                good: staple,
+                side: OrderSide::Bid,
+                outcome: QuoteOutcome::Posted {
+                    seq: 30,
+                    limit: Gold(7),
+                    reservation: Gold(7),
+                },
+            },
+            AllocationRecord::Execution {
+                tick: 1,
+                incoming_seq: 30,
+                resting_seq: 20,
+                incoming_side: OrderSide::Bid,
+                good: staple,
+                buyer: early_winner,
+                seller,
+                price: Gold(6),
+                qty: 1,
+                bid_limit: Gold(7),
+                ask_limit: Gold(6),
+                status: AllocationExecutionStatus::Succeeded,
+            },
+            AllocationRecord::QuoteAttempt {
+                tick: 1,
+                order_pos: 1,
+                agent: member,
+                good: staple,
+                side: OrderSide::Bid,
+                outcome: QuoteOutcome::Posted {
+                    seq: 10,
+                    limit: Gold(5),
+                    reservation: Gold(5),
+                },
+            },
+            AllocationRecord::QuoteAttempt {
+                tick: 1,
+                order_pos: 2,
+                agent: seller,
+                good: staple,
+                side: OrderSide::Ask,
+                outcome: QuoteOutcome::Posted {
+                    seq: 21,
+                    limit: Gold(4),
+                    reservation: Gold(4),
+                },
+            },
+            AllocationRecord::QuoteAttempt {
+                tick: 1,
+                order_pos: 3,
+                agent: later_winner,
+                good: staple,
+                side: OrderSide::Bid,
+                outcome: QuoteOutcome::Posted {
+                    seq: 31,
+                    limit: Gold(7),
+                    reservation: Gold(7),
+                },
+            },
+            AllocationRecord::Execution {
+                tick: 1,
+                incoming_seq: 31,
+                resting_seq: 21,
+                incoming_side: OrderSide::Bid,
+                good: staple,
+                buyer: later_winner,
+                seller,
+                price: Gold(4),
+                qty: 1,
+                bid_limit: Gold(7),
+                ask_limit: Gold(4),
+                status: AllocationExecutionStatus::Succeeded,
+            },
+            AllocationRecord::PassEnd { tick: 1 },
+        ];
+
+        assert_eq!(
+            classify_saving_opportunity(
+                &records,
+                &BTreeMap::new(),
+                staple,
+                member,
+                &BTreeSet::new(),
+            ),
+            SavingLossOutcome::CompetitiveLoss {
+                basis: PriorityBasis::HigherLimit,
+                winner_intent: WinnerIntent::Other,
+            }
+        );
+    }
+
+    #[test]
+    fn saving_join_routes_a_lower_limit_winner_while_live_to_residual() {
+        let member = AgentId(1);
+        let seller = AgentId(2);
+        let winner = AgentId(3);
+        let staple = GoodId(6);
+        let records = vec![
+            AllocationRecord::PassStart { tick: 1 },
+            AllocationRecord::BookSnapshot {
+                tick: 1,
+                side: OrderSide::Ask,
+                agent: seller,
+                good: staple,
+                limit: Gold(4),
+                seq: 20,
+            },
+            AllocationRecord::QuoteAttempt {
+                tick: 1,
+                order_pos: 0,
+                agent: member,
+                good: staple,
+                side: OrderSide::Bid,
+                outcome: QuoteOutcome::Posted {
+                    seq: 10,
+                    limit: Gold(5),
+                    reservation: Gold(5),
+                },
+            },
+            AllocationRecord::QuoteAttempt {
+                tick: 1,
+                order_pos: 1,
+                agent: winner,
+                good: staple,
+                side: OrderSide::Bid,
+                outcome: QuoteOutcome::Posted {
+                    seq: 30,
+                    limit: Gold(4),
+                    reservation: Gold(4),
+                },
+            },
+            AllocationRecord::Execution {
+                tick: 1,
+                incoming_seq: 30,
+                resting_seq: 20,
+                incoming_side: OrderSide::Bid,
+                good: staple,
+                buyer: winner,
+                seller,
+                price: Gold(4),
+                qty: 1,
+                bid_limit: Gold(4),
+                ask_limit: Gold(4),
+                status: AllocationExecutionStatus::Succeeded,
+            },
+            AllocationRecord::PassEnd { tick: 1 },
+        ];
+
+        assert_eq!(
+            classify_saving_opportunity(
+                &records,
+                &BTreeMap::new(),
+                staple,
+                member,
+                &BTreeSet::new(),
+            ),
+            SavingLossOutcome::ExecutionResidual
+        );
+    }
+
+    // The carried seq-10 bid (limit 7) is recognized as LIVE at the execution — that is
+    // why the join reaches the equal-limit branch at all, instead of reading only the
+    // seq-11 requote (limit 5) and reporting `AllAsksAboveLimit`. But the equal-limit
+    // winner arrived LATER (seq 30 > 10), so the member's carried bid held queue
+    // priority and should have won by arrival order; the loss therefore came from a
+    // settlement rejection, not arrival order, and routes to `ExecutionResidual` (never
+    // `EqualLimitEarlierSeq`, which would spuriously inflate the Microstructure family).
+    #[test]
+    fn saving_join_uses_the_bid_interval_live_before_a_requote() {
+        let member = AgentId(1);
+        let seller = AgentId(2);
+        let winner = AgentId(3);
+        let staple = GoodId(7);
+        let records = vec![
+            AllocationRecord::PassStart { tick: 1 },
+            AllocationRecord::BookSnapshot {
+                tick: 1,
+                side: OrderSide::Bid,
+                agent: member,
+                good: staple,
+                limit: Gold(7),
+                seq: 10,
+            },
+            AllocationRecord::BookSnapshot {
+                tick: 1,
+                side: OrderSide::Ask,
+                agent: seller,
+                good: staple,
+                limit: Gold(6),
+                seq: 20,
+            },
+            AllocationRecord::Execution {
+                tick: 1,
+                incoming_seq: 30,
+                resting_seq: 20,
+                incoming_side: OrderSide::Bid,
+                good: staple,
+                buyer: winner,
+                seller,
+                price: Gold(6),
+                qty: 1,
+                bid_limit: Gold(7),
+                ask_limit: Gold(6),
+                status: AllocationExecutionStatus::Succeeded,
+            },
+            AllocationRecord::QuoteExit {
+                tick: 1,
+                agent: member,
+                good: staple,
+                side: OrderSide::Bid,
+                seq: 10,
+            },
+            AllocationRecord::QuoteAttempt {
+                tick: 1,
+                order_pos: 1,
+                agent: member,
+                good: staple,
+                side: OrderSide::Bid,
+                outcome: QuoteOutcome::Posted {
+                    seq: 11,
+                    limit: Gold(5),
+                    reservation: Gold(5),
+                },
+            },
+            AllocationRecord::PassEnd { tick: 1 },
+        ];
+
+        assert_eq!(
+            classify_saving_opportunity(
+                &records,
+                &BTreeMap::new(),
+                staple,
+                member,
+                &BTreeSet::new(),
+            ),
+            SavingLossOutcome::ExecutionResidual
+        );
+    }
+
+    // The coherent sibling of the later-winner case above: a genuine arrival-order
+    // (Microstructure) loss. An EARLIER equal-limit resting bid (the winner, seq 5) is
+    // crossed by an incoming ask before the member's own equal-limit bid (seq 10). The
+    // winner's seq is earlier than the member's, so arrival order truly decided the
+    // loss — the only shape under which `EqualLimitEarlierSeq` is emitted.
+    #[test]
+    fn saving_join_reports_an_equal_limit_earlier_winner_as_microstructure() {
+        let member = AgentId(1);
+        let seller = AgentId(2);
+        let winner = AgentId(3);
+        let staple = GoodId(8);
+        let records = vec![
+            AllocationRecord::PassStart { tick: 1 },
+            AllocationRecord::BookSnapshot {
+                tick: 1,
+                side: OrderSide::Bid,
+                agent: winner,
+                good: staple,
+                limit: Gold(7),
+                seq: 5,
+            },
+            AllocationRecord::BookSnapshot {
+                tick: 1,
+                side: OrderSide::Bid,
+                agent: member,
+                good: staple,
+                limit: Gold(7),
+                seq: 10,
+            },
+            AllocationRecord::QuoteAttempt {
+                tick: 1,
+                order_pos: 0,
+                agent: member,
+                good: staple,
+                side: OrderSide::Bid,
+                outcome: QuoteOutcome::RestingUnchanged {
+                    seq: 10,
+                    limit: Gold(7),
+                    reservation: Gold(7),
+                },
+            },
+            AllocationRecord::QuoteAttempt {
+                tick: 1,
+                order_pos: 1,
+                agent: seller,
+                good: staple,
+                side: OrderSide::Ask,
+                outcome: QuoteOutcome::Posted {
+                    seq: 20,
+                    limit: Gold(6),
+                    reservation: Gold(6),
+                },
+            },
+            AllocationRecord::Execution {
+                tick: 1,
+                incoming_seq: 20,
+                resting_seq: 5,
+                incoming_side: OrderSide::Ask,
+                good: staple,
+                buyer: winner,
+                seller,
+                price: Gold(7),
+                qty: 1,
+                bid_limit: Gold(7),
+                ask_limit: Gold(6),
+                status: AllocationExecutionStatus::Succeeded,
+            },
+            AllocationRecord::PassEnd { tick: 1 },
+        ];
+
+        assert_eq!(
+            classify_saving_opportunity(
+                &records,
+                &BTreeMap::new(),
+                staple,
+                member,
+                &BTreeSet::new(),
+            ),
+            SavingLossOutcome::CompetitiveLoss {
+                basis: PriorityBasis::EqualLimitEarlierSeq,
+                winner_intent: WinnerIntent::Other,
+            }
+        );
+    }
+
+    #[test]
+    fn saving_join_keeps_a_rejected_saving_cross_residual_after_later_consumption() {
+        let member = AgentId(1);
+        let seller = AgentId(2);
+        let winner = AgentId(3);
+        let staple = GoodId(8);
+        let records = vec![
+            AllocationRecord::PassStart { tick: 1 },
+            AllocationRecord::BookSnapshot {
+                tick: 1,
+                side: OrderSide::Ask,
+                agent: seller,
+                good: staple,
+                limit: Gold(4),
+                seq: 20,
+            },
+            AllocationRecord::Execution {
+                tick: 1,
+                incoming_seq: 10,
+                resting_seq: 20,
+                incoming_side: OrderSide::Bid,
+                good: staple,
+                buyer: member,
+                seller,
+                price: Gold(4),
+                qty: 1,
+                bid_limit: Gold(5),
+                ask_limit: Gold(4),
+                status: AllocationExecutionStatus::Rejected,
+            },
+            AllocationRecord::QuoteAttempt {
+                tick: 1,
+                order_pos: 0,
+                agent: member,
+                good: staple,
+                side: OrderSide::Bid,
+                outcome: QuoteOutcome::Posted {
+                    seq: 10,
+                    limit: Gold(5),
+                    reservation: Gold(5),
+                },
+            },
+            AllocationRecord::QuoteAttempt {
+                tick: 1,
+                order_pos: 1,
+                agent: winner,
+                good: staple,
+                side: OrderSide::Bid,
+                outcome: QuoteOutcome::Posted {
+                    seq: 30,
+                    limit: Gold(6),
+                    reservation: Gold(6),
+                },
+            },
+            AllocationRecord::Execution {
+                tick: 1,
+                incoming_seq: 30,
+                resting_seq: 20,
+                incoming_side: OrderSide::Bid,
+                good: staple,
+                buyer: winner,
+                seller,
+                price: Gold(4),
+                qty: 1,
+                bid_limit: Gold(6),
+                ask_limit: Gold(4),
+                status: AllocationExecutionStatus::Succeeded,
+            },
+            AllocationRecord::PassEnd { tick: 1 },
+        ];
+
+        assert_eq!(
+            classify_saving_opportunity(
+                &records,
+                &BTreeMap::new(),
+                staple,
+                member,
+                &BTreeSet::new(),
+            ),
+            SavingLossOutcome::ExecutionResidual
+        );
+    }
+
+    // Table-driven coverage of `classify_saving_opportunity`'s §2 outcome space (impl-66
+    // repair §2): one synthetic pass per outcome, asserting the pinned precedence maps each
+    // shape to the right family. `member` is always `AgentId(1)`; distinct staple ids keep
+    // the rows independent. The intent map is populated only for the payload-selection row.
+    #[test]
+    fn classify_saving_opportunity_covers_every_outcome_branch() {
+        struct Case {
+            name: &'static str,
+            records: Vec<AllocationRecord>,
+            intent: BTreeMap<u64, TracedWant>,
+            expected: SavingLossOutcome,
+        }
+
+        let member = AgentId(1);
+        let seller = AgentId(2);
+        let seller2 = AgentId(5);
+        let winner = AgentId(3);
+        let winner2 = AgentId(4);
+
+        let cases = vec![
+            // A staple bid attempt exists but no live bid results (reservation None) — no
+            // bid interval → GoldReservationBind.
+            Case {
+                name: "NoBidPosted",
+                records: vec![
+                    AllocationRecord::PassStart { tick: 1 },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 0,
+                        agent: member,
+                        good: GoodId(10),
+                        side: OrderSide::Bid,
+                        outcome: QuoteOutcome::NoQuote(NoQuoteReason::ReservationNone),
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 1,
+                        agent: seller,
+                        good: GoodId(10),
+                        side: OrderSide::Ask,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 20,
+                            limit: Gold(3),
+                            reservation: Gold(3),
+                        },
+                    },
+                    AllocationRecord::PassEnd { tick: 1 },
+                ],
+                intent: BTreeMap::new(),
+                expected: SavingLossOutcome::NoBidPosted,
+            },
+            // A live bid plus one ask, but the ask is the member's own — SelfAskOnly precedes
+            // NoExecutableAskInWindow.
+            Case {
+                name: "SelfAskOnly",
+                records: vec![
+                    AllocationRecord::PassStart { tick: 1 },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 0,
+                        agent: member,
+                        good: GoodId(11),
+                        side: OrderSide::Bid,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 10,
+                            limit: Gold(5),
+                            reservation: Gold(5),
+                        },
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 1,
+                        agent: member,
+                        good: GoodId(11),
+                        side: OrderSide::Ask,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 11,
+                            limit: Gold(4),
+                            reservation: Gold(4),
+                        },
+                    },
+                    AllocationRecord::PassEnd { tick: 1 },
+                ],
+                intent: BTreeMap::new(),
+                expected: SavingLossOutcome::SelfAskOnly,
+            },
+            // A live bid but no ask exists anywhere in the window.
+            Case {
+                name: "NoExecutableAskInWindow",
+                records: vec![
+                    AllocationRecord::PassStart { tick: 1 },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 0,
+                        agent: member,
+                        good: GoodId(12),
+                        side: OrderSide::Bid,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 10,
+                            limit: Gold(5),
+                            reservation: Gold(5),
+                        },
+                    },
+                    AllocationRecord::PassEnd { tick: 1 },
+                ],
+                intent: BTreeMap::new(),
+                expected: SavingLossOutcome::NoExecutableAskInWindow,
+            },
+            // A non-self ask exists but its limit exceeds the saving bid's — PricedOut.
+            Case {
+                name: "AllAsksAboveLimit",
+                records: vec![
+                    AllocationRecord::PassStart { tick: 1 },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 0,
+                        agent: member,
+                        good: GoodId(13),
+                        side: OrderSide::Bid,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 10,
+                            limit: Gold(5),
+                            reservation: Gold(5),
+                        },
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 1,
+                        agent: seller,
+                        good: GoodId(13),
+                        side: OrderSide::Ask,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 20,
+                            limit: Gold(6),
+                            reservation: Gold(6),
+                        },
+                    },
+                    AllocationRecord::PassEnd { tick: 1 },
+                ],
+                intent: BTreeMap::new(),
+                expected: SavingLossOutcome::AllAsksAboveLimit,
+            },
+            // The compatible ask is consumed BEFORE the saving bid enters the book (the bid's
+            // QuoteAttempt is ordered after the winner's execution). The winner's price is
+            // irrelevant here — arrival order alone decides → Microstructure.
+            Case {
+                name: "CompetitiveLoss/PreEntryOrder",
+                records: vec![
+                    AllocationRecord::PassStart { tick: 1 },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 0,
+                        agent: seller,
+                        good: GoodId(14),
+                        side: OrderSide::Ask,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 20,
+                            limit: Gold(4),
+                            reservation: Gold(4),
+                        },
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 1,
+                        agent: winner,
+                        good: GoodId(14),
+                        side: OrderSide::Bid,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 30,
+                            limit: Gold(6),
+                            reservation: Gold(6),
+                        },
+                    },
+                    AllocationRecord::Execution {
+                        tick: 1,
+                        incoming_seq: 30,
+                        resting_seq: 20,
+                        incoming_side: OrderSide::Bid,
+                        good: GoodId(14),
+                        buyer: winner,
+                        seller,
+                        price: Gold(4),
+                        qty: 1,
+                        bid_limit: Gold(6),
+                        ask_limit: Gold(4),
+                        status: AllocationExecutionStatus::Succeeded,
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 2,
+                        agent: member,
+                        good: GoodId(14),
+                        side: OrderSide::Bid,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 10,
+                            limit: Gold(5),
+                            reservation: Gold(5),
+                        },
+                    },
+                    AllocationRecord::PassEnd { tick: 1 },
+                ],
+                intent: BTreeMap::new(),
+                expected: SavingLossOutcome::CompetitiveLoss {
+                    basis: PriorityBasis::PreEntryOrder,
+                    winner_intent: WinnerIntent::Other,
+                },
+            },
+            // The compatible ask is consumed while the saving bid is LIVE by a strictly
+            // higher-limit winner — a genuine price contest → AllocationPriority.
+            Case {
+                name: "CompetitiveLoss/HigherLimit",
+                records: vec![
+                    AllocationRecord::PassStart { tick: 1 },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 0,
+                        agent: member,
+                        good: GoodId(15),
+                        side: OrderSide::Bid,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 10,
+                            limit: Gold(5),
+                            reservation: Gold(5),
+                        },
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 1,
+                        agent: seller,
+                        good: GoodId(15),
+                        side: OrderSide::Ask,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 20,
+                            limit: Gold(4),
+                            reservation: Gold(4),
+                        },
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 2,
+                        agent: winner,
+                        good: GoodId(15),
+                        side: OrderSide::Bid,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 30,
+                            limit: Gold(7),
+                            reservation: Gold(7),
+                        },
+                    },
+                    AllocationRecord::Execution {
+                        tick: 1,
+                        incoming_seq: 30,
+                        resting_seq: 20,
+                        incoming_side: OrderSide::Bid,
+                        good: GoodId(15),
+                        buyer: winner,
+                        seller,
+                        price: Gold(4),
+                        qty: 1,
+                        bid_limit: Gold(7),
+                        ask_limit: Gold(4),
+                        status: AllocationExecutionStatus::Succeeded,
+                    },
+                    AllocationRecord::PassEnd { tick: 1 },
+                ],
+                intent: BTreeMap::new(),
+                expected: SavingLossOutcome::CompetitiveLoss {
+                    basis: PriorityBasis::HigherLimit,
+                    winner_intent: WinnerIntent::Other,
+                },
+            },
+            // Consumed while live, equal limits, an EARLIER-seq resting winner crossed first —
+            // arrival order decided → Microstructure.
+            Case {
+                name: "CompetitiveLoss/EqualLimitEarlierSeq",
+                records: vec![
+                    AllocationRecord::PassStart { tick: 1 },
+                    AllocationRecord::BookSnapshot {
+                        tick: 1,
+                        side: OrderSide::Bid,
+                        agent: winner,
+                        good: GoodId(16),
+                        limit: Gold(7),
+                        seq: 5,
+                    },
+                    AllocationRecord::BookSnapshot {
+                        tick: 1,
+                        side: OrderSide::Bid,
+                        agent: member,
+                        good: GoodId(16),
+                        limit: Gold(7),
+                        seq: 10,
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 0,
+                        agent: member,
+                        good: GoodId(16),
+                        side: OrderSide::Bid,
+                        outcome: QuoteOutcome::RestingUnchanged {
+                            seq: 10,
+                            limit: Gold(7),
+                            reservation: Gold(7),
+                        },
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 1,
+                        agent: seller,
+                        good: GoodId(16),
+                        side: OrderSide::Ask,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 20,
+                            limit: Gold(6),
+                            reservation: Gold(6),
+                        },
+                    },
+                    AllocationRecord::Execution {
+                        tick: 1,
+                        incoming_seq: 20,
+                        resting_seq: 5,
+                        incoming_side: OrderSide::Ask,
+                        good: GoodId(16),
+                        buyer: winner,
+                        seller,
+                        price: Gold(7),
+                        qty: 1,
+                        bid_limit: Gold(7),
+                        ask_limit: Gold(6),
+                        status: AllocationExecutionStatus::Succeeded,
+                    },
+                    AllocationRecord::PassEnd { tick: 1 },
+                ],
+                intent: BTreeMap::new(),
+                expected: SavingLossOutcome::CompetitiveLoss {
+                    basis: PriorityBasis::EqualLimitEarlierSeq,
+                    winner_intent: WinnerIntent::Other,
+                },
+            },
+            // The saving bid is cancelled intra-pass (a QuoteExit) and the compatible ask is
+            // consumed AFTER the exit — neither pre-entry nor while-live → Residual.
+            Case {
+                name: "CompetitiveLoss/PostExitConsumption",
+                records: vec![
+                    AllocationRecord::PassStart { tick: 1 },
+                    AllocationRecord::BookSnapshot {
+                        tick: 1,
+                        side: OrderSide::Bid,
+                        agent: member,
+                        good: GoodId(17),
+                        limit: Gold(5),
+                        seq: 10,
+                    },
+                    AllocationRecord::BookSnapshot {
+                        tick: 1,
+                        side: OrderSide::Ask,
+                        agent: seller,
+                        good: GoodId(17),
+                        limit: Gold(4),
+                        seq: 20,
+                    },
+                    AllocationRecord::QuoteExit {
+                        tick: 1,
+                        agent: member,
+                        good: GoodId(17),
+                        side: OrderSide::Bid,
+                        seq: 10,
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 0,
+                        agent: member,
+                        good: GoodId(17),
+                        side: OrderSide::Bid,
+                        outcome: QuoteOutcome::NoQuote(NoQuoteReason::ClampZero),
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 1,
+                        agent: winner,
+                        good: GoodId(17),
+                        side: OrderSide::Bid,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 30,
+                            limit: Gold(6),
+                            reservation: Gold(6),
+                        },
+                    },
+                    AllocationRecord::Execution {
+                        tick: 1,
+                        incoming_seq: 30,
+                        resting_seq: 20,
+                        incoming_side: OrderSide::Bid,
+                        good: GoodId(17),
+                        buyer: winner,
+                        seller,
+                        price: Gold(4),
+                        qty: 1,
+                        bid_limit: Gold(6),
+                        ask_limit: Gold(4),
+                        status: AllocationExecutionStatus::Succeeded,
+                    },
+                    AllocationRecord::PassEnd { tick: 1 },
+                ],
+                intent: BTreeMap::new(),
+                expected: SavingLossOutcome::CompetitiveLoss {
+                    basis: PriorityBasis::PostExitConsumption,
+                    winner_intent: WinnerIntent::Other,
+                },
+            },
+            // The member's own cross reached the ask and was REJECTED at settlement; a later
+            // buyer consuming it does not turn that failure into a priority loss → Residual.
+            Case {
+                name: "ExecutionResidual/market-rejection",
+                records: vec![
+                    AllocationRecord::PassStart { tick: 1 },
+                    AllocationRecord::BookSnapshot {
+                        tick: 1,
+                        side: OrderSide::Ask,
+                        agent: seller,
+                        good: GoodId(18),
+                        limit: Gold(4),
+                        seq: 20,
+                    },
+                    AllocationRecord::Execution {
+                        tick: 1,
+                        incoming_seq: 10,
+                        resting_seq: 20,
+                        incoming_side: OrderSide::Bid,
+                        good: GoodId(18),
+                        buyer: member,
+                        seller,
+                        price: Gold(4),
+                        qty: 1,
+                        bid_limit: Gold(5),
+                        ask_limit: Gold(4),
+                        status: AllocationExecutionStatus::Rejected,
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 0,
+                        agent: member,
+                        good: GoodId(18),
+                        side: OrderSide::Bid,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 10,
+                            limit: Gold(5),
+                            reservation: Gold(5),
+                        },
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 1,
+                        agent: winner,
+                        good: GoodId(18),
+                        side: OrderSide::Bid,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 30,
+                            limit: Gold(6),
+                            reservation: Gold(6),
+                        },
+                    },
+                    AllocationRecord::Execution {
+                        tick: 1,
+                        incoming_seq: 30,
+                        resting_seq: 20,
+                        incoming_side: OrderSide::Bid,
+                        good: GoodId(18),
+                        buyer: winner,
+                        seller,
+                        price: Gold(4),
+                        qty: 1,
+                        bid_limit: Gold(6),
+                        ask_limit: Gold(4),
+                        status: AllocationExecutionStatus::Succeeded,
+                    },
+                    AllocationRecord::PassEnd { tick: 1 },
+                ],
+                intent: BTreeMap::new(),
+                expected: SavingLossOutcome::ExecutionResidual,
+            },
+            // The member never posted a staple bid QuoteAttempt at all — an unreconciled drop,
+            // folded into Residual (never silently absorbed).
+            Case {
+                name: "ExecutionResidual/no-bid-attempt-drop",
+                records: vec![
+                    AllocationRecord::PassStart { tick: 1 },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 0,
+                        agent: seller,
+                        good: GoodId(19),
+                        side: OrderSide::Ask,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 20,
+                            limit: Gold(4),
+                            reservation: Gold(4),
+                        },
+                    },
+                    AllocationRecord::PassEnd { tick: 1 },
+                ],
+                intent: BTreeMap::new(),
+                expected: SavingLossOutcome::ExecutionResidual,
+            },
+            // PAYLOAD RULE: two compatible asks are each lost to a higher-limit winner with a
+            // DISTINCT winner intent. askA (limit 3, seq 20) precedes askB (limit 4, seq 21)
+            // in (limit, seq) order, so the payload is askA's `SavingNext` — even though askB's
+            // execution comes FIRST in record order. This pins first-(limit, seq), not
+            // first-in-trace.
+            Case {
+                name: "CompetitiveLoss/payload-first-by-limit-seq",
+                records: vec![
+                    AllocationRecord::PassStart { tick: 1 },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 0,
+                        agent: member,
+                        good: GoodId(20),
+                        side: OrderSide::Bid,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 10,
+                            limit: Gold(5),
+                            reservation: Gold(5),
+                        },
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 1,
+                        agent: seller,
+                        good: GoodId(20),
+                        side: OrderSide::Ask,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 20,
+                            limit: Gold(3),
+                            reservation: Gold(3),
+                        },
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 2,
+                        agent: seller2,
+                        good: GoodId(20),
+                        side: OrderSide::Ask,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 21,
+                            limit: Gold(4),
+                            reservation: Gold(4),
+                        },
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 3,
+                        agent: winner2,
+                        good: GoodId(20),
+                        side: OrderSide::Bid,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 31,
+                            limit: Gold(8),
+                            reservation: Gold(8),
+                        },
+                    },
+                    // askB (seq 21) consumed FIRST in record order.
+                    AllocationRecord::Execution {
+                        tick: 1,
+                        incoming_seq: 31,
+                        resting_seq: 21,
+                        incoming_side: OrderSide::Bid,
+                        good: GoodId(20),
+                        buyer: winner2,
+                        seller: seller2,
+                        price: Gold(4),
+                        qty: 1,
+                        bid_limit: Gold(8),
+                        ask_limit: Gold(4),
+                        status: AllocationExecutionStatus::Succeeded,
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 4,
+                        agent: winner,
+                        good: GoodId(20),
+                        side: OrderSide::Bid,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 30,
+                            limit: Gold(7),
+                            reservation: Gold(7),
+                        },
+                    },
+                    // askA (seq 20) consumed LATER in record order.
+                    AllocationRecord::Execution {
+                        tick: 1,
+                        incoming_seq: 30,
+                        resting_seq: 20,
+                        incoming_side: OrderSide::Bid,
+                        good: GoodId(20),
+                        buyer: winner,
+                        seller,
+                        price: Gold(3),
+                        qty: 1,
+                        bid_limit: Gold(7),
+                        ask_limit: Gold(3),
+                        status: AllocationExecutionStatus::Succeeded,
+                    },
+                    AllocationRecord::PassEnd { tick: 1 },
+                ],
+                intent: BTreeMap::from([
+                    (
+                        30,
+                        TracedWant {
+                            kind: WantKind::Good(GoodId(20)),
+                            horizon: Horizon::Next,
+                        },
+                    ),
+                    (
+                        31,
+                        TracedWant {
+                            kind: WantKind::Good(GoodId(20)),
+                            horizon: Horizon::Now,
+                        },
+                    ),
+                ]),
+                expected: SavingLossOutcome::CompetitiveLoss {
+                    basis: PriorityBasis::HigherLimit,
+                    winner_intent: WinnerIntent::SavingNext,
+                },
+            },
+        ];
+
+        for case in &cases {
+            // Every row uses a distinct staple id; the first good-bearing record fixes it.
+            let staple = case
+                .records
+                .iter()
+                .find_map(|record| match record {
+                    AllocationRecord::QuoteAttempt { good, .. } => Some(*good),
+                    AllocationRecord::BookSnapshot { good, .. } => Some(*good),
+                    _ => None,
+                })
+                .expect("each case has a staple-bearing record");
+            assert_eq!(
+                classify_saving_opportunity(
+                    &case.records,
+                    &case.intent,
+                    staple,
+                    member,
+                    &BTreeSet::new(),
+                ),
+                case.expected,
+                "case {}",
+                case.name,
+            );
+        }
+    }
 
     #[test]
     fn return_window_counts_last_completed_tick() {
@@ -32303,6 +34513,237 @@ mod tests {
             s.earned_provisioning.stats.genuine_external_revenue,
             Gold::ZERO
         );
+    }
+
+    // C3R.e-obs Slice 0 (D1): the two non-bread (flour) earned-provisioning counter
+    // assertions carried forward as verified test debt. A hand-pushed spot tape moves NO
+    // actual gold, so "credited/debited" here means the earned-provisioning PROVENANCE lots:
+    // the FIFO ledger the attribution pass debits from the buyer and re-credits (as a fresh
+    // `Earned` lot) to a producer-house seller. Bread stock and every bread-only earned stat
+    // must stay untouched — a flour sale is class-tracked outside the bread split.
+    fn assert_earned_bread_stats_unchanged(
+        before: &EarnedProvisioningStats,
+        after: &EarnedProvisioningStats,
+    ) {
+        // The ONLY stats a flour sale may move are the two non-bread earned counters; project
+        // `before` forward on exactly those and require byte-for-byte equality elsewhere, so
+        // any leak into bread revenue, the bread-trade counts, or any other earned stat fails.
+        let mut expected = *before;
+        expected.non_bread_external_earned = after.non_bread_external_earned;
+        expected.non_bread_producer_class_earned = after.non_bread_producer_class_earned;
+        assert_eq!(
+            expected, *after,
+            "a flour sale must move only the non-bread earned counters"
+        );
+    }
+
+    #[test]
+    fn flour_sale_to_external_buyer_credits_non_bread_external_earned() {
+        let cfg = SettlementConfig::frontier_mortal_producers_earned();
+        let mut s = Settlement::generate(7, &cfg);
+        let flour = s.chain.as_ref().expect("chain").content.flour();
+        let bread = s.provenance_bread_good().expect("chain bread");
+        let household = s
+            .producer_household_start()
+            .expect("earned base has producer households");
+        let seller = s
+            .live_colonist_slots
+            .iter()
+            .find_map(|&slot| {
+                (s.colonists[slot].household == Some(household)).then_some(s.colonists[slot].id)
+            })
+            .expect("producer household has a founder");
+        let buyer = s
+            .society
+            .agents
+            .iter()
+            .map(|agent| agent.id)
+            .find(|&id| id != seller)
+            .expect("earned base has another agent");
+        // A genuinely external buyer: not in any producer household.
+        let buyer_slot = s.slot_for_id(buyer).expect("buyer is a colonist");
+        s.colonists[buyer_slot].household = None;
+
+        s.earned_provisioning.buckets.remove(&buyer);
+        s.earned_provisioning.buckets.remove(&seller);
+        s.credit_earned_provisioning_lot(
+            buyer,
+            EarnedGoldLot {
+                source: EarnedGoldSource::Earned,
+                amount: Gold(2),
+            },
+        );
+        s.credit_earned_provisioning_lot(
+            buyer,
+            EarnedGoldLot {
+                source: EarnedGoldSource::Endowed,
+                amount: Gold(3),
+            },
+        );
+
+        let bread_stock_before: u64 = s
+            .society
+            .agents
+            .iter()
+            .map(|agent| u64::from(agent.stock.get(bread)))
+            .sum();
+        let bread_stats_before = s.earned_provisioning.stats;
+
+        let spot_start = s.society.trades.len();
+        s.society.trades.push(econ::market::Trade {
+            tick: s.econ_tick,
+            good: flour,
+            buyer,
+            seller,
+            price: Gold(5),
+            qty: 1,
+        });
+        s.run_earned_provisioning_market_attribution(spot_start);
+
+        // The external non-bread counter takes the full sale; its producer-class sibling
+        // stays put.
+        assert_eq!(
+            s.earned_provisioning.stats.non_bread_external_earned,
+            Gold(5)
+        );
+        assert_eq!(
+            s.earned_provisioning.stats.non_bread_producer_class_earned,
+            Gold::ZERO
+        );
+        // The seller is re-credited a single fresh `Earned` lot of the sale value.
+        let (seller_lots, seller_untracked) = s.debit_earned_provisioning_lots(seller, Gold(5));
+        assert_eq!(
+            seller_lots,
+            vec![EarnedGoldLot {
+                source: EarnedGoldSource::Earned,
+                amount: Gold(5),
+            }],
+            "a flour sale credits the producer-house seller a fresh Earned lot"
+        );
+        assert_eq!(seller_untracked, Gold::ZERO);
+        // The buyer's lots are FIFO-debited to empty by the sale.
+        let (buyer_lots, buyer_untracked) = s.debit_earned_provisioning_lots(buyer, Gold(5));
+        assert!(
+            buyer_lots.is_empty(),
+            "the buyer's earned-provisioning lots are fully debited by the flour sale"
+        );
+        assert_eq!(buyer_untracked, Gold(5));
+        // Nothing bread moved: neither stock nor any bread-only earned statistic.
+        let bread_stock_after: u64 = s
+            .society
+            .agents
+            .iter()
+            .map(|agent| u64::from(agent.stock.get(bread)))
+            .sum();
+        assert_eq!(
+            bread_stock_before, bread_stock_after,
+            "bread stock is untouched"
+        );
+        assert_earned_bread_stats_unchanged(&bread_stats_before, &s.earned_provisioning.stats);
+    }
+
+    #[test]
+    fn flour_sale_to_producer_class_buyer_credits_non_bread_producer_class_earned() {
+        let cfg = SettlementConfig::frontier_mortal_producers_earned();
+        let mut s = Settlement::generate(7, &cfg);
+        let flour = s.chain.as_ref().expect("chain").content.flour();
+        let bread = s.provenance_bread_good().expect("chain bread");
+        let seller_household = s
+            .producer_household_start()
+            .expect("earned base has producer households");
+        let seller = s
+            .live_colonist_slots
+            .iter()
+            .find_map(|&slot| {
+                (s.colonists[slot].household == Some(seller_household))
+                    .then_some(s.colonists[slot].id)
+            })
+            .expect("producer household has a founder");
+        let buyer = s
+            .society
+            .agents
+            .iter()
+            .map(|agent| agent.id)
+            .find(|&id| id != seller)
+            .expect("earned base has another agent");
+        // A producer-CLASS buyer: a member of ANOTHER producer household.
+        let buyer_slot = s.slot_for_id(buyer).expect("buyer is a colonist");
+        s.colonists[buyer_slot].household = Some(seller_household + 1);
+        assert!(s.is_producer_household(seller_household + 1));
+
+        s.earned_provisioning.buckets.remove(&buyer);
+        s.earned_provisioning.buckets.remove(&seller);
+        s.credit_earned_provisioning_lot(
+            buyer,
+            EarnedGoldLot {
+                source: EarnedGoldSource::Earned,
+                amount: Gold(2),
+            },
+        );
+        s.credit_earned_provisioning_lot(
+            buyer,
+            EarnedGoldLot {
+                source: EarnedGoldSource::Endowed,
+                amount: Gold(3),
+            },
+        );
+
+        let bread_stock_before: u64 = s
+            .society
+            .agents
+            .iter()
+            .map(|agent| u64::from(agent.stock.get(bread)))
+            .sum();
+        let bread_stats_before = s.earned_provisioning.stats;
+
+        let spot_start = s.society.trades.len();
+        s.society.trades.push(econ::market::Trade {
+            tick: s.econ_tick,
+            good: flour,
+            buyer,
+            seller,
+            price: Gold(5),
+            qty: 1,
+        });
+        s.run_earned_provisioning_market_attribution(spot_start);
+
+        // The producer-class non-bread counter takes the full sale; the external sibling
+        // stays put.
+        assert_eq!(
+            s.earned_provisioning.stats.non_bread_producer_class_earned,
+            Gold(5)
+        );
+        assert_eq!(
+            s.earned_provisioning.stats.non_bread_external_earned,
+            Gold::ZERO
+        );
+        let (seller_lots, seller_untracked) = s.debit_earned_provisioning_lots(seller, Gold(5));
+        assert_eq!(
+            seller_lots,
+            vec![EarnedGoldLot {
+                source: EarnedGoldSource::Earned,
+                amount: Gold(5),
+            }],
+            "a producer-class flour sale still credits the seller a fresh Earned lot"
+        );
+        assert_eq!(seller_untracked, Gold::ZERO);
+        let (buyer_lots, buyer_untracked) = s.debit_earned_provisioning_lots(buyer, Gold(5));
+        assert!(
+            buyer_lots.is_empty(),
+            "the producer-class buyer's lots are fully debited by the flour sale"
+        );
+        assert_eq!(buyer_untracked, Gold(5));
+        let bread_stock_after: u64 = s
+            .society
+            .agents
+            .iter()
+            .map(|agent| u64::from(agent.stock.get(bread)))
+            .sum();
+        assert_eq!(
+            bread_stock_before, bread_stock_after,
+            "bread stock is untouched"
+        );
+        assert_earned_bread_stats_unchanged(&bread_stats_before, &s.earned_provisioning.stats);
     }
 
     #[test]

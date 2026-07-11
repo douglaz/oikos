@@ -386,11 +386,7 @@ impl Agent {
         }
 
         let before = provisioning_for_money(&self.scale, &self.stock, self.gold, money_good);
-        let target = self.scale.iter().enumerate().position(|(index, want)| {
-            want.kind == WantKind::Good(good)
-                && matches!(want.horizon, Horizon::Now | Horizon::Next)
-                && !before.provided.get(index).copied().unwrap_or(false)
-        })?;
+        let target = self.first_unprovided_bid_target_index(good, &before)?;
 
         let mut after_stock = self.stock.clone();
         after_stock.add(good, qty);
@@ -410,6 +406,34 @@ impl Agent {
         } else {
             None
         }
+    }
+
+    /// The exact scale target a money-priced bid for `good` would provision.
+    /// This uses the same provisioning model and first-target precedence as
+    /// [`Self::reservation_bid_for_money`] and has no side effects.
+    pub(crate) fn first_unprovided_bid_target_for_money(
+        &self,
+        good: GoodId,
+        money_good: GoodId,
+    ) -> Option<&Want> {
+        if good == money_good || self.gold == Gold::ZERO {
+            return None;
+        }
+        let before = provisioning_for_money(&self.scale, &self.stock, self.gold, money_good);
+        let target = self.first_unprovided_bid_target_index(good, &before)?;
+        self.scale.get(target)
+    }
+
+    fn first_unprovided_bid_target_index(
+        &self,
+        good: GoodId,
+        provisions: &Provisioning,
+    ) -> Option<usize> {
+        self.scale.iter().enumerate().position(|(index, want)| {
+            want.kind == WantKind::Good(good)
+                && matches!(want.horizon, Horizon::Now | Horizon::Next)
+                && !provisions.provided.get(index).copied().unwrap_or(false)
+        })
     }
 
     pub fn reservation_ask(&self, good: GoodId, qty: u32) -> Option<Gold> {
