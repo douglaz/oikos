@@ -7,3 +7,6 @@ members = [
     "viewer",
 ]
 resolver = "2"
+
+[profile.test]
+opt-level = 2

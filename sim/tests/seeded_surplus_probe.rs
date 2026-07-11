@@ -174,6 +174,7 @@ fn tail_consumed(
         seeded_minted: final_consumed.seeded_minted - at_exhaustion.seeded_minted,
         self_produced: final_consumed.self_produced - at_exhaustion.self_produced,
         foraged: final_consumed.foraged - at_exhaustion.foraged,
+        commons: final_consumed.commons - at_exhaustion.commons,
     }
 }
 

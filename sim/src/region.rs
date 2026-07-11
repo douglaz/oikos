@@ -127,7 +127,7 @@ pub struct RoadPlan {
 /// linking route, the single traded good, the caravan's trader working capital,
 /// the dwell lengths, and whether the caravan runs at all (the no-caravan control
 /// is `caravans_enabled = false`). Mechanism knobs, not balance targets.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RegionConfig {
     /// Settlement A (index 0, the buyer/cheaper side) recipe.
     pub settlement_a: SettlementConfig,
