@@ -6576,6 +6576,11 @@ pub struct Settlement {
     /// tag 31 and the live value scales carry the behavioral identity.
     birth_stock_wants_emitted: u64,
     birth_stock_attributable_purchases: u64,
+    /// Producer-house members observed below the child-food target. This keeps
+    /// seeded/newborn endowments from masquerading as stock accumulated by the
+    /// saving motive; a member counts as reaching the target only after crossing
+    /// it from below.
+    birth_stock_below_target_agents: BTreeSet<AgentId>,
     birth_stock_reached_agents: BTreeSet<AgentId>,
     birth_stock_held_max: u32,
     birth_stock_held_at_death: u32,
@@ -10096,6 +10101,7 @@ impl Settlement {
             earned_provisioning: EarnedProvisioningLedger::default(),
             birth_stock_wants_emitted: 0,
             birth_stock_attributable_purchases: 0,
+            birth_stock_below_target_agents: BTreeSet::new(),
             birth_stock_reached_agents: BTreeSet::new(),
             birth_stock_held_max: 0,
             birth_stock_held_at_death: 0,
@@ -10318,6 +10324,7 @@ impl Settlement {
         settlement.init_private_land_tenure();
         settlement.init_commitment_norm_seed(seed);
         settlement.init_earned_provisioning_buckets();
+        settlement.init_birth_stock_reach_baseline();
         settlement
     }
 
@@ -10637,6 +10644,7 @@ impl Settlement {
             earned_provisioning: EarnedProvisioningLedger::default(),
             birth_stock_wants_emitted: 0,
             birth_stock_attributable_purchases: 0,
+            birth_stock_below_target_agents: BTreeSet::new(),
             birth_stock_reached_agents: BTreeSet::new(),
             birth_stock_held_max: 0,
             birth_stock_held_at_death: 0,
@@ -18075,8 +18083,16 @@ impl Settlement {
                 self.birth_stock_saving_active() || self.birth_stock_control_active(),
                 self.provenance_bread_good(),
             ) {
-                let held = self.society.free_stock_after_all_reserves(id, staple);
-                self.birth_stock_held_at_death = self.birth_stock_held_at_death.max(held);
+                // Mirror the holding telemetry gate: only stock the member
+                // accumulated from below the target counts as saved birth stock,
+                // so a founder that dies still holding its seeded endowment is
+                // not attributed to the saving motive.
+                if self.birth_stock_below_target_agents.contains(&id)
+                    || self.birth_stock_reached_agents.contains(&id)
+                {
+                    let held = self.society.free_stock_after_all_reserves(id, staple);
+                    self.birth_stock_held_at_death = self.birth_stock_held_at_death.max(held);
+                }
             }
             self.producer_house_deaths = self.producer_house_deaths.saturating_add(1);
         }
@@ -18404,6 +18420,29 @@ impl Settlement {
             .saturating_add(purchased);
     }
 
+    fn init_birth_stock_reach_baseline(&mut self) {
+        if !self.birth_stock_saving_active() && !self.birth_stock_control_active() {
+            return;
+        }
+        let (Some(staple), Some(demo)) = (self.provenance_bread_good(), self.demography.as_ref())
+        else {
+            return;
+        };
+        let target = demo.child_food_endowment;
+        self.birth_stock_below_target_agents = self
+            .live_colonist_slots
+            .iter()
+            .filter_map(|&slot| {
+                let colonist = &self.colonists[slot];
+                colonist
+                    .household
+                    .is_some_and(|household| self.is_producer_household(household))
+                    .then_some(colonist.id)
+            })
+            .filter(|&agent| self.society.free_stock_after_all_reserves(agent, staple) < target)
+            .collect();
+    }
+
     fn observe_birth_stock_holdings(&mut self) {
         if !self.birth_stock_saving_active() && !self.birth_stock_control_active() {
             return;
@@ -18424,9 +18463,19 @@ impl Settlement {
             }
             let agent = colonist.id;
             let held = self.society.free_stock_after_all_reserves(agent, staple);
-            self.birth_stock_held_max = self.birth_stock_held_max.max(held);
-            if held >= target {
+            if held < target {
+                self.birth_stock_below_target_agents.insert(agent);
+            } else if self.birth_stock_below_target_agents.remove(&agent) {
                 self.birth_stock_reached_agents.insert(agent);
+            }
+            // Only stock accumulated from below the target counts as saved birth
+            // stock: seeded founders (start above the target) and newborn
+            // endowments (start at the target) never enter the below-target
+            // population, so their endowments cannot inflate the holding telemetry.
+            if self.birth_stock_below_target_agents.contains(&agent)
+                || self.birth_stock_reached_agents.contains(&agent)
+            {
+                self.birth_stock_held_max = self.birth_stock_held_max.max(held);
             }
         }
     }
@@ -32365,6 +32414,99 @@ mod tests {
         }
         s.record_birth_stock_attributable_purchases(trade_start, &snapshot);
         assert_eq!(s.birth_stock_attributable_purchases, 1);
+    }
+
+    #[test]
+    fn reached_four_excludes_seeded_stock_until_it_is_reaccumulated() {
+        let mut s = Settlement::generate(7, &SettlementConfig::frontier_mortal_producers_saving());
+        let staple = s.known.hunger;
+        let target = s
+            .demography
+            .as_ref()
+            .expect("demography")
+            .child_food_endowment;
+        let producer = s
+            .live_colonist_slots
+            .iter()
+            .find_map(|&slot| {
+                let colonist = &s.colonists[slot];
+                colonist
+                    .household
+                    .is_some_and(|household| s.is_producer_household(household))
+                    .then_some(colonist.id)
+            })
+            .expect("producer household member");
+
+        s.observe_birth_stock_holdings();
+        assert_eq!(
+            s.birth_stock_reached_agents.len(),
+            0,
+            "the founders' seeded bread is not accumulated birth stock"
+        );
+        assert!(
+            s.birth_stock_held_max() < target,
+            "seeded above-target stock must not inflate held_max"
+        );
+
+        let held = s
+            .society
+            .agents
+            .get(producer)
+            .expect("producer agent")
+            .stock
+            .get(staple);
+        assert!(held >= target);
+        assert!(s.society.debit_stock(producer, staple, held - target + 1));
+        s.observe_birth_stock_holdings();
+        assert!(s.society.credit_stock(producer, staple, 1));
+        s.observe_birth_stock_holdings();
+        assert_eq!(s.birth_stock_reached_agents.len(), 1);
+        assert_eq!(
+            s.birth_stock_held_max(),
+            target,
+            "held_max reflects the stock reaccumulated from below, not seeded stock"
+        );
+    }
+
+    #[test]
+    fn held_at_death_excludes_seeded_stock_until_it_is_reaccumulated() {
+        let mut s = Settlement::generate(7, &SettlementConfig::frontier_mortal_producers_saving());
+        let staple = s.known.hunger;
+        let target = s
+            .demography
+            .as_ref()
+            .expect("demography")
+            .child_food_endowment;
+        let producer = s
+            .live_colonist_slots
+            .iter()
+            .find_map(|&slot| {
+                let colonist = &s.colonists[slot];
+                colonist
+                    .household
+                    .is_some_and(|household| s.is_producer_household(household))
+                    .then_some(colonist.id)
+            })
+            .expect("producer household member");
+
+        // A founder holding its seeded endowment (at/above the target) that has
+        // never accumulated from below must not be attributed to the motive.
+        let seeded = s.society.free_stock_after_all_reserves(producer, staple);
+        assert!(seeded >= target);
+        s.record_producer_house_death(producer);
+        assert_eq!(
+            s.birth_stock_held_at_death, 0,
+            "seeded stock is not saved birth stock at death"
+        );
+
+        // Once the member drops below the target and is observed there, a later
+        // death records the stock it genuinely holds.
+        assert!(s
+            .society
+            .debit_stock(producer, staple, seeded - (target - 1)));
+        s.observe_birth_stock_holdings();
+        s.record_producer_house_death(producer);
+        assert_eq!(s.birth_stock_held_at_death, target - 1);
     }
 
     #[test]
