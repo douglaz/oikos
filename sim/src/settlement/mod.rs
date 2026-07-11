@@ -7253,6 +7253,11 @@ pub struct Settlement {
     birth_stock_source_shortfalls: u64,
     birth_stock_injection_records: Vec<BirthStockInjectionRecord>,
     birth_stock_births_by_household: Vec<u64>,
+    /// C3R.e-obs (impl-66 repair): the C3R.d attribution snapshot captured at the most
+    /// recent pre-market seam while allocation observation is active. Runtime-only, read-only
+    /// telemetry for independently recounting eligible opportunities; no decision path reads
+    /// it and it is NEVER serialized.
+    last_birth_stock_attribution_snapshot: BTreeSet<AgentId>,
     /// C3R.e-obs (impl-66): the runtime-only §2 loss-decomposition accumulator. NEVER
     /// serialized; populated only when `saving_allocation_obs_active()`.
     saving_allocation_obs: SavingAllocationObs,
@@ -10791,6 +10796,7 @@ impl Settlement {
             birth_stock_source_shortfalls: 0,
             birth_stock_injection_records: Vec::new(),
             birth_stock_births_by_household: vec![0; households.len()],
+            last_birth_stock_attribution_snapshot: BTreeSet::new(),
             saving_allocation_obs: SavingAllocationObs::default(),
             saving_obs_stock_tick: None,
             saving_obs_pending_offerable: None,
@@ -11343,6 +11349,7 @@ impl Settlement {
             birth_stock_source_shortfalls: 0,
             birth_stock_injection_records: Vec::new(),
             birth_stock_births_by_household: Vec::new(),
+            last_birth_stock_attribution_snapshot: BTreeSet::new(),
             saving_allocation_obs: SavingAllocationObs::default(),
             saving_obs_stock_tick: None,
             saving_obs_pending_offerable: None,
@@ -11787,6 +11794,9 @@ impl Settlement {
         // `report.promoted` so the whole-system ledger balances across the phase
         // transition (and the gold checkpoints account the minted gold).
         let birth_stock_attribution_snapshot = self.birth_stock_attribution_snapshot();
+        if self.saving_allocation_obs_active() {
+            self.last_birth_stock_attribution_snapshot = birth_stock_attribution_snapshot.clone();
+        }
         // C3R.e-obs: close the post-death/pre-market provisioning seam.
         self.saving_obs_capture_pre_market(&report);
         // C3R.e-obs (§3.2a/§5): capture the PRE-market offerable staple supply here — the
@@ -19435,6 +19445,16 @@ impl Settlement {
     /// NEVER serialized; read by the acceptance suite to print family shares + diagnosis.
     pub fn saving_allocation_obs_report(&self) -> &SavingAllocationObs {
         &self.saving_allocation_obs
+    }
+
+    /// C3R.e-obs (impl-66 repair): the C3R.d birth-stock attribution snapshot captured at the
+    /// most recent pre-market seam inside [`Self::econ_tick`] while allocation observation is
+    /// active. Runtime-only, read-only, NEVER serialized and NEVER read by a decision path.
+    /// The acceptance suite reads this after each tick so deaths and pre-market provisioning
+    /// cannot make a before/after recomputation drift from the opportunity domain the market
+    /// actually saw.
+    pub fn birth_stock_attribution_members(&self) -> &BTreeSet<AgentId> {
+        &self.last_birth_stock_attribution_snapshot
     }
 
     fn init_birth_stock_reach_baseline(&mut self) {
@@ -30251,6 +30271,660 @@ mod tests {
             ),
             SavingLossOutcome::ExecutionResidual
         );
+    }
+
+    // Table-driven coverage of `classify_saving_opportunity`'s §2 outcome space (impl-66
+    // repair §2): one synthetic pass per outcome, asserting the pinned precedence maps each
+    // shape to the right family. `member` is always `AgentId(1)`; distinct staple ids keep
+    // the rows independent. The intent map is populated only for the payload-selection row.
+    #[test]
+    fn classify_saving_opportunity_covers_every_outcome_branch() {
+        struct Case {
+            name: &'static str,
+            records: Vec<AllocationRecord>,
+            intent: BTreeMap<u64, TracedWant>,
+            expected: SavingLossOutcome,
+        }
+
+        let member = AgentId(1);
+        let seller = AgentId(2);
+        let seller2 = AgentId(5);
+        let winner = AgentId(3);
+        let winner2 = AgentId(4);
+
+        let cases = vec![
+            // A staple bid attempt exists but no live bid results (reservation None) — no
+            // bid interval → GoldReservationBind.
+            Case {
+                name: "NoBidPosted",
+                records: vec![
+                    AllocationRecord::PassStart { tick: 1 },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 0,
+                        agent: member,
+                        good: GoodId(10),
+                        side: OrderSide::Bid,
+                        outcome: QuoteOutcome::NoQuote(NoQuoteReason::ReservationNone),
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 1,
+                        agent: seller,
+                        good: GoodId(10),
+                        side: OrderSide::Ask,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 20,
+                            limit: Gold(3),
+                            reservation: Gold(3),
+                        },
+                    },
+                    AllocationRecord::PassEnd { tick: 1 },
+                ],
+                intent: BTreeMap::new(),
+                expected: SavingLossOutcome::NoBidPosted,
+            },
+            // A live bid plus one ask, but the ask is the member's own — SelfAskOnly precedes
+            // NoExecutableAskInWindow.
+            Case {
+                name: "SelfAskOnly",
+                records: vec![
+                    AllocationRecord::PassStart { tick: 1 },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 0,
+                        agent: member,
+                        good: GoodId(11),
+                        side: OrderSide::Bid,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 10,
+                            limit: Gold(5),
+                            reservation: Gold(5),
+                        },
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 1,
+                        agent: member,
+                        good: GoodId(11),
+                        side: OrderSide::Ask,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 11,
+                            limit: Gold(4),
+                            reservation: Gold(4),
+                        },
+                    },
+                    AllocationRecord::PassEnd { tick: 1 },
+                ],
+                intent: BTreeMap::new(),
+                expected: SavingLossOutcome::SelfAskOnly,
+            },
+            // A live bid but no ask exists anywhere in the window.
+            Case {
+                name: "NoExecutableAskInWindow",
+                records: vec![
+                    AllocationRecord::PassStart { tick: 1 },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 0,
+                        agent: member,
+                        good: GoodId(12),
+                        side: OrderSide::Bid,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 10,
+                            limit: Gold(5),
+                            reservation: Gold(5),
+                        },
+                    },
+                    AllocationRecord::PassEnd { tick: 1 },
+                ],
+                intent: BTreeMap::new(),
+                expected: SavingLossOutcome::NoExecutableAskInWindow,
+            },
+            // A non-self ask exists but its limit exceeds the saving bid's — PricedOut.
+            Case {
+                name: "AllAsksAboveLimit",
+                records: vec![
+                    AllocationRecord::PassStart { tick: 1 },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 0,
+                        agent: member,
+                        good: GoodId(13),
+                        side: OrderSide::Bid,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 10,
+                            limit: Gold(5),
+                            reservation: Gold(5),
+                        },
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 1,
+                        agent: seller,
+                        good: GoodId(13),
+                        side: OrderSide::Ask,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 20,
+                            limit: Gold(6),
+                            reservation: Gold(6),
+                        },
+                    },
+                    AllocationRecord::PassEnd { tick: 1 },
+                ],
+                intent: BTreeMap::new(),
+                expected: SavingLossOutcome::AllAsksAboveLimit,
+            },
+            // The compatible ask is consumed BEFORE the saving bid enters the book (the bid's
+            // QuoteAttempt is ordered after the winner's execution). The winner's price is
+            // irrelevant here — arrival order alone decides → Microstructure.
+            Case {
+                name: "CompetitiveLoss/PreEntryOrder",
+                records: vec![
+                    AllocationRecord::PassStart { tick: 1 },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 0,
+                        agent: seller,
+                        good: GoodId(14),
+                        side: OrderSide::Ask,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 20,
+                            limit: Gold(4),
+                            reservation: Gold(4),
+                        },
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 1,
+                        agent: winner,
+                        good: GoodId(14),
+                        side: OrderSide::Bid,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 30,
+                            limit: Gold(6),
+                            reservation: Gold(6),
+                        },
+                    },
+                    AllocationRecord::Execution {
+                        tick: 1,
+                        incoming_seq: 30,
+                        resting_seq: 20,
+                        incoming_side: OrderSide::Bid,
+                        good: GoodId(14),
+                        buyer: winner,
+                        seller,
+                        price: Gold(4),
+                        qty: 1,
+                        bid_limit: Gold(6),
+                        ask_limit: Gold(4),
+                        status: AllocationExecutionStatus::Succeeded,
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 2,
+                        agent: member,
+                        good: GoodId(14),
+                        side: OrderSide::Bid,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 10,
+                            limit: Gold(5),
+                            reservation: Gold(5),
+                        },
+                    },
+                    AllocationRecord::PassEnd { tick: 1 },
+                ],
+                intent: BTreeMap::new(),
+                expected: SavingLossOutcome::CompetitiveLoss {
+                    basis: PriorityBasis::PreEntryOrder,
+                    winner_intent: WinnerIntent::Other,
+                },
+            },
+            // The compatible ask is consumed while the saving bid is LIVE by a strictly
+            // higher-limit winner — a genuine price contest → AllocationPriority.
+            Case {
+                name: "CompetitiveLoss/HigherLimit",
+                records: vec![
+                    AllocationRecord::PassStart { tick: 1 },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 0,
+                        agent: member,
+                        good: GoodId(15),
+                        side: OrderSide::Bid,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 10,
+                            limit: Gold(5),
+                            reservation: Gold(5),
+                        },
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 1,
+                        agent: seller,
+                        good: GoodId(15),
+                        side: OrderSide::Ask,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 20,
+                            limit: Gold(4),
+                            reservation: Gold(4),
+                        },
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 2,
+                        agent: winner,
+                        good: GoodId(15),
+                        side: OrderSide::Bid,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 30,
+                            limit: Gold(7),
+                            reservation: Gold(7),
+                        },
+                    },
+                    AllocationRecord::Execution {
+                        tick: 1,
+                        incoming_seq: 30,
+                        resting_seq: 20,
+                        incoming_side: OrderSide::Bid,
+                        good: GoodId(15),
+                        buyer: winner,
+                        seller,
+                        price: Gold(4),
+                        qty: 1,
+                        bid_limit: Gold(7),
+                        ask_limit: Gold(4),
+                        status: AllocationExecutionStatus::Succeeded,
+                    },
+                    AllocationRecord::PassEnd { tick: 1 },
+                ],
+                intent: BTreeMap::new(),
+                expected: SavingLossOutcome::CompetitiveLoss {
+                    basis: PriorityBasis::HigherLimit,
+                    winner_intent: WinnerIntent::Other,
+                },
+            },
+            // Consumed while live, equal limits, an EARLIER-seq resting winner crossed first —
+            // arrival order decided → Microstructure.
+            Case {
+                name: "CompetitiveLoss/EqualLimitEarlierSeq",
+                records: vec![
+                    AllocationRecord::PassStart { tick: 1 },
+                    AllocationRecord::BookSnapshot {
+                        tick: 1,
+                        side: OrderSide::Bid,
+                        agent: winner,
+                        good: GoodId(16),
+                        limit: Gold(7),
+                        seq: 5,
+                    },
+                    AllocationRecord::BookSnapshot {
+                        tick: 1,
+                        side: OrderSide::Bid,
+                        agent: member,
+                        good: GoodId(16),
+                        limit: Gold(7),
+                        seq: 10,
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 0,
+                        agent: member,
+                        good: GoodId(16),
+                        side: OrderSide::Bid,
+                        outcome: QuoteOutcome::RestingUnchanged {
+                            seq: 10,
+                            limit: Gold(7),
+                            reservation: Gold(7),
+                        },
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 1,
+                        agent: seller,
+                        good: GoodId(16),
+                        side: OrderSide::Ask,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 20,
+                            limit: Gold(6),
+                            reservation: Gold(6),
+                        },
+                    },
+                    AllocationRecord::Execution {
+                        tick: 1,
+                        incoming_seq: 20,
+                        resting_seq: 5,
+                        incoming_side: OrderSide::Ask,
+                        good: GoodId(16),
+                        buyer: winner,
+                        seller,
+                        price: Gold(7),
+                        qty: 1,
+                        bid_limit: Gold(7),
+                        ask_limit: Gold(6),
+                        status: AllocationExecutionStatus::Succeeded,
+                    },
+                    AllocationRecord::PassEnd { tick: 1 },
+                ],
+                intent: BTreeMap::new(),
+                expected: SavingLossOutcome::CompetitiveLoss {
+                    basis: PriorityBasis::EqualLimitEarlierSeq,
+                    winner_intent: WinnerIntent::Other,
+                },
+            },
+            // The saving bid is cancelled intra-pass (a QuoteExit) and the compatible ask is
+            // consumed AFTER the exit — neither pre-entry nor while-live → Residual.
+            Case {
+                name: "CompetitiveLoss/PostExitConsumption",
+                records: vec![
+                    AllocationRecord::PassStart { tick: 1 },
+                    AllocationRecord::BookSnapshot {
+                        tick: 1,
+                        side: OrderSide::Bid,
+                        agent: member,
+                        good: GoodId(17),
+                        limit: Gold(5),
+                        seq: 10,
+                    },
+                    AllocationRecord::BookSnapshot {
+                        tick: 1,
+                        side: OrderSide::Ask,
+                        agent: seller,
+                        good: GoodId(17),
+                        limit: Gold(4),
+                        seq: 20,
+                    },
+                    AllocationRecord::QuoteExit {
+                        tick: 1,
+                        agent: member,
+                        good: GoodId(17),
+                        side: OrderSide::Bid,
+                        seq: 10,
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 0,
+                        agent: member,
+                        good: GoodId(17),
+                        side: OrderSide::Bid,
+                        outcome: QuoteOutcome::NoQuote(NoQuoteReason::ClampZero),
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 1,
+                        agent: winner,
+                        good: GoodId(17),
+                        side: OrderSide::Bid,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 30,
+                            limit: Gold(6),
+                            reservation: Gold(6),
+                        },
+                    },
+                    AllocationRecord::Execution {
+                        tick: 1,
+                        incoming_seq: 30,
+                        resting_seq: 20,
+                        incoming_side: OrderSide::Bid,
+                        good: GoodId(17),
+                        buyer: winner,
+                        seller,
+                        price: Gold(4),
+                        qty: 1,
+                        bid_limit: Gold(6),
+                        ask_limit: Gold(4),
+                        status: AllocationExecutionStatus::Succeeded,
+                    },
+                    AllocationRecord::PassEnd { tick: 1 },
+                ],
+                intent: BTreeMap::new(),
+                expected: SavingLossOutcome::CompetitiveLoss {
+                    basis: PriorityBasis::PostExitConsumption,
+                    winner_intent: WinnerIntent::Other,
+                },
+            },
+            // The member's own cross reached the ask and was REJECTED at settlement; a later
+            // buyer consuming it does not turn that failure into a priority loss → Residual.
+            Case {
+                name: "ExecutionResidual/market-rejection",
+                records: vec![
+                    AllocationRecord::PassStart { tick: 1 },
+                    AllocationRecord::BookSnapshot {
+                        tick: 1,
+                        side: OrderSide::Ask,
+                        agent: seller,
+                        good: GoodId(18),
+                        limit: Gold(4),
+                        seq: 20,
+                    },
+                    AllocationRecord::Execution {
+                        tick: 1,
+                        incoming_seq: 10,
+                        resting_seq: 20,
+                        incoming_side: OrderSide::Bid,
+                        good: GoodId(18),
+                        buyer: member,
+                        seller,
+                        price: Gold(4),
+                        qty: 1,
+                        bid_limit: Gold(5),
+                        ask_limit: Gold(4),
+                        status: AllocationExecutionStatus::Rejected,
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 0,
+                        agent: member,
+                        good: GoodId(18),
+                        side: OrderSide::Bid,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 10,
+                            limit: Gold(5),
+                            reservation: Gold(5),
+                        },
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 1,
+                        agent: winner,
+                        good: GoodId(18),
+                        side: OrderSide::Bid,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 30,
+                            limit: Gold(6),
+                            reservation: Gold(6),
+                        },
+                    },
+                    AllocationRecord::Execution {
+                        tick: 1,
+                        incoming_seq: 30,
+                        resting_seq: 20,
+                        incoming_side: OrderSide::Bid,
+                        good: GoodId(18),
+                        buyer: winner,
+                        seller,
+                        price: Gold(4),
+                        qty: 1,
+                        bid_limit: Gold(6),
+                        ask_limit: Gold(4),
+                        status: AllocationExecutionStatus::Succeeded,
+                    },
+                    AllocationRecord::PassEnd { tick: 1 },
+                ],
+                intent: BTreeMap::new(),
+                expected: SavingLossOutcome::ExecutionResidual,
+            },
+            // The member never posted a staple bid QuoteAttempt at all — an unreconciled drop,
+            // folded into Residual (never silently absorbed).
+            Case {
+                name: "ExecutionResidual/no-bid-attempt-drop",
+                records: vec![
+                    AllocationRecord::PassStart { tick: 1 },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 0,
+                        agent: seller,
+                        good: GoodId(19),
+                        side: OrderSide::Ask,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 20,
+                            limit: Gold(4),
+                            reservation: Gold(4),
+                        },
+                    },
+                    AllocationRecord::PassEnd { tick: 1 },
+                ],
+                intent: BTreeMap::new(),
+                expected: SavingLossOutcome::ExecutionResidual,
+            },
+            // PAYLOAD RULE: two compatible asks are each lost to a higher-limit winner with a
+            // DISTINCT winner intent. askA (limit 3, seq 20) precedes askB (limit 4, seq 21)
+            // in (limit, seq) order, so the payload is askA's `SavingNext` — even though askB's
+            // execution comes FIRST in record order. This pins first-(limit, seq), not
+            // first-in-trace.
+            Case {
+                name: "CompetitiveLoss/payload-first-by-limit-seq",
+                records: vec![
+                    AllocationRecord::PassStart { tick: 1 },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 0,
+                        agent: member,
+                        good: GoodId(20),
+                        side: OrderSide::Bid,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 10,
+                            limit: Gold(5),
+                            reservation: Gold(5),
+                        },
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 1,
+                        agent: seller,
+                        good: GoodId(20),
+                        side: OrderSide::Ask,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 20,
+                            limit: Gold(3),
+                            reservation: Gold(3),
+                        },
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 2,
+                        agent: seller2,
+                        good: GoodId(20),
+                        side: OrderSide::Ask,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 21,
+                            limit: Gold(4),
+                            reservation: Gold(4),
+                        },
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 3,
+                        agent: winner2,
+                        good: GoodId(20),
+                        side: OrderSide::Bid,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 31,
+                            limit: Gold(8),
+                            reservation: Gold(8),
+                        },
+                    },
+                    // askB (seq 21) consumed FIRST in record order.
+                    AllocationRecord::Execution {
+                        tick: 1,
+                        incoming_seq: 31,
+                        resting_seq: 21,
+                        incoming_side: OrderSide::Bid,
+                        good: GoodId(20),
+                        buyer: winner2,
+                        seller: seller2,
+                        price: Gold(4),
+                        qty: 1,
+                        bid_limit: Gold(8),
+                        ask_limit: Gold(4),
+                        status: AllocationExecutionStatus::Succeeded,
+                    },
+                    AllocationRecord::QuoteAttempt {
+                        tick: 1,
+                        order_pos: 4,
+                        agent: winner,
+                        good: GoodId(20),
+                        side: OrderSide::Bid,
+                        outcome: QuoteOutcome::Posted {
+                            seq: 30,
+                            limit: Gold(7),
+                            reservation: Gold(7),
+                        },
+                    },
+                    // askA (seq 20) consumed LATER in record order.
+                    AllocationRecord::Execution {
+                        tick: 1,
+                        incoming_seq: 30,
+                        resting_seq: 20,
+                        incoming_side: OrderSide::Bid,
+                        good: GoodId(20),
+                        buyer: winner,
+                        seller,
+                        price: Gold(3),
+                        qty: 1,
+                        bid_limit: Gold(7),
+                        ask_limit: Gold(3),
+                        status: AllocationExecutionStatus::Succeeded,
+                    },
+                    AllocationRecord::PassEnd { tick: 1 },
+                ],
+                intent: BTreeMap::from([
+                    (
+                        30,
+                        TracedWant {
+                            kind: WantKind::Good(GoodId(20)),
+                            horizon: Horizon::Next,
+                        },
+                    ),
+                    (
+                        31,
+                        TracedWant {
+                            kind: WantKind::Good(GoodId(20)),
+                            horizon: Horizon::Now,
+                        },
+                    ),
+                ]),
+                expected: SavingLossOutcome::CompetitiveLoss {
+                    basis: PriorityBasis::HigherLimit,
+                    winner_intent: WinnerIntent::SavingNext,
+                },
+            },
+        ];
+
+        for case in &cases {
+            // Every row uses a distinct staple id; the first good-bearing record fixes it.
+            let staple = case
+                .records
+                .iter()
+                .find_map(|record| match record {
+                    AllocationRecord::QuoteAttempt { good, .. } => Some(*good),
+                    AllocationRecord::BookSnapshot { good, .. } => Some(*good),
+                    _ => None,
+                })
+                .expect("each case has a staple-bearing record");
+            assert_eq!(
+                classify_saving_opportunity(
+                    &case.records,
+                    &case.intent,
+                    staple,
+                    member,
+                    &BTreeSet::new(),
+                ),
+                case.expected,
+                "case {}",
+                case.name,
+            );
+        }
     }
 
     #[test]

@@ -5,9 +5,17 @@
 //! per-seed diagnosis. NOTHING here changes behavior — the hard guards below pin that:
 //! the digest differs from OFF by exactly the two-byte tag-32 emission, the obs flag is
 //! byte-inert with the motive off, the family shares partition the unfilled opportunities,
-//! and the obs-ON headline reproduces the landed C3R.d metrics. Diagnosis is PRINTED,
-//! never asserted (the lever selection is the NEXT milestone's, not this one's).
+//! and the obs-ON headline reproduces the landed C3R.d metrics AND verdict.
+//!
+//! The verdict is NOT a printed label: the oracle runs all four C3R.d cells through the SAME
+//! real classifier (`common::classify`, shared with the C3R.d suite) and `assert_eq!`s the
+//! computed verdict enum against the landed expectation (impl-66 repair §1). The opportunity
+//! denominator is cross-checked by an INDEPENDENT eligible-opportunity recount off the
+//! attribution snapshot, not only the family-sum tautology (repair §3).
 
+mod common;
+
+use common::{classify, trace, trace_with_config, Cell, Verdict};
 use sim::{SavingAllocationObs, Settlement, SettlementConfig};
 
 const SEEDS: [u64; 5] = [3, 7, 11, 19, 23];
@@ -16,10 +24,11 @@ const RUN_TICKS: u64 = 1_600;
 const EXPECTED_NO_MOTIVE_BIRTHS: [u64; 5] = [2, 3, 5, 2, 1];
 
 /// The landed C3R.d headline facts pinned as the behavioral oracle: obs ON must reproduce
-/// each `(producer_births, attributable_purchases, reached_four)` triple and its verdict.
+/// each `(producer_births, attributable_purchases, reached_four)` triple AND the verdict the
+/// REAL classifier computes from the four-cell grid.
 struct Pinned {
     seed: u64,
-    verdict: &'static str,
+    verdict: Verdict,
     births: u64,
     attributable: u64,
     reached_four: usize,
@@ -28,35 +37,35 @@ struct Pinned {
 const ORACLE: [Pinned; 5] = [
     Pinned {
         seed: 3,
-        verdict: "BirthsResumeStructureStillDies",
+        verdict: Verdict::BirthsResumeStructureStillDies,
         births: 3,
         attributable: 3,
         reached_four: 3,
     },
     Pinned {
         seed: 7,
-        verdict: "BaseUnviable",
+        verdict: Verdict::BaseUnviable,
         births: 0,
         attributable: 5,
         reached_four: 0,
     },
     Pinned {
         seed: 11,
-        verdict: "BirthStockRaceLost",
+        verdict: Verdict::BirthStockRaceLost,
         births: 0,
         attributable: 7,
         reached_four: 0,
     },
     Pinned {
         seed: 19,
-        verdict: "StockReachedBirthsStillBlocked",
+        verdict: Verdict::StockReachedBirthsStillBlocked,
         births: 1,
         attributable: 6,
         reached_four: 1,
     },
     Pinned {
         seed: 23,
-        verdict: "StockReachedBirthsStillBlocked",
+        verdict: Verdict::StockReachedBirthsStillBlocked,
         births: 1,
         attributable: 3,
         reached_four: 1,
@@ -79,14 +88,6 @@ fn headline_obs_off() -> SettlementConfig {
 /// the instrumentation is inert. Kept only to anchor the C3R.c reference facts.
 fn reference_cell() -> SettlementConfig {
     SettlementConfig::frontier_mortal_producers_earned()
-}
-
-fn run(seed: u64, cfg: &SettlementConfig) -> Settlement {
-    let mut s = Settlement::generate(seed, cfg);
-    for _ in 0..RUN_TICKS {
-        s.econ_tick();
-    }
-    s
 }
 
 /// Hard guard: the ENTIRE digest footprint of the observation is the ON-only two-byte
@@ -145,57 +146,69 @@ fn obs_flag_is_byte_inert_when_the_motive_is_off() {
     );
 }
 
-/// The pinned five-seed oracle + the totality invariant + the printed diagnosis. The
-/// oracle runs the two budgeted cells (headline obs-ON + the no-motive reference) over all
-/// five seeds = 16,000 settlement ticks.
+/// The pinned five-seed oracle + the totality invariant + the printed diagnosis. The oracle
+/// runs the FOUR C3R.d cells (Headline obs-ON, SufficiencyControl, NoMotiveReference,
+/// MintOnReference) through the SAME real classifier the C3R.d suite uses, and `assert_eq!`s
+/// the COMPUTED verdict against the landed expectation — no display-only label. The obs-ON
+/// headline reproduces the landed C3R.d `(births, attributable, reached_four)` metrics with
+/// zero behavioral drift.
 #[test]
-fn obs_reproduces_the_landed_c3rd_headline_and_prints_the_diagnosis() {
+fn obs_reproduces_the_landed_c3rd_headline_verdict_and_prints_the_diagnosis() {
     println!(
         "C3R.e-obs allocation-contest diagnosis (obs ON) — seeds={SEEDS:?}, ticks={RUN_TICKS}"
     );
     for (index, pinned) in ORACLE.iter().enumerate() {
-        let headline = run(pinned.seed, &headline_obs_on());
-        let reference = run(pinned.seed, &reference_cell());
+        // The four C3R.d cells, exactly as the C3R.d suite forms them — except the Headline
+        // runs with the allocation-obs flag ON (behaviorally inert, so the metrics/verdict
+        // are unchanged). `trace_with_config` also hands back the driven settlement so we can
+        // read its runtime-only obs report.
+        let reference = trace(pinned.seed, Cell::NoMotiveReference);
+        let mint_on = trace(pinned.seed, Cell::MintOnReference);
+        let control = trace(pinned.seed, Cell::SufficiencyControl);
+        let (headline, headline_settlement) =
+            trace_with_config(pinned.seed, Cell::Headline, headline_obs_on());
 
-        // INERTNESS: obs ON reproduces the exact landed C3R.d headline metrics, and the
-        // reference cell reproduces the C3R.c no-motive birth anchor. Together these
-        // reproduce the classification inputs (and thus the landed verdict) with zero
-        // behavioral drift.
+        // ORACLE (repair §1): the verdict is COMPUTED by the real classifier and asserted,
+        // never a printed constant. If obs ON perturbed any classification input the verdict
+        // would drift and this fails.
+        let verdict = classify(&headline, &control, &reference, &mint_on);
         assert_eq!(
-            headline.producer_house_births(),
-            pinned.births,
+            verdict, pinned.verdict,
+            "seed {}: the real classifier's verdict drifted from the landed C3R.d cell",
+            pinned.seed
+        );
+
+        // The exact landed metric pins are KEPT — they are the classifier's own inputs, so
+        // pinning them and the verdict together closes the underdetermination the display-only
+        // label left open.
+        assert_eq!(
+            headline.producer_births, pinned.births,
             "seed {}: obs ON changed producer_births",
             pinned.seed
         );
         assert_eq!(
-            headline.birth_stock_attributable_purchases(),
-            pinned.attributable,
+            headline.attributable_purchases, pinned.attributable,
             "seed {}: obs ON changed attributable purchases",
             pinned.seed
         );
         assert_eq!(
-            headline.birth_stock_reached_four_count(),
-            pinned.reached_four,
+            headline.reached_four, pinned.reached_four,
             "seed {}: obs ON changed reached_four",
             pinned.seed
         );
         assert_eq!(
-            reference.producer_house_births(),
-            EXPECTED_NO_MOTIVE_BIRTHS[index],
+            reference.producer_births, EXPECTED_NO_MOTIVE_BIRTHS[index],
             "seed {}: the no-motive reference anchor drifted",
             pinned.seed
         );
 
-        // TOTALITY (a bookkeeping invariant, not a result): every unfilled opportunity got
-        // exactly one outcome, so the five families partition `unfilled()` exactly, and the
-        // CompetitiveLoss bases partition the competitive-loss total.
-        let obs = headline.saving_allocation_obs_report();
+        let obs = headline_settlement.saving_allocation_obs_report();
         // `filled` counts distinct eligible buyer-tick opportunities, while attributable
         // purchases counts units. A carried unit may fill before the member's quote turn and
         // a newly posted unit may fill later in the same pass, so quantity can exceed the
         // opportunity count even though both use the same eligibility snapshot.
         assert!(
-            obs.filled <= headline.birth_stock_attributable_purchases(),
+            obs.filled <= headline.attributable_purchases,
             "seed {}: distinct filled opportunities cannot exceed purchased quantity",
             pinned.seed
         );
@@ -204,6 +217,10 @@ fn obs_reproduces_the_landed_c3rd_headline_and_prints_the_diagnosis() {
             "seed {}: the allocation oracle must observe a non-empty opportunity domain",
             pinned.seed
         );
+
+        // TOTALITY (a bookkeeping invariant, not a result): every unfilled opportunity got
+        // exactly one outcome, so the five families partition `unfilled()` exactly, and the
+        // CompetitiveLoss bases partition the competitive-loss total.
         let family_sum = obs.offer_scarcity()
             + obs.allocation_priority()
             + obs.microstructure_loss()
@@ -254,11 +271,52 @@ fn obs_reproduces_the_landed_c3rd_headline_and_prints_the_diagnosis() {
         );
 
         // DIAGNOSIS: printed, NEVER asserted.
-        print_diagnosis(pinned, obs);
+        print_diagnosis(pinned, verdict, obs);
     }
 }
 
-fn print_diagnosis(pinned: &Pinned, obs: &SavingAllocationObs) {
+/// Repair §3: the INDEPENDENT eligible-opportunity count, driven per tick over one 1,600-tick
+/// headline obs-ON run. After each tick, this reads the public accessor for the C3R.d
+/// attribution snapshot captured at the actual pre-market seam. It adds that set's size only
+/// when the observation report gained a supply row for the same tick, proving the tick opened
+/// a money-priced spot pass (`PassStart`). Neither the snapshot accessor nor this accumulator
+/// reads the observation outcome counters whose denominator it checks.
+#[test]
+fn independent_eligible_opportunity_count_via_attribution_snapshot() {
+    let seed = ORACLE[0].seed;
+    let mut s = Settlement::generate(seed, &headline_obs_on());
+    let mut independent = 0u64;
+    let mut spot_pass_ticks = 0u64;
+
+    for _ in 0..RUN_TICKS {
+        let tick = s.econ_tick_count();
+        let supply_rows_before = s.saving_allocation_obs_report().supply_series.len();
+        s.econ_tick();
+
+        let obs = s.saving_allocation_obs_report();
+        let opened_spot_pass = obs.supply_series.len() == supply_rows_before + 1
+            && obs.supply_series.last().is_some_and(|row| row.tick == tick);
+        if opened_spot_pass {
+            independent += s.birth_stock_attribution_members().len() as u64;
+            spot_pass_ticks += 1;
+        }
+    }
+
+    let obs = s.saving_allocation_obs_report();
+    let opportunities = obs.filled + obs.unfilled();
+    assert!(independent > 0, "the accessor recount must be non-vacuous");
+    assert_eq!(
+        independent, opportunities,
+        "seed {seed}: the independent pre-market eligible-opportunity recount must equal \
+         filled + unfilled"
+    );
+    println!(
+        "seed {seed:>2}: opportunities={opportunities} \
+         independent(pre-market accessor)={independent} spot_pass_ticks={spot_pass_ticks}"
+    );
+}
+
+fn print_diagnosis(pinned: &Pinned, verdict: Verdict, obs: &SavingAllocationObs) {
     let unfilled = obs.unfilled();
     let share = |count: u64| {
         if unfilled == 0 {
@@ -285,8 +343,8 @@ fn print_diagnosis(pinned: &Pinned, obs: &SavingAllocationObs) {
         "MixedDiagnosis"
     };
     println!(
-        "seed {:>2} [{}]: filled={} unfilled={} no_spot_pass_ticks={} drops={}",
-        pinned.seed, pinned.verdict, obs.filled, unfilled, obs.no_spot_pass_ticks, obs.drops
+        "seed {:>2} [{:?}]: filled={} unfilled={} no_spot_pass_ticks={} drops={}",
+        pinned.seed, verdict, obs.filled, unfilled, obs.no_spot_pass_ticks, obs.drops
     );
     println!(
         "    families: OfferScarcity={:.3} AllocationPriority={:.3} Microstructure={:.3} \
