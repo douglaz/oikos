@@ -7430,6 +7430,12 @@ pub struct EarnedProvisioningStats {
     pub genuine_external_bread_trades: u64,
     pub intra_household_sales: Gold,
     pub intra_household_bread_trades: u64,
+    /// C3R.d disclosure: cross-household NON-bread sale proceeds credited `Earned` to a
+    /// producer-house seller, split by buyer class so producer-to-producer (e.g. flour)
+    /// recirculation stays visible to the accounting-loop reading instead of silently
+    /// inflating "earned" funds. Runtime-only.
+    pub non_bread_external_earned: Gold,
+    pub non_bread_producer_class_earned: Gold,
     pub endowment_funded_provisioning: Gold,
     pub provisioning_transfers: u64,
     pub provisioning_gold: Gold,
@@ -18726,6 +18732,28 @@ impl Settlement {
                     );
                     self.credit_earned_provisioning_lots(trade.seller, buyer_lots);
                 } else {
+                    // Disclosed, class-tracked: a producer-class buyer means this revenue is
+                    // internal producer-to-producer recirculation (e.g. a Miller's flour sold
+                    // to a Baker) — it funds provisioning as genuinely earned income for the
+                    // FIFO, but must stay visible to the accounting-loop reading rather than
+                    // bypass the bread-only class split.
+                    let producer_class_buyer =
+                        buyer_household.is_some_and(|h| self.is_producer_household(h));
+                    if producer_class_buyer {
+                        self.earned_provisioning
+                            .stats
+                            .non_bread_producer_class_earned = self
+                            .earned_provisioning
+                            .stats
+                            .non_bread_producer_class_earned
+                            .saturating_add(payment);
+                    } else {
+                        self.earned_provisioning.stats.non_bread_external_earned = self
+                            .earned_provisioning
+                            .stats
+                            .non_bread_external_earned
+                            .saturating_add(payment);
+                    }
                     self.credit_earned_provisioning_lot(
                         trade.seller,
                         EarnedGoldLot {

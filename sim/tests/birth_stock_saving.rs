@@ -371,7 +371,7 @@ fn print_trace(trace: &Trace, verdict: Verdict) {
          eligible={} injections={} shortfalls={} records={} failed_injected_births={} \
          blocks=(interval:{} cap:{} hunger:{} endowment:{}) final_min=({},{}) \
          final_output={} final_trades={} final_price={:?} structure={} flow={} \
-         ledger=(external:{} genuine:{} intra:{} provisioning:{}) \
+         ledger=(external:{} genuine:{} intra:{} non_bread_ext:{} non_bread_prod:{} provisioning:{}) \
          gold_start={:?} gold_mid={:?} gold_final={:?}",
         trace.seed,
         trace.cell,
@@ -409,6 +409,8 @@ fn print_trace(trace: &Trace, verdict: Verdict) {
         trace.stats.external_earned_revenue.0,
         trace.stats.genuine_external_revenue.0,
         trace.stats.intra_household_sales.0,
+        trace.stats.non_bread_external_earned.0,
+        trace.stats.non_bread_producer_class_earned.0,
         trace.stats.provisioning_gold.0,
         trace.gold_start,
         trace.gold_mid,

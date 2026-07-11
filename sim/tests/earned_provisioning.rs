@@ -571,7 +571,7 @@ fn print_trace(trace: &Trace, verdict: Verdict) {
          final_spread_positive={} final_bread_per_staffed={:.4} \
          early_flow={} mid_flow={} late_genuine_trades={} late_genuine_revenue={} \
          earned_total={} genuine={} from_consumers={} from_gatherers={} from_lineage={} \
-         from_other_producers={} intra_household_sales={} external_trades={} genuine_trades={} \
+         from_other_producers={} intra_household_sales={} non_bread_ext_earned={} non_bread_prod_earned={} external_trades={} genuine_trades={} \
          intra_trades={} provisioning_transfers={} provisioning_gold={} \
          endowment_funded_provisioning={} members_fed_by_purchase={} funded_but_unfilled={} \
          buyer_gold_start=({},{}) buyer_gold_mid=({},{}) buyer_gold_final=({},{}) \
@@ -618,6 +618,8 @@ fn print_trace(trace: &Trace, verdict: Verdict) {
         stats.from_lineage.0,
         stats.from_other_producer_households.0,
         stats.intra_household_sales.0,
+        stats.non_bread_external_earned.0,
+        stats.non_bread_producer_class_earned.0,
         stats.external_bread_trades,
         stats.genuine_external_bread_trades,
         stats.intra_household_bread_trades,
