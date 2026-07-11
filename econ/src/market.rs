@@ -42,6 +42,29 @@ pub struct ExecutedTrade {
     pub payment: Option<MoneyComposition>,
 }
 
+/// One exact candidate crossing considered by the CDA. This is observation-only
+/// metadata: ordinary order APIs do not request or allocate it, and matching
+/// decisions never read it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MatchAttempt {
+    pub incoming_seq: u64,
+    pub resting_seq: u64,
+    pub incoming_side: OrderSide,
+    pub good: GoodId,
+    pub buyer: AgentId,
+    pub seller: AgentId,
+    pub qty: u32,
+    pub bid_limit: Gold,
+    pub ask_limit: Gold,
+    pub status: MatchStatus,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MatchStatus {
+    Succeeded,
+    Rejected,
+}
+
 pub struct OrderBook {
     pub good: GoodId,
     pub bids: BTreeMap<(Reverse<Gold>, u64), Order>,
@@ -230,10 +253,26 @@ impl OrderBook {
         agents: &mut [Agent],
         reservations: &mut Reservations,
     ) -> Vec<Trade> {
-        self.add_order_inner(order, tick, agents, reservations, None)
+        self.add_order_inner(order, tick, agents, reservations, None, None)
             .into_iter()
             .map(|execution| execution.trade)
             .collect()
+    }
+
+    pub(crate) fn add_order_observed(
+        &mut self,
+        order: Order,
+        tick: u64,
+        agents: &mut [Agent],
+        reservations: &mut Reservations,
+    ) -> (Vec<Trade>, Vec<MatchAttempt>) {
+        let mut attempts = Vec::new();
+        let executions = self
+            .add_order_inner(order, tick, agents, reservations, None, Some(&mut attempts))
+            .into_iter()
+            .map(|execution| execution.trade)
+            .collect();
+        (executions, attempts)
     }
 
     pub fn add_order_m3(
@@ -251,6 +290,7 @@ impl OrderBook {
             agents,
             reservations,
             Some((money_system, accepted_media)),
+            None,
         )
     }
 
@@ -261,6 +301,7 @@ impl OrderBook {
         agents: &mut [Agent],
         reservations: &mut Reservations,
         money_system: Option<(&mut MoneySystem, AcceptedMedia)>,
+        attempts: Option<&mut Vec<MatchAttempt>>,
     ) -> Vec<ExecutedTrade> {
         if order.good != self.good || order.qty == 0 || order.expires_tick <= tick {
             reservations.release_order(&order);
@@ -277,8 +318,8 @@ impl OrderBook {
         };
 
         let executions = match order.side {
-            OrderSide::Bid => self.match_bid(&mut order, tick, &mut execution),
-            OrderSide::Ask => self.match_ask(&mut order, tick, &mut execution),
+            OrderSide::Bid => self.match_bid(&mut order, tick, &mut execution, attempts),
+            OrderSide::Ask => self.match_ask(&mut order, tick, &mut execution, attempts),
         };
 
         if order.qty > 0 {
@@ -372,6 +413,7 @@ impl OrderBook {
         order: &mut Order,
         tick: u64,
         execution: &mut MarketExecution<'_>,
+        mut attempts: Option<&mut Vec<MatchAttempt>>,
     ) -> Vec<ExecutedTrade> {
         let mut trades = Vec::new();
         let mut skipped_resting = BTreeSet::new();
@@ -405,7 +447,26 @@ impl OrderBook {
                 price,
                 qty,
             };
-            if let Some(payment) = apply_trade(&trade, execution, order, &resting) {
+            let payment = apply_trade(&trade, execution, order, &resting);
+            if let Some(rows) = attempts.as_deref_mut() {
+                rows.push(MatchAttempt {
+                    incoming_seq: order.seq,
+                    resting_seq: resting.seq,
+                    incoming_side: OrderSide::Bid,
+                    good: order.good,
+                    buyer: order.agent,
+                    seller: resting.agent,
+                    qty,
+                    bid_limit: order.limit,
+                    ask_limit: resting.limit,
+                    status: if payment.is_some() {
+                        MatchStatus::Succeeded
+                    } else {
+                        MatchStatus::Rejected
+                    },
+                });
+            }
+            if let Some(payment) = payment {
                 order.qty -= qty;
                 let mut remainder = resting;
                 remainder.qty -= qty;
@@ -426,6 +487,7 @@ impl OrderBook {
         order: &mut Order,
         tick: u64,
         execution: &mut MarketExecution<'_>,
+        mut attempts: Option<&mut Vec<MatchAttempt>>,
     ) -> Vec<ExecutedTrade> {
         let mut trades = Vec::new();
         let mut skipped_resting = BTreeSet::new();
@@ -459,7 +521,26 @@ impl OrderBook {
                 price,
                 qty,
             };
-            if let Some(payment) = apply_trade(&trade, execution, &resting, order) {
+            let payment = apply_trade(&trade, execution, &resting, order);
+            if let Some(rows) = attempts.as_deref_mut() {
+                rows.push(MatchAttempt {
+                    incoming_seq: order.seq,
+                    resting_seq: resting.seq,
+                    incoming_side: OrderSide::Ask,
+                    good: order.good,
+                    buyer: resting.agent,
+                    seller: order.agent,
+                    qty,
+                    bid_limit: resting.limit,
+                    ask_limit: order.limit,
+                    status: if payment.is_some() {
+                        MatchStatus::Succeeded
+                    } else {
+                        MatchStatus::Rejected
+                    },
+                });
+            }
+            if let Some(payment) = payment {
                 order.qty -= qty;
                 let mut remainder = resting;
                 remainder.qty -= qty;
@@ -589,7 +670,7 @@ fn two_agents_mut(agents: &mut [Agent], a: usize, b: usize) -> (&mut Agent, &mut
 
 #[cfg(test)]
 mod tests {
-    use super::{Order, OrderBook, OrderSide, Reservations};
+    use super::{MatchStatus, Order, OrderBook, OrderSide, Reservations};
     use crate::agent::{Agent, AgentId, Role, Want, WantKind};
     use crate::good::{Gold, Horizon, Stock, FOOD};
 
@@ -772,7 +853,7 @@ mod tests {
 
         let bid = order(1, OrderSide::Bid, Gold(2), 1, 3);
         assert!(reservations.reserve_order(&agents, &bid));
-        let trades = book.add_order(bid, 0, &mut agents, &mut reservations);
+        let (trades, attempts) = book.add_order_observed(bid, 0, &mut agents, &mut reservations);
 
         assert_eq!(trades.len(), 1);
         assert_eq!(trades[0].seller, AgentId(3));
@@ -781,6 +862,16 @@ mod tests {
         assert_eq!(agents[2].stock.get(FOOD), 0);
         assert_eq!(book.asks.len(), 1);
         assert_eq!(book.asks.values().next().unwrap().agent, AgentId(2));
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[0].incoming_seq, 3);
+        assert_eq!(attempts[0].resting_seq, 1);
+        assert_eq!(attempts[0].incoming_side, OrderSide::Bid);
+        assert_eq!(attempts[0].bid_limit, Gold(2));
+        assert_eq!(attempts[0].ask_limit, Gold(1));
+        assert_eq!(attempts[0].status, MatchStatus::Rejected);
+        assert_eq!(attempts[1].resting_seq, 2);
+        assert_eq!(attempts[1].ask_limit, Gold(2));
+        assert_eq!(attempts[1].status, MatchStatus::Succeeded);
     }
 
     #[test]

@@ -38,10 +38,10 @@ enum ApplyMode {
 use crate::factor::{
     FactorSide, LaborBook, LaborMarketView, LaborOrder, LaborReservations, LaborTrade,
 };
-use crate::good::{Gold, GoodId, Stock, FOOD, GOLD, NET, WOOD};
+use crate::good::{Gold, GoodId, Horizon, Stock, FOOD, GOLD, NET, WOOD};
 use crate::issuer::{Issuer, IssuerPolicy};
 use crate::ledger::{BankId, MoneySystem};
-use crate::market::{ExecutedTrade, Order, OrderBook, OrderSide, Reservations, Trade};
+use crate::market::{ExecutedTrade, MatchStatus, Order, OrderBook, OrderSide, Reservations, Trade};
 use crate::marketability::{MarketabilityAcceptance, MarketabilityConfig};
 use crate::menger::{MengerianEmergence, SaleabilitySnapshot};
 use crate::metrics::{
@@ -89,6 +89,124 @@ struct LiveQuote {
     limit: Gold,
     qty: u32,
     seq: u64,
+}
+
+/// C3R.e-obs (impl-66): the pure-observation allocation trace over the money-priced
+/// SPOT quote passes. Runtime-only, opt-in (`enable_allocation_trace`), NEVER serialized,
+/// and NEVER read by any decision path — the market steps exactly as it would with the
+/// trace off. Zero rows unless the trace is enabled. Scope: the M1 pass and the V2
+/// money-phase pass only (the two money-priced spot passes where `order_pos` lives); the
+/// M2/M3 loops are outside the C3R.e opportunity domain.
+///
+/// The batch lifecycle is one tick: `PassStart` opens a pass, quote/exec/exit records
+/// follow in temporal (append) order, `PassEnd` closes it. The settlement drains the
+/// batch each tick (`take_allocation_trace`), so a tick with no money spot pass drains
+/// empty.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AllocationRecord {
+    /// The money-priced spot pass opens (taken AFTER expiry/cancellation purging — the
+    /// post-cancellation pass-start the opportunity window is defined on).
+    PassStart { tick: u64 },
+    /// One live resting order in the post-cancellation pass-start book snapshot.
+    BookSnapshot {
+        tick: u64,
+        side: OrderSide,
+        agent: AgentId,
+        good: GoodId,
+        limit: Gold,
+        seq: u64,
+    },
+    /// One quote attempt (bid or ask) in the pass, keyed by loop `order_pos`. TOTAL over
+    /// both sides and every early return in the quote path.
+    QuoteAttempt {
+        tick: u64,
+        order_pos: usize,
+        agent: AgentId,
+        good: GoodId,
+        side: OrderSide,
+        outcome: QuoteOutcome,
+    },
+    /// An intra-pass cancellation/exit of a live quote (routes `PostExitConsumption`).
+    QuoteExit {
+        tick: u64,
+        agent: AgentId,
+        good: GoodId,
+        side: OrderSide,
+        seq: u64,
+    },
+    /// A crossing at the CDA. `incoming_seq`/`incoming_side` identify the taker and
+    /// `resting_seq` identifies the exact resting order it consumed; the remaining
+    /// fields are the executed trade.
+    Execution {
+        tick: u64,
+        incoming_seq: u64,
+        resting_seq: u64,
+        incoming_side: OrderSide,
+        good: GoodId,
+        buyer: AgentId,
+        seller: AgentId,
+        price: Gold,
+        qty: u32,
+        bid_limit: Gold,
+        ask_limit: Gold,
+        status: AllocationExecutionStatus,
+    },
+    /// The money-priced spot pass closes.
+    PassEnd { tick: u64 },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AllocationExecutionStatus {
+    Succeeded,
+    Rejected,
+}
+
+/// The outcome of a single `ensure_bid`/`ensure_ask` quote attempt (C3R.e-obs).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuoteOutcome {
+    /// No live order results from this attempt — every early return that cancels/skips
+    /// the quote (the sub-reason is interpretive only; the join treats all bid-side
+    /// `NoQuote` as `NoBidPosted`).
+    NoQuote(NoQuoteReason),
+    /// A fresh order posted this tick (it may then cross/fill immediately).
+    Posted {
+        seq: u64,
+        limit: Gold,
+        reservation: Gold,
+    },
+    /// A carried resting order left unchanged (still live this pass) — a live order that
+    /// was NOT re-posted this tick.
+    RestingUnchanged {
+        seq: u64,
+        limit: Gold,
+        reservation: Gold,
+    },
+}
+
+/// Why a quote attempt produced no live order (C3R.e-obs; interpretive sub-label).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoQuoteReason {
+    /// Bid side: `reservation_bid_for_money` returned None (no want / no reservation).
+    ReservationNone,
+    /// Bid side: the gold/free-tender clamp drove the shaded limit to zero.
+    ClampZero,
+    /// `available_agent` returned None (the agent is over-reserved this tick).
+    AvailableAgentFailure,
+    /// `ensure_order` could not post (mul_qty overflow / free tender short / reserve fail).
+    PostFailure,
+    /// Ask side: no stock to sell, or `reservation_ask_for_money` returned None.
+    NoAsk,
+    /// The good is the money good — no market opportunity (out of the join's staple domain).
+    NotMarketGood,
+}
+
+/// The poster's first-unprovided want captured AT BID-POST TIME, keyed by `seq` in
+/// [`Society::allocation_intent`] (C3R.e-obs). Interpretive `winner_intent` color only;
+/// never a rule input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TracedWant {
+    pub kind: WantKind,
+    pub horizon: Horizon,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -348,6 +466,21 @@ pub struct Society {
     /// to read realized FOOD/WOOD consumption back for need replenishment.
     consumption_log: Vec<(AgentId, GoodId, u32)>,
     consumption_log_enabled: bool,
+    /// C3R.e-obs (impl-66): the pure-observation allocation trace. Off by default and
+    /// read by NO engine path, so every conformance golden is byte-identical; the C3R.e
+    /// obs settlement enables it once at construction to reconstruct WHY a saving bid
+    /// loses. All fields runtime-only — NEVER serialized (see [`AllocationRecord`]).
+    allocation_trace_enabled: bool,
+    /// Set true only inside the two money-priced spot passes (M1, V2 money phase), so
+    /// quote/exec/exit recording is scoped to them and the M2/M3 loops never record.
+    allocation_trace_pass_active: bool,
+    /// The current `order_pos` inside the instrumented pass loop (for `QuoteAttempt`).
+    allocation_trace_order_pos: usize,
+    /// This tick's spot-pass batch, drained by the settlement each tick.
+    allocation_trace: Vec<AllocationRecord>,
+    /// Persistent `seq → first-unprovided want` captured at post time and pruned to live
+    /// orders at each pass start — the carried intent map for `winner_intent`.
+    allocation_intent: BTreeMap<u64, TracedWant>,
 }
 
 impl Society {
@@ -497,6 +630,11 @@ impl Society {
             tick_self_funded_project_starts: Vec::new(),
             consumption_log: Vec::new(),
             consumption_log_enabled: false,
+            allocation_trace_enabled: false,
+            allocation_trace_pass_active: false,
+            allocation_trace_order_pos: 0,
+            allocation_trace: Vec::new(),
+            allocation_intent: BTreeMap::new(),
         })
     }
 
@@ -735,7 +873,9 @@ impl Society {
         self.cancel_changed_live_quotes();
         let trade_start = self.trades.len();
         let mut filled = Vec::new();
+        self.allocation_trace_begin_pass();
         for order_pos in 0..self.agent_order.len() {
+            self.allocation_trace_order_pos = order_pos;
             let agent_index = self.agent_order[order_pos];
             for good_pos in 0..self.market_goods.len() {
                 let good = self.market_goods[good_pos];
@@ -744,6 +884,7 @@ impl Society {
             }
         }
         self.sync_live_quotes();
+        self.allocation_trace_end_pass();
 
         let tick_trades = self.trades[trade_start..].to_vec();
         self.observe_tick_trades(&tick_trades);
@@ -781,7 +922,9 @@ impl Society {
             self.run_direct_pass_for_money(money_good);
             self.cancel_changed_live_quotes();
             let mut filled = Vec::new();
+            self.allocation_trace_begin_pass();
             for order_pos in 0..self.agent_order.len() {
+                self.allocation_trace_order_pos = order_pos;
                 let agent_index = self.agent_order[order_pos];
                 for good_pos in 0..self.market_goods.len() {
                     let good = self.market_goods[good_pos];
@@ -790,6 +933,7 @@ impl Society {
                 }
             }
             self.sync_live_quotes();
+            self.allocation_trace_end_pass();
 
             tick_spot_trades = self.trades[trade_start..].to_vec();
             self.observe_tick_trades(&tick_spot_trades);
@@ -2948,17 +3092,50 @@ impl Society {
     }
 
     fn ensure_bid(&mut self, agent_index: usize, good: GoodId, filled: &mut Vec<FillKey>) {
+        let agent_id = self.agents[agent_index].id;
         if self.money.is_money_good(good) {
+            self.allocation_trace_record_attempt(
+                agent_id,
+                good,
+                OrderSide::Bid,
+                QuoteOutcome::NoQuote(NoQuoteReason::NotMarketGood),
+            );
             return;
         }
         let Some(money_good) = self.money.current_money_good() else {
+            self.allocation_trace_record_attempt(
+                agent_id,
+                good,
+                OrderSide::Bid,
+                QuoteOutcome::NoQuote(NoQuoteReason::NotMarketGood),
+            );
             return;
         };
-        let agent_id = self.agents[agent_index].id;
         let existing = self.find_live_quote(agent_id, OrderSide::Bid, good);
         let Some(agent) = self.available_agent(agent_index, existing) else {
+            self.allocation_trace_record_attempt(
+                agent_id,
+                good,
+                OrderSide::Bid,
+                QuoteOutcome::NoQuote(NoQuoteReason::AvailableAgentFailure),
+            );
             self.cancel_existing(existing);
             return;
+        };
+        // Only recompute the poster's intent target while the trace is actively
+        // recording. `ensure_order_with_intent` consumes `traced_target` under the
+        // same `allocation_trace_recording()` guard, so when observation is off this
+        // stays `None` and the provisioning model never runs in the quote hot loop —
+        // the milestone's honest zero-allocation-when-disabled claim (§3.1).
+        let traced_target = if self.allocation_trace_recording() {
+            agent
+                .first_unprovided_bid_target_for_money(good, money_good)
+                .map(|want| TracedWant {
+                    kind: want.kind,
+                    horizon: want.horizon,
+                })
+        } else {
+            None
         };
         // S1: a driver-set override replaces the scale-derived reservation/limit
         // for this `(agent, good)`. Empty in every lab scenario, so the original
@@ -2967,6 +3144,12 @@ impl Society {
             Some((reservation, limit)) => (reservation, limit),
             None => {
                 let Some(reservation) = agent.reservation_bid_for_money(good, 1, money_good) else {
+                    self.allocation_trace_record_attempt(
+                        agent_id,
+                        good,
+                        OrderSide::Bid,
+                        QuoteOutcome::NoQuote(NoQuoteReason::ReservationNone),
+                    );
                     self.cancel_existing(existing);
                     return;
                 };
@@ -2977,10 +3160,16 @@ impl Society {
         limit = limit.min(agent.gold);
         limit = limit.min(self.free_spot_tender_after_all_reserves_for_quote(agent.id, existing));
         if limit == Gold::ZERO {
+            self.allocation_trace_record_attempt(
+                agent_id,
+                good,
+                OrderSide::Bid,
+                QuoteOutcome::NoQuote(NoQuoteReason::ClampZero),
+            );
             self.cancel_existing(existing);
             return;
         }
-        self.ensure_order(
+        self.ensure_order_with_intent(
             QuotePlan {
                 agent_index,
                 side: OrderSide::Bid,
@@ -2990,26 +3179,58 @@ impl Society {
                 existing,
             },
             filled,
+            traced_target,
         );
     }
 
     fn ensure_ask(&mut self, agent_index: usize, good: GoodId, filled: &mut Vec<FillKey>) {
+        let agent_id = self.agents[agent_index].id;
         if self.money.is_money_good(good) {
+            self.allocation_trace_record_attempt(
+                agent_id,
+                good,
+                OrderSide::Ask,
+                QuoteOutcome::NoQuote(NoQuoteReason::NotMarketGood),
+            );
             return;
         }
         let Some(money_good) = self.money.current_money_good() else {
+            self.allocation_trace_record_attempt(
+                agent_id,
+                good,
+                OrderSide::Ask,
+                QuoteOutcome::NoQuote(NoQuoteReason::NotMarketGood),
+            );
             return;
         };
-        let existing = self.find_live_quote(self.agents[agent_index].id, OrderSide::Ask, good);
+        let existing = self.find_live_quote(agent_id, OrderSide::Ask, good);
         let Some(agent) = self.available_agent(agent_index, existing) else {
+            self.allocation_trace_record_attempt(
+                agent_id,
+                good,
+                OrderSide::Ask,
+                QuoteOutcome::NoQuote(NoQuoteReason::AvailableAgentFailure),
+            );
             self.cancel_existing(existing);
             return;
         };
         if agent.stock.get(good) == 0 {
+            self.allocation_trace_record_attempt(
+                agent_id,
+                good,
+                OrderSide::Ask,
+                QuoteOutcome::NoQuote(NoQuoteReason::NoAsk),
+            );
             self.cancel_existing(existing);
             return;
         }
         let Some(reservation) = agent.reservation_ask_for_money(good, 1, money_good) else {
+            self.allocation_trace_record_attempt(
+                agent_id,
+                good,
+                OrderSide::Ask,
+                QuoteOutcome::NoQuote(NoQuoteReason::NoAsk),
+            );
             self.cancel_existing(existing);
             return;
         };
@@ -3029,9 +3250,28 @@ impl Society {
     }
 
     fn ensure_order(&mut self, plan: QuotePlan, filled: &mut Vec<FillKey>) {
+        self.ensure_order_with_intent(plan, filled, None);
+    }
+
+    fn ensure_order_with_intent(
+        &mut self,
+        plan: QuotePlan,
+        filled: &mut Vec<FillKey>,
+        traced_bid_target: Option<TracedWant>,
+    ) {
         if let Some(index) = plan.existing {
             let quote = self.live_quotes[index];
             if quote.reservation == plan.reservation && quote.limit == plan.limit {
+                self.allocation_trace_record_attempt(
+                    quote.agent,
+                    quote.good,
+                    quote.side,
+                    QuoteOutcome::RestingUnchanged {
+                        seq: quote.seq,
+                        limit: quote.limit,
+                        reservation: quote.reservation,
+                    },
+                );
                 return;
             }
             self.cancel_existing(Some(index));
@@ -3049,13 +3289,31 @@ impl Society {
         };
         if order.side == OrderSide::Bid {
             let Some(amount) = order.limit.mul_qty(order.qty) else {
+                self.allocation_trace_record_attempt(
+                    order.agent,
+                    order.good,
+                    order.side,
+                    QuoteOutcome::NoQuote(NoQuoteReason::PostFailure),
+                );
                 return;
             };
             if self.free_spot_tender_after_all_reserves(order.agent) < amount {
+                self.allocation_trace_record_attempt(
+                    order.agent,
+                    order.good,
+                    order.side,
+                    QuoteOutcome::NoQuote(NoQuoteReason::PostFailure),
+                );
                 return;
             }
         }
         if !self.reservations.reserve_order(&self.agents, &order) {
+            self.allocation_trace_record_attempt(
+                order.agent,
+                order.good,
+                order.side,
+                QuoteOutcome::NoQuote(NoQuoteReason::PostFailure),
+            );
             return;
         }
         self.live_quotes.push(LiveQuote {
@@ -3067,40 +3325,96 @@ impl Society {
             qty: order.qty,
             seq: order.seq,
         });
+        self.allocation_trace_record_attempt(
+            order.agent,
+            plan.good,
+            plan.side,
+            QuoteOutcome::Posted {
+                seq: order.seq,
+                limit: plan.limit,
+                reservation: plan.reservation,
+            },
+        );
+        if self.allocation_trace_recording() && order.side == OrderSide::Bid {
+            if let Some(target) = traced_bid_target {
+                self.allocation_intent.insert(order.seq, target);
+            }
+        }
         let book_index = self
             .books
             .iter()
             .position(|book| book.good == plan.good)
             .expect("market good has a book");
-        let executions = if self.m3_enabled {
+        let observing = self.allocation_trace_recording();
+        let (executions, attempts) = if self.m3_enabled {
             let tender = self.public_spot_tender;
             let money_system = self
                 .money_system
                 .as_mut()
                 .expect("M3 spot order requires money system");
-            self.books[book_index].add_order_m3(
-                order,
-                self.tick.0,
-                self.agents.as_mut_slice(),
-                &mut self.reservations,
-                money_system,
-                tender.accepted_media(),
+            (
+                self.books[book_index].add_order_m3(
+                    order,
+                    self.tick.0,
+                    self.agents.as_mut_slice(),
+                    &mut self.reservations,
+                    money_system,
+                    tender.accepted_media(),
+                ),
+                Vec::new(),
             )
         } else {
-            self.books[book_index]
-                .add_order(
+            let (trades, attempts) = if observing {
+                self.books[book_index].add_order_observed(
                     order,
                     self.tick.0,
                     self.agents.as_mut_slice(),
                     &mut self.reservations,
                 )
-                .into_iter()
-                .map(|trade| ExecutedTrade {
-                    trade,
-                    payment: None,
-                })
-                .collect()
+            } else {
+                (
+                    self.books[book_index].add_order(
+                        order,
+                        self.tick.0,
+                        self.agents.as_mut_slice(),
+                        &mut self.reservations,
+                    ),
+                    Vec::new(),
+                )
+            };
+            (
+                trades
+                    .into_iter()
+                    .map(|trade| ExecutedTrade {
+                        trade,
+                        payment: None,
+                    })
+                    .collect(),
+                attempts,
+            )
         };
+        for attempt in attempts {
+            self.allocation_trace.push(AllocationRecord::Execution {
+                tick: self.tick.0,
+                incoming_seq: attempt.incoming_seq,
+                resting_seq: attempt.resting_seq,
+                incoming_side: attempt.incoming_side,
+                good: attempt.good,
+                buyer: attempt.buyer,
+                seller: attempt.seller,
+                price: match attempt.incoming_side {
+                    OrderSide::Bid => attempt.ask_limit,
+                    OrderSide::Ask => attempt.bid_limit,
+                },
+                qty: attempt.qty,
+                bid_limit: attempt.bid_limit,
+                ask_limit: attempt.ask_limit,
+                status: match attempt.status {
+                    MatchStatus::Succeeded => AllocationExecutionStatus::Succeeded,
+                    MatchStatus::Rejected => AllocationExecutionStatus::Rejected,
+                },
+            });
+        }
         let mut affected_agents = Vec::new();
         for execution in executions {
             let trade = execution.trade;
@@ -3355,6 +3669,17 @@ impl Society {
     fn cancel_existing(&mut self, existing: Option<usize>) {
         if let Some(index) = existing {
             let quote = self.live_quotes.remove(index);
+            // C3R.e-obs: an intra-pass exit of a live quote (records only inside an
+            // instrumented spot pass — pre-pass cancellations are before the window).
+            if self.allocation_trace_recording() {
+                self.allocation_trace.push(AllocationRecord::QuoteExit {
+                    tick: self.tick.0,
+                    agent: quote.agent,
+                    good: quote.good,
+                    side: quote.side,
+                    seq: quote.seq,
+                });
+            }
             if let Some(book_index) = self.books.iter().position(|book| book.good == quote.good) {
                 self.books[book_index].cancel(
                     quote.agent,
@@ -4355,6 +4680,112 @@ impl Society {
     /// econ rule or conformance output.
     pub fn consumption_log_last_tick(&self) -> &[(AgentId, GoodId, u32)] {
         &self.consumption_log
+    }
+
+    /// C3R.e-obs (impl-66): enable the pure-observation allocation trace ONCE at
+    /// settlement construction. Record-only; no decision path ever reads the trace, so a
+    /// society with it enabled steps byte-identically to one without (the ONLY observable
+    /// difference is the settlement's own digest tag). Off by default — the goldens never
+    /// call this, matching the `enable_consumption_log` opt-in shape.
+    pub fn enable_allocation_trace(&mut self) {
+        self.allocation_trace_enabled = true;
+    }
+
+    /// Whether the allocation trace is recording (C3R.e-obs).
+    pub fn allocation_trace_enabled(&self) -> bool {
+        self.allocation_trace_enabled
+    }
+
+    /// Drain this tick's spot-pass allocation-trace batch (C3R.e-obs). Empty on a tick
+    /// with no money-priced spot pass (barter / pre-promotion), which the settlement
+    /// counts as a no-spot-pass tick. Leaves the persistent `seq → intent` map intact.
+    pub fn take_allocation_trace(&mut self) -> Vec<AllocationRecord> {
+        std::mem::take(&mut self.allocation_trace)
+    }
+
+    /// The persistent `seq → first-unprovided want` map used to attribute `winner_intent`
+    /// (C3R.e-obs). Read by the settlement's join right after a pass, before the next
+    /// pass prunes it to live orders.
+    pub fn allocation_intent(&self) -> &BTreeMap<u64, TracedWant> {
+        &self.allocation_intent
+    }
+
+    /// True when the trace should record — enabled AND inside an instrumented spot pass.
+    #[inline]
+    fn allocation_trace_recording(&self) -> bool {
+        self.allocation_trace_enabled && self.allocation_trace_pass_active
+    }
+
+    /// Open an instrumented spot pass: emit `PassStart`, prune the carried intent map to
+    /// currently-live order seqs, and snapshot the post-cancellation resting book.
+    fn allocation_trace_begin_pass(&mut self) {
+        if !self.allocation_trace_enabled {
+            return;
+        }
+        let tick = self.tick.0;
+        // Prune the persistent intent map to the orders still live at pass start (bounded
+        // by live orders — no cap-and-drop; the pass batch is the record cap).
+        let live: BTreeSet<u64> = self
+            .books
+            .iter()
+            .flat_map(|book| {
+                book.bids
+                    .values()
+                    .chain(book.asks.values())
+                    .map(|order| order.seq)
+            })
+            .collect();
+        self.allocation_intent.retain(|seq, _| live.contains(seq));
+        // Build the pass-start batch in a local, then extend, to keep the immutable
+        // `self.books` borrow disjoint from the `self.allocation_trace` mutation.
+        let mut rows = vec![AllocationRecord::PassStart { tick }];
+        for book in &self.books {
+            for order in book.bids.values().chain(book.asks.values()) {
+                rows.push(AllocationRecord::BookSnapshot {
+                    tick,
+                    side: order.side,
+                    agent: order.agent,
+                    good: order.good,
+                    limit: order.limit,
+                    seq: order.seq,
+                });
+            }
+        }
+        self.allocation_trace.extend(rows);
+        self.allocation_trace_pass_active = true;
+    }
+
+    /// Close an instrumented spot pass: emit `PassEnd` and stop recording.
+    fn allocation_trace_end_pass(&mut self) {
+        if !self.allocation_trace_pass_active {
+            return;
+        }
+        self.allocation_trace_pass_active = false;
+        self.allocation_trace
+            .push(AllocationRecord::PassEnd { tick: self.tick.0 });
+    }
+
+    /// Record one quote attempt's outcome (C3R.e-obs), keyed by the loop `order_pos`.
+    fn allocation_trace_record_attempt(
+        &mut self,
+        agent: AgentId,
+        good: GoodId,
+        side: OrderSide,
+        outcome: QuoteOutcome,
+    ) {
+        if !self.allocation_trace_recording() {
+            return;
+        }
+        let tick = self.tick.0;
+        let order_pos = self.allocation_trace_order_pos;
+        self.allocation_trace.push(AllocationRecord::QuoteAttempt {
+            tick,
+            order_pos,
+            agent,
+            good,
+            side,
+            outcome,
+        });
     }
 
     /// S15 own-use cultivation seam: record `qty` units of `good` consumed by `agent`
@@ -9282,6 +9713,313 @@ mod tests {
         assert_eq!(society.agents[0].gold, Gold(1));
         assert_eq!(society.agents[0].stock.get(SALT), 0);
         assert!(society.agents[0].scale[0].satisfied);
+    }
+
+    // C3R.e-obs Slice A: a designated-GOLD spot market with a FOOD buyer + seller (whose
+    // ask crosses the buyer's resting bid), a broke FOOD bidder (a gold-reservation bind),
+    // and a SALT bidder with no seller (a carried resting bid). Bid overrides pin the
+    // buyers' limits so the belief nudge cannot perturb the carry.
+    const TRACE_BUYER: AgentId = AgentId(1);
+    const TRACE_SELLER: AgentId = AgentId(2);
+    const TRACE_BROKE: AgentId = AgentId(3);
+    const TRACE_RESTER: AgentId = AgentId(4);
+
+    fn allocation_trace_market(enable: bool) -> Society {
+        let mut buyer_stock = Stock::new(SALT.0);
+        buyer_stock.add(WOOD, 1);
+        let mut buyer = test_capitalist(buyer_stock);
+        buyer.id = TRACE_BUYER;
+        buyer.gold = Gold(10);
+        buyer.scale = scale_entries(&[
+            // This provided-but-`satisfied == false` want proves trace intent follows
+            // bid provisioning, not the first stale raw scale flag.
+            (WantKind::Good(WOOD), Horizon::Next, 1),
+            (WantKind::Good(FOOD), Horizon::Next, 1),
+        ]);
+
+        let mut seller = test_capitalist({
+            let mut stock = Stock::new(SALT.0);
+            stock.add(FOOD, 5);
+            stock
+        });
+        seller.id = TRACE_SELLER;
+        seller.gold = Gold(0);
+        seller.scale = scale_entries(&[(WantKind::Good(GOLD), Horizon::Next, 1)]);
+
+        let mut broke = test_capitalist(Stock::new(SALT.0));
+        broke.id = TRACE_BROKE;
+        broke.gold = Gold(0);
+        broke.scale = scale_entries(&[(WantKind::Good(FOOD), Horizon::Next, 1)]);
+
+        let mut rester = test_capitalist(Stock::new(SALT.0));
+        rester.id = TRACE_RESTER;
+        rester.gold = Gold(10);
+        rester.scale = scale_entries(&[(WantKind::Good(SALT), Horizon::Next, 1)]);
+
+        let mut society = Society::from_scenario(MarketScenario {
+            name: "allocation-trace-market",
+            scenario: ScenarioName::MarketPriceDiscovery,
+            seed: 1,
+            periods: 1,
+            agents: vec![buyer, seller, broke, rester],
+            recipes: Vec::new(),
+            events: Vec::new(),
+            money: MarketMoneyConfig::Designated(DesignatedMoney { good: GOLD }),
+        });
+        if enable {
+            society.enable_allocation_trace();
+        }
+        society
+    }
+
+    #[test]
+    fn allocation_trace_is_empty_when_disabled() {
+        let mut society = allocation_trace_market(false);
+        society.step();
+        assert!(
+            society.take_allocation_trace().is_empty(),
+            "the trace records nothing unless explicitly enabled"
+        );
+        assert!(society.allocation_intent().is_empty());
+    }
+
+    #[test]
+    fn allocation_trace_records_the_money_spot_pass() {
+        let mut society = allocation_trace_market(true);
+        // Pin the SALT rester's bid so its carried limit is stable across ticks, and give
+        // the FOOD buyer a limit that clears the seller's ask.
+        society.set_bid_override(TRACE_RESTER, SALT, Gold(2), Gold(2));
+        society.set_bid_override(TRACE_BUYER, FOOD, Gold(5), Gold(3));
+        society.step();
+        let trace = society.take_allocation_trace();
+
+        // The batch brackets the pass and every attempt is inside it.
+        assert!(matches!(
+            trace.first(),
+            Some(AllocationRecord::PassStart { tick: 0 })
+        ));
+        assert!(matches!(
+            trace.last(),
+            Some(AllocationRecord::PassEnd { tick: 0 })
+        ));
+        for row in &trace {
+            if let AllocationRecord::QuoteAttempt { order_pos, .. } = row {
+                assert!(*order_pos < 4, "order_pos stays within the agent order");
+            }
+        }
+
+        // The FOOD buyer posts its overridden bid.
+        let buyer_seq = trace
+            .iter()
+            .find_map(|row| match row {
+                AllocationRecord::QuoteAttempt {
+                    agent: TRACE_BUYER,
+                    good,
+                    side: OrderSide::Bid,
+                    outcome:
+                        QuoteOutcome::Posted {
+                            seq,
+                            limit,
+                            reservation,
+                        },
+                    ..
+                } if *good == FOOD => {
+                    assert_eq!(*limit, Gold(3));
+                    assert_eq!(*reservation, Gold(5));
+                    Some(*seq)
+                }
+                _ => None,
+            })
+            .expect("the FOOD buyer posts a bid");
+        let (seller_seq, seller_limit) = trace
+            .iter()
+            .find_map(|row| match row {
+                AllocationRecord::QuoteAttempt {
+                    agent: TRACE_SELLER,
+                    good,
+                    side: OrderSide::Ask,
+                    outcome: QuoteOutcome::Posted { seq, limit, .. },
+                    ..
+                } if *good == FOOD => Some((*seq, *limit)),
+                _ => None,
+            })
+            .expect("the FOOD seller posts an ask");
+
+        // The seller's ask crosses the buyer's RESTING bid — a later-ask-crosses-resting-bid
+        // execution that clears at the resting bid's limit (3), not the ask's (1).
+        assert!(trace.iter().any(|row| matches!(
+            row,
+            AllocationRecord::Execution {
+                incoming_seq,
+                incoming_side: OrderSide::Ask,
+                resting_seq,
+                buyer: TRACE_BUYER,
+                seller: TRACE_SELLER,
+                price: Gold(3),
+                qty: 1,
+                bid_limit: Gold(3),
+                ask_limit,
+                status: AllocationExecutionStatus::Succeeded,
+                ..
+            } if *incoming_seq == seller_seq
+                && *resting_seq == buyer_seq
+                && *ask_limit == seller_limit
+        )));
+
+        // The broke bidder is a gold-reservation bind: no bid posted for FOOD.
+        assert!(trace.iter().any(|row| matches!(
+            row,
+            AllocationRecord::QuoteAttempt {
+                agent: TRACE_BROKE,
+                good,
+                side: OrderSide::Bid,
+                outcome: QuoteOutcome::NoQuote(NoQuoteReason::ReservationNone),
+                ..
+            } if *good == FOOD
+        )));
+
+        // The poster's first-unprovided want is captured at post time, keyed by seq.
+        assert_eq!(
+            society.allocation_intent().get(&buyer_seq),
+            Some(&TracedWant {
+                kind: WantKind::Good(FOOD),
+                horizon: Horizon::Next,
+            })
+        );
+
+        // Re-arm only the SALT rester (the FOOD buyer has been filled); its carried bid
+        // is now recorded as an unchanged rest.
+        society.set_bid_override(TRACE_RESTER, SALT, Gold(2), Gold(2));
+        society.step();
+        let trace2 = society.take_allocation_trace();
+        // The carried SALT bid is in the post-cancellation pass-start book snapshot...
+        assert!(trace2.iter().any(|row| matches!(
+            row,
+            AllocationRecord::BookSnapshot {
+                side: OrderSide::Bid,
+                agent: TRACE_RESTER,
+                good,
+                limit: Gold(2),
+                seq: 3,
+                ..
+            } if *good == SALT
+        )));
+        // ...and is recorded as an unchanged rest for the pass.
+        assert!(trace2.iter().any(|row| matches!(
+            row,
+            AllocationRecord::QuoteAttempt {
+                agent: TRACE_RESTER,
+                good,
+                side: OrderSide::Bid,
+                outcome: QuoteOutcome::RestingUnchanged { seq: 3, limit: Gold(2), reservation: Gold(2) },
+                ..
+            } if *good == SALT
+        )));
+    }
+
+    #[test]
+    fn allocation_trace_records_rejected_match_before_valid_counterparty() {
+        let mut buyer = test_capitalist(Stock::new(SALT.0));
+        buyer.id = AgentId(1);
+        buyer.gold = Gold(2);
+        buyer.scale = scale_entries(&[(WantKind::Good(FOOD), Horizon::Next, 1)]);
+
+        let mut broken_seller = test_capitalist({
+            let mut stock = Stock::new(SALT.0);
+            stock.add(FOOD, 1);
+            stock
+        });
+        broken_seller.id = AgentId(2);
+        broken_seller.gold = Gold(u64::MAX);
+
+        let mut valid_seller = test_capitalist({
+            let mut stock = Stock::new(SALT.0);
+            stock.add(FOOD, 1);
+            stock
+        });
+        valid_seller.id = AgentId(3);
+        valid_seller.gold = Gold::ZERO;
+
+        let mut society = Society::from_scenario(MarketScenario {
+            name: "allocation-trace-rejection",
+            scenario: ScenarioName::MarketPriceDiscovery,
+            seed: 1,
+            periods: 1,
+            agents: vec![buyer, broken_seller, valid_seller],
+            recipes: Vec::new(),
+            events: Vec::new(),
+            money: MarketMoneyConfig::Designated(DesignatedMoney { good: GOLD }),
+        });
+        let book_index = society
+            .books
+            .iter()
+            .position(|book| book.good == FOOD)
+            .expect("FOOD has a market book");
+        for (seller, limit, seq) in [(AgentId(2), Gold(1), 1), (AgentId(3), Gold(2), 2)] {
+            let ask = Order {
+                agent: seller,
+                side: OrderSide::Ask,
+                good: FOOD,
+                limit,
+                qty: 1,
+                seq,
+                expires_tick: 3,
+            };
+            assert!(society.reservations.reserve_order(&society.agents, &ask));
+            assert!(society.books[book_index]
+                .add_order(
+                    ask,
+                    0,
+                    society.agents.as_mut_slice(),
+                    &mut society.reservations,
+                )
+                .is_empty());
+        }
+        society.seq = 2;
+        society.enable_allocation_trace();
+        society.allocation_trace_begin_pass();
+        let buyer_index = society.agent_index_for(AgentId(1)).unwrap();
+        let mut filled = Vec::new();
+        society.ensure_order_with_intent(
+            QuotePlan {
+                agent_index: buyer_index,
+                side: OrderSide::Bid,
+                good: FOOD,
+                reservation: Gold(2),
+                limit: Gold(2),
+                existing: None,
+            },
+            &mut filled,
+            Some(TracedWant {
+                kind: WantKind::Good(FOOD),
+                horizon: Horizon::Next,
+            }),
+        );
+
+        let executions = society
+            .allocation_trace
+            .iter()
+            .filter_map(|row| match row {
+                AllocationRecord::Execution {
+                    incoming_seq,
+                    resting_seq,
+                    bid_limit,
+                    ask_limit,
+                    status,
+                    ..
+                } => Some((*incoming_seq, *resting_seq, *bid_limit, *ask_limit, *status)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            executions,
+            vec![
+                (3, 1, Gold(2), Gold(1), AllocationExecutionStatus::Rejected),
+                (3, 2, Gold(2), Gold(2), AllocationExecutionStatus::Succeeded),
+            ]
+        );
+        assert_eq!(society.trades.len(), 1);
+        assert_eq!(society.trades[0].seller, AgentId(3));
     }
 
     #[test]
