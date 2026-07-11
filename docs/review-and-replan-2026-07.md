@@ -193,12 +193,30 @@ Falsifiable bar: production survives the death of producers.
 >   in 2 rounds; RoR ACCEPT-AS-HONEST-FINDING (formal label retained; causal headline reframed; zero-
 >   activation prominently disclosed; dormant ledger provenance gap flagged for repair before any positive
 >   run). Report §29 + appendix. Preserved on **`feat/earned-provisioning-impl-rb`** (tip `ec3417d`).
-> - **C3R.d — NEXT (RoR-endorsed): individual saving ahead of need.** The keystone's remaining question is
->   now BEHAVIORAL, not institutional: a parent-facing future-bread motive that purchases and RETAINS the
->   four-loaf birth stock through the existing market machinery (purchased stock already passes the birth
->   gate — nothing structural is missing; direct conserved birth-stock provisioning as a sufficiency
->   control). Prerequisite repair: the dormant ledger provenance gap. After intergenerational continuity is
->   restored, re-run the recurring-vs-depleting demand question. Scoping pending user.
+> - **C3R.d — LANDED (impl-65, spec `docs/impl-birth-stock-saving.md`).** The birth-stock saving motive,
+>   built minimally (the full 4-unit Next-horizon want block while below cap; Slice 0 = the ledger
+>   provenance repair; a conserved out-of-household sufficiency control; flag `birth_stock_saving`, tag 31).
+>   **Result: the motive works as built and the trap holds — a BOOTSTRAP/ALLOCATION TRAP.** The control
+>   confirms the premise emphatically within bounds (four loaves = an immediate birth at every one of
+>   690–730 otherwise-eligible opportunities/run; endowment block → 0; cap-limited replacement throughput,
+>   births ~2 → 702–730 — recurring redistribution proving LOCAL gate sufficiency, not endogenous stock
+>   formation). The motive: wants 384–540/run, only 3–7 attributable purchases clear, stock reaches four
+>   0–3×, births never materially exceed the reference. Diagnosis: no uncommitted surplus reaches saving
+>   (offer-scarcity vs hungry-buyer allocation unresolved — follow-up telemetry named). The circle: no
+>   chain → no winnable bread → no birth stock → no heirs → no chain. **Individual saving alone does not
+>   escape a low-level equilibrium this deep.** Process: rb-lite CONSENSUS_FAILURE over one ledger-contract
+>   P1, orchestrator-adjudicated (non-bread Earned credits kept, class-tracked + disclosed — empirically
+>   negligible producer-class bypass 0–14 gold); round-7 claude reviewer degraded; gated on codex review +
+>   independent verification + RoR ACCEPT-AS-HONEST-FINDING (narrowed framing). Report §30 + appendix.
+>   Preserved on **`feat/birth-stock-saving-impl-rb`** (tip `45a922e`).
+> - **C3R.e — NEXT: the trap-escape (a coordination/transition lever, NOT another individual behavior).**
+>   RoR-endorsed menu: (0) FIRST instrument the allocation contest (offerable bread, seller class, losing
+>   birth-stock bids, competing Now demand — resolves the offer-scarcity-vs-allocation diagnosis and is
+>   follow-up debt anyway); then one of (a) a household/collective granary or birth-stock reserve, (b) a
+>   priority set-aside, (c) the C3R.b hearth subsidy re-read as a TRAP-ESCAPE intervention — ignite, then
+>   WITHDRAW to test hysteresis (does the economy stay out of the trap once out?), (d) a finite initial
+>   stock/capital bridge (the recurring control does NOT already prove a one-time endowment sufficient).
+>   Scoping pending user.
 
 **P5+ — re-derive the institutional stack on the living base.** Firms (C2R) and rent/factor markets
 (C4R) once solvent counterparties exist; the classes/mobility measurement (C9) over whatever forms;
