@@ -209,14 +209,26 @@ Falsifiable bar: production survives the death of producers.
 >   negligible producer-class bypass 0–14 gold); round-7 claude reviewer degraded; gated on codex review +
 >   independent verification + RoR ACCEPT-AS-HONEST-FINDING (narrowed framing). Report §30 + appendix.
 >   Preserved on **`feat/birth-stock-saving-impl-rb`** (tip `45a922e`).
-> - **C3R.e — NEXT: the trap-escape (a coordination/transition lever, NOT another individual behavior).**
->   RoR-endorsed menu: (0) FIRST instrument the allocation contest (offerable bread, seller class, losing
->   birth-stock bids, competing Now demand — resolves the offer-scarcity-vs-allocation diagnosis and is
->   follow-up debt anyway); then one of (a) a household/collective granary or birth-stock reserve, (b) a
->   priority set-aside, (c) the C3R.b hearth subsidy re-read as a TRAP-ESCAPE intervention — ignite, then
->   WITHDRAW to test hysteresis (does the economy stay out of the trap once out?), (d) a finite initial
->   stock/capital bridge (the recurring control does NOT already prove a one-time endowment sufficient).
->   Scoping pending user.
+> - **C3R.e-obs — LANDED (impl-66, spec `docs/impl-saving-allocation-obs.md`).** The instrumentation
+>   prerequisite: for every failed saving quote-opportunity, one cause by pinned precedence, from an inert
+>   four-record allocation trace (digest = OFF + one two-byte tag emission; the pinned oracle re-runs the
+>   full C3R.d classification under observation). **Diagnosis: `MixedDiagnosis` ×5 — three correlated
+>   economic bottlenecks (OfferScarcity .22–.38, AllocationPriority .25–.35, GoldBind [= NoBidPosted under
+>   reservation/posting logic] .28–.38) with Microstructure at 2–7% — the trap SURVIVES its disconfirmation
+>   challenge.** RoR: REJECT (a false-green oracle — printed verdicts, not computed) → repaired (shared real
+>   classifier asserted; branch table-tests; an independent opportunity recount; diagnosis byte-identical)
+>   → ACCEPT-AS-HONEST-FINDING. Endorsed conclusion: "correlated economic bottlenecks, microstructure
+>   minor, direct provision as the maximin next intervention." Report §31 + appendix. Preserved on
+>   **`feat/saving-allocation-obs-impl-rb`** (tip `06e3180`).
+> - **C3R.e — NEXT: the ignition/withdrawal experiment (the lever now SELECTED by the diagnosis).** Direct
+>   stock provision as the maximin intervention (bypasses all three proximate bottlenecks at once;
+>   gate-proven by the C3R.d control) — tested as IGNITION + a strict WITHDRAWAL/HYSTERESIS bar (all
+>   support ended; no residual shock inventory; market-funded replacement births; several producer
+>   lifetimes; a matched no-ignition cell staying trapped), per the amended plan: two ignition paths
+>   compared (one-time conserved stock — split REDISTRIBUTION vs ADDITIVE cells — and the C3R.b
+>   subsidy-withdrawal), on the demand-regime axis {current, durable}. The all-goods↔bread-only classifier
+>   congruence lands in this spec. "Multiple equilibria / big push" language stays RESERVED for an observed
+>   high state surviving withdrawal. Scoping pending user.
 
 **P5+ — re-derive the institutional stack on the living base.** Firms (C2R) and rent/factor markets
 (C4R) once solvent counterparties exist; the classes/mobility measurement (C9) over whatever forms;
