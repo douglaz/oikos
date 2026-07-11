@@ -654,7 +654,29 @@ We state the scaffolds plainly; a hostile reader should attack these first.
   therefore no longer institutional but behavioral, and it is the oldest one in capital theory: where does the
   first act of saving come from? (One empirical gift along the way: the ledger's buyer-class split showed that the
   only durable external demand in the economy comes from the one class with recurring *earned* income — the
-  gatherers — and not from the endowed consumers, whose one-time purse simply depletes.)
+  gatherers — and not from the endowed consumers, whose one-time purse simply depletes.) That behavioral question
+  has since been put to the test — **C3R.d, the birth-stock motive**: give every member of a growable household a
+  standing, market-cleared want for exactly the four loaves a birth requires, expressed through the same machinery
+  a miller uses to want grain it will never eat, so that the existing market does the buying and the existing
+  reservation logic does the retaining. The behavior *works as built* — the wants are emitted, some bids clear, the
+  stock occasionally assembles, a few births follow — and the economy stays trapped. A sufficiency control puts the
+  question beyond doubt from the other side: inject the four loaves directly (a conserved transfer from the richest
+  outside holder, no minting) and *every one* of roughly seven hundred otherwise-eligible opportunities per run
+  becomes an immediate birth — possession of the stock is the sole missing condition, every single time. But the
+  unassisted market almost never lets a producer household assemble it: of some five hundred saving wants a run,
+  three to seven purchases clear, because the chain upstream produces nothing and what bread survives elsewhere is
+  either not offered or lost to hungrier bidders — the telemetry cannot yet say which, and the write-up is careful
+  to claim only that *no uncommitted surplus reaches saving*, not that nothing exists to save. The keystone's four
+  slices thus close into a single figure: a **bootstrap trap**. The chain is dead for want of heirs; heirs are
+  absent for want of the birth stock; the stock cannot be assembled for want of winnable bread; and bread goes
+  unmade for want of a chain. Each slice removed a wall — capital destruction, the subsidy flood, the absent
+  motive — and behind the last wall was not a missing behavior but a missing *starting point*: an economy already
+  inside the trap has no individual action that leads out of it. What the trap names as its own next question is,
+  for the first time in the keystone, not another refinement of individual choice but a **coordination or
+  transition problem** — a granary, a set-aside, a deliberately temporary subsidy withdrawn after ignition, an
+  initial endowment that bridges the first generation — which is to say: the model has arrived, from the inside,
+  at the oldest question about development. Not "why do poor economies lack capital?" but "what, other than
+  someone's prior accumulation, could ever start the accumulating?"
 
 ---
 
