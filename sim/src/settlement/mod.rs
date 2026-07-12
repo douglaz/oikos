@@ -1835,6 +1835,24 @@ pub struct ChainConfig {
     /// validated above the lineage `cultivate_hunger_in` trigger and strictly below
     /// `hunger_critical`, so it fires within the alive-but-lethal-pressure window.
     pub emergency_hunger_threshold: u16,
+    /// C3R.e (impl-67): the A1 ignition gate — the econ tick at which the one-shot conserved
+    /// birth-stock injection fires ONCE (donors restricted to NON-producer households, every
+    /// moved staple unit origin-flagged), a dedicated latch independent of the SufficiencyControl
+    /// mode. `None` for every existing config, so no ignition fires and the run is byte-identical
+    /// (tag 33, ON-only).
+    pub birth_stock_ignition_at: Option<u64>,
+    /// C3R.e (impl-67): the A2 additive endowment — extra starting staple credited to each
+    /// producer-house subject at generation ([`build_agent`]), then split out of the tick-0
+    /// bootstrap sweep as origin-flagged lots (so the additive stock is exhaustion-tracked). `0`
+    /// for every existing config, so no endowment is added and the run is byte-identical (tag 33).
+    pub producer_house_starting_staple: u32,
+    /// C3R.e (impl-67): the B support-withdrawal gate — while `econ_tick < until` the producer-house
+    /// `food_provision` hearth AND the `producer_subsistence` cushion's STAPLE leg are delivered; at
+    /// or after `until` both are withdrawn. Its mere PRESENCE (`Some`) also disables the cushion's
+    /// WOOD leg for the ENTIRE run (constant across eras — the bread-only ledger cannot origin-track
+    /// subsidized WOOD). `None` for every existing config (support never gated off, WOOD leg intact),
+    /// so the run is byte-identical (tag 33, ON-only).
+    pub producer_support_until_tick: Option<u64>,
 }
 
 impl ChainConfig {
@@ -2036,6 +2054,11 @@ impl ChainConfig {
             // existing config and its goldens are byte-identical (both canonicalized ON-only).
             gatherer_food_cushion: 0,
             emergency_hunger_threshold: 0,
+            // C3R.e off by default (tag 33, ON-only): no ignition, no additive endowment, no
+            // support-withdrawal gate — every existing config stays byte-identical.
+            birth_stock_ignition_at: None,
+            producer_house_starting_staple: 0,
+            producer_support_until_tick: None,
         }
     }
 
@@ -2224,6 +2247,10 @@ impl ChainConfig {
             // S21h off by default (see `grain_flour_bread`).
             gatherer_food_cushion: 0,
             emergency_hunger_threshold: 0,
+            // C3R.e off by default (see `grain_flour_bread`).
+            birth_stock_ignition_at: None,
+            producer_house_starting_staple: 0,
+            producer_support_until_tick: None,
         }
     }
 
@@ -2390,6 +2417,10 @@ impl ChainConfig {
             // S21h off by default (see `grain_flour_bread`).
             gatherer_food_cushion: 0,
             emergency_hunger_threshold: 0,
+            // C3R.e off by default (see `grain_flour_bread`).
+            birth_stock_ignition_at: None,
+            producer_house_starting_staple: 0,
+            producer_support_until_tick: None,
         }
     }
 }
@@ -7251,6 +7282,19 @@ pub struct Settlement {
     birth_stock_eligible_opportunities: u64,
     birth_stock_injections_completed: u64,
     birth_stock_source_shortfalls: u64,
+    /// C3R.e (impl-67): the A1 ignition dose — the total staple quantity the one-shot injection
+    /// moved at `birth_stock_ignition_at` (`< 24 = 6 × child_food_endowment → an under-dose →
+    /// IgnitionShortfall`). `0` off the A1 path. Runtime-only, never digested.
+    ignition_injected_qty: u64,
+    /// C3R.e (impl-67): cumulative producer-house birth funding, split by the acquisition channel
+    /// the drawn (parent→child) endowment lots carried — criterion iii reads market funding
+    /// (`Bought`/`SelfProduced`) against non-market (`SeededMinted`/`Foraged`/`Commons`). `0` off
+    /// the acquisition-ledger path. Runtime-only, never digested.
+    producer_birth_funded_by_channel: [u64; FoodChannel::COUNT],
+    /// C3R.e (impl-67): cumulative producer-house birth funding drawn from INTERVENTION-ORIGIN
+    /// lots — criterion iii requires this to stay flat within an eligible window (a birth paid for
+    /// with subsidy residue is not market-funded). `0` off the path. Runtime-only, never digested.
+    producer_birth_funded_intervention: u64,
     birth_stock_injection_records: Vec<BirthStockInjectionRecord>,
     birth_stock_births_by_household: Vec<u64>,
     /// C3R.e-obs (impl-66 repair): the C3R.d attribution snapshot captured at the most
@@ -7924,6 +7968,15 @@ struct ChainRuntime {
     /// [`ChainConfig::emergency_hunger_threshold`]). `0` (off) for every existing config, so
     /// the [`Settlement::run_emergency_self_provision`] phase is inert and byte-identical.
     emergency_hunger_threshold: u16,
+    /// C3R.e (impl-67): the A1 ignition gate (see [`ChainConfig::birth_stock_ignition_at`]).
+    /// `None` for every existing config; canonicalized ON-only under tag 33.
+    birth_stock_ignition_at: Option<u64>,
+    /// C3R.e (impl-67): the A2 additive endowment (see
+    /// [`ChainConfig::producer_house_starting_staple`]). `0` for every existing config; tag 33.
+    producer_house_starting_staple: u32,
+    /// C3R.e (impl-67): the B support-withdrawal gate (see
+    /// [`ChainConfig::producer_support_until_tick`]). `None` for every existing config; tag 33.
+    producer_support_until_tick: Option<u64>,
     /// S21d.0: retire the food mints (see [`ChainConfig::retire_food_mints`]). `false` for every
     /// existing config, so the demographic + producer staple mints fire and the run is
     /// byte-identical (the flag is canonicalized ON-only).
@@ -9017,10 +9070,19 @@ impl FoodChannel {
 
 /// S21d.1: one FIFO lot of tracked-food held by an agent — `qty` units that all entered via the
 /// same `channel`. Lots are stored oldest-at-front so a debit draws the earliest acquisition first.
+///
+/// C3R.e (impl-67): `intervention` is an ORTHOGONAL origin flag — `true` for a unit that entered
+/// through a finite intervention (A1's moved loaves, A2's endowment split, B's support mints). It
+/// is preserved through EVERY transfer, INCLUDING the market-sale retag to `Bought` (a sale changes
+/// the `channel`, never the origin flag), so it is resale-proof: an ignition loaf that leaves the
+/// cohort and returns as `Bought` still reads as intervention-origin. Estate-to-COMMONS (a terminal,
+/// economically inaccessible sink) consumes the flag. It rides the un-digested ledger, so it is
+/// digest-free.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct FoodLot {
     channel: FoodChannel,
     qty: u64,
+    intervention: bool,
 }
 
 /// S21d.1: the **acquisition-channel ledger** — a sim-side, runtime-only per-agent FIFO balance
@@ -9074,15 +9136,27 @@ struct AcquisitionLedger {
 }
 
 impl AcquisitionLedger {
-    /// Credit `qty` of `agent`'s tracked-food as a fresh `channel` lot (an inflow).
+    /// Credit `qty` of `agent`'s tracked-food as a fresh `channel` lot (an inflow), non-intervention.
     fn credit(&mut self, agent: AgentId, channel: FoodChannel, qty: u64) {
+        self.credit_lot(agent, channel, qty, false);
+    }
+
+    /// C3R.e (impl-67): credit `qty` of `agent`'s tracked-food as a fresh INTERVENTION-ORIGIN lot
+    /// (A2's endowment split / B's support mints). Identical to [`Self::credit`] except the lot
+    /// carries the origin flag, so the units read as intervention-origin until consumed/sunk.
+    fn credit_intervention(&mut self, agent: AgentId, channel: FoodChannel, qty: u64) {
+        self.credit_lot(agent, channel, qty, true);
+    }
+
+    fn credit_lot(&mut self, agent: AgentId, channel: FoodChannel, qty: u64, intervention: bool) {
         if qty == 0 {
             return;
         }
-        self.lots
-            .entry(agent)
-            .or_default()
-            .push_back(FoodLot { channel, qty });
+        self.lots.entry(agent).or_default().push_back(FoodLot {
+            channel,
+            qty,
+            intervention,
+        });
         self.credited_by_channel[channel.index()] += qty;
         // S22a: track per-agent cumulative bought food (market purchases) for the rolling
         // material-buyer diagnostic. `transfer_as_bought` routes the buyer's inflow through
@@ -9111,6 +9185,7 @@ impl AcquisitionLedger {
             drawn.push(FoodLot {
                 channel: front.channel,
                 qty: take,
+                intervention: front.intervention,
             });
             front.qty -= take;
             qty -= take;
@@ -9166,35 +9241,84 @@ impl AcquisitionLedger {
     }
 
     /// A MARKET-SALE transfer: the seller's units leave FIFO (booked as non-consume outflow), and
-    /// the SAME quantity enters the buyer as a fresh `Bought` lot — the buyer's acquisition channel
+    /// the SAME quantity enters the buyer as fresh `Bought` lots — the buyer's acquisition channel
     /// is, by definition, "bought" regardless of the seller's origin. Conserved (held total
     /// unchanged); the channel mix shifts toward `Bought`, which is exactly the probe's signal.
+    ///
+    /// C3R.e (impl-67): the retag is ORDER-PRESERVING and origin-flag-preserving. Each drawn lot
+    /// maps IN ORIGINAL FIFO ORDER to a fresh `Bought` lot that KEEPS its `intervention` origin flag
+    /// (the sale changes the channel, never the origin), coalescing only ADJACENT equal-origin lots.
+    /// A channel-partition would reorder a mixed FIFO and corrupt later exhaustion/birth attribution
+    /// — so a single intervention loaf sold and resold still reads as intervention-origin. With every
+    /// drawn lot equal-origin (the un-flagged default) the run collapses to one `Bought` lot of the
+    /// full quantity, exactly the pre-flag credit, so off the intervention path this is inert.
     fn transfer_as_bought(
         &mut self,
         from: AgentId,
         to: AgentId,
         qty: u64,
     ) -> [u64; FoodChannel::COUNT] {
-        let drawn = self.draw(from, qty);
-        let total: u64 = drawn.iter().sum();
-        for channel in FoodChannel::ALL {
-            self.other_outflow_by_channel[channel.index()] += drawn[channel.index()];
+        let drawn = self.draw_lots(from, qty);
+        let mut breakdown = [0u64; FoodChannel::COUNT];
+        let mut run: Vec<FoodLot> = Vec::new();
+        for lot in drawn {
+            breakdown[lot.channel.index()] += lot.qty;
+            self.other_outflow_by_channel[lot.channel.index()] += lot.qty;
+            match run.last_mut() {
+                Some(last) if last.intervention == lot.intervention => last.qty += lot.qty,
+                _ => run.push(FoodLot {
+                    channel: FoodChannel::Bought,
+                    qty: lot.qty,
+                    intervention: lot.intervention,
+                }),
+            }
         }
-        // Credit the buyer as Bought for what the seller actually had to give (`total`, which may
-        // be < qty only if the ledger and stock drifted — guarded by the conservation assert).
-        self.credit(to, FoodChannel::Bought, total);
-        drawn
+        let total: u64 = breakdown.iter().sum();
+        if total > 0 {
+            self.lots.entry(to).or_default().extend(run);
+            self.credited_by_channel[FoodChannel::Bought.index()] += total;
+            *self.bought_credited_by_agent.entry(to).or_insert(0) += total;
+        }
+        breakdown
     }
 
     /// An ORIGIN-PRESERVING transfer (birth endowment / estate→heir): draw FIFO from `from` and
-    /// re-credit the SAME channels to `to`, so an inherited seeded loaf stays seeded and a produced
-    /// one stays produced. A pure internal move — it touches neither the consume nor the outflow
-    /// tally, and (unlike `credit`) does not double-count the inflow counters.
-    fn transfer_preserve(&mut self, from: AgentId, to: AgentId, qty: u64) {
+    /// re-credit the SAME channels (and origin flags) to `to`, so an inherited seeded loaf stays
+    /// seeded and an intervention loaf stays intervention-origin. A pure internal move — it touches
+    /// neither the consume nor the outflow tally, and (unlike `credit`) does not double-count the
+    /// inflow counters. Returns the exact drawn lots so a caller (e.g. the birth-funding site) can
+    /// attribute funding by channel and origin.
+    fn transfer_preserve(&mut self, from: AgentId, to: AgentId, qty: u64) -> Vec<FoodLot> {
         let drawn = self.draw_lots(from, qty);
         if !drawn.is_empty() {
-            self.lots.entry(to).or_default().extend(drawn);
+            self.lots
+                .entry(to)
+                .or_default()
+                .extend(drawn.iter().copied());
         }
+        drawn
+    }
+
+    /// C3R.e (impl-67): like [`Self::transfer_preserve`] but STAMPS every moved lot as
+    /// intervention-origin — A1's one-shot injection moves ordinary donor bread and re-flags it as
+    /// intervention (the channel is preserved; only the origin flag is set). Returns the moved lots.
+    fn transfer_preserve_as_intervention(
+        &mut self,
+        from: AgentId,
+        to: AgentId,
+        qty: u64,
+    ) -> Vec<FoodLot> {
+        let mut drawn = self.draw_lots(from, qty);
+        for lot in &mut drawn {
+            lot.intervention = true;
+        }
+        if !drawn.is_empty() {
+            self.lots
+                .entry(to)
+                .or_default()
+                .extend(drawn.iter().copied());
+        }
+        drawn
     }
 
     /// Move up to `qty` of the sender's self-produced tracked-food channel to `to`, leaving
@@ -9217,6 +9341,7 @@ impl AcquisitionLedger {
                     moved.push_back(FoodLot {
                         channel: lot.channel,
                         qty: take,
+                        intervention: lot.intervention,
                     });
                     lot.qty -= take;
                     remaining -= take;
@@ -9263,6 +9388,7 @@ impl AcquisitionLedger {
                     moved.push(FoodLot {
                         channel: back.channel,
                         qty: take,
+                        intervention: back.intervention,
                     });
                     back.qty -= take;
                     remaining -= take;
@@ -9330,6 +9456,30 @@ impl AcquisitionLedger {
             }
         }
         held
+    }
+
+    /// C3R.e (impl-67): total INTERVENTION-ORIGIN tracked food held across ALL living agents,
+    /// every channel — the GLOBAL exhaustion read (criterion ii is `== 0`). Resale-proof: the
+    /// origin flag survives the market retag, so a laundered ignition loaf still counts here.
+    fn intervention_held(&self) -> u64 {
+        self.lots
+            .values()
+            .flat_map(|q| q.iter())
+            .filter(|lot| lot.intervention)
+            .map(|lot| lot.qty)
+            .sum()
+    }
+
+    /// C3R.e (impl-67): intervention-origin tracked food held by the given cohort of agents (the
+    /// producer-cohort exhaustion read). A subset of [`Self::intervention_held`].
+    fn intervention_held_by(&self, agents: &BTreeSet<AgentId>) -> u64 {
+        agents
+            .iter()
+            .filter_map(|id| self.lots.get(id))
+            .flat_map(|q| q.iter())
+            .filter(|lot| lot.intervention)
+            .map(|lot| lot.qty)
+            .sum()
     }
 
     /// Tracked-food currently held by one agent in one channel.
@@ -10718,6 +10868,9 @@ impl Settlement {
                 land_price_cap_factor: chain.land_price_cap_factor,
                 gatherer_food_cushion: chain.gatherer_food_cushion,
                 emergency_hunger_threshold: chain.emergency_hunger_threshold,
+                birth_stock_ignition_at: chain.birth_stock_ignition_at,
+                producer_house_starting_staple: chain.producer_house_starting_staple,
+                producer_support_until_tick: chain.producer_support_until_tick,
                 retire_food_mints: chain.retire_food_mints,
                 acquisition_ledger: chain.acquisition_ledger,
                 productive_reentry: chain.productive_reentry,
@@ -10794,6 +10947,9 @@ impl Settlement {
             birth_stock_eligible_opportunities: 0,
             birth_stock_injections_completed: 0,
             birth_stock_source_shortfalls: 0,
+            ignition_injected_qty: 0,
+            producer_birth_funded_by_channel: [0; FoodChannel::COUNT],
+            producer_birth_funded_intervention: 0,
             birth_stock_injection_records: Vec::new(),
             birth_stock_births_by_household: vec![0; households.len()],
             last_birth_stock_attribution_snapshot: BTreeSet::new(),
@@ -11347,6 +11503,9 @@ impl Settlement {
             birth_stock_eligible_opportunities: 0,
             birth_stock_injections_completed: 0,
             birth_stock_source_shortfalls: 0,
+            ignition_injected_qty: 0,
+            producer_birth_funded_by_channel: [0; FoodChannel::COUNT],
+            producer_birth_funded_intervention: 0,
             birth_stock_injection_records: Vec::new(),
             birth_stock_births_by_household: Vec::new(),
             last_birth_stock_attribution_snapshot: BTreeSet::new(),
@@ -12012,6 +12171,10 @@ impl Settlement {
         // before the after-snapshot so its (transferred-in) holdings balance the
         // parent's debit. A no-op without a demography overlay; draws no randomness.
         let birth_stock_injections = self.run_birth_stock_sufficiency_control();
+        // C3R.e (impl-67): the A1 one-shot ignition fires here (before the births), independent of
+        // the recurring SufficiencyControl gate above — a no-op unless `birth_stock_ignition_at`
+        // matches this tick.
+        self.run_birth_stock_ignition();
         self.observe_birth_stock_holdings();
         report.births = self.run_births();
         self.record_birth_stock_control_results(&birth_stock_injections);
@@ -15385,16 +15548,34 @@ impl Settlement {
             .collect();
         for (id, h) in members {
             let spec = &demo.households[h];
-            if mint_food {
+            // C3R.e (impl-67): the B support-withdrawal gate — a producer household's food hearth
+            // is withdrawn once `econ_tick >= producer_support_until_tick`. Lineage households and
+            // every non-B config (`producer_support_until_tick == None`) are unaffected, so the run
+            // is byte-identical off B.
+            if mint_food && (!self.is_producer_household(h) || self.producer_support_active()) {
+                // C3R.e (impl-67): a producer household's food hearth under a B cell is a support
+                // mint — origin-flag it (only producer households under B ever reach here with a
+                // non-zero `food_provision`; every lineage hearth stays plain).
+                let support_mint =
+                    self.is_producer_household(h) && self.producer_support_configured();
                 self.deliver_demography_provision_unit(
                     id,
                     Some(h),
                     staple,
                     spec.food_provision,
+                    support_mint,
                     report,
                 );
             }
-            self.deliver_demography_provision_unit(id, Some(h), WOOD, spec.wood_provision, report);
+            // WOOD is not tracked food, so this never touches the acquisition ledger (never flagged).
+            self.deliver_demography_provision_unit(
+                id,
+                Some(h),
+                WOOD,
+                spec.wood_provision,
+                false,
+                report,
+            );
         }
     }
 
@@ -15404,6 +15585,11 @@ impl Settlement {
         household: Option<usize>,
         good: GoodId,
         provision: u32,
+        // C3R.e (impl-67): stamp the credited tracked-food lot as INTERVENTION-ORIGIN — set only
+        // for a B cell's producer-house support mint (the hearth staple / the cushion's staple
+        // leg), so the withdrawn support inventory is exhaustion-tracked. `false` everywhere else
+        // (every lineage hearth, every non-B config), so the ledger stays behaviour-identical.
+        intervention: bool,
         report: &mut EconTickReport,
     ) {
         if provision == 0 {
@@ -15435,9 +15621,20 @@ impl Settlement {
             // or the producer staple floor) enters as the `SeededMinted` channel — the very
             // term the open-survival probe retires, so its only effect here is on the
             // mints-ON control. WOOD/other provisions are not tracked food, so no-op.
+            // C3R.e (impl-67): a B cell's producer-house support mint enters as an
+            // INTERVENTION-ORIGIN `SeededMinted` lot (resale-proof), so the withdrawn support is
+            // exhaustion-tracked; every other mint stays plain, so the ledger is unchanged off B.
             if self.acquisition_ledger_active() && Some(good) == self.acquisition_food_good() {
-                self.acquisition
-                    .credit(id, FoodChannel::SeededMinted, u64::from(credited));
+                if intervention {
+                    self.acquisition.credit_intervention(
+                        id,
+                        FoodChannel::SeededMinted,
+                        u64::from(credited),
+                    );
+                } else {
+                    self.acquisition
+                        .credit(id, FoodChannel::SeededMinted, u64::from(credited));
+                }
             }
         }
     }
@@ -15597,11 +15794,22 @@ impl Settlement {
             // origin preserved (an inherited bought loaf stays bought). A no-op off the bread
             // endowment / off the ledger.
             if self.acquisition_ledger_active() && Some(staple) == self.acquisition_food_good() {
-                self.acquisition.transfer_preserve(
+                let drawn = self.acquisition.transfer_preserve(
                     parent_id,
                     child_id,
                     u64::from(demo.child_food_endowment),
                 );
+                // C3R.e (impl-67): attribute the producer-house birth's funding by the exact drawn
+                // parent→child endowment lots — criterion iii reads this window-diffed (market
+                // funding = Bought/SelfProduced, no intervention-origin lot).
+                if self.is_producer_household(h) {
+                    for lot in &drawn {
+                        self.producer_birth_funded_by_channel[lot.channel.index()] += lot.qty;
+                        if lot.intervention {
+                            self.producer_birth_funded_intervention += lot.qty;
+                        }
+                    }
+                }
             }
             if gold_endow > 0 {
                 let transferred = self
@@ -16147,6 +16355,19 @@ impl Settlement {
                 if good == staple && !mint_staple {
                     continue;
                 }
+                // C3R.e (impl-67): the B support-withdrawal gate on the cushion's STAPLE leg —
+                // withdrawn once `econ_tick >= producer_support_until_tick` (inert for every non-B
+                // config, where `producer_support_until_tick == None`, so byte-identical).
+                if good == staple && !self.producer_support_active() {
+                    continue;
+                }
+                // C3R.e (impl-67): the cushion's WOOD leg is DISABLED for the ENTIRE run of a B
+                // cell — the bread-only acquisition ledger cannot origin-track subsidized WOOD, so
+                // rather than leave untracked WOOD to survive "exhaustion" the B substrate runs
+                // staple-only, constant across eras. `None` (every non-B config) leaves it intact.
+                if good == WOOD && self.producer_cushion_wood_disabled() {
+                    continue;
+                }
                 // S19 cycle producers: top subsistence up only to a low cap (well below
                 // `need_max` = 12), so a producer's SINGLE per-tick barter offer is freed to
                 // bid for its recipe input / the medium rather than reserved for survival —
@@ -16176,7 +16397,19 @@ impl Settlement {
                     .get(id)
                     .map_or(0, |agent| agent.stock.get(good));
                 if held < target {
-                    self.deliver_demography_provision_unit(id, None, good, target - held, report);
+                    // C3R.e (impl-67): a B cell's cushion STAPLE leg is a support mint —
+                    // origin-flag it so the withdrawn cushion is exhaustion-tracked. The WOOD leg
+                    // is disabled under B (skipped above) and untracked anyway, and every non-B
+                    // cushion stays plain, so the ledger is unchanged off B.
+                    let support_mint = good == staple && self.producer_support_configured();
+                    self.deliver_demography_provision_unit(
+                        id,
+                        None,
+                        good,
+                        target - held,
+                        support_mint,
+                        report,
+                    );
                 }
             }
         }
@@ -18736,6 +18969,47 @@ impl Settlement {
                 .is_some_and(chain_runtime_earned_provisioning_active)
     }
 
+    /// C3R.e (impl-67): true when ANY of the three ignition/withdrawal knobs is set — the sole
+    /// gate on the tag-33 digest record (ON-only, so every existing config stays byte-identical).
+    fn ignition_withdrawal_active(&self) -> bool {
+        self.chain.as_ref().is_some_and(|chain| {
+            chain.birth_stock_ignition_at.is_some()
+                || chain.producer_house_starting_staple > 0
+                || chain.producer_support_until_tick.is_some()
+        })
+    }
+
+    /// C3R.e (impl-67): the B support gate — `true` while the producer-house food hearth and the
+    /// `producer_subsistence` cushion's STAPLE leg are still delivered. `None`
+    /// (`producer_support_until_tick`, every non-B config) → always on, so the gate is inert and
+    /// the run is byte-identical; `Some(until)` → on while `econ_tick < until`, withdrawn at/after.
+    fn producer_support_active(&self) -> bool {
+        self.chain.as_ref().is_none_or(|chain| {
+            chain
+                .producer_support_until_tick
+                .is_none_or(|until| self.econ_tick < until)
+        })
+    }
+
+    /// C3R.e (impl-67): true for a B cell — the support-withdrawal gate is configured
+    /// (`producer_support_until_tick.is_some()`). Every producer-house support mint (the food
+    /// hearth AND the cushion's STAPLE leg) is then ORIGIN-FLAGGED, so the withdrawn support
+    /// inventory is exhaustion-tracked (criterion ii): a window right after withdrawal cannot
+    /// pass on residual pre-withdrawal support bread. `None` (every non-B config) → false, so no
+    /// support mint is flagged and the ledger is behaviour-identical.
+    fn producer_support_configured(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(|chain| chain.producer_support_until_tick.is_some())
+    }
+
+    /// C3R.e (impl-67): the cushion's WOOD leg is disabled for the ENTIRE run of any B cell
+    /// (marked by `producer_support_until_tick` being set — the bread-only ledger cannot
+    /// origin-track subsidized WOOD). `None` (every non-B config) leaves the WOOD leg intact.
+    fn producer_cushion_wood_disabled(&self) -> bool {
+        self.producer_support_configured()
+    }
+
     fn birth_stock_saving_active(&self) -> bool {
         self.demography.is_some()
             && self
@@ -18788,6 +19062,18 @@ impl Settlement {
         self.producer_household_start().is_some_and(|start| {
             household >= start && household < start + MORTAL_PRODUCER_HOUSEHOLDS
         })
+    }
+
+    /// C3R.e (impl-67): whether `id` is a producer-house SUBJECT (a seeded/latent producer) — the
+    /// key for the A2 bootstrap-sweep endowment split. Mirrors [`is_producer_subject_vocation`],
+    /// keyed by agent id through the colonist arena. `false` for an unknown or dead-slot id.
+    fn is_producer_subject_id(&self, id: AgentId) -> bool {
+        self.colonist_slot_by_id
+            .get(&id)
+            .map(|&slot| &self.colonists[slot])
+            .is_some_and(|colonist| {
+                is_producer_subject_vocation(colonist.vocation, colonist.latent)
+            })
     }
 
     fn record_producer_house_person_ticks(&mut self) {
@@ -19517,12 +19803,16 @@ impl Settlement {
         }
     }
 
+    /// C3R.e (impl-67): `ignition` re-flags the moved acquisition-ledger lots as
+    /// intervention-origin (A1's one-shot injection); the recurring SufficiencyControl caller passes
+    /// `false`, so its moved lots keep their ordinary origin and the run is byte-identical off A1.
     fn transfer_birth_stock(
         &mut self,
         donor: AgentId,
         recipient: AgentId,
         staple: GoodId,
         qty: u32,
+        ignition: bool,
     ) -> bool {
         let recipient_held = self
             .society
@@ -19558,8 +19848,16 @@ impl Settlement {
                 .transfer(donor, recipient, u64::from(qty));
         }
         if Some(staple) == self.acquisition_food_good() {
-            self.acquisition
-                .transfer_preserve(donor, recipient, u64::from(qty));
+            if ignition {
+                self.acquisition.transfer_preserve_as_intervention(
+                    donor,
+                    recipient,
+                    u64::from(qty),
+                );
+            } else {
+                self.acquisition
+                    .transfer_preserve(donor, recipient, u64::from(qty));
+            }
         }
         true
     }
@@ -19568,6 +19866,37 @@ impl Settlement {
         if !self.birth_stock_control_active() {
             return Vec::new();
         }
+        // The recurring control: ordinary donors (no producer exclusion), no origin flag.
+        self.inject_birth_stock(false).0
+    }
+
+    /// C3R.e (impl-67): the A1 one-shot ignition — the SAME conserved injection machinery, fired
+    /// ONCE at `birth_stock_ignition_at` behind its OWN latch (independent of the SufficiencyControl
+    /// mode, which the recurring path gates on). Donors are restricted to NON-producer households
+    /// and every moved unit is origin-flagged. `ignition_injected_qty` records the dose — the
+    /// detector for under-dosing (`< 24 → IgnitionShortfall`), since the driver's shortfall counter
+    /// alone cannot see an ineligible household that receives nothing.
+    fn run_birth_stock_ignition(&mut self) {
+        let Some(at) = self
+            .chain
+            .as_ref()
+            .and_then(|chain| chain.birth_stock_ignition_at)
+        else {
+            return;
+        };
+        if self.econ_tick != at {
+            return;
+        }
+        let (_injected, injected_qty) = self.inject_birth_stock(true);
+        self.ignition_injected_qty = injected_qty;
+    }
+
+    /// C3R.e (impl-67): the shared birth-stock injection body, factored out of the recurring
+    /// SufficiencyControl driver so the A1 one-shot can reuse it. With `ignition = false` this is
+    /// byte-identical to the landed control (ordinary donors, no origin flag). With `ignition =
+    /// true` the donor pool EXCLUDES producer households and every moved unit is origin-flagged.
+    /// Returns the injected households and the total staple quantity moved (the ignition dose).
+    fn inject_birth_stock(&mut self, ignition: bool) -> (Vec<usize>, u64) {
         let Some((household_count, birth_interval, max_household_size, hunger_ceiling, target)) =
             self.demography.as_ref().map(|demo| {
                 (
@@ -19579,10 +19908,11 @@ impl Settlement {
                 )
             })
         else {
-            return Vec::new();
+            return (Vec::new(), 0);
         };
         let staple = self.known.hunger;
         let mut injected = Vec::new();
+        let mut injected_qty = 0u64;
         let mut injected_recipients = BTreeSet::new();
         for household in 0..household_count {
             if !self.is_producer_household(household) {
@@ -19631,8 +19961,14 @@ impl Settlement {
                 .iter()
                 .copied()
                 .filter(|&slot| {
+                    // C3R.e A1: an ignition additionally excludes producer households from the
+                    // donor pool (a pure redistribution FROM the non-producer surround).
                     self.colonists[slot].household != Some(household)
                         && !injected_recipients.contains(&self.colonists[slot].id)
+                        && !(ignition
+                            && self.colonists[slot]
+                                .household
+                                .is_some_and(|h| self.is_producer_household(h)))
                 })
                 .map(|slot| {
                     let id = self.colonists[slot].id;
@@ -19650,17 +19986,18 @@ impl Settlement {
             };
             debug_assert!(held >= target);
             let recipient = self.colonists[recipient_slot].id;
-            if self.transfer_birth_stock(donor, recipient, staple, target) {
+            if self.transfer_birth_stock(donor, recipient, staple, target, ignition) {
                 self.birth_stock_injections_completed =
                     self.birth_stock_injections_completed.saturating_add(1);
                 injected.push(household);
+                injected_qty = injected_qty.saturating_add(u64::from(target));
                 injected_recipients.insert(recipient);
             } else {
                 self.birth_stock_source_shortfalls =
                     self.birth_stock_source_shortfalls.saturating_add(1);
             }
         }
-        injected
+        (injected, injected_qty)
     }
 
     fn record_birth_stock_control_results(&mut self, injected: &[usize]) {
@@ -21857,6 +22194,10 @@ impl Settlement {
         let Some(food) = self.acquisition_food_good() else {
             return;
         };
+        let endow = self
+            .chain
+            .as_ref()
+            .map_or(0, |chain| chain.producer_house_starting_staple);
         let seed: Vec<(AgentId, u64)> = self
             .society
             .agents
@@ -21865,7 +22206,26 @@ impl Settlement {
             .filter(|&(_, qty)| qty > 0)
             .collect();
         for (id, qty) in seed {
-            self.acquisition.credit(id, FoodChannel::SeededMinted, qty);
+            // C3R.e (impl-67): the A2 split — for a producer subject, credit exactly the additive
+            // endowment (`producer_house_starting_staple`, clamped to its holding) as
+            // INTERVENTION-origin lots at the FRONT (oldest, so the head start is spent first and
+            // exhaustion is honestly measured), and the remainder as plain `SeededMinted`. Every
+            // non-producer's whole holding — and every non-A2 config (`endow == 0`) — stays plain
+            // `SeededMinted`, so the sweep is byte-behaviour-identical off A2.
+            let flagged = if endow > 0 && self.is_producer_subject_id(id) {
+                u64::from(endow).min(qty)
+            } else {
+                0
+            };
+            if flagged > 0 {
+                self.acquisition
+                    .credit_intervention(id, FoodChannel::SeededMinted, flagged);
+            }
+            let plain = qty - flagged;
+            if plain > 0 {
+                self.acquisition
+                    .credit(id, FoodChannel::SeededMinted, plain);
+            }
         }
         self.acquisition.initialized = true;
     }
@@ -24890,6 +25250,27 @@ impl Settlement {
         self.birth_stock_source_shortfalls
     }
 
+    /// C3R.e (impl-67) (read-only): the A1 ignition dose — the total staple quantity the one-shot
+    /// injection moved at `birth_stock_ignition_at`. `< 24` (= 6 × `child_food_endowment`) is an
+    /// under-dose → `IgnitionShortfall`. `0` off the A1 path.
+    pub fn ignition_injected_qty(&self) -> u64 {
+        self.ignition_injected_qty
+    }
+
+    /// C3R.e (impl-67) (read-only): cumulative producer-house birth funding split by the drawn
+    /// endowment lots' acquisition channel. Window-diffed, criterion iii reads market funding
+    /// (`bought + self_produced`) against non-market (`seeded_minted + foraged + commons`).
+    pub fn producer_birth_funded_by_channel(&self) -> AcquisitionChannels {
+        AcquisitionChannels::from_array(self.producer_birth_funded_by_channel)
+    }
+
+    /// C3R.e (impl-67) (read-only): cumulative producer-house birth funding drawn from
+    /// INTERVENTION-ORIGIN lots. Window-diffed, criterion iii requires this flat (a birth paid
+    /// for with subsidy residue is not market-funded). `0` off the path.
+    pub fn producer_birth_funded_intervention(&self) -> u64 {
+        self.producer_birth_funded_intervention
+    }
+
     pub fn birth_stock_injection_records(&self) -> &[BirthStockInjectionRecord] {
         &self.birth_stock_injection_records
     }
@@ -24902,6 +25283,32 @@ impl Settlement {
     /// channel — the live channel mix and the seed-depletion read (`seeded_minted → 0`).
     pub fn acquisition_held_by_channel(&self) -> AcquisitionChannels {
         AcquisitionChannels::from_array(self.acquisition.held_by_channel())
+    }
+
+    /// C3R.e (impl-67) (read-only): the GLOBAL intervention-origin exhaustion read — total
+    /// intervention-flagged tracked food held across every living agent and channel. Criterion ii
+    /// (`ResidualExhausted`) is exactly `== 0`. Resale-proof (the origin flag survives the market
+    /// retag). `0` off the acquisition-ledger path.
+    pub fn acquisition_intervention_held(&self) -> u64 {
+        self.acquisition.intervention_held()
+    }
+
+    /// C3R.e (impl-67) (read-only): the PRODUCER-COHORT intervention-origin held total — the
+    /// intervention-flagged tracked food held by living producer-household members. A subset of
+    /// [`Self::acquisition_intervention_held`], surfaced beside it for cohort-level diagnosis.
+    pub fn producer_intervention_held(&self) -> u64 {
+        let cohort: BTreeSet<AgentId> = self
+            .colonists
+            .iter()
+            .filter(|colonist| {
+                colonist.alive
+                    && colonist
+                        .household
+                        .is_some_and(|household| self.is_producer_household(household))
+            })
+            .map(|colonist| colonist.id)
+            .collect();
+        self.acquisition.intervention_held_by(&cohort)
     }
 
     /// S21h.1 (read-only): tracked food (bread) currently HELD by the living non-lineage
@@ -25998,6 +26405,33 @@ impl Settlement {
                 out.push(32);
                 out.push(u8::from(chain.saving_allocation_obs));
             }
+            // C3R.e (impl-67): ONE fixed injective record — a presence-bit byte (which of the
+            // three knobs is set), then the present fields' LE bytes in fixed order (absent field
+            // = presence bit 0, no bytes). Gated ON-only, so with all three knobs off no byte is
+            // emitted and every prior golden is byte-identical.
+            if self.ignition_withdrawal_active() {
+                out.push(33);
+                let mut presence = 0u8;
+                if chain.birth_stock_ignition_at.is_some() {
+                    presence |= 0b001;
+                }
+                if chain.producer_house_starting_staple > 0 {
+                    presence |= 0b010;
+                }
+                if chain.producer_support_until_tick.is_some() {
+                    presence |= 0b100;
+                }
+                out.push(presence);
+                if let Some(at) = chain.birth_stock_ignition_at {
+                    out.extend_from_slice(&at.to_le_bytes());
+                }
+                if chain.producer_house_starting_staple > 0 {
+                    out.extend_from_slice(&chain.producer_house_starting_staple.to_le_bytes());
+                }
+                if let Some(until) = chain.producer_support_until_tick {
+                    out.extend_from_slice(&until.to_le_bytes());
+                }
+            }
             // S23b: the post-money land market extends S23a's registry with an endogenous-price
             // state, listings, last-sale anchors, and the non-agent fee sink. Emitted only when the
             // market composes on active private land tenure; with the flag off every S23a and older
@@ -26850,6 +27284,17 @@ fn seeded_surplus_seller_class(vocation: Vocation, household: Option<usize>) -> 
     )
 }
 
+/// C3R.e (impl-67): a producer-house SUBJECT for the A2 additive endowment and its bootstrap-sweep
+/// origin-flag split — the seeded or latent producers (miller/baker/cycle), mirroring
+/// [`Settlement::run_producer_subsistence`]'s producer gate exactly. Consumers and gatherers are
+/// excluded, so the endowment lands only on the chain's producers.
+fn is_producer_subject_vocation(vocation: Vocation, latent: Option<RecipeId>) -> bool {
+    matches!(
+        vocation,
+        Vocation::Miller | Vocation::Baker | Vocation::CycleA | Vocation::CycleB | Vocation::CycleC
+    ) || (vocation == Vocation::Unassigned && latent.is_some())
+}
+
 fn build_agent(
     id: AgentId,
     need: &NeedState,
@@ -26899,6 +27344,16 @@ fn build_agent(
                 _ => (chain.bread_buffer, chain.wood_buffer),
             };
             stock.add(staple, staple_buffer);
+            // C3R.e (impl-67): the A2 additive endowment — a producer-house SUBJECT (seeded/latent
+            // producer) starts with an extra `producer_house_starting_staple` of the staple, raising
+            // aggregate bread. Split out of the tick-0 bootstrap sweep as origin-flagged lots
+            // (`maybe_init_acquisition_ledger`), keyed on the SAME producer-subject predicate. `0`
+            // for every non-A2 config, so no stock is added and the run is byte-identical.
+            if chain.producer_house_starting_staple > 0
+                && is_producer_subject_vocation(vocation, latent)
+            {
+                stock.add(staple, chain.producer_house_starting_staple);
+            }
             if chain.seeded_surplus_bread > 0 && seeded_surplus_seller_class(vocation, None) {
                 stock.add(chain.content.bread(), chain.seeded_surplus_bread);
             }
@@ -32476,6 +32931,66 @@ mod tests {
     }
 
     #[test]
+    fn canonical_bytes_include_ignition_withdrawal() {
+        // C3R.e (impl-67): tag 33 is ONE fixed injective record (a presence-bit byte + present
+        // fields in fixed order). With every knob off it emits nothing (byte-identical to the
+        // base); each knob splits the digest; and the presence byte keeps the record injective —
+        // the same numeric value under a DIFFERENT knob must digest apart (no partition collision).
+        let base = SettlementConfig::frontier_mortal_producers_earned();
+        let base_bytes = Settlement::generate(7, &base).canonical_bytes();
+
+        // Off is byte-identical: the C3R.e knobs are all off by default, so an explicit all-off
+        // clone emits no tag-33 byte and digests exactly as the base.
+        let mut all_off = base.clone();
+        {
+            let c = all_off.chain.as_mut().expect("chain");
+            c.birth_stock_ignition_at = None;
+            c.producer_house_starting_staple = 0;
+            c.producer_support_until_tick = None;
+        }
+        assert_eq!(
+            base_bytes,
+            Settlement::generate(7, &all_off).canonical_bytes(),
+            "with every C3R.e knob off, tag 33 emits nothing — the base stays byte-identical"
+        );
+
+        // Each knob splits the digest (it steers deterministic behavior at its gated tick).
+        for mutate in [
+            (|c: &mut ChainConfig| c.birth_stock_ignition_at = Some(50)) as fn(&mut ChainConfig),
+            |c: &mut ChainConfig| c.producer_house_starting_staple = 4,
+            |c: &mut ChainConfig| c.producer_support_until_tick = Some(400),
+        ] {
+            let mut on = base.clone();
+            mutate(on.chain.as_mut().expect("chain"));
+            assert_ne!(
+                base_bytes,
+                Settlement::generate(7, &on).canonical_bytes(),
+                "each C3R.e knob must be part of the chain-config identity"
+            );
+        }
+
+        // Injectivity via the presence byte: the SAME numeric value under two DIFFERENT knobs must
+        // digest apart — a partition of the value bytes alone would collide these.
+        let mut ignite_50 = base.clone();
+        ignite_50
+            .chain
+            .as_mut()
+            .expect("chain")
+            .birth_stock_ignition_at = Some(50);
+        let mut support_50 = base.clone();
+        support_50
+            .chain
+            .as_mut()
+            .expect("chain")
+            .producer_support_until_tick = Some(50);
+        assert_ne!(
+            Settlement::generate(7, &ignite_50).canonical_bytes(),
+            Settlement::generate(7, &support_50).canonical_bytes(),
+            "the tag-33 presence byte must keep the record injective across knobs"
+        );
+    }
+
+    #[test]
     fn canonical_bytes_include_per_agent_capital() {
         // S10: the per_agent_capital flag steers every future tick (it replaces the S7
         // build planner with a per-colonist ordinal decision), so it is part of the chain
@@ -34197,6 +34712,94 @@ mod tests {
     }
 
     #[test]
+    fn acquisition_intervention_flag_survives_partial_draw_in_fifo_order() {
+        // C3R.e: a MIXED-ORIGIN FIFO — an intervention-flagged SeededMinted lot ahead of a plain
+        // Bought lot. A partial origin-preserving transfer (birth/inheritance) draws oldest-first
+        // and KEEPS each lot's intervention flag; the global intervention-held read tracks exactly
+        // the flagged units as they move.
+        let mut ledger = AcquisitionLedger::default();
+        let (donor, heir) = (AgentId(1), AgentId(2));
+        ledger.credit_intervention(donor, FoodChannel::SeededMinted, 3);
+        ledger.credit(donor, FoodChannel::Bought, 4);
+        assert_eq!(ledger.intervention_held(), 3);
+
+        // The heir inherits 4 units oldest-first: all 3 intervention + 1 plain Bought.
+        let drawn = ledger.transfer_preserve(donor, heir, 4);
+        assert_eq!(
+            drawn,
+            vec![
+                FoodLot {
+                    channel: FoodChannel::SeededMinted,
+                    qty: 3,
+                    intervention: true,
+                },
+                FoodLot {
+                    channel: FoodChannel::Bought,
+                    qty: 1,
+                    intervention: false,
+                },
+            ],
+            "the drawn breakdown preserves FIFO order and each lot's origin flag"
+        );
+        // The flag moved with the units — total unchanged, now held by the heir, not the donor.
+        assert_eq!(ledger.intervention_held(), 3);
+        assert_eq!(ledger.intervention_held_by(&BTreeSet::from([heir])), 3);
+        assert_eq!(ledger.intervention_held_by(&BTreeSet::from([donor])), 0);
+    }
+
+    #[test]
+    fn acquisition_market_retag_preserves_order_and_intervention_flag() {
+        // C3R.e: the P0 laundering guard for the market-sale retag. A seller holds a MIXED FIFO —
+        // two adjacent PLAIN lots, then an intervention lot. Selling all of it retags every unit to
+        // Bought but must KEEP each unit's intervention flag, mapping lots in original FIFO order
+        // and coalescing ONLY adjacent equal-origin lots: the two plains merge, the intervention
+        // run stays separate. A channel-partition would fold the flagged units into the plain run
+        // and launder the origin.
+        let mut ledger = AcquisitionLedger::default();
+        let (seller, buyer) = (AgentId(1), AgentId(2));
+        ledger.credit(seller, FoodChannel::SeededMinted, 2);
+        ledger.credit(seller, FoodChannel::Bought, 2);
+        ledger.credit_intervention(seller, FoodChannel::SeededMinted, 3);
+        assert_eq!(ledger.intervention_held(), 3);
+
+        let drawn = ledger.transfer_as_bought(seller, buyer, 7);
+        // The per-channel breakdown of what left the seller (the pre-flag contract, unchanged).
+        assert_eq!(drawn[FoodChannel::SeededMinted.index()], 5);
+        assert_eq!(drawn[FoodChannel::Bought.index()], 2);
+
+        // The buyer's lots: all Bought channel; the two adjacent PLAIN lots coalesce to one, the
+        // intervention run stays SEPARATE and in FIFO order — never one laundered Bought lot.
+        assert_eq!(
+            ledger.lots.get(&buyer),
+            Some(&VecDeque::from([
+                FoodLot {
+                    channel: FoodChannel::Bought,
+                    qty: 4,
+                    intervention: false,
+                },
+                FoodLot {
+                    channel: FoodChannel::Bought,
+                    qty: 3,
+                    intervention: true,
+                },
+            ])),
+            "the retag preserves FIFO order + the origin flag, coalescing only adjacent equal-origin"
+        );
+        // Resale-proof: the intervention units are still tracked after leaving the cohort as Bought.
+        assert_eq!(ledger.intervention_held(), 3);
+        assert_eq!(ledger.intervention_held_by(&BTreeSet::from([buyer])), 3);
+
+        // A mixed partial CONSUME still eats oldest-first across the retagged run: the 4 plain
+        // first, then one unit into the intervention run.
+        ledger.consume(buyer, 5);
+        assert_eq!(
+            ledger.intervention_held(),
+            2,
+            "after the 4 plain units, one intervention unit is consumed"
+        );
+    }
+
+    #[test]
     fn acquisition_transfer_self_produced_skips_older_channels() {
         let mut ledger = AcquisitionLedger::default();
         let (donor, recipient) = (AgentId(1), AgentId(2));
@@ -35193,7 +35796,7 @@ mod tests {
         s.acquisition = AcquisitionLedger::default();
         s.acquisition.credit(donor, FoodChannel::Bought, 4);
 
-        assert!(s.transfer_birth_stock(donor, recipient, staple, 4));
+        assert!(s.transfer_birth_stock(donor, recipient, staple, 4, false));
 
         assert_eq!(s.stock_of_id(donor, staple), 0);
         assert_eq!(s.stock_of_id(recipient, staple), 4);
@@ -35205,6 +35808,7 @@ mod tests {
             Some(&VecDeque::from([FoodLot {
                 channel: FoodChannel::Bought,
                 qty: 4,
+                intervention: false,
             }]))
         );
     }
@@ -35233,7 +35837,7 @@ mod tests {
             .get(staple);
         assert!(s.society.debit_stock(donor, staple, held));
         assert!(s.society.credit_stock(donor, staple, 4));
-        assert!(!s.transfer_birth_stock(donor, recipient, staple, 4));
+        assert!(!s.transfer_birth_stock(donor, recipient, staple, 4, false));
         assert_eq!(s.stock_of_id(donor, staple), 4);
     }
 
