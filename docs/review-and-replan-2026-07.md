@@ -220,15 +220,27 @@ Falsifiable bar: production survives the death of producers.
 >   → ACCEPT-AS-HONEST-FINDING. Endorsed conclusion: "correlated economic bottlenecks, microstructure
 >   minor, direct provision as the maximin next intervention." Report §31 + appendix. Preserved on
 >   **`feat/saving-allocation-obs-impl-rb`** (tip `06e3180`).
-> - **C3R.e — NEXT: the ignition/withdrawal experiment (the lever now SELECTED by the diagnosis).** Direct
->   stock provision as the maximin intervention (bypasses all three proximate bottlenecks at once;
->   gate-proven by the C3R.d control) — tested as IGNITION + a strict WITHDRAWAL/HYSTERESIS bar (all
->   support ended; no residual shock inventory; market-funded replacement births; several producer
->   lifetimes; a matched no-ignition cell staying trapped), per the amended plan: two ignition paths
->   compared (one-time conserved stock — split REDISTRIBUTION vs ADDITIVE cells — and the C3R.b
->   subsidy-withdrawal), on the demand-regime axis {current, durable}. The all-goods↔bread-only classifier
->   congruence lands in this spec. "Multiple equilibria / big push" language stays RESERVED for an observed
->   high state surviving withdrawal. Scoping pending user.
+> - **C3R.e — LANDED (impl-67, spec `docs/impl-ignition-withdrawal.md`): THE KEYSTONE CLOSES.** Three finite
+>   interventions × two regimes against the strictest preregistered bar (the launder-proof intervention-
+>   origin flag, global exhaustion, drawn-lot birth funding, live-demand windows, matched twins).
+>   **Result: undetermined-class verdicts across the grid — the escape experiment cannot yet be POSED.**
+>   A1: dose 0 ×5 (every original producer founder dead by tick 36 — the shot arrived at heirs or ashes).
+>   Durable regime: PERMANENT support fails structure 4/5 (the composite regime less robust; the producer
+>   warmth expense the leading mechanism). Every eligible window everywhere: external demand dead
+>   (EDD@560/@160; criterion v verified live early). No relapse proven; no unescapability claimed. **The
+>   program's oldest wall (S23e→C1→C3R.c: no demand survives) is demonstrably the wall in front of the
+>   trap's exit.** Report §32 + appendix. Preserved on **`feat/ignition-withdrawal-impl-rb`** (tip
+>   `f6d68a4`). Debt: the A1 gate decomposition; the A2 `start>0` boundary fix before oracle reuse.
+> - **THE KEYSTONE ARC (C3R.a→e) IS COMPLETE.** Five landed slices + the obs diagnosis: the chain dies with
+>   its producers → inheritance preserves structure but the subsidy caps flow → income feeds the living but
+>   never funds reproduction → the saving motive works but nothing reaches saving (the bootstrap trap,
+>   economic, correlated, microstructure-minor) → no finite intervention reaches a measurable escape
+>   because the demand horizon binds first. The next frontier is NOT another keystone slice: it is the
+>   DEMAND HORIZON itself — a durable external demand base that does not deplete (the recurring-income
+>   problem: who earns, forever, and spends into this economy?) — after which the C3R.e oracle re-runs
+>   as-is. Candidates for scoping: a genuinely closed multi-class circulation (every class earns AND
+>   spends), or the article-surgery/consolidation pass first (the negative keystone is now a complete,
+>   publishable arc). Scoping pending user.
 
 **P5+ — re-derive the institutional stack on the living base.** Firms (C2R) and rent/factor markets
 (C4R) once solvent counterparties exist; the classes/mobility measurement (C9) over whatever forms;
