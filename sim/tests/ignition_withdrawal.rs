@@ -22,7 +22,10 @@
 //! Run: `cargo test -p sim --test ignition_withdrawal -- --nocapture`.
 
 use sim::content::{BREAD_PER_BAKE, FLOUR_PER_BAKE};
-use sim::{GoodId, Settlement, SettlementConfig, Vocation};
+use sim::{
+    classify_closure, closure_classified_windows, closure_windows, ClosureTickAgg, ClosureVerdict,
+    ClosureWindow, GoodId, Settlement, SettlementConfig, Vocation,
+};
 
 const SEEDS: [u64; 5] = [3, 7, 11, 19, 23];
 const RUN_TICKS: u64 = 1_600;
@@ -57,6 +60,10 @@ const EXPECTED_NO_MOTIVE_BIRTHS: [u64; 5] = [2, 3, 5, 2, 1];
 enum Regime {
     Durable,
     Current,
+    /// DH.a (impl-68): the closed circulation — the durable stack MINUS the endowed non-producing
+    /// surround (`consumers = 0`, the 2 legacy lineage households removed), instrumented by the
+    /// closure ledger. Re-poses the ignition question on a genuinely closed regime.
+    Closed,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,17 +126,48 @@ const CELLS: [Cell; 7] = [
     },
 ];
 
+/// DH.a (impl-68): the 5 Closed cells, appended after the landed 7 in the landed intervention order
+/// (BWithdrawn, A1, A2, BNeverWithdrawn, NoIgnition). Closure is evaluated on the Closed NoIgnition
+/// trace; every Closed cell prints the closure preamble before the unchanged ladder verdict.
+const CLOSED_CELLS: [Cell; 5] = [
+    Cell {
+        regime: Regime::Closed,
+        intervention: Intervention::BWithdrawn,
+    },
+    Cell {
+        regime: Regime::Closed,
+        intervention: Intervention::A1Redistribution,
+    },
+    Cell {
+        regime: Regime::Closed,
+        intervention: Intervention::A2Additive,
+    },
+    Cell {
+        regime: Regime::Closed,
+        intervention: Intervention::BNeverWithdrawn,
+    },
+    Cell {
+        regime: Regime::Closed,
+        intervention: Intervention::NoIgnition,
+    },
+];
+
 /// Build the cell's config from the C3R.d earned base (the trap) + the acquisition ledger, the
 /// disclosed regime, and the finite intervention. Every pin is verbatim; none is searched.
 fn config(cell: Cell) -> SettlementConfig {
     // The trap: the C3R.d NoMotiveReference (earned, no saving motive, no support). The ledger is
-    // enabled in EVERY C3R.e cell (§1.4) — runtime-only, behaviorally inert.
-    let mut cfg = SettlementConfig::frontier_mortal_producers_earned();
+    // enabled in EVERY C3R.e cell (§1.4) — runtime-only, behaviorally inert. DH.a: the {closed}
+    // regime is the durable stack MINUS the endowed surround (`frontier_closed_circulation`, which
+    // already pins gatherers=48 + producer wood_provision=0 and drops the consumers/lineage).
+    let mut cfg = match cell.regime {
+        Regime::Closed => SettlementConfig::frontier_closed_circulation(),
+        _ => SettlementConfig::frontier_mortal_producers_earned(),
+    };
     cfg.chain.as_mut().expect("chain").acquisition_ledger = true;
 
     // The disclosed {durable} regime: retire the producer WOOD mint (producers buy warmth out of
     // bread revenue) and pin gatherers at 48 (double the base 24, a single value — classify not
-    // tune). {current} keeps the landed regime.
+    // tune). {current} keeps the landed regime; {closed} already applied both in its constructor.
     if cell.regime == Regime::Durable {
         cfg.gatherers = DURABLE_GATHERERS;
         let demo = cfg.demography.as_mut().expect("demography");
@@ -253,6 +291,9 @@ struct CellRun {
     final_births: u64,
     funded_market_total: u64,
     funded_nonmarket_total: u64,
+    /// DH.a: the closure ledger's per-tick aggregates (one per tick), captured for Closed cells so
+    /// the preamble can window them; empty for the landed Durable/Current cells.
+    closure_ticks: Vec<ClosureTickAgg>,
 }
 
 fn run_cell_seed(seed: u64, cell: Cell) -> CellRun {
@@ -324,6 +365,12 @@ fn run_cell_seed(seed: u64, cell: Cell) -> CellRun {
 
     let funded_market_total = *funded_market.last().unwrap_or(&0);
     let funded_nonmarket_total = *funded_nonmarket.last().unwrap_or(&0);
+    // DH.a: capture the closure ledger's per-tick aggregates for Closed cells only.
+    let closure_ticks = if cell.regime == Regime::Closed {
+        s.closure_tick_aggregates().to_vec()
+    } else {
+        Vec::new()
+    };
     CellRun {
         seed,
         cell,
@@ -346,6 +393,7 @@ fn run_cell_seed(seed: u64, cell: Cell) -> CellRun {
         final_births: s.producer_house_births(),
         funded_market_total,
         funded_nonmarket_total,
+        closure_ticks,
     }
 }
 
@@ -775,10 +823,11 @@ fn matched_reference(cell: Cell) -> Cell {
     }
 }
 
-/// The same-regime support-on control cell (durable only).
+/// The same-regime support-on control cell (durable and closed regimes — §3.4 extends it to Closed
+/// identically). `Current` keeps the landed regime, which has no support-on control.
 fn support_on_control(cell: Cell) -> Option<Cell> {
-    (cell.regime == Regime::Durable).then_some(Cell {
-        regime: Regime::Durable,
+    matches!(cell.regime, Regime::Durable | Regime::Closed).then_some(Cell {
+        regime: cell.regime,
         intervention: Intervention::BNeverWithdrawn,
     })
 }
@@ -821,10 +870,16 @@ fn assert_hard_guards(run: &CellRun) {
     );
 }
 
-fn print_windows(reports: &[WindowReport]) {
+/// Render the per-window criteria block as a `String` (the canonical renderer, §3.4). The bytes
+/// are byte-identical to the pre-DH.a `print_windows` `println!` text — validated against the
+/// committed golden captured from the unmodified base, never against the renderer itself.
+fn render_windows(reports: &[WindowReport]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
     for r in reports {
         let tag = if r.eligible { "ELIGIBLE" } else { "obs/skip" };
-        println!(
+        let _ = writeln!(
+            out,
             "      w@{:>4} {tag} held_in={:>3} births={} | iii={} iv={} v={} vi={} \
              | structure={} flow={} ref_structure={}",
             r.start,
@@ -839,6 +894,111 @@ fn print_windows(reports: &[WindowReport]) {
             r.reference_structure as u8,
         );
     }
+    out
+}
+
+/// Render one INTERVENTION cell's report block (verdict line, the A1 gate decomposition, the
+/// HysteresisHolds banner, then the per-window criteria) as a `String`, byte-identical to the
+/// pre-DH.a `println!` sequence.
+fn render_intervention_cell(
+    seed: u64,
+    cell: Cell,
+    run: &CellRun,
+    verdict: &Verdict,
+    reports: &[WindowReport],
+) -> String {
+    use std::fmt::Write as _;
+    let survivors: usize = reports.iter().filter(|r| r.eligible).count();
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "  {} seed {seed}: verdict={:?}  (ignition_dose={}, eligible_windows={})",
+        cell.label(),
+        verdict,
+        run.ignition_injected_qty,
+        survivors,
+    );
+    if matches!(cell.intervention, Intervention::A1Redistribution) {
+        let [interval, extinct, cap, hunger, at_target, donor] = run.ignition_gates;
+        let _ = writeln!(
+            out,
+            "      ignition gates: interval={interval} extinct={extinct} cap={cap} \
+             hunger={hunger} at_target={at_target} donor_shortfall={donor}"
+        );
+    }
+    if let Verdict::HysteresisHolds {
+        first_window,
+        windows_survived,
+    } = verdict
+    {
+        // The ONLY rung permitted multiple-equilibria / big-push language.
+        let _ = writeln!(
+            out,
+            "    HYSTERESIS HOLDS — a big push separated two equilibria of the same \
+             economy: {windows_survived} consecutive post-withdrawal windows survive \
+             from w@{first_window} (history, not parameters)."
+        );
+    }
+    out.push_str(&render_windows(reports));
+    out
+}
+
+/// Render one CONTROL cell's reference-outcome line as a `String`, byte-identical to the pre-DH.a
+/// `println!`.
+fn render_control_cell(seed: u64, cell: Cell, verdict: &Verdict) -> String {
+    format!("  {} seed {seed}: control={verdict:?}\n", cell.label())
+}
+
+/// Render one closure window's CC0–CC3 diagnostics (§3.3).
+fn render_closure_window(w: &ClosureWindow) -> String {
+    let tag = if w.start >= N {
+        "classified"
+    } else {
+        "BOOTSTRAP "
+    };
+    format!(
+        "      closure w@{:>4} [{tag}] CC0 G={} M={} B={} | CC1 own[{} {} {}] buy[{} {} {}] \
+         | CC2 epd[{} {} {}] eph[{} {} {}] | CC3 drain={} goods={} esc={} fee={}\n",
+        w.start,
+        w.present[0] as u8,
+        w.present[1] as u8,
+        w.present[2] as u8,
+        w.own_sale_consideration[0],
+        w.own_sale_consideration[1],
+        w.own_sale_consideration[2],
+        w.purchase_consideration[0],
+        w.purchase_consideration[1],
+        w.purchase_consideration[2],
+        w.endowed_purchase_debits[0],
+        w.endowed_purchase_debits[1],
+        w.endowed_purchase_debits[2],
+        w.endowed_physical_debits[0],
+        w.endowed_physical_debits[1],
+        w.endowed_physical_debits[2],
+        w.commons_drain,
+        w.commons_goods_drain,
+        w.wage_escrow_gold,
+        w.land_fee_pool_salt,
+    )
+}
+
+/// Render the closure preamble for a Closed cell (§3.4): this cell's own per-window CC0–CC3
+/// diagnostics (bootstrap included, marked) then the base-trace (Closed NoIgnition) closure verdict.
+/// Printed BEFORE the unchanged ladder verdict.
+fn render_closure_preamble(
+    cell_windows: &[ClosureWindow],
+    base_verdict: &ClosureVerdict,
+) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    for w in cell_windows {
+        out.push_str(&render_closure_window(w));
+    }
+    let _ = writeln!(
+        out,
+        "      closure verdict (base NoIgnition): {base_verdict:?}"
+    );
+    out
 }
 
 #[test]
@@ -851,10 +1011,16 @@ fn ignition_and_withdrawal_diagnosis() {
     );
 
     let mut total_runs = 0usize;
+    // The canonical renderer's existing-cell projection (§3.4): each existing cell's report
+    // block, concatenated in the seeds-outermost × landed-`CELLS`-order loop, asserted
+    // byte-identical against the pre-DH.a golden captured from the unmodified base.
+    let mut existing_projection = String::new();
     for &seed in &SEEDS {
-        // Drive all seven cells for this seed once (references are DERIVED views — no extra runs).
+        // Drive the landed seven cells and the five DH.a Closed cells for this seed (references are
+        // DERIVED views — no extra runs). Seeds-outermost, landed order then Closed order.
         let runs: Vec<CellRun> = CELLS
             .iter()
+            .chain(CLOSED_CELLS.iter())
             .map(|&cell| run_cell_seed(seed, cell))
             .collect();
         // Hard guards (invariants only) — asserted on every run.
@@ -883,48 +1049,56 @@ fn ignition_and_withdrawal_diagnosis() {
         println!("--- seed {seed} ---");
         for &cell in &CELLS {
             let run = lookup(cell);
-            if cell.is_intervention() {
+            let block = if cell.is_intervention() {
                 let reference = lookup(matched_reference(cell));
                 let support = support_on_control(cell).map(lookup);
                 let (verdict, reports) = classify_intervention(run, reference, support);
-                let survivors: usize = reports.iter().filter(|r| r.eligible).count();
-                println!(
-                    "  {} seed {seed}: verdict={:?}  (ignition_dose={}, eligible_windows={})",
-                    cell.label(),
-                    verdict,
-                    run.ignition_injected_qty,
-                    survivors,
-                );
-                if matches!(cell.intervention, Intervention::A1Redistribution) {
-                    let [interval, extinct, cap, hunger, at_target, donor] = run.ignition_gates;
-                    println!(
-                        "      ignition gates: interval={interval} extinct={extinct} cap={cap} \
-                         hunger={hunger} at_target={at_target} donor_shortfall={donor}"
-                    );
-                }
-                if let Verdict::HysteresisHolds {
-                    first_window,
-                    windows_survived,
-                } = verdict
-                {
-                    // The ONLY rung permitted multiple-equilibria / big-push language.
-                    println!(
-                        "    HYSTERESIS HOLDS — a big push separated two equilibria of the same \
-                         economy: {windows_survived} consecutive post-withdrawal windows survive \
-                         from w@{first_window} (history, not parameters)."
-                    );
-                }
-                print_windows(&reports);
+                render_intervention_cell(seed, cell, run, &verdict, &reports)
             } else {
                 let verdict = classify_control(run);
-                println!("  {} seed {seed}: control={:?}", cell.label(), verdict);
-            }
+                render_control_cell(seed, cell, &verdict)
+            };
+            print!("{block}");
+            existing_projection.push_str(&block);
+        }
+
+        // DH.a: the Closed cells. Closure is evaluated on the Closed NoIgnition trace (§3.3); every
+        // Closed cell prints its own per-window CC0–CC3 diagnostics + that base verdict, THEN the
+        // unchanged ladder verdict. The Closed cells are NOT part of the pre-DH.a golden projection.
+        let closed_base = lookup(Cell {
+            regime: Regime::Closed,
+            intervention: Intervention::NoIgnition,
+        });
+        let base_windows = closure_windows(&closed_base.closure_ticks);
+        let base_verdict = classify_closure(&closure_classified_windows(&base_windows));
+        for &cell in &CLOSED_CELLS {
+            let run = lookup(cell);
+            let cell_windows = closure_windows(&run.closure_ticks);
+            let mut block = render_closure_preamble(&cell_windows, &base_verdict);
+            block.push_str(&if cell.is_intervention() {
+                let reference = lookup(matched_reference(cell));
+                let support = support_on_control(cell).map(lookup);
+                let (verdict, reports) = classify_intervention(run, reference, support);
+                render_intervention_cell(seed, cell, run, &verdict, &reports)
+            } else {
+                let verdict = classify_control(run);
+                render_control_cell(seed, cell, &verdict)
+            });
+            print!("{block}");
         }
     }
+    // §3.4 step 2: the renderer's existing-cell projection equals the golden captured from the
+    // unmodified base, byte-for-byte. The renderer is validated against master's output here,
+    // never against itself.
+    assert_eq!(
+        existing_projection,
+        include_str!("goldens/ignition_withdrawal_pre_dh_a.txt"),
+        "the existing seven-cell projection must reproduce the pre-DH.a golden byte-for-byte"
+    );
+    let all_cells = CELLS.len() + CLOSED_CELLS.len();
     println!(
-        "C3R.e complete: {total_runs} runs ({} cells × {} seeds).",
-        CELLS.len(),
+        "C3R.e / DH.a complete: {total_runs} runs ({all_cells} cells × {} seeds).",
         SEEDS.len()
     );
-    assert_eq!(total_runs, CELLS.len() * SEEDS.len());
+    assert_eq!(total_runs, all_cells * SEEDS.len());
 }

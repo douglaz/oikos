@@ -1,0 +1,92 @@
+  {Durable, BWithdrawn} seed 3: verdict=SupportOnControlFails  (ignition_dose=0, eligible_windows=0)
+  {Durable, A1Redistribution} seed 3: verdict=IgnitionShortfall  (ignition_dose=0, eligible_windows=0)
+      ignition gates: interval=0 extinct=6 cap=0 hunger=0 at_target=0 donor_shortfall=0
+  {Durable, A2Additive} seed 3: verdict=SupportOnControlFails  (ignition_dose=0, eligible_windows=0)
+  {Durable, BNeverWithdrawn} seed 3: control=SupportOnControlFails
+  {Durable, NoIgnition} seed 3: control=MatchedReferenceTrapped
+  {Current, BWithdrawn} seed 3: verdict=ExternalDemandDiedFirst { window: 560 }  (ignition_dose=0, eligible_windows=6)
+      w@ 400 obs/skip held_in= 17 births=1 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@ 560 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@ 720 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@ 880 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@1040 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@1200 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@1360 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+  {Current, NoIgnition} seed 3: control=MatchedReferenceTrapped
+  {Durable, BWithdrawn} seed 7: verdict=SupportOnControlFails  (ignition_dose=0, eligible_windows=0)
+  {Durable, A1Redistribution} seed 7: verdict=IgnitionShortfall  (ignition_dose=0, eligible_windows=0)
+      ignition gates: interval=0 extinct=6 cap=0 hunger=0 at_target=0 donor_shortfall=0
+  {Durable, A2Additive} seed 7: verdict=SupportOnControlFails  (ignition_dose=0, eligible_windows=0)
+  {Durable, BNeverWithdrawn} seed 7: control=SupportOnControlFails
+  {Durable, NoIgnition} seed 7: control=MatchedReferenceTrapped
+  {Current, BWithdrawn} seed 7: verdict=IgnitionNeverIgnites  (ignition_dose=0, eligible_windows=6)
+      w@ 400 obs/skip held_in=  9 births=1 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@ 560 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@ 720 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@ 880 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@1040 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@1200 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@1360 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+  {Current, NoIgnition} seed 7: control=MatchedReferenceTrapped
+  {Durable, BWithdrawn} seed 11: verdict=SupportOnControlFails  (ignition_dose=0, eligible_windows=0)
+  {Durable, A1Redistribution} seed 11: verdict=IgnitionShortfall  (ignition_dose=0, eligible_windows=0)
+      ignition gates: interval=0 extinct=6 cap=0 hunger=0 at_target=0 donor_shortfall=0
+  {Durable, A2Additive} seed 11: verdict=SupportOnControlFails  (ignition_dose=0, eligible_windows=0)
+  {Durable, BNeverWithdrawn} seed 11: control=SupportOnControlFails
+  {Durable, NoIgnition} seed 11: control=MatchedReferenceTrapped
+  {Current, BWithdrawn} seed 11: verdict=ExternalDemandDiedFirst { window: 560 }  (ignition_dose=0, eligible_windows=6)
+      w@ 400 obs/skip held_in= 16 births=2 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@ 560 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@ 720 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@ 880 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@1040 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@1200 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@1360 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+  {Current, NoIgnition} seed 11: control=MatchedReferenceTrapped
+  {Durable, BWithdrawn} seed 19: verdict=ExternalDemandDiedFirst { window: 560 }  (ignition_dose=0, eligible_windows=6)
+      w@ 400 obs/skip held_in= 21 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@ 560 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@ 720 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@ 880 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@1040 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@1200 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@1360 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+  {Durable, A1Redistribution} seed 19: verdict=IgnitionShortfall  (ignition_dose=0, eligible_windows=0)
+      ignition gates: interval=0 extinct=6 cap=0 hunger=0 at_target=0 donor_shortfall=0
+  {Durable, A2Additive} seed 19: verdict=ExternalDemandDiedFirst { window: 160 }  (ignition_dose=0, eligible_windows=9)
+      w@   0 obs/skip held_in= 12 births=1 | iii=1 iv=0 v=1 vi=1 | structure=0 flow=0 ref_structure=0
+      w@ 160 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@ 320 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@ 480 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@ 640 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@ 800 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@ 960 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@1120 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@1280 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@1440 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+  {Durable, BNeverWithdrawn} seed 19: control=SupportOnControlViable
+  {Durable, NoIgnition} seed 19: control=MatchedReferenceTrapped
+  {Current, BWithdrawn} seed 19: verdict=IgnitionNeverIgnites  (ignition_dose=0, eligible_windows=6)
+      w@ 400 obs/skip held_in= 18 births=1 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@ 560 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@ 720 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@ 880 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@1040 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@1200 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@1360 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+  {Current, NoIgnition} seed 19: control=MatchedReferenceTrapped
+  {Durable, BWithdrawn} seed 23: verdict=SupportOnControlFails  (ignition_dose=0, eligible_windows=0)
+  {Durable, A1Redistribution} seed 23: verdict=IgnitionShortfall  (ignition_dose=0, eligible_windows=0)
+      ignition gates: interval=0 extinct=6 cap=0 hunger=0 at_target=0 donor_shortfall=0
+  {Durable, A2Additive} seed 23: verdict=SupportOnControlFails  (ignition_dose=0, eligible_windows=0)
+  {Durable, BNeverWithdrawn} seed 23: control=SupportOnControlFails
+  {Durable, NoIgnition} seed 23: control=MatchedReferenceTrapped
+  {Current, BWithdrawn} seed 23: verdict=ExternalDemandDiedFirst { window: 560 }  (ignition_dose=0, eligible_windows=6)
+      w@ 400 obs/skip held_in= 16 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@ 560 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@ 720 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@ 880 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@1040 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@1200 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+      w@1360 ELIGIBLE held_in=  0 births=0 | iii=0 iv=0 v=0 vi=1 | structure=0 flow=0 ref_structure=0
+  {Current, NoIgnition} seed 23: control=MatchedReferenceTrapped

@@ -88,6 +88,18 @@ pub mod era;
 pub mod region;
 pub mod settlement;
 
+/// DH.a (impl-68): the closed-circulation closure vocabulary — the classification classes, the raw
+/// audit-tape events, the per-tick aggregates, the pure `classify_closure` verdict, its
+/// `ClosureWindow`/`ClosureVerdict` types, and the SHARED windowing pipeline (`closure_windows` +
+/// `closure_classified_windows`, P1-3) the oracle AND the DH.a tests both call. Re-exported so the
+/// `ignition_withdrawal` oracle and the DH.a tests name them through `sim` alone. See
+/// [`settlement::closure`].
+pub use settlement::closure::{
+    classify_closure, closure_classified_windows, closure_windows, ClosureClass, ClosureCriterion,
+    ClosureDebitFamily, ClosureEventKind, ClosurePhysicalEvent, ClosureSaleSplit, ClosureTickAgg,
+    ClosureVerdict, ClosureWindow, CLOSURE_GRID_WINDOW,
+};
+
 pub use content::ContentSet;
 pub use demography::{DemographyConfig, HouseholdSpec};
 pub use era::{

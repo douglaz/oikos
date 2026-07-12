@@ -241,6 +241,23 @@ Falsifiable bar: production survives the death of producers.
 >   as-is. Candidates for scoping: a genuinely closed multi-class circulation (every class earns AND
 >   spends), or the article-surgery/consolidation pass first (the negative keystone is now a complete,
 >   publishable arc). Scoping pending user.
+>
+>   **DH.a LANDED AND ACCEPTED (impl-68, tag 34; spec f08b830 SPEC-READY after 7 xhigh rounds; branch
+>   feat/closed-circulation-impl-rb = 4e20214 + repair 54eafd9; RoR REJECT on instrumentation → repair,
+>   verdict grid byte-stable, diagnostic delta NONE → focused re-check ACCEPT, zero findings).** The
+>   closed regime = the durable stack MINUS the endowed non-producing surround (consumers=0, both legacy
+>   lineage households removed; identity-tested; nothing else). Result on ALL 25 Closed runs:
+>   **`ClosureStructureAbsent { first_window: 160, class: Miller }`** — both producer classes extinct
+>   before the first classified window; `extinct=6` at tick 50 exactly as on durable; ladder subordinate
+>   (A1 IgnitionShortfall ×5 dose 0; B/A2 SupportOnControlFails ×4 seeds; seed 3 EDD@560/@160). The
+>   closure question could not be posed: **the wall is REPRODUCTION, not demand** — earned income
+>   (C3R.c), the saving motive (C3R.d), ignition (C3R.e), and an undying demand base (DH.a) all fail at
+>   producer-lineage extinction. Report §33. **DH.b selection (per the preregistered S-row + the RoR's
+>   reading): producer succession / heir continuity FIRST — how does a producer lineage persist? (birth
+>   economics on the closed base, apprenticeship/succession outside the bloodline, household merger, or
+>   the wage-employer route reframed as succession-by-hiring). Estate recirculation and hoard carrying
+>   costs are DESELECTED for now — they answer leak/drain diagnoses that were never reached. Scoping
+>   pending user.**
 
 **P5+ — re-derive the institutional stack on the living base.** Firms (C2R) and rent/factor markets
 (C4R) once solvent counterparties exist; the classes/mobility measurement (C9) over whatever forms;

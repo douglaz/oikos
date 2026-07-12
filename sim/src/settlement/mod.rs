@@ -2681,7 +2681,16 @@ pub struct SettlementConfig {
     /// a tender bench. See [`TaxPolicy`], [`SettlementConfig::tax_in_fiat`], and
     /// [`SettlementConfig::tax_in_specie`].
     pub tax: Option<TaxPolicy>,
+    /// DH.a (impl-68) — the **closed-circulation marker**. `false` for every config except
+    /// [`SettlementConfig::frontier_closed_circulation`], so every existing config and golden is
+    /// byte-identical by construction (default-false; digest tag 34 is emitted ON-only). When
+    /// `true` the runtime activates the whole-population gold/physical provenance ledger and the
+    /// closure-observation pass — pure observation that alters no settlement (proven by the DH.a
+    /// inertness test). See [`mod@closure`].
+    pub closed_circulation: bool,
 }
+
+pub mod closure;
 
 mod in_kind_wage;
 
@@ -2758,6 +2767,7 @@ impl SettlementConfig {
             cycle: None,
             tender_bench: None,
             tax: None,
+            closed_circulation: false,
         }
     }
 
@@ -3078,6 +3088,7 @@ impl SettlementConfig {
             cycle: None,
             tender_bench: None,
             tax: None,
+            closed_circulation: false,
         }
     }
 
@@ -3155,6 +3166,7 @@ impl SettlementConfig {
             cycle: None,
             tender_bench: None,
             tax: None,
+            closed_circulation: false,
         }
     }
 
@@ -3272,6 +3284,7 @@ impl SettlementConfig {
             cycle: None,
             tender_bench: None,
             tax: None,
+            closed_circulation: false,
         }
     }
 
@@ -3414,6 +3427,7 @@ impl SettlementConfig {
             cycle: None,
             tender_bench: None,
             tax: None,
+            closed_circulation: false,
         }
     }
 
@@ -3667,6 +3681,7 @@ impl SettlementConfig {
             cycle: None,
             tender_bench: None,
             tax: None,
+            closed_circulation: false,
         }
     }
 
@@ -4133,6 +4148,54 @@ impl SettlementConfig {
             .chain
             .as_ref()
             .is_some_and(chain_config_earned_provisioning_active));
+        cfg
+    }
+
+    /// DH.a (impl-68) — THE CLOSED CIRCULATION: the durable stack MINUS the endowed non-producing
+    /// surround. Built subtractively from [`Self::frontier_mortal_producers_earned`] exactly as the
+    /// `ignition_withdrawal` oracle builds its `{durable}` regime (producer `wood_provision = 0` +
+    /// `gatherers = 48`), then the §3.1 edit list and NOTHING else:
+    ///
+    /// - `consumers = 0`; `starting_gold_consumer = 0`; `consumer_wood_endowment = 0` (the last two
+    ///   are already 0 on this path — zeroed for explicitness, all three in the §3.7 identity test).
+    /// - the 2 legacy lineage households are removed: the demography household list is ONLY the 6
+    ///   mortal producer households (their per-tick hearth mints go with them).
+    /// - `closed_circulation = true` (the ON-only marker, digest tag 34).
+    ///
+    /// A household that produces nothing and earns nothing cannot exist in a closed economy; the
+    /// lineage surround (like the consumer cohort) is endowment scaffolding from earlier arcs. DH.a
+    /// removes scaffolding rather than converting it. No parameter tuning, no new mechanism: every
+    /// market the regime needs already exists. See `docs/impl-closed-circulation.md`.
+    pub fn frontier_closed_circulation() -> Self {
+        // The {durable} regime exactly as the oracle builds it: the earned trap base + the retired
+        // producer WOOD mint + gatherers pinned at 48 (double the base 24).
+        let mut cfg = Self::frontier_mortal_producers_earned();
+        cfg.gatherers = 48;
+        if let Some(demo) = cfg.demography.as_mut() {
+            let start = demo
+                .households
+                .len()
+                .checked_sub(MORTAL_PRODUCER_HOUSEHOLDS)
+                .expect("earned base appends producer households");
+            for household in &mut demo.households[start..] {
+                household.wood_provision = 0;
+            }
+        }
+        // The DH.a subtractive edits (§3.1): remove the endowed non-producing surround.
+        cfg.consumers = 0;
+        cfg.starting_gold_consumer = 0;
+        cfg.consumer_wood_endowment = 0;
+        if let Some(demo) = cfg.demography.as_mut() {
+            // Keep ONLY the 6 mortal producer households (drop the 2 legacy lineage households at
+            // the head of the list). Their hearth mints leave with them.
+            let start = demo
+                .households
+                .len()
+                .checked_sub(MORTAL_PRODUCER_HOUSEHOLDS)
+                .expect("earned base appends producer households");
+            demo.households.drain(..start);
+        }
+        cfg.closed_circulation = true;
         cfg
     }
 
@@ -7731,6 +7794,16 @@ pub struct Settlement {
     /// fingerprint. The live receivability, receipts, and defaults are read from the
     /// society / its issuer.
     tax: Option<TaxRuntime>,
+    /// DH.a (impl-68): the closed-circulation marker, copied from
+    /// [`SettlementConfig::closed_circulation`]. `false` for every non-closed settlement, so the
+    /// closure observation and provenance ledger are inert and every existing run is byte-identical.
+    /// Deliberately absent from [`Settlement::canonical_bytes`] except via the ON-only digest tag
+    /// 34 (see [`closure`]).
+    closed_circulation: bool,
+    /// DH.a (impl-68): the whole-population gold/physical provenance ledger + raw event tape,
+    /// maintained only when `closed_circulation` is on. Pure observation — runtime-only, never
+    /// serialized in `canonical_bytes`, and provably behaviour-inert (the DH.a inertness test).
+    closure: closure::ClosureLedger,
 }
 
 /// The G8c-3 tax-overlay runtime (held on a finance [`Settlement`]). Reused econ M21
@@ -11173,6 +11246,11 @@ impl Settlement {
             // G8c-3: a spatial settlement levies no tax (the finance path returns early
             // from `generate`), so the tax overlay is always absent here.
             tax: None,
+            // DH.a (impl-68): copy the closed-circulation marker so the runtime can gate the
+            // whole-population provenance ledger + closure observation on it. Default-false, so a
+            // non-closed settlement is byte-identical.
+            closed_circulation: config.closed_circulation,
+            closure: closure::ClosureLedger::default(),
         };
         // S22e: endow a minority of lineage households with a plow at generation (a
         // conservation-safe INITIAL endowment, no earning required). A no-op off the gate, so
@@ -11191,6 +11269,10 @@ impl Settlement {
         if settlement.saving_allocation_obs_active() {
             settlement.society.enable_allocation_trace();
         }
+        // DH.a (impl-68): seed the whole-population provenance ledger from the generated holdings
+        // (registry, endowed gold/physical buckets, the InitialHolding/A2FrontLoad tape). Pure
+        // observation; a no-op off the closed-circulation marker.
+        settlement.closure_init();
         settlement
     }
 
@@ -11708,6 +11790,9 @@ impl Settlement {
             shadow_cycle_cache: RefCell::new(None),
             bench: bench_runtime.map(|surface| BenchRuntime { surface, scenario }),
             tax: tax_runtime,
+            // DH.a (impl-68): a finance settlement is never closed-circulation.
+            closed_circulation: false,
+            closure: closure::ClosureLedger::default(),
         }
     }
 
@@ -11726,6 +11811,10 @@ impl Settlement {
         // the runtime-only ledger starts in lockstep with held stock. A no-op off the gated
         // path (and after the first active tick).
         self.maybe_init_acquisition_ledger();
+        // DH.a (impl-68): reset the closure per-tick aggregate (pure observation).
+        if self.closure_active() {
+            self.closure_begin_tick();
+        }
         let mut report = EconTickReport {
             econ_tick: self.econ_tick,
             fast_ticks: FAST_TICKS_PER_ECON_TICK,
@@ -11790,6 +11879,10 @@ impl Settlement {
         }
         self.record_pending_deposits(fast.deposited);
         report.transferred = self.transfer_pending_deposits();
+        // DH.a: the world→econ gathered-node deposits (own_produced credits).
+        if self.closure_active() {
+            self.closure_phase(closure::ClosurePhase::Gather);
+        }
         self.refresh_private_land_carried_sources();
         // S18: accumulate the WOOD relocated node→econ this tick — the provenance bound for
         // traded WOOD (with every WOOD buffer + the mint zeroed, all WOOD enters here). A
@@ -11818,6 +11911,10 @@ impl Settlement {
         // lifespan is a function of the stable seed, nothing is drawn.
         report.deaths += self.age_and_remove_elderly(&mut report, &mut wage_labor_used);
         self.saving_obs_capture_death_phase();
+        // DH.a: route the estates of agents that died this tick (heir / commons drain).
+        if self.closure_active() {
+            self.closure_observe_estates();
+        }
 
         // ---- 4. SCALES.
         self.regenerate_scales();
@@ -11835,6 +11932,10 @@ impl Settlement {
         let mut capital_labor_used = Vec::new();
         if self.run_capital_formation(&mut report, &mut capital_labor_used) {
             self.regenerate_scales();
+        }
+        // DH.a: WOOD → mill/oven tool completions (own_produced tools, endowed input debits).
+        if self.closure_active() {
+            self.closure_phase(closure::ClosurePhase::Capital);
         }
 
         // ---- 4b. ROLE-CHOICE (G3b): each living colonist holding latent
@@ -11903,6 +12004,11 @@ impl Settlement {
         // own bread stock instead. Both are no-ops off their gates.
         let earned_funded_bid_members = self.run_earned_provisioning_transfers();
         self.run_producer_stock_provisioning_control();
+        // DH.a: the (retired-in-NoIgnition) hearth + producer-subsistence deliveries — endowed
+        // support credits (B arms only; a no-op in NoIgnition where all provisions are 0).
+        if self.closure_active() {
+            self.closure_phase(closure::ClosurePhase::Support);
+        }
 
         // ---- 4c''. OWN-LABOR SUBSISTENCE (S12): with the food mints retired, give each
         // hungry, eligible, unprovisioned colonist with spare labor a labor-produced
@@ -11914,6 +12020,10 @@ impl Settlement {
         // no-op unless the gated own-labor path is active, so every other run is
         // byte-identical.
         self.run_own_labor_subsistence(&fast.foraged, &mut report);
+        // DH.a: labor-produced own-consumption subsistence (own_produced + own consumption).
+        if self.closure_active() {
+            self.closure_phase(closure::ClosurePhase::OwnUse);
+        }
 
         // ---- 4d. BANK (G8b): colonists deposit M3 specie into the chartered bank
         // (specie → reserves, claims to the depositor) and the bank lends fiduciary
@@ -12098,6 +12208,12 @@ impl Settlement {
         // SALT on food before trying to re-buy land.
         self.run_land_market();
         report.total_gold_after_step = self.total_gold().0;
+        // DH.a: observe the settled market batch in its real order — authoritative consumption log
+        // first, then the tick's spot trades (both physical legs + the gold sale-split). Reconciles
+        // buckets post-market-batch.
+        if self.closure_active() {
+            self.closure_observe_market(provenance_spot_trades_start);
+        }
         // §5 money/escrow invariant, asserted each tick the wage escrow can hold funds: total
         // gold (agents + commons + land-fee pool + wage escrow) after the market equals the
         // pre-fast total plus only what the promotion channel minted. `report.conserves()` is
@@ -12136,6 +12252,10 @@ impl Settlement {
         // market (so the input a producer just bought is on hand) and is a no-op
         // for a plain settlement (no chain).
         self.run_production(&mut report);
+        // DH.a: miller/baker recipe production (input debit, own_produced output).
+        if self.closure_active() {
+            self.closure_phase(closure::ClosurePhase::Production);
+        }
 
         // ---- 6a-bis. OWN-USE CULTIVATION (S15): each cultivating colonist converts the
         // grain it hauled this tick into bread by its own labor (booked
@@ -12172,6 +12292,10 @@ impl Settlement {
         // and BEFORE the own-use consume passes (so its consume-log tail is sinked by them).
         // A no-op off the gated seam, so every other run is byte-identical.
         self.run_emergency_self_provision(&mut report);
+        // DH.a: own-use cultivation + the emergency subsistence floor (own_produced + consumption).
+        if self.closure_active() {
+            self.closure_phase(closure::ClosurePhase::OwnUse);
+        }
 
         // ---- 6a-ter. PROVENANCE: OWN-USE CONSUME (S16): sink the cultivators' own-use bread
         // consume (the consumed-log tail past the market pass), produced-first. No-op off path.
@@ -12221,6 +12345,10 @@ impl Settlement {
         // it decays end-of-tick holdings, before the whole-system snapshot so the
         // conservation identity accounts it. A no-op unless enabled.
         self.run_spoilage(&mut report);
+        // DH.a: per-agent perishable decay (a recorded physical sink).
+        if self.closure_active() {
+            self.closure_phase(closure::ClosurePhase::Spoilage);
+        }
         // Close the post-birth/end-of-tick seam after the only later physical sink.
         self.saving_obs_finish_stock_tick(&report);
         // ---- 7b. PROVENANCE FINALIZE (S16): record the first produced-surplus tick and
@@ -12260,6 +12388,11 @@ impl Settlement {
             }
         }
 
+        // DH.a: finalize the closure per-tick aggregate (CC0 living, CC3 boundary sinks), reconcile
+        // end-of-tick, and push it. Pure observation — before the tick counter advances.
+        if self.closure_active() {
+            self.closure_finalize_tick();
+        }
         self.record_commitment_norm_observations();
         self.econ_tick += 1;
         self.last_report = report.clone();
@@ -12803,6 +12936,13 @@ impl Settlement {
             if self.society.credit_stock(agent, good, take) {
                 let removed = self.world.stockpile_withdraw(self.exchange, good, take);
                 assert_eq!(removed, take, "exchange must hold every credited unit");
+                // DH.a (P1-1): the world→econ deposit seam — a settled gathered-node deposit is
+                // own-produced. Emit at the real credit, not a phase diff.
+                self.closure_emit(closure::ClosureEventKind::GatherDeposit {
+                    agent,
+                    good,
+                    qty: removed,
+                });
                 if Some(good) == share_input {
                     self.credit_share_contract_grain(agent, removed);
                     self.credit_in_kind_contract_grain(agent, removed);
@@ -14539,9 +14679,11 @@ impl Settlement {
         };
         self.commons_gold = self.commons_gold.saturating_add(gold);
         self.earned_provisioning.buckets.remove(&id);
+        let mut closure_goods = BTreeMap::new();
         for (good, qty) in stock {
             if qty > 0 {
                 *self.commons_stock.entry(good).or_insert(0) += qty;
+                closure_goods.insert(good, (0, qty));
             }
         }
         // S16: the dead colonist's produced bread leaves the living population for the
@@ -14554,7 +14696,7 @@ impl Settlement {
         if self.acquisition_ledger_active() {
             self.acquisition.drop_to_sink(id);
         }
-        self.record_estate_destination(id, EstateDestination::Commons);
+        self.record_estate_destination(id, EstateDestination::Commons, None, closure_goods);
         true
     }
 
@@ -14642,9 +14784,10 @@ impl Settlement {
         };
         let mut bread_placed_with_heir = 0u64;
         let mut bread_placed_with_commons = 0u64;
-        match destination {
+        let mut closure_goods = BTreeMap::new();
+        let gold_heir = match destination {
             Some(EstateDestination::Household { heir, .. }) => {
-                if self.credit_estate_gold_to_heir(heir, gold) {
+                let gold_heir = if self.credit_estate_gold_to_heir(heir, gold) {
                     let (lots, untracked) = self.debit_earned_provisioning_lots(id, gold);
                     self.credit_earned_provisioning_lots(heir, lots);
                     self.credit_earned_provisioning_lot(
@@ -14654,12 +14797,14 @@ impl Settlement {
                             amount: untracked,
                         },
                     );
+                    Some(heir)
                 } else {
                     // Defensive: an overflow at the heir, stale heir id, or future
                     // ledger-money estate routes the gold to the commons.
                     self.commons_gold = self.commons_gold.saturating_add(gold);
                     self.earned_provisioning.buckets.remove(&id);
-                }
+                    None
+                };
                 for (good, qty) in stock {
                     if qty == 0 {
                         continue;
@@ -14686,6 +14831,7 @@ impl Settlement {
                     if qty > placed {
                         *self.commons_stock.entry(good).or_insert(0) += qty - placed;
                     }
+                    closure_goods.insert(good, (placed, qty - placed));
                     if Some(good) == tracked_bread {
                         bread_placed_with_heir += placed;
                         bread_placed_with_commons += qty - placed;
@@ -14708,6 +14854,7 @@ impl Settlement {
                         self.cultivation_tool_inheritor_ids.insert(heir);
                     }
                 }
+                gold_heir
             }
             Some(EstateDestination::Commons) | None => {
                 self.commons_gold = self.commons_gold.saturating_add(gold);
@@ -14715,13 +14862,15 @@ impl Settlement {
                 for (good, qty) in stock {
                     if qty > 0 {
                         *self.commons_stock.entry(good).or_insert(0) += qty;
+                        closure_goods.insert(good, (0, qty));
                     }
                     if Some(good) == tracked_bread {
                         bread_placed_with_commons += qty;
                     }
                 }
+                None
             }
-        }
+        };
         self.earned_provisioning.buckets.remove(&id);
         // S22e: place the {plows} partition the inheritance switch forced to the commons (a
         // conserved transfer — the same sink the heirless commons fallback uses). Empty unless the
@@ -14730,12 +14879,14 @@ impl Settlement {
         if forced_commons_plows > 0 {
             if let Some(plow) = plow_good {
                 *self.commons_stock.entry(plow).or_insert(0) += forced_commons_plows;
+                closure_goods.insert(plow, (0, forced_commons_plows));
             }
         }
         if let Some(forced_tools) = forced_commons_producer_tools {
             for (tool, qty) in forced_tools {
                 if qty > 0 {
                     *self.commons_stock.entry(tool).or_insert(0) += qty;
+                    closure_goods.insert(tool, (0, qty));
                 }
             }
         }
@@ -14786,7 +14937,12 @@ impl Settlement {
                 }
             }
         }
-        self.record_estate_destination(id, destination.unwrap_or(EstateDestination::Commons));
+        self.record_estate_destination(
+            id,
+            destination.unwrap_or(EstateDestination::Commons),
+            gold_heir,
+            closure_goods,
+        );
         true
     }
 
@@ -14808,7 +14964,28 @@ impl Settlement {
             .and_then(|slot| self.colonists[slot].household)
     }
 
-    fn record_estate_destination(&mut self, id: AgentId, destination: EstateDestination) {
+    fn record_estate_destination(
+        &mut self,
+        id: AgentId,
+        destination: EstateDestination,
+        gold_heir: Option<AgentId>,
+        goods: BTreeMap<GoodId, (u64, u64)>,
+    ) {
+        // DH.a: stash the actual heir/commons placements for post-death closure observation.
+        if self.closure_active() {
+            let heir = match destination {
+                EstateDestination::Household { heir, .. } => Some(heir),
+                EstateDestination::Commons => None,
+            };
+            self.closure.pending_estate.push((
+                id,
+                closure::ClosureEstateRouting {
+                    gold_heir,
+                    heir,
+                    goods,
+                },
+            ));
+        }
         if let Some(slot) = self.slot_for_id(id) {
             self.colonists[slot].estate_destination = Some(destination);
         }
@@ -15625,6 +15802,14 @@ impl Settlement {
         };
         let credited = provision.min(u32::MAX - held);
         if credited > 0 && self.society.credit_stock(id, good, credited) {
+            // DH.a (P1-1): the runtime support-delivery seam. In the closed regime EVERY demographic
+            // provision / producer-subsistence mint is a B-arm support credit (there is no lineage
+            // hearth) — endowed, since support is not production. Emit at the real mint.
+            self.closure_emit(closure::ClosureEventKind::BSupportCredit {
+                agent: id,
+                good,
+                qty: credited,
+            });
             *report.endowment.entry(good).or_insert(0) += u64::from(credited);
             if good == self.known.hunger {
                 if household.is_some_and(|h| self.is_producer_household(h)) {
@@ -15892,6 +16077,16 @@ impl Settlement {
             let child_slot = self.colonists.len() - 1;
             self.live_colonist_slots.push(child_slot);
             self.colonist_slot_by_id.insert(child_id, child_slot);
+            // DH.a: register the newborn (household → class) and record the conserved staple + gold
+            // endowment as bucket-preserving transfers (rule 5).
+            self.closure_note_birth(
+                parent_id,
+                child_id,
+                h,
+                staple,
+                demo.child_food_endowment,
+                Gold(gold_endow),
+            );
             // S13: a spatial-households newborn gets a world agent at its EXACT econ id
             // (a reused arena `slot#gen` after a death recycled the slot), so
             // world_id == econ_id holds mid-run too. The slot's prior world occupant was
@@ -16140,6 +16335,11 @@ impl Settlement {
         let cycle_a_recipe = chain.content.cycle_a_recipe().map(|recipe| recipe.id);
         let cycle_b_recipe = chain.content.cycle_b_recipe().map(|recipe| recipe.id);
         let cycle_c_recipe = chain.content.cycle_c_recipe().map(|recipe| recipe.id);
+        // DH.a (P1-1): the recipe seam gate. Precomputed so the emit inside the id-loop is a partial
+        // borrow of `self.closure` alone (never a `&mut self` method), disjoint from the
+        // `&self.live_colonist_slots` iterator.
+        let closure_on = self.closure_active();
+        let closure_tick = self.econ_tick;
         // `chain`/`colonists` (immutable) and `society` (mutable) are disjoint
         // fields, so id-ordered iteration here borrows them side by side. The
         // recipe ids are content data; mutation delegates to econ's existing
@@ -16211,6 +16411,23 @@ impl Settlement {
                     if Some(out_good) == acquisition_bread {
                         self.acquisition
                             .credit(id, FoodChannel::SelfProduced, u64::from(out_qty));
+                    }
+                    // DH.a (P1-1): the recipe seam — input consumed (endowed portion feeds CC2),
+                    // output own-produced. Emit at the real application, not a phase diff. Research
+                    // (Knowledge, drained immediately) never persists in stock and never runs under
+                    // the closed marker, so it is excluded here.
+                    if closure_on {
+                        let (input, input_qty) = applied.input.unwrap_or((out_good, 0));
+                        self.closure.record(
+                            closure_tick,
+                            closure::ClosureEventKind::RecipeProduction {
+                                agent: id,
+                                input,
+                                input_qty,
+                                output: out_good,
+                                output_qty: out_qty,
+                            },
+                        );
                     }
                 }
                 // Conserved good INPUTS to any recipe — research included — are accounted
@@ -17971,6 +18188,13 @@ impl Settlement {
                 let held = u64::from(self.society.agents.get(id).map_or(0, |a| a.stock.get(good)));
                 let spoil = u32::try_from(decay(held)).unwrap_or(u32::MAX);
                 if spoil > 0 && self.society.debit_stock(id, good, spoil) {
+                    // DH.a (P1-1): the per-agent perishable-decay seam (a recorded sink). Commons
+                    // spoilage below is NOT a per-agent event (§3.2 R5-5), so it is not emitted.
+                    self.closure_emit(closure::ClosureEventKind::Spoilage {
+                        agent: id,
+                        good,
+                        qty: spoil,
+                    });
                     *report.spoiled.entry(good).or_insert(0) += u64::from(spoil);
                     if Some(good) == provenance_bread {
                         self.bread_provenance.sink(id, u64::from(spoil));
@@ -18482,6 +18706,13 @@ impl Settlement {
                 None => false,
             };
             if completed {
+                self.closure_emit(closure::ClosureEventKind::CapitalFormation {
+                    agent: builder,
+                    input: WOOD,
+                    input_qty: 0,
+                    tool,
+                    tool_qty: qty,
+                });
                 *report.produced.entry(tool).or_insert(0) += u64::from(qty);
                 self.tools_built = self.tools_built.saturating_add(u64::from(qty));
                 self.record_mortal_capital_build_completion(slot, qty);
@@ -18681,6 +18912,13 @@ impl Settlement {
                 None => None,
             };
             if let Some(mut project) = started {
+                self.closure_emit(closure::ClosureEventKind::CapitalFormation {
+                    agent: id,
+                    input: WOOD,
+                    input_qty: wood_qty,
+                    tool: project.output_good,
+                    tool_qty: 0,
+                });
                 *report.consumed_as_input.entry(WOOD).or_insert(0) += u64::from(wood_qty);
                 if project.labor_advanced < template.required_labor && advance_project(&mut project)
                 {
@@ -18695,6 +18933,13 @@ impl Settlement {
                 };
                 if completed {
                     let qty = project.output_qty;
+                    self.closure_emit(closure::ClosureEventKind::CapitalFormation {
+                        agent: id,
+                        input: WOOD,
+                        input_qty: 0,
+                        tool: project.output_good,
+                        tool_qty: qty,
+                    });
                     *report.produced.entry(project.output_good).or_insert(0) += u64::from(qty);
                     self.tools_built = self.tools_built.saturating_add(u64::from(qty));
                     self.record_mortal_capital_build_completion(slot, qty);
@@ -18901,6 +19146,13 @@ impl Settlement {
             let Some(mut project) = started else {
                 continue;
             };
+            self.closure_emit(closure::ClosureEventKind::CapitalFormation {
+                agent: id,
+                input: WOOD,
+                input_qty: params.wood_qty,
+                tool: project.output_good,
+                tool_qty: 0,
+            });
             *report.consumed_as_input.entry(WOOD).or_insert(0) += u64::from(params.wood_qty);
             if project.labor_advanced < template.required_labor && advance_project(&mut project) {
                 labor_used.push((id, 1));
@@ -18912,6 +19164,13 @@ impl Settlement {
             };
             if completed {
                 let qty = project.output_qty;
+                self.closure_emit(closure::ClosureEventKind::CapitalFormation {
+                    agent: id,
+                    input: WOOD,
+                    input_qty: 0,
+                    tool: project.output_good,
+                    tool_qty: qty,
+                });
                 *report.produced.entry(project.output_good).or_insert(0) += u64::from(qty);
                 self.tools_built = self.tools_built.saturating_add(u64::from(qty));
                 self.record_mortal_capital_build_completion(slot, qty);
@@ -19338,6 +19597,8 @@ impl Settlement {
                 }
                 let gold_before = self.total_gold();
                 if self.society.transfer_gold(producer, member, amount) {
+                    // DH.a rule 4: bucket-preserving gold-only provisioning transfer.
+                    self.closure_note_gold_transfer(producer, member, amount);
                     let (_, endowed, untracked) =
                         self.earned_provisioning_transfer_gold_provenance(producer, member, amount);
                     self.earned_provisioning.stats.endowment_funded_provisioning = self
@@ -19879,6 +20140,8 @@ impl Settlement {
                     .transfer_preserve(donor, recipient, u64::from(qty));
             }
         }
+        // DH.a: a committed staple move between existing agents — a bucket-preserving transfer.
+        self.closure_note_staple_transfer(donor, recipient, staple, qty);
         true
     }
 
@@ -24040,6 +24303,12 @@ impl Settlement {
         self.land_fee_pool_salt.0
     }
 
+    /// DH.a (impl-68): the wage-labor escrow pool (CC3 reads it at every window boundary — it must
+    /// stay 0 on the closed regime, which runs no wage labor). Runtime-only.
+    pub fn wage_escrow_gold(&self) -> u64 {
+        self.wage_escrow_gold.0
+    }
+
     pub fn land_market_carrying_paid_total(&self) -> u64 {
         self.land_market_carrying_paid_total
     }
@@ -26496,6 +26765,15 @@ impl Settlement {
                 if let Some(until) = chain.producer_support_until_tick {
                     out.extend_from_slice(&until.to_le_bytes());
                 }
+            }
+            // DH.a (impl-68): the closed-circulation marker. ON-only, injective — the tag byte 34
+            // then the marker byte (always 1 when active). The whole-population provenance ledger
+            // and closure preamble it enables are pure OBSERVATION and never serialized; the entire
+            // digest footprint is these two bytes, so removing this block yields the OFF stream
+            // byte-for-byte (a dedicated identity test pins it).
+            if self.closed_circulation {
+                out.push(34);
+                out.push(1);
             }
             // S23b: the post-money land market extends S23a's registry with an endogenous-price
             // state, listings, last-sale anchors, and the non-agent fee sink. Emitted only when the
@@ -32042,6 +32320,193 @@ mod tests {
     }
 
     #[test]
+    fn closure_estate_observer_records_the_actual_heir_commons_split() {
+        let mut config = SettlementConfig::frontier_closed_circulation();
+        config
+            .demography
+            .as_mut()
+            .expect("closed circulation has demography")
+            .households[0]
+            .founders = 2;
+        let mut s = Settlement::generate(1, &config);
+        let household_members: Vec<AgentId> = s
+            .live_colonist_slots
+            .iter()
+            .filter_map(|&slot| {
+                (s.colonists[slot].household == Some(0)).then_some(s.colonists[slot].id)
+            })
+            .collect();
+        let deceased = household_members[0];
+        let heir = household_members[1];
+
+        let estate_good = s
+            .society
+            .agents
+            .get(deceased)
+            .unwrap()
+            .stock
+            .positive_goods()
+            .find(|&good| s.society.agents.get(deceased).unwrap().stock.get(good) > 1)
+            .expect("the producer estate must contain a splittable physical holding");
+        let heir_held = s.society.agents.get(heir).unwrap().stock.get(estate_good);
+        let top_up = (u32::MAX - 1) - heir_held;
+        assert!(s.society.credit_stock(heir, estate_good, top_up));
+        // Mirror the manual out-of-band real top-up into the closure shadow inventory. The pre-P1-1
+        // phase diff absorbed any stock change automatically; the seam-based ledger (P1-1) tracks
+        // only real mutation seams, so this test injects the matching shadow credit directly to keep
+        // the physical-invariant reconcile `closure_observe_estates` now asserts satisfied.
+        s.closure.record(
+            0,
+            closure::ClosureEventKind::GatherDeposit {
+                agent: heir,
+                good: estate_good,
+                qty: top_up,
+            },
+        );
+        let deceased_qty = s
+            .society
+            .agents
+            .get(deceased)
+            .unwrap()
+            .stock
+            .get(estate_good);
+
+        let slot = s.slot_for_id(deceased).unwrap();
+        s.mark_colonist_dead(slot);
+        let mut report = EconTickReport::default();
+        let mut wage_labor_used = Vec::new();
+        assert!(s.settle_estate_to_heirs(deceased, &mut report, &mut wage_labor_used));
+        s.closure_observe_estates();
+
+        let mut heir_qty = 0;
+        let mut commons_qty = 0;
+        for event in s.closure.tape.iter().filter(|event| event.tick == 0) {
+            match event.kind {
+                closure::ClosureEventKind::HouseholdTransfer {
+                    from,
+                    to,
+                    good,
+                    qty,
+                } if from == deceased && to == heir && good == estate_good => heir_qty += qty,
+                closure::ClosureEventKind::EstateToCommons { agent, good, qty }
+                    if agent == deceased && good == estate_good =>
+                {
+                    commons_qty += qty
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(heir_qty, 1, "only the heir's real headroom is transferred");
+        assert_eq!(commons_qty, deceased_qty - 1);
+        assert_eq!(
+            s.closure.cur.commons_goods_drain,
+            u64::from(deceased_qty - 1),
+            "the closure observer records the gross unplaceable remainder"
+        );
+    }
+
+    #[test]
+    fn closure_estate_observer_records_failed_heir_gold_credit_as_commons_drain() {
+        let mut config = SettlementConfig::frontier_closed_circulation();
+        config
+            .demography
+            .as_mut()
+            .expect("closed circulation has demography")
+            .households[0]
+            .founders = 2;
+        let mut s = Settlement::generate(1, &config);
+        let household_members: Vec<AgentId> = s
+            .live_colonist_slots
+            .iter()
+            .filter_map(|&slot| {
+                (s.colonists[slot].household == Some(0)).then_some(s.colonists[slot].id)
+            })
+            .collect();
+        let deceased = household_members[0];
+        let heir = household_members[1];
+        let estate_gold = s.society.agents.get(deceased).unwrap().gold;
+        assert!(
+            estate_gold > Gold::ZERO,
+            "the estate must exercise gold routing"
+        );
+
+        s.society.agents.get_mut(heir).unwrap().gold = Gold(u64::MAX);
+        let heir_shadow = s.closure.gold.entry(heir).or_default();
+        heir_shadow.earned = Gold::ZERO;
+        heir_shadow.endowed = Gold(u64::MAX);
+        let commons_before = s.commons_gold();
+
+        let slot = s.slot_for_id(deceased).unwrap();
+        s.mark_colonist_dead(slot);
+        let mut report = EconTickReport::default();
+        let mut wage_labor_used = Vec::new();
+        assert!(s.settle_estate_to_heirs(deceased, &mut report, &mut wage_labor_used));
+        assert_eq!(
+            s.commons_gold(),
+            commons_before.saturating_add(estate_gold),
+            "the real estate route falls back to commons when the heir would overflow"
+        );
+
+        s.closure_observe_estates();
+        assert_eq!(
+            s.closure.cur.commons_drain, estate_gold.0,
+            "the closure observer must record the actual gold fallback, independently of goods"
+        );
+    }
+
+    #[test]
+    fn closure_estate_observer_replays_chained_estates_in_causal_order() {
+        let mut config = SettlementConfig::frontier_closed_circulation();
+        config
+            .demography
+            .as_mut()
+            .expect("closed circulation has demography")
+            .households[0]
+            .founders = 2;
+        let mut s = Settlement::generate(1, &config);
+        let mut household_members: Vec<AgentId> = s
+            .live_colonist_slots
+            .iter()
+            .filter_map(|&slot| {
+                (s.colonists[slot].household == Some(0)).then_some(s.colonists[slot].id)
+            })
+            .collect();
+        household_members.sort();
+        let heir = household_members[0];
+        let donor = *household_members.last().expect("household member");
+        assert!(donor > heir, "the donor must sort after its heir");
+        for &id in &household_members[1..household_members.len() - 1] {
+            let slot = s.slot_for_id(id).expect("intermediate member slot");
+            s.mark_colonist_dead(slot);
+        }
+        for id in [heir, donor] {
+            s.society.agents.get_mut(id).expect("live member").gold = Gold(5);
+            let buckets = s.closure.gold.entry(id).or_default();
+            buckets.earned = Gold::ZERO;
+            buckets.endowed = Gold(5);
+        }
+        let expected_drain = 10;
+
+        let mut report = EconTickReport::default();
+        let mut wage_labor_used = Vec::new();
+        let donor_slot = s.slot_for_id(donor).expect("donor slot");
+        s.mark_colonist_dead(donor_slot);
+        assert!(s.settle_estate_to_heirs(donor, &mut report, &mut wage_labor_used));
+        assert_eq!(s.heir_for(donor), Some(heir));
+
+        let heir_slot = s.slot_for_id(heir).expect("heir slot");
+        s.mark_colonist_dead(heir_slot);
+        assert!(s.settle_estate_to_heirs(heir, &mut report, &mut wage_labor_used));
+        assert_eq!(s.heir_for(heir), None);
+
+        s.closure_observe_estates();
+        assert_eq!(
+            s.closure.cur.commons_drain, expected_drain,
+            "the donor's gold must enter the heir's buckets before the heir's estate drains"
+        );
+    }
+
+    #[test]
     fn frontier_estate_gold_inherits_after_emergent_promotion() {
         // After G5a promotion the frontier's money balances live in `Agent.gold` even
         // though the money regime is still `Emergent(SALT)`. The public econ
@@ -34069,6 +34534,61 @@ mod tests {
             s.need_of(builder_index).expect("builder need").rest > 0,
             "recorded capital labor must feed the next needs update"
         );
+    }
+
+    #[test]
+    fn capital_formation_emits_input_and_output_at_the_mutation_seams() {
+        let mut cfg = capital_test_config();
+        {
+            let chain = cfg.chain.as_mut().expect("chain");
+            chain.producible_capital = false;
+            chain.tool_build_labor = 1;
+        }
+        let mut s = Settlement::generate(1, &cfg);
+
+        for _ in 0..900u64 {
+            s.econ_tick();
+            s.chain.as_mut().expect("chain").producible_capital = true;
+            s.closed_circulation = true;
+            let mut report = EconTickReport::default();
+            let mut labor_used = Vec::new();
+            let completed = s.run_capital_formation(&mut report, &mut labor_used);
+            if report.consumed_as_input_of(WOOD) > 0 {
+                assert!(completed, "a one-labor build completes at its start seam");
+                let capital_events: Vec<_> = s
+                    .closure
+                    .tape
+                    .iter()
+                    .filter_map(|event| match event.kind {
+                        closure::ClosureEventKind::CapitalFormation {
+                            agent,
+                            input,
+                            input_qty,
+                            tool,
+                            tool_qty,
+                        } => Some((agent, input, input_qty, tool, tool_qty)),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(
+                    capital_events.len(),
+                    2,
+                    "start and completion are distinct seams"
+                );
+                assert_eq!(capital_events[0].1, WOOD);
+                assert!(capital_events[0].2 > 0);
+                assert_eq!(capital_events[0].4, 0);
+                assert_eq!(capital_events[1].0, capital_events[0].0);
+                assert_eq!(capital_events[1].1, WOOD);
+                assert_eq!(capital_events[1].2, 0);
+                assert_eq!(capital_events[1].3, capital_events[0].3);
+                assert!(capital_events[1].4 > 0);
+                return;
+            }
+            s.closed_circulation = false;
+            s.chain.as_mut().expect("chain").producible_capital = false;
+        }
+        panic!("test setup did not reach a capital start seam");
     }
 
     #[test]
