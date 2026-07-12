@@ -169,8 +169,9 @@ fn digest_tag34_is_off_plus_the_single_marker_emission() {
 // ===========================================================================================
 
 use sim::{
-    classify_closure, AgentId, ClosureClass, ClosureCriterion, ClosureDebitFamily,
-    ClosureEventKind, ClosurePhysicalEvent, ClosureVerdict, ClosureWindow, Gold, GoodId,
+    classify_closure, closure_classified_windows, closure_windows, AgentId, ClosureClass,
+    ClosureCriterion, ClosureDebitFamily, ClosureEventKind, ClosurePhysicalEvent, ClosureSaleSplit,
+    ClosureTickAgg, ClosureVerdict, ClosureWindow, Gold, GoodId,
 };
 use std::collections::BTreeMap;
 
@@ -178,39 +179,9 @@ const SEED3: u64 = 3;
 const RUN_TICKS: u64 = 1_600;
 const N: u64 = 160;
 
-/// §3.3 mandatory observation-inertness check on the preregistered seed VALUE 3 cell: two Closed
-/// NoIgnition settlements with the marker enabled — the ledger force-disabled vs active — must be
-/// byte-identical after generation and after EVERY tick (both the returned `EconTickReport` and
-/// `canonical_bytes`). Proves the ledger + preamble alter no settlement.
-#[test]
-fn closure_ledger_is_observation_only_seed3() {
-    let cfg = SettlementConfig::frontier_closed_circulation();
-    let mut on = Settlement::generate(SEED3, &cfg);
-    let mut off = Settlement::generate(SEED3, &cfg);
-    // Force-disable the ledger on `off` (before the first econ_tick).
-    off.closure_ledger_force_disable_for_test();
-    assert_eq!(
-        on.canonical_bytes(),
-        off.canonical_bytes(),
-        "marker-on hook-off vs hook-on must be byte-identical after generation"
-    );
-    // The inertness comparison runs the full experimental horizon (extinction + steady state): per
-    // §3.3 the ledger must be inert after EVERY tick of the run the oracle evaluates, so it iterates
-    // to `RUN_TICKS`, not a prefix. Its runtime is disclosed separately from the 60 experimental cells.
-    for tick in 0..RUN_TICKS {
-        let report_on = on.econ_tick();
-        let report_off = off.econ_tick();
-        assert_eq!(
-            report_on, report_off,
-            "the EconTickReport must be identical with the ledger active vs disabled (tick {tick})"
-        );
-        assert_eq!(
-            on.canonical_bytes(),
-            off.canonical_bytes(),
-            "canonical_bytes must be identical with the ledger active vs disabled (tick {tick})"
-        );
-    }
-}
+// §3.3 P2-1: the mandatory observation-inertness check moved to a LIBRARY unit-test module
+// (`sim::settlement::closure::inertness_tests`) because its force-disable hook is now `#[cfg(test)]`
+// and thus invisible to this integration-test build. See `closure.rs`.
 
 /// §3.1: the total ClosureClass mapping — every living agent maps to exactly one class at every
 /// window boundary; every non-household colonist is a Gatherer.
@@ -300,9 +271,10 @@ fn initial_holding_and_a2_frontload_are_disjoint() {
     }
 }
 
-/// §3.3 R6-4: the PIPELINE-level bootstrap-exclusion test — the bootstrap window [0,160) is printed
-/// (present in the absolute grid) but the classifier input begins at [160,320); an endowed debit in
-/// a later window still fails CC2.
+/// §3.3 R6-4 / P1-3: the PIPELINE-level bootstrap-exclusion test — driven through the SAME shared
+/// pipeline (`closure_windows` → `closure_classified_windows` → `classify_closure`) the oracle uses,
+/// not a duplicate. The bootstrap window [0,160) is printed (present in the absolute grid) but the
+/// classifier input begins at [160,320); an endowed debit in a later window still fails CC2.
 #[test]
 fn bootstrap_window_is_printed_but_excluded_from_classification() {
     let cfg = SettlementConfig::frontier_closed_circulation();
@@ -310,15 +282,20 @@ fn bootstrap_window_is_printed_but_excluded_from_classification() {
     for _ in 0..RUN_TICKS {
         s.econ_tick();
     }
-    let windows = all_windows(s.closure_tick_aggregates());
+    // THE real pipeline (shared with the oracle, P1-3): window aggregation → bootstrap filter.
+    let windows = closure_windows(s.closure_tick_aggregates());
     assert_eq!(
         windows[0].start, 0,
-        "the bootstrap window [0,160) is printed"
+        "the bootstrap window [0,160) is printed (present in the absolute grid)"
     );
-    let classified = classified_windows(&windows);
+    let classified = closure_classified_windows(&windows);
     assert_eq!(
         classified[0].start, N,
         "the classifier input begins at [160,320), not the bootstrap window"
+    );
+    assert!(
+        classified.iter().all(|w| w.start >= N),
+        "no bootstrap window survives the filter"
     );
     // An endowed physical debit injected into a later CLASSIFIED window still fails CC2 (the
     // exclusion is of the bootstrap window ONLY, never of genuine later leaks).
@@ -334,12 +311,60 @@ fn bootstrap_window_is_printed_but_excluded_from_classification() {
     );
 }
 
-/// §3.3 R6-1: the preregistered seed-value-3 raw-tape recount. An INDEPENDENT reference reducer —
-/// built SOLELY from the raw `ClosurePhysicalEvent` tape + the actor→class registry (never the
-/// production ledger) — must byte-match the production ledger on EVERY tape-derived per-window
-/// result: sale decompositions + own-production consideration, purchase consideration,
-/// endowed_physical_debits by class AND event family, gross commons_goods_drain, and the boundary
-/// origin inventories. (Monetary gold-bucket fields stay outside — no raw gold events ride the tape.)
+/// P1-3: the SHARED pipeline's window aggregation folds CC0 correctly — a class that is present at
+/// SOME per-tick samples of a window but not ALL of them disappears mid-window, so that window fails
+/// CC0 (present == false). Drives `closure_windows` (the real aggregation the oracle uses) on an
+/// injected per-tick aggregate sequence: Miller lives every tick EXCEPT one sample inside [160,320),
+/// so [0,160) has Miller present but [160,320) does not → `ClosureStructureAbsent` at 160 for Miller.
+#[test]
+fn pipeline_fails_cc0_when_a_class_disappears_mid_window() {
+    let miller = ClosureClass::Miller.index();
+    // Two full windows' worth of ticks (2 * N). Every class lives at every sample, and every class
+    // trades every tick, so absent the injection the grid would hold.
+    let mut ticks: Vec<ClosureTickAgg> = (0..2 * N)
+        .map(|t| ClosureTickAgg {
+            tick: t,
+            living: [true; 3],
+            own_sale_consideration: [1; 3],
+            purchase_consideration: [1; 3],
+            ..Default::default()
+        })
+        .collect();
+    // Miller disappears for exactly ONE sample inside the SECOND window [160,320) — present at the
+    // other 159 samples. Living "at EVERY sample" is required, so the whole window fails CC0.
+    let mid = (N + N / 2) as usize;
+    ticks[mid].living[miller] = false;
+    let windows = closure_windows(&ticks);
+    assert_eq!(windows.len(), 2, "two full 160-tick windows");
+    assert!(
+        windows[0].present[miller],
+        "[0,160): Miller present at every sample"
+    );
+    assert!(
+        !windows[1].present[miller],
+        "[160,320): a single missing sample makes Miller absent for the whole window"
+    );
+    // Through the classifier (all windows classified here — the injected grid has no bootstrap
+    // meaning) the mid-window disappearance is a CC0 structure failure at that window.
+    assert_eq!(
+        classify_closure(&windows),
+        ClosureVerdict::ClosureStructureAbsent {
+            first_window: N,
+            class: ClosureClass::Miller,
+        }
+    );
+}
+
+/// §3.3 R6-1 / P1-2: the preregistered seed-value-3 raw-tape recount, made INDEPENDENT and COMPLETE.
+/// An independent reference reducer — built SOLELY from the raw `ClosurePhysicalEvent` tape + the
+/// actor→class registry, sharing with production ONLY the raw event types, the registry data, and
+/// `Gold::mul_qty` (its class/family index mappings are TEST-LOCAL, never the production
+/// `ClosureClass::index()`/`ClosureDebitFamily::index()` helpers) — must byte-match the production
+/// ledger on EVERY tape-derived per-window result: EVERY sale's explicit bucket decomposition, the
+/// per-tick own-production/purchase consideration, endowed_physical_debits by class AND event
+/// family, gross commons_goods_drain, and the origin inventories at EVERY 160-tick window boundary
+/// (not only the final one). Monetary gold-bucket fields stay outside — no raw gold events ride the
+/// tape.
 #[test]
 fn seed3_raw_tape_recount_matches_the_production_ledger() {
     let cfg = SettlementConfig::frontier_closed_circulation();
@@ -349,9 +374,9 @@ fn seed3_raw_tape_recount_matches_the_production_ledger() {
     }
 
     // The independent reference reducer over the raw tape + registry.
-    let reference = RefReducer::replay(s.closure_event_tape(), s.closure_registry());
+    let reference = RefReducer::replay(s.closure_event_tape(), s.closure_registry(), RUN_TICKS);
 
-    // Per-tick tape-derived aggregates.
+    // (a) Per-tick tape-derived aggregates.
     let production = s.closure_tick_aggregates();
     for (t, prod) in production.iter().enumerate() {
         let refa = reference
@@ -381,11 +406,47 @@ fn seed3_raw_tape_recount_matches_the_production_ledger() {
         );
     }
 
-    // Boundary origin inventories.
+    // (b) EVERY sale's explicit bucket decomposition (not just the aggregate families).
+    let prod_sales = s.closure_sale_splits();
+    assert!(
+        !prod_sales.is_empty(),
+        "the seed-3 run must settle at least one sale to recount"
+    );
+    assert_eq!(
+        prod_sales.len(),
+        reference.sale_splits.len(),
+        "the reducers must decompose the SAME number of sales"
+    );
+    for (prod_split, ref_split) in prod_sales.iter().zip(&reference.sale_splits) {
+        assert_eq!(
+            *prod_split, *ref_split,
+            "per-sale origin decomposition mismatch (tick {}, trade {})",
+            prod_split.tick, prod_split.trade_id
+        );
+    }
+
+    // (c) Origin inventories at EVERY 160-tick window boundary (not only the final one).
+    let prod_boundaries = s.closure_boundary_inventories();
+    assert_eq!(
+        prod_boundaries.len(),
+        (RUN_TICKS / N) as usize,
+        "one boundary snapshot per window"
+    );
+    for (start, prod_inv) in prod_boundaries {
+        let ref_inv = reference
+            .boundaries
+            .get(start)
+            .expect("the reference must snapshot the same window boundaries");
+        assert_eq!(
+            prod_inv, ref_inv,
+            "boundary origin inventory mismatch at window w@{start}"
+        );
+    }
+    // The final boundary equals the live inventory snapshot (a cross-check of the accessor).
     assert_eq!(
         s.closure_inventory_snapshot(),
         reference.positive_inventory(),
-        "the reducers must agree on the boundary origin inventories"
+        "the reducers must agree on the final origin inventory"
     );
 }
 
@@ -445,35 +506,10 @@ fn pass_window(start: u64) -> ClosureWindow {
     }
 }
 
-/// Window the per-tick aggregates into the absolute 160-tick grid (bootstrap [0,160) included).
-fn all_windows(ticks: &[sim::ClosureTickAgg]) -> Vec<ClosureWindow> {
-    let mut windows = Vec::new();
-    let mut start = 0u64;
-    while start + N <= RUN_TICKS {
-        let mut w = pass_window(start);
-        w.present = [true; 3];
-        w.own_sale_consideration = [0; 3];
-        w.purchase_consideration = [0; 3];
-        w.endowed_purchase_debits = [0; 3];
-        w.endowed_physical_debits = [0; 3];
-        for t in start..start + N {
-            let agg = &ticks[t as usize];
-            for c in 0..3 {
-                if !agg.living[c] {
-                    w.present[c] = false;
-                }
-                w.endowed_physical_debits[c] += agg.endowed_physical_debits[c];
-            }
-        }
-        windows.push(w);
-        start += N;
-    }
-    windows
-}
-
-fn classified_windows(windows: &[ClosureWindow]) -> Vec<ClosureWindow> {
-    windows.iter().filter(|w| w.start >= N).cloned().collect()
-}
+/// A per-agent per-good origin-inventory snapshot `(endowed, acquired, own_produced)`, matching the
+/// production `closure_inventory_snapshot` shape (defined test-locally so the recount shares no type
+/// helper beyond the raw vocabulary).
+type OriginInventory = BTreeMap<AgentId, BTreeMap<GoodId, (u32, u32, u32)>>;
 
 /// One tick's tape-derived aggregates, reproduced independently from the raw tape.
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -485,26 +521,76 @@ struct RefTickAgg {
     commons_goods_drain: u64,
 }
 
-/// The INDEPENDENT reference reducer: it re-implements the physical reduction from scratch (shares
-/// no bucket-consumption / origin-classification / aggregation helper with the production ledger),
-/// consuming ONLY the raw tape + the registry, plus `Gold::mul_qty` (the shared arithmetic).
+/// TEST-LOCAL class index (independent of the production `ClosureClass::index`, P1-2). Shares only
+/// the raw `ClosureClass` vocabulary (registry data); the mapping is re-derived here, so a production
+/// index bug cannot propagate into the recount. Must agree with the production per-class array layout
+/// `[Gatherer, Miller, Baker]` for the byte-match to hold — that agreement is exactly what is tested.
+fn class_index(c: ClosureClass) -> usize {
+    match c {
+        ClosureClass::Gatherer => 0,
+        ClosureClass::Miller => 1,
+        ClosureClass::Baker => 2,
+    }
+}
+
+/// TEST-LOCAL debit-family index (independent of the production `ClosureDebitFamily::index`, P1-2).
+/// Re-derived from the raw `ClosureDebitFamily` vocabulary; must agree with the production
+/// `[[u64;5];3]` family layout `[Sale, Consumption, RecipeInput, CapitalInput, Spoilage]`.
+fn family_index(f: ClosureDebitFamily) -> usize {
+    match f {
+        ClosureDebitFamily::Sale => 0,
+        ClosureDebitFamily::Consumption => 1,
+        ClosureDebitFamily::RecipeInput => 2,
+        ClosureDebitFamily::CapitalInput => 3,
+        ClosureDebitFamily::Spoilage => 4,
+    }
+}
+
+/// The INDEPENDENT reference reducer (P1-2): it re-implements the physical reduction from scratch —
+/// its own bucket-consumption order, its own class/family index mappings (`class_index`/
+/// `family_index`, never the production `.index()` helpers), and its own aggregation — consuming ONLY
+/// the raw tape + the registry, plus `Gold::mul_qty` (the one shared arithmetic, §3.2). It records
+/// EVERY sale's split and the origin inventory at EVERY 160-tick window boundary.
 #[derive(Default)]
 struct RefReducer {
     inv: BTreeMap<AgentId, BTreeMap<GoodId, [u32; 3]>>,
     ticks: BTreeMap<u64, RefTickAgg>,
+    /// Every settled sale's decomposition, in tape order (compared per-sale against production).
+    sale_splits: Vec<ClosureSaleSplit>,
+    /// Origin inventory at each 160-tick window boundary (window start → per-agent per-good split).
+    boundaries: BTreeMap<u64, OriginInventory>,
 }
 
 impl RefReducer {
-    fn replay(tape: &[ClosurePhysicalEvent], registry: &BTreeMap<AgentId, ClosureClass>) -> Self {
+    fn replay(
+        tape: &[ClosurePhysicalEvent],
+        registry: &BTreeMap<AgentId, ClosureClass>,
+        run_ticks: u64,
+    ) -> Self {
         let mut r = RefReducer::default();
+        // Snapshot the origin inventory at the END of each 160-tick window: the tape is ordered by
+        // (tick, order), so when the first event of a later window arrives, every event of the
+        // windows before it has been applied — the boundary state (matching the production ledger's
+        // finalize-tick snapshot at ticks 159, 319, …).
+        let mut next_end = N;
         for ev in tape {
+            while ev.tick >= next_end {
+                let snap = r.positive_inventory();
+                r.boundaries.insert(next_end - N, snap);
+                next_end += N;
+            }
             r.apply(ev, registry);
+        }
+        while next_end <= run_ticks {
+            let snap = r.positive_inventory();
+            r.boundaries.insert(next_end - N, snap);
+            next_end += N;
         }
         r
     }
 
     fn class(registry: &BTreeMap<AgentId, ClosureClass>, agent: AgentId) -> Option<usize> {
-        registry.get(&agent).map(|c| c.index())
+        registry.get(&agent).copied().map(class_index)
     }
 
     /// Consume `qty` in the fixed order endowed → acquired → own_produced; returns `[e, a, o]`.
@@ -541,7 +627,7 @@ impl RefReducer {
         if let Some(c) = class {
             let a = self.ticks.entry(tick).or_default();
             a.endowed_physical_debits[c] += u64::from(e);
-            a.endowed_by_family[c][family.index()] += u64::from(e);
+            a.endowed_by_family[c][family_index(family)] += u64::from(e);
         }
     }
 
@@ -562,10 +648,18 @@ impl RefReducer {
                 good,
                 qty,
                 price,
-                trade_id: _,
+                trade_id,
             } => {
                 let split = self.debit(seller, good, qty);
                 self.credit(buyer, good, qty, 1);
+                // EVERY sale's explicit decomposition, keyed to its trade id (P1-2).
+                self.sale_splits.push(ClosureSaleSplit {
+                    tick,
+                    trade_id,
+                    endowed: split[0],
+                    acquired: split[1],
+                    own_produced: split[2],
+                });
                 let sc = Self::class(registry, seller);
                 let bc = Self::class(registry, buyer);
                 if let Some(c) = sc {
@@ -646,8 +740,8 @@ impl RefReducer {
         }
     }
 
-    fn positive_inventory(&self) -> BTreeMap<AgentId, BTreeMap<GoodId, (u32, u32, u32)>> {
-        let mut out: BTreeMap<AgentId, BTreeMap<GoodId, (u32, u32, u32)>> = BTreeMap::new();
+    fn positive_inventory(&self) -> OriginInventory {
+        let mut out: OriginInventory = BTreeMap::new();
         for (&agent, goods) in &self.inv {
             for (&good, b) in goods {
                 if b[0] + b[1] + b[2] > 0 {

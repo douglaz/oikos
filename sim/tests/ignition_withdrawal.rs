@@ -23,8 +23,8 @@
 
 use sim::content::{BREAD_PER_BAKE, FLOUR_PER_BAKE};
 use sim::{
-    classify_closure, ClosureTickAgg, ClosureVerdict, ClosureWindow, GoodId, Settlement,
-    SettlementConfig, Vocation,
+    classify_closure, closure_classified_windows, closure_windows, ClosureTickAgg, ClosureVerdict,
+    ClosureWindow, GoodId, Settlement, SettlementConfig, Vocation,
 };
 
 const SEEDS: [u64; 5] = [3, 7, 11, 19, 23];
@@ -949,62 +949,6 @@ fn render_control_cell(seed: u64, cell: Cell, verdict: &Verdict) -> String {
     format!("  {} seed {seed}: control={verdict:?}\n", cell.label())
 }
 
-/// DH.a (§3.3): window the closure ledger's per-tick aggregates into the oracle's absolute 160-tick
-/// grid ([0,160), [160,320), … to the horizon). `start == 0` is the BOOTSTRAP window (printed but
-/// excluded from `classify_closure`; passing it is impossible by construction — all gold begins
-/// endowed). Per-class fields are indexed by [`ClosureClass::index`] (`[Gatherer, Miller, Baker]`).
-fn closure_all_windows(ticks: &[ClosureTickAgg]) -> Vec<ClosureWindow> {
-    let mut windows = Vec::new();
-    let mut start = 0u64;
-    while start + N <= RUN_TICKS {
-        let mut w = ClosureWindow {
-            start,
-            present: [true; 3],
-            own_sale_consideration: [0; 3],
-            purchase_consideration: [0; 3],
-            endowed_purchase_debits: [0; 3],
-            endowed_physical_debits: [0; 3],
-            commons_drain: 0,
-            commons_goods_drain: 0,
-            wage_escrow_gold: 0,
-            land_fee_pool_salt: 0,
-        };
-        for t in start..start + N {
-            let Some(agg) = ticks.get(t as usize) else {
-                w.present = [false; 3];
-                continue;
-            };
-            for c in 0..3 {
-                if !agg.living[c] {
-                    w.present[c] = false;
-                }
-                w.own_sale_consideration[c] =
-                    w.own_sale_consideration[c].saturating_add(agg.own_sale_consideration[c]);
-                w.purchase_consideration[c] =
-                    w.purchase_consideration[c].saturating_add(agg.purchase_consideration[c]);
-                w.endowed_purchase_debits[c] =
-                    w.endowed_purchase_debits[c].saturating_add(agg.endowed_purchase_debits[c]);
-                w.endowed_physical_debits[c] =
-                    w.endowed_physical_debits[c].saturating_add(agg.endowed_physical_debits[c]);
-            }
-            w.commons_drain = w.commons_drain.saturating_add(agg.commons_drain);
-            w.commons_goods_drain = w
-                .commons_goods_drain
-                .saturating_add(agg.commons_goods_drain);
-            w.wage_escrow_gold = w.wage_escrow_gold.max(agg.wage_escrow_gold);
-            w.land_fee_pool_salt = w.land_fee_pool_salt.max(agg.land_fee_pool_salt);
-        }
-        windows.push(w);
-        start += N;
-    }
-    windows
-}
-
-/// The classified (post-bootstrap) subset of the absolute grid — the input to `classify_closure`.
-fn closure_classified(windows: &[ClosureWindow]) -> Vec<ClosureWindow> {
-    windows.iter().filter(|w| w.start >= N).cloned().collect()
-}
-
 /// Render one closure window's CC0–CC3 diagnostics (§3.3).
 fn render_closure_window(w: &ClosureWindow) -> String {
     let tag = if w.start >= N {
@@ -1125,11 +1069,11 @@ fn ignition_and_withdrawal_diagnosis() {
             regime: Regime::Closed,
             intervention: Intervention::NoIgnition,
         });
-        let base_windows = closure_all_windows(&closed_base.closure_ticks);
-        let base_verdict = classify_closure(&closure_classified(&base_windows));
+        let base_windows = closure_windows(&closed_base.closure_ticks);
+        let base_verdict = classify_closure(&closure_classified_windows(&base_windows));
         for &cell in &CLOSED_CELLS {
             let run = lookup(cell);
-            let cell_windows = closure_all_windows(&run.closure_ticks);
+            let cell_windows = closure_windows(&run.closure_ticks);
             let mut block = render_closure_preamble(&cell_windows, &base_verdict);
             block.push_str(&if cell.is_intervention() {
                 let reference = lookup(matched_reference(cell));

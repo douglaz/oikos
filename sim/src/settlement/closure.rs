@@ -66,6 +66,22 @@ pub struct ClosurePhysicalEvent {
     pub kind: ClosureEventKind,
 }
 
+/// A per-agent per-good origin-inventory snapshot: `(endowed, acquired, own_produced)` per positive
+/// holding. Shared by the boundary snapshots and [`Settlement::closure_inventory_snapshot`].
+pub type ClosureOriginInventory = BTreeMap<AgentId, BTreeMap<GoodId, (u32, u32, u32)>>;
+
+/// One settled sale's origin decomposition, keyed to its `trade_id` (§3.3 R6-1, P1-2). Recorded at
+/// the `SettledSpotTrade` seam by the production ledger; the independent recount reproduces it from
+/// the raw tape and compares EVERY sale's split.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClosureSaleSplit {
+    pub tick: u64,
+    pub trade_id: u64,
+    pub endowed: u32,
+    pub acquired: u32,
+    pub own_produced: u32,
+}
+
 /// The variant-specific signed committed legs of a [`ClosurePhysicalEvent`] (§3.2 event table).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClosureEventKind {
@@ -387,10 +403,16 @@ pub(crate) struct ClosureLedger {
     pub gold: BTreeMap<AgentId, GoldBuckets>,
     /// Per-agent per-good physical origin buckets (the production physical reducer's state).
     pub inv: BTreeMap<AgentId, BTreeMap<GoodId, OriginBuckets>>,
-    /// The running physical snapshot for phase diffing (real stock, excluding GOLD).
-    pub prev_stock: BTreeMap<AgentId, BTreeMap<GoodId, u32>>,
     /// The RAW physical audit tape (all ticks, in mutation order).
     pub tape: Vec<ClosurePhysicalEvent>,
+    /// Per-settled-sale origin decompositions, recorded at each `SettledSpotTrade` seam so the seed-3
+    /// recount can compare EVERY sale's split (not just the aggregate families) against the
+    /// independent reference reducer (P1-2, §3.3 R6-1).
+    pub sale_splits: Vec<ClosureSaleSplit>,
+    /// Per-window-boundary origin inventory snapshots (window start, per-agent per-good split),
+    /// captured at each 160-tick boundary so the recount compares boundary inventories at EVERY
+    /// window, not only the final one (P1-2).
+    pub boundary_inventories: Vec<(u64, ClosureOriginInventory)>,
     /// Per-tick production-reducer aggregates (windowed by the oracle / classify caller).
     pub ticks: Vec<ClosureTickAgg>,
     /// The accumulator for the tick currently being observed.
@@ -398,8 +420,9 @@ pub(crate) struct ClosureLedger {
     /// The monotonic tape event counter (the `order` stamp), never reset.
     pub order: u32,
     /// Actual estate placements stashed by the `record_estate_destination` hook, consumed by the
-    /// post-death estate observation. Each good records `(placed_with_heir, placed_with_commons)`.
-    pub pending_estate: BTreeMap<AgentId, ClosureEstateRouting>,
+    /// post-death estate observation in the same causal order. Each good records
+    /// `(placed_with_heir, placed_with_commons)`.
+    pub pending_estate: Vec<(AgentId, ClosureEstateRouting)>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -701,12 +724,24 @@ impl ClosureLedger {
     /// Record a physical event on the tape and apply it to the physical reducer state (buckets +
     /// physical aggregates). Returns the seller's debit split for a `SettledSpotTrade` (which the
     /// caller uses to split the sale proceeds into gold buckets); `None` otherwise.
-    fn record(&mut self, tick: u64, kind: ClosureEventKind) -> Option<DebitSplit> {
+    pub(crate) fn record(&mut self, tick: u64, kind: ClosureEventKind) -> Option<DebitSplit> {
         let order = self.order;
         self.order = self.order.saturating_add(1);
         let ev = ClosurePhysicalEvent { tick, order, kind };
         self.tape.push(ev);
-        self.apply_physical(kind)
+        let split = self.apply_physical(kind);
+        // Record every settled sale's origin decomposition (keyed to its trade id) so the seed-3
+        // recount can compare EVERY sale's split against the independent reference reducer (P1-2).
+        if let (ClosureEventKind::SettledSpotTrade { trade_id, .. }, Some(s)) = (kind, split) {
+            self.sale_splits.push(ClosureSaleSplit {
+                tick,
+                trade_id,
+                endowed: s.endowed,
+                acquired: s.acquired,
+                own_produced: s.own_produced,
+            });
+        }
+        split
     }
 
     /// The physical reducer (production side; the reference reducer in the test re-implements this
@@ -909,22 +944,109 @@ use econ::good::GOLD;
 use econ::project::RecipeId;
 use std::collections::BTreeSet;
 
-/// The stock-mutating phases the closure observation diffs (§3.2 event table). Each maps a
-/// per-agent per-good positive delta to a credit origin and a negative delta to a debit family.
+/// The stock-mutating phases of `econ_tick`, used only as a reconciliation LABEL (P1-1). The tape is
+/// emitted at the real mutation seams inside the mutating functions; at each phase boundary the
+/// retained snapshot pass reconciles the reducer against reality (asserts, never infers), so a
+/// same-phase credit/debit can no longer cancel or land in the wrong event family.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ClosurePhase {
-    /// Settled gathered-node deposits → `own_produced`.
+    /// World→econ gathered-node deposits (`transfer_pending_deposits` → `GatherDeposit`).
     Gather,
-    /// WOOD in → mill/oven out.
+    /// WOOD in → mill/oven out (`run_capital_formation` → `CapitalFormation`).
     Capital,
-    /// B-arm runtime support deliveries → `endowed`.
+    /// B-arm runtime support deliveries (`deliver_demography_provision_unit` → `BSupportCredit`).
     Support,
-    /// Recipe application (miller/baker) → input debit, output `own_produced`.
+    /// Recipe application (`run_production` → `RecipeProduction`).
     Production,
     /// Own-use production/consumption (own-labor subsistence, cultivation, emergency floor).
     OwnUse,
-    /// Per-agent perishable decay.
+    /// Per-agent perishable decay (`run_spoilage` → `Spoilage`).
     Spoilage,
+}
+
+impl ClosurePhase {
+    /// The reconciliation-assertion label for this phase boundary.
+    fn label(self) -> &'static str {
+        match self {
+            ClosurePhase::Gather => "gather",
+            ClosurePhase::Capital => "capital",
+            ClosurePhase::Support => "support",
+            ClosurePhase::Production => "production",
+            ClosurePhase::OwnUse => "own-use",
+            ClosurePhase::Spoilage => "spoilage",
+        }
+    }
+}
+
+/// The oracle's absolute closure-window width (§3.3) — the frozen 160-tick grid the ladder already
+/// uses. Shared so the oracle AND the DH.a tests window the closure aggregates through ONE pipeline
+/// (P1-3), never a duplicate.
+pub const CLOSURE_GRID_WINDOW: u64 = 160;
+
+/// Window the closure ledger's per-tick aggregates into the oracle's absolute 160-tick grid
+/// ([0,160), [160,320), … to the horizon). This is THE real windowing pipeline (P1-3): the oracle's
+/// preamble AND the DH.a tests call it, never a copy. `start == 0` is the BOOTSTRAP window (printed
+/// but excluded from `classify_closure` by [`closure_classified_windows`]; passing it is impossible
+/// by construction — all gold begins endowed). Per-class fields are indexed by
+/// [`ClosureClass::index`] (`[Gatherer, Miller, Baker]`). A class counts as present in a window only
+/// if it is living at EVERY tick sample in the window, so a mid-window disappearance fails CC0.
+pub fn closure_windows(ticks: &[ClosureTickAgg]) -> Vec<ClosureWindow> {
+    let n = CLOSURE_GRID_WINDOW;
+    let mut windows = Vec::new();
+    let mut start = 0u64;
+    while start + n <= ticks.len() as u64 {
+        let mut w = ClosureWindow {
+            start,
+            present: [true; 3],
+            own_sale_consideration: [0; 3],
+            purchase_consideration: [0; 3],
+            endowed_purchase_debits: [0; 3],
+            endowed_physical_debits: [0; 3],
+            commons_drain: 0,
+            commons_goods_drain: 0,
+            wage_escrow_gold: 0,
+            land_fee_pool_salt: 0,
+        };
+        for t in start..start + n {
+            let Some(agg) = ticks.get(t as usize) else {
+                w.present = [false; 3];
+                continue;
+            };
+            for c in 0..3 {
+                if !agg.living[c] {
+                    w.present[c] = false;
+                }
+                w.own_sale_consideration[c] =
+                    w.own_sale_consideration[c].saturating_add(agg.own_sale_consideration[c]);
+                w.purchase_consideration[c] =
+                    w.purchase_consideration[c].saturating_add(agg.purchase_consideration[c]);
+                w.endowed_purchase_debits[c] =
+                    w.endowed_purchase_debits[c].saturating_add(agg.endowed_purchase_debits[c]);
+                w.endowed_physical_debits[c] =
+                    w.endowed_physical_debits[c].saturating_add(agg.endowed_physical_debits[c]);
+            }
+            w.commons_drain = w.commons_drain.saturating_add(agg.commons_drain);
+            w.commons_goods_drain = w
+                .commons_goods_drain
+                .saturating_add(agg.commons_goods_drain);
+            w.wage_escrow_gold = w.wage_escrow_gold.max(agg.wage_escrow_gold);
+            w.land_fee_pool_salt = w.land_fee_pool_salt.max(agg.land_fee_pool_salt);
+        }
+        windows.push(w);
+        start += n;
+    }
+    windows
+}
+
+/// The post-bootstrap classified subset of the absolute grid — the input to [`classify_closure`]
+/// (§3.3). The bootstrap window [0,160) is excluded (all gold begins endowed → it cannot pass);
+/// classification begins at [160,320). Shared by the oracle AND the DH.a tests (P1-3).
+pub fn closure_classified_windows(windows: &[ClosureWindow]) -> Vec<ClosureWindow> {
+    windows
+        .iter()
+        .filter(|w| w.start >= CLOSURE_GRID_WINDOW)
+        .cloned()
+        .collect()
 }
 
 /// A colonist's class from its latent recipe (preferred) or its seeded vocation.
@@ -950,32 +1072,28 @@ impl Settlement {
         self.closed_circulation && !self.closure.disabled
     }
 
-    /// Test-only force-disable hook (§3.3): flip the ledger off so a marker-on run does no
-    /// observation. Conservation-safe only when called before the first `econ_tick`.
-    pub fn closure_ledger_force_disable_for_test(&mut self) {
+    /// Test-only force-disable hook (§3.3, P2-1): flip the ledger off so a marker-on run does no
+    /// observation. Gated `#[cfg(test)]` so it is invisible outside the crate's own test build — the
+    /// mandatory inertness check that consumes it therefore lives in a library unit-test module
+    /// (`inertness_tests` below), exactly as the spec anticipated. Conservation-safe only when called
+    /// before the first `econ_tick`.
+    #[cfg(test)]
+    pub(crate) fn closure_ledger_force_disable_for_test(&mut self) {
         self.closure.disabled = true;
     }
 
-    /// A living agent's stock, excluding GOLD (money is tracked in the gold buckets).
-    fn closure_snapshot_stock(&self) -> BTreeMap<AgentId, BTreeMap<GoodId, u32>> {
-        let mut out = BTreeMap::new();
-        for &slot in &self.live_colonist_slots {
-            let id = self.colonists[slot].id;
-            if let Some(agent) = self.society.agents.get(id) {
-                let goods: BTreeMap<GoodId, u32> = agent
-                    .stock
-                    .positive_goods()
-                    .filter(|&g| g != GOLD)
-                    .map(|g| (g, agent.stock.get(g)))
-                    .collect();
-                out.insert(id, goods);
-            }
+    /// Emit ONE physical event at its real mutation seam (§3.2, P1-1): record it on the ordered tape
+    /// and apply it to the production reducer. Marker-gated, observation-only — a no-op off the closed
+    /// regime or with the ledger force-disabled. The seam callers pass the EXACT committed quantities,
+    /// so the tape is ground truth: no same-phase net-diff can cancel a credit/debit pair or land a
+    /// leg in the wrong event family. (The market and estate seams call `self.closure` directly
+    /// because they need the returned split / bespoke routing.)
+    pub(crate) fn closure_emit(&mut self, kind: ClosureEventKind) {
+        if !self.closure_active() {
+            return;
         }
-        out
-    }
-
-    fn closure_resync_prev_stock(&mut self) {
-        self.closure.prev_stock = self.closure_snapshot_stock();
+        let tick = self.econ_tick;
+        self.closure.record(tick, kind);
     }
 
     /// Build the registry + household_class, seed the endowed gold/physical buckets, emit the
@@ -1073,7 +1191,7 @@ impl Settlement {
                 }
             }
         }
-        self.closure_resync_prev_stock();
+        self.closure_reconcile("closure-init");
     }
 
     /// Reset the per-tick aggregate accumulator at the top of `econ_tick`.
@@ -1084,42 +1202,14 @@ impl Settlement {
         };
     }
 
-    /// Diff the current stock against `prev_stock`, emit the phase's events, apply them to the
-    /// reducer, and advance `prev_stock`. Pure observation.
+    /// Reconcile the reducer against reality at a phase boundary (§3.2, P1-1). The phase's events
+    /// were already emitted at their real mutation seams (`transfer_pending_deposits`,
+    /// `run_production`, `deliver_demography_provision_unit`, `run_spoilage`, …), so this is the
+    /// RETAINED SNAPSHOT PASS as a reconciliation ASSERTION only — never inference: the reducer's
+    /// per-agent per-good buckets must equal live stock, i.e. the sum of this phase's emitted events
+    /// reproduces the real delta exactly. Pure observation.
     pub(crate) fn closure_phase(&mut self, phase: ClosurePhase) {
-        let now = self.closure_snapshot_stock();
-        let tick = self.econ_tick;
-        let mut events: Vec<ClosureEventKind> = Vec::new();
-        let ids: BTreeSet<AgentId> = now
-            .keys()
-            .chain(self.closure.prev_stock.keys())
-            .copied()
-            .collect();
-        for id in ids {
-            let prev = self.closure.prev_stock.get(&id);
-            let cur = now.get(&id);
-            let goods: BTreeSet<GoodId> = prev
-                .into_iter()
-                .flat_map(|m| m.keys().copied())
-                .chain(cur.into_iter().flat_map(|m| m.keys().copied()))
-                .collect();
-            let mut gains: Vec<(GoodId, u32)> = Vec::new();
-            let mut losses: Vec<(GoodId, u32)> = Vec::new();
-            for good in goods {
-                let p = prev.and_then(|m| m.get(&good)).copied().unwrap_or(0);
-                let c = cur.and_then(|m| m.get(&good)).copied().unwrap_or(0);
-                if c > p {
-                    gains.push((good, c - p));
-                } else if p > c {
-                    losses.push((good, p - c));
-                }
-            }
-            closure_phase_events(phase, id, gains, losses, &mut events);
-        }
-        for kind in events {
-            self.closure.record(tick, kind);
-        }
-        self.closure.prev_stock = now;
+        self.closure_reconcile(phase.label());
     }
 
     /// Observe the market batch (§3.2): replay the authoritative consumption log first, matching
@@ -1127,7 +1217,6 @@ impl Settlement {
     /// on the tape + the gold sale-split). Reconciles the buckets against reality afterward.
     pub(crate) fn closure_observe_market(&mut self, spot_start: usize) {
         let tick = self.econ_tick;
-        let now = self.closure_snapshot_stock();
         let consumptions = self.society.consumption_log_last_tick().to_vec();
         // Snapshot the tick's spot trades.
         let trades: Vec<(AgentId, AgentId, GoodId, u32, Gold)> = self.society.trades[spot_start..]
@@ -1164,33 +1253,18 @@ impl Settlement {
             }
             self.closure.gold_sale_credit(seller, price, split);
         }
-        self.closure.prev_stock = now;
         self.closure_reconcile("post-market-batch");
     }
 
     /// Route the estates of agents that died this tick (§3.2 rules 6–7). Dead agents are producers
     /// (gatherers are immortal, non-spatial), so a dead agent's estate is exactly its ledgered
-    /// buckets: to a heir (bucket-preserving) or to the commons (removed + drain recorded).
+    /// buckets: to a heir (bucket-preserving) or to the commons (removed + drain recorded). The dead
+    /// set is exactly this tick's estate-routing seam records (`record_estate_destination`), so no
+    /// stock snapshot is needed to detect deaths (P1-1).
     pub(crate) fn closure_observe_estates(&mut self) {
-        let current: BTreeSet<AgentId> = self
-            .live_colonist_slots
-            .iter()
-            .map(|&slot| self.colonists[slot].id)
-            .collect();
-        let dead: Vec<AgentId> = self
-            .closure
-            .prev_stock
-            .keys()
-            .copied()
-            .filter(|id| !current.contains(id))
-            .collect();
+        let pending = std::mem::take(&mut self.closure.pending_estate);
         let tick = self.econ_tick;
-        for dead_id in dead {
-            let routing = self
-                .closure
-                .pending_estate
-                .remove(&dead_id)
-                .expect("every closed-regime death records its actual estate routing");
+        for (dead_id, routing) in pending {
             // Gold (production ledger only).
             let gold_b = self.closure.gold.remove(&dead_id).unwrap_or_default();
             match routing.gold_heir {
@@ -1256,7 +1330,7 @@ impl Settlement {
             }
             self.closure.inv.remove(&dead_id);
         }
-        self.closure_resync_prev_stock();
+        self.closure_reconcile("estates");
     }
 
     // ---- Seam hooks (called from the corresponding mod.rs functions) ----
@@ -1291,14 +1365,10 @@ impl Settlement {
                 qty,
             },
         );
-        // Keep the diff baseline consistent for the donor/recipient across this out-of-phase move.
-        self.closure_sync_agent_prev(donor);
-        self.closure_sync_agent_prev(recipient);
     }
 
     /// A birth: register the child (household → class), transfer the staple endowment
-    /// (bucket-preserving) and the gold gift (bucket-preserving), and extend the diff baseline to
-    /// cover the new agent.
+    /// (bucket-preserving) and the gold gift (bucket-preserving).
     pub(crate) fn closure_note_birth(
         &mut self,
         parent: AgentId,
@@ -1327,28 +1397,11 @@ impl Settlement {
             );
         }
         self.closure.gold_transfer_preserving(parent, child, gold);
-        self.closure_sync_agent_prev(parent);
-        self.closure_sync_agent_prev(child);
-    }
-
-    /// Refresh a single agent's entry in `prev_stock` to its current real stock (used after an
-    /// out-of-phase transfer so the next phase diff does not re-observe it).
-    fn closure_sync_agent_prev(&mut self, id: AgentId) {
-        if let Some(agent) = self.society.agents.get(id) {
-            let goods: BTreeMap<GoodId, u32> = agent
-                .stock
-                .positive_goods()
-                .filter(|&g| g != GOLD)
-                .map(|g| (g, agent.stock.get(g)))
-                .collect();
-            self.closure.prev_stock.insert(id, goods);
-        } else {
-            self.closure.prev_stock.remove(&id);
-        }
     }
 
     /// Finalize the tick: record CC0 living membership + the CC3 boundary sinks, reconcile
-    /// end-of-tick, and push the aggregate.
+    /// end-of-tick, snapshot the boundary origin inventory at each 160-tick window boundary, and push
+    /// the aggregate.
     pub(crate) fn closure_finalize_tick(&mut self) {
         let mut living = [false; 3];
         for &slot in &self.live_colonist_slots {
@@ -1364,6 +1417,18 @@ impl Settlement {
         self.closure_reconcile("end-of-tick");
         let agg = std::mem::take(&mut self.closure.cur);
         self.closure.ticks.push(agg);
+        // Snapshot the boundary origin inventory at the END of each 160-tick window (ticks 159, 319,
+        // …) so the seed-3 recount compares boundary inventories at EVERY window (P1-2), not only the
+        // final one. `ticks.len()` is now the count of finalized ticks; a completed window ends when
+        // it is a multiple of the grid width.
+        let finalized = self.closure.ticks.len() as u64;
+        if finalized.is_multiple_of(CLOSURE_GRID_WINDOW) {
+            let window_start = finalized - CLOSURE_GRID_WINDOW;
+            let snapshot = self.closure_inventory_snapshot();
+            self.closure
+                .boundary_inventories
+                .push((window_start, snapshot));
+        }
     }
 
     /// Debug-assert the ledger invariants against reality: `earned + endowed == agent.gold`, and
@@ -1426,10 +1491,8 @@ impl Settlement {
     /// The production physical reducer's boundary origin inventory: per agent per good with a
     /// positive holding, the `(endowed, acquired, own_produced)` split. Used by the seed-3 recount
     /// to byte-match the independent reference reducer.
-    pub fn closure_inventory_snapshot(
-        &self,
-    ) -> BTreeMap<AgentId, BTreeMap<GoodId, (u32, u32, u32)>> {
-        let mut out: BTreeMap<AgentId, BTreeMap<GoodId, (u32, u32, u32)>> = BTreeMap::new();
+    pub fn closure_inventory_snapshot(&self) -> ClosureOriginInventory {
+        let mut out: ClosureOriginInventory = BTreeMap::new();
         for (&agent, goods) in &self.closure.inv {
             for (&good, b) in goods {
                 if b.total() > 0 {
@@ -1441,111 +1504,17 @@ impl Settlement {
         }
         out
     }
-}
 
-/// Build the tape events for one agent's per-good gains/losses under a phase's semantics.
-fn closure_phase_events(
-    phase: ClosurePhase,
-    agent: AgentId,
-    gains: Vec<(GoodId, u32)>,
-    losses: Vec<(GoodId, u32)>,
-    out: &mut Vec<ClosureEventKind>,
-) {
-    match phase {
-        ClosurePhase::Gather => {
-            for (good, qty) in gains {
-                out.push(ClosureEventKind::GatherDeposit { agent, good, qty });
-            }
-            for (good, qty) in losses {
-                out.push(ClosureEventKind::Consumption { agent, good, qty });
-            }
-        }
-        ClosurePhase::Support => {
-            for (good, qty) in gains {
-                out.push(ClosureEventKind::BSupportCredit { agent, good, qty });
-            }
-            for (good, qty) in losses {
-                out.push(ClosureEventKind::Consumption { agent, good, qty });
-            }
-        }
-        ClosurePhase::Spoilage => {
-            for (good, qty) in losses {
-                out.push(ClosureEventKind::Spoilage { agent, good, qty });
-            }
-            for (good, qty) in gains {
-                out.push(ClosureEventKind::GatherDeposit { agent, good, qty });
-            }
-        }
-        ClosurePhase::Capital | ClosurePhase::Production | ClosurePhase::OwnUse => {
-            let mut gi = gains.into_iter();
-            let mut li = losses.into_iter();
-            let first_loss = li.next();
-            let first_gain = gi.next();
-            match (first_loss, first_gain) {
-                (Some((ig, iq)), Some((og, oq))) => {
-                    if phase == ClosurePhase::Capital {
-                        out.push(ClosureEventKind::CapitalFormation {
-                            agent,
-                            input: ig,
-                            input_qty: iq,
-                            tool: og,
-                            tool_qty: oq,
-                        });
-                    } else {
-                        out.push(ClosureEventKind::RecipeProduction {
-                            agent,
-                            input: ig,
-                            input_qty: iq,
-                            output: og,
-                            output_qty: oq,
-                        });
-                    }
-                }
-                (Some((ig, iq)), None) => {
-                    if phase == ClosurePhase::Capital {
-                        out.push(ClosureEventKind::CapitalFormation {
-                            agent,
-                            input: ig,
-                            input_qty: iq,
-                            tool: ig,
-                            tool_qty: 0,
-                        });
-                    } else {
-                        out.push(ClosureEventKind::RecipeProduction {
-                            agent,
-                            input: ig,
-                            input_qty: iq,
-                            output: ig,
-                            output_qty: 0,
-                        });
-                    }
-                }
-                (None, Some((og, oq))) => {
-                    if phase == ClosurePhase::Capital {
-                        out.push(ClosureEventKind::CapitalFormation {
-                            agent,
-                            input: og,
-                            input_qty: 0,
-                            tool: og,
-                            tool_qty: oq,
-                        });
-                    } else {
-                        out.push(ClosureEventKind::GatherDeposit {
-                            agent,
-                            good: og,
-                            qty: oq,
-                        });
-                    }
-                }
-                (None, None) => {}
-            }
-            for (good, qty) in li {
-                out.push(ClosureEventKind::Consumption { agent, good, qty });
-            }
-            for (good, qty) in gi {
-                out.push(ClosureEventKind::GatherDeposit { agent, good, qty });
-            }
-        }
+    /// The production ledger's per-settled-sale origin decompositions (§3.3 R6-1, P1-2). The seed-3
+    /// recount reproduces each from the raw tape and compares EVERY sale's split.
+    pub fn closure_sale_splits(&self) -> &[ClosureSaleSplit] {
+        &self.closure.sale_splits
+    }
+
+    /// The production ledger's per-window-boundary origin inventories (window start, per-agent
+    /// per-good split), captured at every 160-tick boundary (§3.3 R6-1, P1-2).
+    pub fn closure_boundary_inventories(&self) -> &[(u64, ClosureOriginInventory)] {
+        &self.closure.boundary_inventories
     }
 }
 
@@ -1566,33 +1535,25 @@ mod reducer_tests {
     }
 
     #[test]
-    fn split_capital_build_legs_stay_in_the_capital_event_family() {
+    fn capital_formation_input_posts_the_capital_family_not_recipe() {
+        // The seam emits a `CapitalFormation` event directly (no snapshot pairing, P1-1): its endowed
+        // input debit must land in the CapitalInput family, never RecipeInput.
         let agent = AgentId(1);
         let wood = GoodId(2);
         let tool = GoodId(3);
-
-        let mut start = Vec::new();
-        closure_phase_events(
-            ClosurePhase::Capital,
-            agent,
-            Vec::new(),
-            vec![(wood, 6)],
-            &mut start,
-        );
-        assert_eq!(
-            start,
-            vec![ClosureEventKind::CapitalFormation {
+        let mut l = ledger(&[(agent, G)]);
+        l.inv_credit(agent, wood, 6, Origin::Endowed);
+        // A multi-tick build's committed input (tool_qty = 0 this tick).
+        l.record(
+            0,
+            ClosureEventKind::CapitalFormation {
                 agent,
                 input: wood,
                 input_qty: 6,
                 tool: wood,
                 tool_qty: 0,
-            }],
-            "a multi-tick build's committed input must not be reported as recipe production"
+            },
         );
-        let mut l = ledger(&[(agent, G)]);
-        l.inv_credit(agent, wood, 6, Origin::Endowed);
-        l.record(0, start[0]);
         assert_eq!(
             l.cur.endowed_physical_debits_by_family[G.index()]
                 [ClosureDebitFamily::CapitalInput.index()],
@@ -1603,26 +1564,18 @@ mod reducer_tests {
                 [ClosureDebitFamily::RecipeInput.index()],
             0
         );
-
-        let mut completion = Vec::new();
-        closure_phase_events(
-            ClosurePhase::Capital,
-            agent,
-            vec![(tool, 1)],
-            Vec::new(),
-            &mut completion,
-        );
-        assert_eq!(
-            completion,
-            vec![ClosureEventKind::CapitalFormation {
+        // A later tool completion (input_qty = 0) credits the tool own_produced.
+        l.record(
+            0,
+            ClosureEventKind::CapitalFormation {
                 agent,
                 input: tool,
                 input_qty: 0,
                 tool,
                 tool_qty: 1,
-            }],
-            "a later tool completion must not be reported as a gather deposit"
+            },
         );
+        assert_eq!(l.inv[&agent][&tool].own_produced, 1);
     }
 
     // ---- R7-1: the gold reducer ----
@@ -1934,5 +1887,49 @@ mod reducer_tests {
             0,
             "a drain is CC3, not CC2"
         );
+    }
+}
+
+#[cfg(test)]
+mod inertness_tests {
+    //! P2-1 (§3.3): the mandatory observation-inertness check, moved into a LIBRARY unit-test module
+    //! because its `closure_ledger_force_disable_for_test` hook is now `#[cfg(test)]` (invisible to an
+    //! integration-test build). Two Closed NoIgnition settlements with the marker enabled — the ledger
+    //! force-disabled vs active — must be byte-identical after generation and after EVERY tick (both
+    //! the returned `EconTickReport` and `canonical_bytes`), proving the ledger + preamble alter no
+    //! settlement. Runtime is disclosed separately from the 60 experimental cells.
+
+    use crate::{Settlement, SettlementConfig};
+
+    const SEED3: u64 = 3;
+    const RUN_TICKS: u64 = 1_600;
+
+    #[test]
+    fn closure_ledger_is_observation_only_seed3() {
+        let cfg = SettlementConfig::frontier_closed_circulation();
+        let mut on = Settlement::generate(SEED3, &cfg);
+        let mut off = Settlement::generate(SEED3, &cfg);
+        // Force-disable the ledger on `off` (before the first econ_tick).
+        off.closure_ledger_force_disable_for_test();
+        assert_eq!(
+            on.canonical_bytes(),
+            off.canonical_bytes(),
+            "marker-on hook-off vs hook-on must be byte-identical after generation"
+        );
+        // Per §3.3 the ledger must be inert after EVERY tick of the run the oracle evaluates, so this
+        // iterates to `RUN_TICKS` (extinction + steady state), not a prefix.
+        for tick in 0..RUN_TICKS {
+            let report_on = on.econ_tick();
+            let report_off = off.econ_tick();
+            assert_eq!(
+                report_on, report_off,
+                "the EconTickReport must be identical with the ledger active vs disabled (tick {tick})"
+            );
+            assert_eq!(
+                on.canonical_bytes(),
+                off.canonical_bytes(),
+                "canonical_bytes must be identical with the ledger active vs disabled (tick {tick})"
+            );
+        }
     }
 }

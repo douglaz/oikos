@@ -12936,6 +12936,13 @@ impl Settlement {
             if self.society.credit_stock(agent, good, take) {
                 let removed = self.world.stockpile_withdraw(self.exchange, good, take);
                 assert_eq!(removed, take, "exchange must hold every credited unit");
+                // DH.a (P1-1): the world→econ deposit seam — a settled gathered-node deposit is
+                // own-produced. Emit at the real credit, not a phase diff.
+                self.closure_emit(closure::ClosureEventKind::GatherDeposit {
+                    agent,
+                    good,
+                    qty: removed,
+                });
                 if Some(good) == share_input {
                     self.credit_share_contract_grain(agent, removed);
                     self.credit_in_kind_contract_grain(agent, removed);
@@ -14970,14 +14977,14 @@ impl Settlement {
                 EstateDestination::Household { heir, .. } => Some(heir),
                 EstateDestination::Commons => None,
             };
-            self.closure.pending_estate.insert(
+            self.closure.pending_estate.push((
                 id,
                 closure::ClosureEstateRouting {
                     gold_heir,
                     heir,
                     goods,
                 },
-            );
+            ));
         }
         if let Some(slot) = self.slot_for_id(id) {
             self.colonists[slot].estate_destination = Some(destination);
@@ -15795,6 +15802,14 @@ impl Settlement {
         };
         let credited = provision.min(u32::MAX - held);
         if credited > 0 && self.society.credit_stock(id, good, credited) {
+            // DH.a (P1-1): the runtime support-delivery seam. In the closed regime EVERY demographic
+            // provision / producer-subsistence mint is a B-arm support credit (there is no lineage
+            // hearth) — endowed, since support is not production. Emit at the real mint.
+            self.closure_emit(closure::ClosureEventKind::BSupportCredit {
+                agent: id,
+                good,
+                qty: credited,
+            });
             *report.endowment.entry(good).or_insert(0) += u64::from(credited);
             if good == self.known.hunger {
                 if household.is_some_and(|h| self.is_producer_household(h)) {
@@ -16320,6 +16335,11 @@ impl Settlement {
         let cycle_a_recipe = chain.content.cycle_a_recipe().map(|recipe| recipe.id);
         let cycle_b_recipe = chain.content.cycle_b_recipe().map(|recipe| recipe.id);
         let cycle_c_recipe = chain.content.cycle_c_recipe().map(|recipe| recipe.id);
+        // DH.a (P1-1): the recipe seam gate. Precomputed so the emit inside the id-loop is a partial
+        // borrow of `self.closure` alone (never a `&mut self` method), disjoint from the
+        // `&self.live_colonist_slots` iterator.
+        let closure_on = self.closure_active();
+        let closure_tick = self.econ_tick;
         // `chain`/`colonists` (immutable) and `society` (mutable) are disjoint
         // fields, so id-ordered iteration here borrows them side by side. The
         // recipe ids are content data; mutation delegates to econ's existing
@@ -16391,6 +16411,23 @@ impl Settlement {
                     if Some(out_good) == acquisition_bread {
                         self.acquisition
                             .credit(id, FoodChannel::SelfProduced, u64::from(out_qty));
+                    }
+                    // DH.a (P1-1): the recipe seam — input consumed (endowed portion feeds CC2),
+                    // output own-produced. Emit at the real application, not a phase diff. Research
+                    // (Knowledge, drained immediately) never persists in stock and never runs under
+                    // the closed marker, so it is excluded here.
+                    if closure_on {
+                        let (input, input_qty) = applied.input.unwrap_or((out_good, 0));
+                        self.closure.record(
+                            closure_tick,
+                            closure::ClosureEventKind::RecipeProduction {
+                                agent: id,
+                                input,
+                                input_qty,
+                                output: out_good,
+                                output_qty: out_qty,
+                            },
+                        );
                     }
                 }
                 // Conserved good INPUTS to any recipe — research included — are accounted
@@ -18151,6 +18188,13 @@ impl Settlement {
                 let held = u64::from(self.society.agents.get(id).map_or(0, |a| a.stock.get(good)));
                 let spoil = u32::try_from(decay(held)).unwrap_or(u32::MAX);
                 if spoil > 0 && self.society.debit_stock(id, good, spoil) {
+                    // DH.a (P1-1): the per-agent perishable-decay seam (a recorded sink). Commons
+                    // spoilage below is NOT a per-agent event (§3.2 R5-5), so it is not emitted.
+                    self.closure_emit(closure::ClosureEventKind::Spoilage {
+                        agent: id,
+                        good,
+                        qty: spoil,
+                    });
                     *report.spoiled.entry(good).or_insert(0) += u64::from(spoil);
                     if Some(good) == provenance_bread {
                         self.bread_provenance.sink(id, u64::from(spoil));
@@ -18662,6 +18706,13 @@ impl Settlement {
                 None => false,
             };
             if completed {
+                self.closure_emit(closure::ClosureEventKind::CapitalFormation {
+                    agent: builder,
+                    input: WOOD,
+                    input_qty: 0,
+                    tool,
+                    tool_qty: qty,
+                });
                 *report.produced.entry(tool).or_insert(0) += u64::from(qty);
                 self.tools_built = self.tools_built.saturating_add(u64::from(qty));
                 self.record_mortal_capital_build_completion(slot, qty);
@@ -18861,6 +18912,13 @@ impl Settlement {
                 None => None,
             };
             if let Some(mut project) = started {
+                self.closure_emit(closure::ClosureEventKind::CapitalFormation {
+                    agent: id,
+                    input: WOOD,
+                    input_qty: wood_qty,
+                    tool: project.output_good,
+                    tool_qty: 0,
+                });
                 *report.consumed_as_input.entry(WOOD).or_insert(0) += u64::from(wood_qty);
                 if project.labor_advanced < template.required_labor && advance_project(&mut project)
                 {
@@ -18875,6 +18933,13 @@ impl Settlement {
                 };
                 if completed {
                     let qty = project.output_qty;
+                    self.closure_emit(closure::ClosureEventKind::CapitalFormation {
+                        agent: id,
+                        input: WOOD,
+                        input_qty: 0,
+                        tool: project.output_good,
+                        tool_qty: qty,
+                    });
                     *report.produced.entry(project.output_good).or_insert(0) += u64::from(qty);
                     self.tools_built = self.tools_built.saturating_add(u64::from(qty));
                     self.record_mortal_capital_build_completion(slot, qty);
@@ -19081,6 +19146,13 @@ impl Settlement {
             let Some(mut project) = started else {
                 continue;
             };
+            self.closure_emit(closure::ClosureEventKind::CapitalFormation {
+                agent: id,
+                input: WOOD,
+                input_qty: params.wood_qty,
+                tool: project.output_good,
+                tool_qty: 0,
+            });
             *report.consumed_as_input.entry(WOOD).or_insert(0) += u64::from(params.wood_qty);
             if project.labor_advanced < template.required_labor && advance_project(&mut project) {
                 labor_used.push((id, 1));
@@ -19092,6 +19164,13 @@ impl Settlement {
             };
             if completed {
                 let qty = project.output_qty;
+                self.closure_emit(closure::ClosureEventKind::CapitalFormation {
+                    agent: id,
+                    input: WOOD,
+                    input_qty: 0,
+                    tool: project.output_good,
+                    tool_qty: qty,
+                });
                 *report.produced.entry(project.output_good).or_insert(0) += u64::from(qty);
                 self.tools_built = self.tools_built.saturating_add(u64::from(qty));
                 self.record_mortal_capital_build_completion(slot, qty);
@@ -32272,7 +32351,18 @@ mod tests {
         let heir_held = s.society.agents.get(heir).unwrap().stock.get(estate_good);
         let top_up = (u32::MAX - 1) - heir_held;
         assert!(s.society.credit_stock(heir, estate_good, top_up));
-        s.closure_phase(closure::ClosurePhase::Support);
+        // Mirror the manual out-of-band real top-up into the closure shadow inventory. The pre-P1-1
+        // phase diff absorbed any stock change automatically; the seam-based ledger (P1-1) tracks
+        // only real mutation seams, so this test injects the matching shadow credit directly to keep
+        // the physical-invariant reconcile `closure_observe_estates` now asserts satisfied.
+        s.closure.record(
+            0,
+            closure::ClosureEventKind::GatherDeposit {
+                agent: heir,
+                good: estate_good,
+                qty: top_up,
+            },
+        );
         let deceased_qty = s
             .society
             .agents
@@ -32361,6 +32451,58 @@ mod tests {
         assert_eq!(
             s.closure.cur.commons_drain, estate_gold.0,
             "the closure observer must record the actual gold fallback, independently of goods"
+        );
+    }
+
+    #[test]
+    fn closure_estate_observer_replays_chained_estates_in_causal_order() {
+        let mut config = SettlementConfig::frontier_closed_circulation();
+        config
+            .demography
+            .as_mut()
+            .expect("closed circulation has demography")
+            .households[0]
+            .founders = 2;
+        let mut s = Settlement::generate(1, &config);
+        let mut household_members: Vec<AgentId> = s
+            .live_colonist_slots
+            .iter()
+            .filter_map(|&slot| {
+                (s.colonists[slot].household == Some(0)).then_some(s.colonists[slot].id)
+            })
+            .collect();
+        household_members.sort();
+        let heir = household_members[0];
+        let donor = *household_members.last().expect("household member");
+        assert!(donor > heir, "the donor must sort after its heir");
+        for &id in &household_members[1..household_members.len() - 1] {
+            let slot = s.slot_for_id(id).expect("intermediate member slot");
+            s.mark_colonist_dead(slot);
+        }
+        for id in [heir, donor] {
+            s.society.agents.get_mut(id).expect("live member").gold = Gold(5);
+            let buckets = s.closure.gold.entry(id).or_default();
+            buckets.earned = Gold::ZERO;
+            buckets.endowed = Gold(5);
+        }
+        let expected_drain = 10;
+
+        let mut report = EconTickReport::default();
+        let mut wage_labor_used = Vec::new();
+        let donor_slot = s.slot_for_id(donor).expect("donor slot");
+        s.mark_colonist_dead(donor_slot);
+        assert!(s.settle_estate_to_heirs(donor, &mut report, &mut wage_labor_used));
+        assert_eq!(s.heir_for(donor), Some(heir));
+
+        let heir_slot = s.slot_for_id(heir).expect("heir slot");
+        s.mark_colonist_dead(heir_slot);
+        assert!(s.settle_estate_to_heirs(heir, &mut report, &mut wage_labor_used));
+        assert_eq!(s.heir_for(heir), None);
+
+        s.closure_observe_estates();
+        assert_eq!(
+            s.closure.cur.commons_drain, expected_drain,
+            "the donor's gold must enter the heir's buckets before the heir's estate drains"
         );
     }
 
@@ -34392,6 +34534,61 @@ mod tests {
             s.need_of(builder_index).expect("builder need").rest > 0,
             "recorded capital labor must feed the next needs update"
         );
+    }
+
+    #[test]
+    fn capital_formation_emits_input_and_output_at_the_mutation_seams() {
+        let mut cfg = capital_test_config();
+        {
+            let chain = cfg.chain.as_mut().expect("chain");
+            chain.producible_capital = false;
+            chain.tool_build_labor = 1;
+        }
+        let mut s = Settlement::generate(1, &cfg);
+
+        for _ in 0..900u64 {
+            s.econ_tick();
+            s.chain.as_mut().expect("chain").producible_capital = true;
+            s.closed_circulation = true;
+            let mut report = EconTickReport::default();
+            let mut labor_used = Vec::new();
+            let completed = s.run_capital_formation(&mut report, &mut labor_used);
+            if report.consumed_as_input_of(WOOD) > 0 {
+                assert!(completed, "a one-labor build completes at its start seam");
+                let capital_events: Vec<_> = s
+                    .closure
+                    .tape
+                    .iter()
+                    .filter_map(|event| match event.kind {
+                        closure::ClosureEventKind::CapitalFormation {
+                            agent,
+                            input,
+                            input_qty,
+                            tool,
+                            tool_qty,
+                        } => Some((agent, input, input_qty, tool, tool_qty)),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(
+                    capital_events.len(),
+                    2,
+                    "start and completion are distinct seams"
+                );
+                assert_eq!(capital_events[0].1, WOOD);
+                assert!(capital_events[0].2 > 0);
+                assert_eq!(capital_events[0].4, 0);
+                assert_eq!(capital_events[1].0, capital_events[0].0);
+                assert_eq!(capital_events[1].1, WOOD);
+                assert_eq!(capital_events[1].2, 0);
+                assert_eq!(capital_events[1].3, capital_events[0].3);
+                assert!(capital_events[1].4 > 0);
+                return;
+            }
+            s.closed_circulation = false;
+            s.chain.as_mut().expect("chain").producible_capital = false;
+        }
+        panic!("test setup did not reach a capital start seam");
     }
 
     #[test]
