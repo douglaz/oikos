@@ -243,7 +243,7 @@ Falsifiable bar: production survives the death of producers.
 >   publishable arc). Scoping pending user.
 >
 >   **DH.a LANDED AND ACCEPTED (impl-68, tag 34; spec f08b830 SPEC-READY after 7 xhigh rounds; branch
->   feat/closed-circulation-impl-rb = 4e20214 + repair 54eafd9; RoR REJECT on instrumentation → repair,
+>   feat/closed-circulation-impl-rb = 4e20214 + repair 54eafd9; master merge ea9650f; RoR REJECT on instrumentation → repair,
 >   verdict grid byte-stable, diagnostic delta NONE → focused re-check ACCEPT, zero findings).** The
 >   closed regime = the durable stack MINUS the endowed non-producing surround (consumers=0, both legacy
 >   lineage households removed; identity-tested; nothing else). Result on ALL 25 Closed runs:
