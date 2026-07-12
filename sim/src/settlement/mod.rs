@@ -7286,6 +7286,14 @@ pub struct Settlement {
     /// moved at `birth_stock_ignition_at` (`< 24 = 6 × child_food_endowment → an under-dose →
     /// IgnitionShortfall`). `0` off the A1 path. Runtime-only, never digested.
     ignition_injected_qty: u64,
+    /// C3R.e debt repair: the one-shot ignition's per-household gate decomposition (runtime-only,
+    /// never serialized) — which gate blocked each producer household at the pinned shot.
+    ignition_gate_blocked_interval: u64,
+    ignition_gate_extinct: u64,
+    ignition_gate_blocked_cap: u64,
+    ignition_gate_blocked_hunger: u64,
+    ignition_gate_suppressed_at_target: u64,
+    ignition_gate_donor_shortfall: u64,
     /// C3R.e (impl-67): cumulative producer-house birth funding, split by the acquisition channel
     /// the drawn (parent→child) endowment lots carried — criterion iii reads market funding
     /// (`Bought`/`SelfProduced`) against non-market (`SeededMinted`/`Foraged`/`Commons`). `0` off
@@ -10948,6 +10956,12 @@ impl Settlement {
             birth_stock_injections_completed: 0,
             birth_stock_source_shortfalls: 0,
             ignition_injected_qty: 0,
+            ignition_gate_blocked_interval: 0,
+            ignition_gate_extinct: 0,
+            ignition_gate_blocked_cap: 0,
+            ignition_gate_blocked_hunger: 0,
+            ignition_gate_suppressed_at_target: 0,
+            ignition_gate_donor_shortfall: 0,
             producer_birth_funded_by_channel: [0; FoodChannel::COUNT],
             producer_birth_funded_intervention: 0,
             birth_stock_injection_records: Vec::new(),
@@ -11504,6 +11518,12 @@ impl Settlement {
             birth_stock_injections_completed: 0,
             birth_stock_source_shortfalls: 0,
             ignition_injected_qty: 0,
+            ignition_gate_blocked_interval: 0,
+            ignition_gate_extinct: 0,
+            ignition_gate_blocked_cap: 0,
+            ignition_gate_blocked_hunger: 0,
+            ignition_gate_suppressed_at_target: 0,
+            ignition_gate_donor_shortfall: 0,
             producer_birth_funded_by_channel: [0; FoodChannel::COUNT],
             producer_birth_funded_intervention: 0,
             birth_stock_injection_records: Vec::new(),
@@ -19897,6 +19917,9 @@ impl Settlement {
     /// true` the donor pool EXCLUDES producer households and every moved unit is origin-flagged.
     /// Returns the injected households and the total staple quantity moved (the ignition dose).
     fn inject_birth_stock(&mut self, ignition: bool) -> (Vec<usize>, u64) {
+        // C3R.e debt repair: the one-shot ignition records a per-household gate decomposition
+        // (runtime-only; the RoR's disclosed verification gap — WHY the dose fell short).
+
         let Some((household_count, birth_interval, max_household_size, hunger_ceiling, target)) =
             self.demography.as_ref().map(|demo| {
                 (
@@ -19922,6 +19945,10 @@ impl Settlement {
                 .last_birth_tick
                 .map_or(birth_interval, |tick| tick + birth_interval);
             if self.econ_tick < next_eligible {
+                if ignition {
+                    self.ignition_gate_blocked_interval =
+                        self.ignition_gate_blocked_interval.saturating_add(1);
+                }
                 continue;
             }
             let member_slots: Vec<_> = self
@@ -19930,17 +19957,38 @@ impl Settlement {
                 .copied()
                 .filter(|&slot| self.colonists[slot].household == Some(household))
                 .collect();
-            if member_slots.is_empty()
-                || member_slots.len() >= self.birth_cap_for_household(household, max_household_size)
-                || !member_slots
-                    .iter()
-                    .all(|&slot| self.colonists[slot].need.hunger <= hunger_ceiling)
-                || member_slots.iter().any(|&slot| {
-                    self.society
-                        .free_stock_after_all_reserves(self.colonists[slot].id, staple)
-                        >= target
-                })
+            if member_slots.is_empty() {
+                if ignition {
+                    self.ignition_gate_extinct = self.ignition_gate_extinct.saturating_add(1);
+                }
+                continue;
+            }
+            if member_slots.len() >= self.birth_cap_for_household(household, max_household_size) {
+                if ignition {
+                    self.ignition_gate_blocked_cap =
+                        self.ignition_gate_blocked_cap.saturating_add(1);
+                }
+                continue;
+            }
+            if !member_slots
+                .iter()
+                .all(|&slot| self.colonists[slot].need.hunger <= hunger_ceiling)
             {
+                if ignition {
+                    self.ignition_gate_blocked_hunger =
+                        self.ignition_gate_blocked_hunger.saturating_add(1);
+                }
+                continue;
+            }
+            if member_slots.iter().any(|&slot| {
+                self.society
+                    .free_stock_after_all_reserves(self.colonists[slot].id, staple)
+                    >= target
+            }) {
+                if ignition {
+                    self.ignition_gate_suppressed_at_target =
+                        self.ignition_gate_suppressed_at_target.saturating_add(1);
+                }
                 continue;
             }
             self.birth_stock_eligible_opportunities =
@@ -19982,6 +20030,10 @@ impl Settlement {
             let Some((held, _, donor)) = donor.filter(|&(held, _, _)| held >= target) else {
                 self.birth_stock_source_shortfalls =
                     self.birth_stock_source_shortfalls.saturating_add(1);
+                if ignition {
+                    self.ignition_gate_donor_shortfall =
+                        self.ignition_gate_donor_shortfall.saturating_add(1);
+                }
                 continue;
             };
             debug_assert!(held >= target);
@@ -25255,6 +25307,19 @@ impl Settlement {
     /// under-dose → `IgnitionShortfall`. `0` off the A1 path.
     pub fn ignition_injected_qty(&self) -> u64 {
         self.ignition_injected_qty
+    }
+
+    /// C3R.e debt repair: the one-shot ignition's gate decomposition
+    /// (interval, extinct, cap, hunger, at-target, donor-shortfall). Runtime-only.
+    pub fn ignition_gate_decomposition(&self) -> [u64; 6] {
+        [
+            self.ignition_gate_blocked_interval,
+            self.ignition_gate_extinct,
+            self.ignition_gate_blocked_cap,
+            self.ignition_gate_blocked_hunger,
+            self.ignition_gate_suppressed_at_target,
+            self.ignition_gate_donor_shortfall,
+        ]
     }
 
     /// C3R.e (impl-67) (read-only): cumulative producer-house birth funding split by the drawn

@@ -249,6 +249,7 @@ struct CellRun {
     /// starves is unviable as an experiment (`BaseUnviable`).
     member_starvations: u64,
     ignition_injected_qty: u64,
+    ignition_gates: [u64; 6],
     final_births: u64,
     funded_market_total: u64,
     funded_nonmarket_total: u64,
@@ -341,6 +342,7 @@ fn run_cell_seed(seed: u64, cell: Cell) -> CellRun {
         immortal_max,
         member_starvations: s.earned_provisioning_stats().member_starvations,
         ignition_injected_qty: s.ignition_injected_qty(),
+        ignition_gates: s.ignition_gate_decomposition(),
         final_births: s.producer_house_births(),
         funded_market_total,
         funded_nonmarket_total,
@@ -488,11 +490,12 @@ fn measurement_starts(intervention: Intervention) -> Vec<u64> {
 }
 
 /// The strict lower bound a window start must EXCEED to be eligible (the vacuous-exhaustion hole):
-/// A1 → `> 50`; A2 and B measurement → any start on their grid.
-fn eligible_start_exclusive(intervention: Intervention) -> u64 {
+/// A1 → `> 50` (its global origin-held is 0 BEFORE the shot fires); A2 and B → NO floor (the spec's
+/// `start ≥ 0` / grid-start semantics — the debt-repair fix of the result-neutral `start > 0` mismatch).
+fn eligible_start_exclusive(intervention: Intervention) -> Option<u64> {
     match intervention {
-        Intervention::A1Redistribution => IGNITION_TICK,
-        _ => 0,
+        Intervention::A1Redistribution => Some(IGNITION_TICK),
+        _ => None,
     }
 }
 
@@ -598,7 +601,7 @@ fn classify_intervention(
     let mut eligible: Vec<WindowView> = Vec::new();
     for start in measurement_starts(intervention) {
         let w = run.window(start);
-        let is_eligible = start > start_floor && w.held_entering == 0;
+        let is_eligible = start_floor.is_none_or(|f| start > f) && w.held_entering == 0;
         let vi = !reference_passes_structure_at(reference, start); // matched cell fails structure
         reports.push(WindowReport {
             start,
@@ -892,6 +895,13 @@ fn ignition_and_withdrawal_diagnosis() {
                     run.ignition_injected_qty,
                     survivors,
                 );
+                if matches!(cell.intervention, Intervention::A1Redistribution) {
+                    let [interval, extinct, cap, hunger, at_target, donor] = run.ignition_gates;
+                    println!(
+                        "      ignition gates: interval={interval} extinct={extinct} cap={cap} \
+                         hunger={hunger} at_target={at_target} donor_shortfall={donor}"
+                    );
+                }
                 if let Verdict::HysteresisHolds {
                     first_window,
                     windows_survived,
