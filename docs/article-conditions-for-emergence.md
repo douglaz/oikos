@@ -1,10 +1,10 @@
-# Conditions for Emergent Money, and the Limits of Emergent Occupation
+# Conditions for Emergent Money, the Limits of Emergent Occupation, and the Bootstrap Trap of the Mortal Economy
 
 ### A praxeologic agent-based study under a no-smuggling, conservation, and adversarial-review discipline
 
-*Working paper distilled from the OIKOS experimental record (milestones S5–S24c, plus the S23c–e generational
-property coda). Companion to the running report `report-emergence-and-its-limits.md`, which carries the
-per-milestone detail.*
+*Working paper distilled from the OIKOS experimental record (milestones S5–S24c, the S23c–e generational
+property coda, the C1–C1S voluntary-labor arc, and the C3R keystone arc through its endgame). Companion to
+the running report `report-emergence-and-its-limits.md`, which carries the per-milestone detail.*
 
 ---
 
@@ -22,7 +22,7 @@ independent second-model review of the *landed* result. Two methodological guard
 canonical state) and a **no-tuning discipline** (set principled parameters, *report* the outcome, sweep
 rather than search for a passing value), which together make the **negative** findings trustworthy.
 
-Two headline results. First, **money emergence decomposes into separable necessary conditions**: a token
+Three headline results. First, **money emergence decomposes into separable necessary conditions**: a token
 became Mengerian money only when it had (1) real direct-use demand as a non-circular eligibility floor,
 (2) leadership in *medium* (re-trade) saleability rather than in consumption, (3) a tradeable pre-money
 supply to circulate against, and (4) an exchange institution permitting monetary round-tripping. Each
@@ -45,8 +45,21 @@ the canonical real-world exit cost is **private property in land**, not a contra
 at roughly ten times the commons baseline), and a post-money *alienable land market* with a genuinely
 endogenous, rent-tracking price goes **thin** over the owner-dominance that private tenure produces, never
 forming an owner-cultivator class; what stabilized an occupation here was contract, not property — the
-design of the exit-cost institution decides the outcome. We report all of these as **model findings, not
-theorems**, and disclose the configured scaffolds that remain.
+design of the exit-cost institution decides the outcome. Third, the study's keystone: **making the
+production chain's capital-owning producers mortal collapses the economy into a bootstrap trap that no
+tested individual behavior or finite intervention escapes.** Five slices remove one wall at a time —
+capital inheritance restores the chain's *structure* but the subsidy that supplies heirs floods the market
+and caps its *flow*; retire the subsidy and everyone eats but no one saves the four-loaf stock a birth
+requires; supply the saving behavior and it works, into a market it almost never wins (an instrumented
+diagnosis: three correlated economic bottlenecks at roughly a third each, with deterministic-queue
+artifacts at two to seven percent — the trap survives its own disconfirmation test); intervene with
+one-time stock or a withdrawn subsidy, under a launder-proof provenance regime and a preregistered
+hysteresis bar, and the interventions' preconditions fail before persistence can be measured — the
+producers' founders are dead before the aid arrives, and **external demand dies before any measurement
+window opens, on either tested regime**. The trap's exit is thereby located behind the study's oldest
+unsolved wall: no class in the mortal economy earns recurring income, so every demand base is a depleting
+stock. We report all of these as **model findings, not theorems**, and disclose the configured scaffolds
+that remain.
 
 ---
 
@@ -392,7 +405,257 @@ stays deferred until buyers can pay.
 
 ---
 
-## 8. Discussion
+## 8. From contracts to generations: the voluntary-labor close and the imitation triad
+
+Two arcs completed after the property strand, and each ended on a precisely-named boundary.
+
+**The demand-side constraint, isolated.** S23c's secure
+heritable-title engine works but is vacuous on a base where owners are immortal and reproducers are landless;
+S23d fixed that (mortal reproducing owners, inheritance fires endogenously) but the base was subsistence-bound
+under an unlimited own-labor floor; and S23e then *tried* the disciplined repair — a finite, regenerating rival
+commons whose scarcity was pinned to a measured baseline and swept, not searched — and it did **not** rescue the
+base at any scarcity level. A result review with code evidence ruled out both a wiring confound and the
+short-lifespan wall: the owners produce and sell a surplus, and the buy path is real but untaken. The isolated
+constraint is that the non-owner demand side has **no sustained purchasing power** — a one-time money endowment
+that depletes, with no wage, rent, or payment stream — so scarcity merely starves buyers rather than sending
+them to the market. The next lever is therefore a **buyer-income / money-circulation mechanism**: a labor
+market, or a wage/rent/payment loop that gives non-owners recurring earnings, so a hungry buyer can actually
+*pay* an owner for bread. Only once the demand side can earn does re-running the S23c generational tenure study
+become meaningful; until then it stays deferred, and the three milestones (S23c/d/e) remain branch-preserved
+nulls. That lever has since been *built* — **C1, the keystone of a civilization-core arc** (a full C1–C10
+praxeology-consistent roadmap): a voluntary wage market on the S23e marginal base, an owner hiring a hungry
+non-owner for a money wage paid *now* from the owner's own prior bread-sale earnings, with an ordinal worker ask
+and an own-money employer appraisal (no smuggled credit) imputed from the low realized bread price the poor buyers
+actually pay. It produced a *third, sharper* null — **`WageMarketVacuous`**: across all seeds and the whole
+scarcity sweep, no voluntary wage contract clears *at all*, because the owner's willingness-to-pay sits below the
+worker's reservation ask. The machinery is proven functional (a fiat-wage control forces eight hires), so the null
+is economic, not a wiring artifact: voluntary bilateral wage contracting cannot **self-start** the circular flow —
+the bid–ask gap will not close while owners cannot sell for enough because buyers cannot earn because there are no
+wages. This is neither the hoped-for `CircularFlowForms` nor even the anticipated `WageInertDemandStillDead` (wages
+clear but demand stays dead); the wage market never opens. The scoping matters: C1 ruled out exactly *one*
+voluntary institution — post-money **money-wage** contracts — on a base with no accumulated savings, which is what
+the Austrian wages-fund doctrine predicts (a wage is an advance of present goods out of *prior saving*; no fund,
+no money-wage market). Read correctly, the null *confirms* the sequencing that capital accumulation precedes wage
+labor; it does not indict voluntary exchange. The levers it points to, untested and first in line, are voluntary:
+**in-kind (natural) wages** (the measured gap is a *money* gap — a hungry worker paid in bread has essentially no
+reservation ask), **share contracts / tenancy** (no wage advance needed — historically the institution of
+thin-capital economies), and the **accumulation horizon** (can a wages-fund form endogenously?). A state that
+hires and spends first, or a credit advance against future output, remain interesting *interventionist
+comparisons* — in the game, the state is an optional intervention the player can try, never a requirement — but
+not the implied fix. C1 is preserved as a branch-only null, not merged. The first of those voluntary levers has
+since been *built* — **C1R, the output-share tenancy** — and it produced the strand's first partial positive:
+**the no-advance contract clears voluntarily** (31–54 contracts per seed, real bread moving at exact split
+ratios, the same-seed money-wage cell printing its null beside it — the advance/money-gap reading demonstrated,
+not argued; zero uptake under an abundant commons, so contracting is a genuine scarcity phenomenon). But it
+clears only as **transient scarcity relief**: no voluntary contract is ever renewed, because the contract feeds
+the worker *out of the hungry eligibility pool* by term end, and share bread substitutes one-for-one for commons
+draws — consumption is re-sourced, not raised, so no survival lift forms (`ShareClearsButNoLift`, honest and
+traced to economics rather than wiring). The follow-ons it names: a forward-provisioning persistence probe
+(renewal chosen *before* hunger returns), and in-kind wages from the **owner bread fund the share contracts have
+now created** — the wages-fund whose absence made the money-wage market vacuous. The persistence probe has since
+been built — **P1.5, forward provisioning**: the worker's outside-option question extended from *this tick* to a
+**term-horizon pure forecast of its own deterministic need** (the engine's need law is closed-form, so the
+forecast is derived from digested state, never configured — no new want, no history, no self-justifying income).
+Its telemetry first *measured* the C1R null (fed-out is ~100% of renewal fates) and *corrected* part of its story
+(substitution is ~3–37%, not 1:1 — the missing lift was income magnitude, not crowd-out). Its headline answers
+"was it myopia?" with **no — and removing the myopia still does not create tenure**: the fed-out fate *survives*
+the forward gate, because one term's share income rationally covers the next term's forecast need. What forms
+instead is a **standing rotational labor market** — near-universal participation, 4–10× contract volume, ~10×
+worker income, doubled consumption, a real survival lift (+8 colonists) in pockets, and exactly one
+threshold-marginal `StandingTenancyLifts` cell at the pre-declared bars — plus a second named wall: **tenure is
+mortality-bounded** (most contracts end at an owner's death, not at a renewal decision; term=24: 1,172 contracts,
+55 live-live expiries). Provisioning for the future, handed to the worker as a derived faculty, *reshaped* the
+institution rather than perpetuating its pairings — rotational labor, not tenure. Contiguous tenancy now has two
+named preconditions this base lacks: a reason to prefer the *same* counterparty, and **succession across owner
+death** — the heir assuming the live contract, the next probe the traces name alongside C1N in-kind wages. That
+wage probe has since been built — **C1N, in-kind (bread) wages**: the fixed-advance twin of the share contract,
+where the owner advances a bread wage *up front* out of its own realized cultivation surplus and takes the whole
+product. Its result completes the wage/share strand's central claim: on the same base and seed where the **money**
+wage clears zero, the **in-kind** advance clears real contracts (3–47 hires a seed), because the in-kind fund
+exists and the money fund does not — the wages-fund doctrine (a wage is an advance of prior saving) confirmed a
+third time, now in its sharpest form, with the binding margin the *size of the fund* exactly as the doctrine
+predicts (the dominant decline is the owner lacking enough saved bread to advance). Its persistence is
+scarcity-dependent: at the scarce commons it sustains and *raises survival* (the first advance-based labor to lift
+the survival needle), at the marginal commons it clears then fades, at the abundant commons it never forms. So the
+honest close on voluntary labor is layered rather than flat: **the exchange itself clears** — money-wage nulls
+were a *fund* gap, not a labor-exchange gap, and both the share and the fixed-wage form prove it — but **continuity
+does not**, for the same reason across all three probes (the fund exhausts, the mortal counterparties die), which
+is why the arc turns next to succession across death, not to another contract form. That final probe has since
+been built — **C1S, tenure succession**: on a mortal owner's death the heir who inherits the plot assumes the
+owner side of the live contract, if heir and worker both re-consent — and it is the arc's *closing* result. The
+mechanism works: contracts genuinely survive their owner's death into the heir's ownership (dozens a run), heirs
+sometimes decline to keep working the plot themselves and workers sometimes decline to continue, both as free
+choices. But **standing tenure still does not form** — not a single succeeded relationship persists into the final
+window on any seed — because the renewal ledger shows the worker is fed out of the pool at *every* term boundary,
+exactly as before. Removing the mortality bound changed the cause of dissolution but not the outcome: the
+owner-death seam was never the binding constraint; the worker's satiation exit is. This closes the strand as a
+clean sequence of eliminations. The occupation levers (S22) each failed because they left the hunger/profit *exit*
+intact; the contract probes then ruled out, one at a time, the candidate fixes for the exit itself — the output
+share (fed out), the term-horizon forecast (myopia is not it — the market only rotates faster), the in-kind
+advance (the money gap is not it — it clears and still fades), and succession (mortality is not it). Every
+voluntary institution that leaves the worker free to stop contracting once its present need is met **clears but
+does not persist**. The single located binding constraint on a standing occupational institution in this model is
+therefore the **worker's satiation exit** — the freedom to exit when fed. What would override it is, by
+construction, an institution that *removes* that freedom (coercion, debt-bondage, an exogenous standing
+obligation) — which this study declines to smuggle in under the voluntary banner. Naming that boundary precisely,
+rather than crossing it, is where the voluntary-labor arc honestly ends.
+
+**The imitation triad closed institution selection.** The study having shown that *specific* hand-designed
+institutions make or break emergence (which exchange rule, which exit-cost institution), the next question
+was not another hand-designed institution but whether agents or populations
+can **select among institutions** based on their own survival and trade outcomes — i.e. whether the
+institutional layer the experimenter has so far supplied can itself emerge. A three-slice arc
+answers it with a clean triad of negatives. S24a (gate S22f's commitment behind an adopted-norm bit and let
+it **spread by generic local imitation of observed success** — a generic survival score, never institution
+identity, with a score-purity invariant and an outcome-blind null) gives a *mixed* result: the institution
+propagates and recreates a core, but under *sticky* adoption it usually over-spreads or cannot be separated
+from drift. S24b makes adoption **abandonable** — and the institution **dies back completely**, because on a
+generic individual-welfare score the committed *producers* are not better off than the *buyers* they feed. S24c
+changes the unit of imitation to the **local group** (imitate the practice of the better-off *neighbourhood*,
+not the better-off individual) — and it **also dissolves**, because the best-fed group is itself
+buyer-dominated, so the gradient still points away from the producing role. The three together are the
+result: a working institution can be **supplied**, and can be made to **spread by ratchet**, but under
+non-circular **local welfare-imitation — individual or group — it does not *select***. The unifying reason is
+structural, a *tragedy of imitation* with a specific cause: **the value of a division-of-labor institution is
+non-local — realized through exchange, flowing from producers to buyers across the market — so no purely
+local welfare observable ever makes the producer role look best.** Selecting such an institution would need a
+signal that sees past local welfare — a market-mediated or global payoff, explicit contribution accounting,
+or group-level reproduction/selection — each a genuinely new mechanism, and the honest boundary at which this
+study leaves the emergence of the institutional layer itself.
+
+## 9. The mortal economy: the keystone arc — a bootstrap trap, and the demand horizon in front of its exit
+
+**The wall behind every prior result.** Every result
+above shared a quiet exemption: the *producers* — the miller and baker who own the mill and oven and turn
+grain into flour into bread — were **immortal**. The economy that emerged, and every labor institution
+probed on it, rested on practitioners who never died. C3R makes them mortal and asks the civilization
+question directly: can a division of labor in *production* survive its practitioners dying? Its first slice
+introduces producer mortality and **nothing else** — no succession, no inheritance — with one companion
+guard: producer *formation* (building the tool, or adopting the role) is restricted to mortal agents, so
+the immortal gatherers and consumers of the surrounding economy cannot quietly rebuild the chain and fake a
+recovery (the immortal-producer count is provably zero). The result is uniform and unambiguous across every
+seed: **the chain collapses.** And the collapse is instrumented to be *honest* rather than an artifact — it
+is not a hidden immortal reservoir (zero), not a thin-population artifact (the eligible mortal pool stays
+healthy), not apathy (agents re-adopt the vacated role a hundred and fifty times a run), and not an
+investment freeze (mortal builders do complete the payback-16 mill, two or three times). The chain churns
+through frantic re-adoption and the occasional rebuild but never *stabilizes*: a producer dies before its
+capital has paid back, each dead producer's mill sinks to the commons where no one can use it, and the next
+mortal must begin the roundabout investment from nothing — two or three builds against a hundred and fifty
+deaths, the payback horizon biting exactly as Böhm-Bawerk's theory of capital predicts. Notably, the
+satiation exit that closed the voluntary-labor arc does *not* govern here — a chain producer is
+profitability-locked, not satiation-gated — so the constraint the keystone exposes is genuinely new:
+**mortality and the payback horizon**, not the freedom to stop once fed. The finding names its own next two
+probes precisely: the *role* is refilled only by ad-hoc re-adoption, never smooth transfer (role
+succession), and the *capital* is destroyed to the commons on every death instead of being carried across
+the generational gap (capital inheritance). This is where the study turns from *whether an economy can be
+more than subsistence* to *whether it can stay that way once everyone in it is mortal*. The capital-inheritance
+probe has since been built — **C3R.b**: give the mortal producers reproducing households so a dead producer's
+mill passes to a live heir who re-adopts the role, all through machinery the engine already had. Its result is
+the study's sharpest illustration of the difference between *having* capital and *using* it. Fixing the capital
+destruction is not sufficient: in a narrow, honestly-reported window (and only four of five seeds) inheritance
+does keep both stages of the chain continuously staffed — the first time the structure of a production chain
+survives its mortal producers — yet in every one of those runs the chain produces almost no bread. The reason is
+an intrinsic bind, and the model measures rather than asserts it: inheritance can sustain the chain's structure
+only by keeping the producer households populated, and populated households reproduce; but the very reproduction
+that supplies the heirs carries a household food subsidy that floods the market and collapses the demand for
+bread, so the continuously-staffed chain has nothing to produce *for*. The matched control makes the trade-off
+visible from the other side — deny the inheritance and the households die back, so the chain runs instead on
+constant re-building, which produces real bread but cannot hold its stations manned. Continuity of capital, in
+other words, buys structure at the cost of flow; rebuilding buys flow at the cost of structure. This is
+Böhm-Bawerk's point turned inside out: capital that is continuously *possessed* is not thereby continuously
+*used*, once the demographic machinery that carries it across the generations is itself a subsidy that suppresses
+the market. And it moves the keystone's open question off the supply side entirely — the next binding constraint
+is not how a role or a tool passes to the next generation (the engine already does that) but how a mortal economy
+can reproduce its producers *without* the very act of reproduction drowning the demand they exist to serve.
+That question has since been answered — **C3R.c, earned provisioning**: retire the subsidy entirely and let the
+producers' externally-earned revenue provision their dependents through the market, with a strict ledger that
+refuses to count self-dealing or producer-to-producer recirculation as genuine demand. The result reframed the
+problem once more, and more fundamentally than any slice before it. Nobody starves: freed of the subsidy's price
+flood, the adults feed themselves easily — so easily that the transfer mechanism built for the milestone never
+fires at all, an economy that never demands the machinery designed for it (the same shape as the wage market
+that never cleared). **What fails is reproduction.** Bearing a child in this model requires the parent to hand
+over a small *saved* stock of food, and agents who buy only against present hunger eat every loaf they purchase:
+income circulates, consumption is covered, and no one ever accumulates the four-loaf fund a birth requires — so
+births collapse, heirs vanish, and the chain's structure dies of childlessness in an economy where everyone is
+fed. The prior-saving problem, which the wage-labor null located in the employer's wages-fund, reappears here in
+its most elemental form: **a mortal economy whose members demand only against present need cannot fund its own
+reproduction.** Subsidize the family and the market drowns; unsubsidize it and the family disappears — unless
+someone *saves ahead of need*, which no behavior in the model yet does. The keystone's remaining question is
+therefore no longer institutional but behavioral, and it is the oldest one in capital theory: where does the
+first act of saving come from? (One empirical gift along the way: the ledger's buyer-class split showed that the
+only durable external demand in the economy comes from the one class with recurring *earned* income — the
+gatherers — and not from the endowed consumers, whose one-time purse simply depletes.) That behavioral question
+has since been put to the test — **C3R.d, the birth-stock motive**: give every member of a growable household a
+standing, market-cleared want for exactly the four loaves a birth requires, expressed through the same machinery
+a miller uses to want grain it will never eat, so that the existing market does the buying and the existing
+reservation logic does the retaining. The behavior *works as built* — the wants are emitted, some bids clear, the
+stock occasionally assembles, a few births follow — and the economy stays trapped. A sufficiency control puts the
+question beyond doubt from the other side: inject the four loaves directly (a conserved transfer from the richest
+outside holder, no minting) and *every one* of roughly seven hundred otherwise-eligible opportunities per run
+becomes an immediate birth — possession of the stock is the sole missing condition, every single time. But the
+unassisted market almost never lets a producer household assemble it: of some five hundred saving wants a run,
+three to seven purchases clear, because the chain upstream produces nothing and what bread survives elsewhere is
+either not offered or lost to hungrier bidders — the telemetry cannot yet say which, and the write-up is careful
+to claim only that *no uncommitted surplus reaches saving*, not that nothing exists to save. The keystone's four
+slices thus close into a single figure: a **bootstrap trap**. The chain is dead for want of heirs; heirs are
+absent for want of the birth stock; the stock cannot be assembled for want of winnable bread; and bread goes
+unmade for want of a chain. Each slice removed a wall — capital destruction, the subsidy flood, the absent
+motive — and behind the last wall was not a missing behavior but a missing *starting point*: an economy already
+inside the trap has no individual action that leads out of it. What the trap names as its own next question is,
+for the first time in the keystone, not another refinement of individual choice but a **coordination or
+transition problem** — a granary, a set-aside, a deliberately temporary subsidy withdrawn after ignition, an
+initial endowment that bridges the first generation — which is to say: the model has arrived, from the inside,
+at the oldest question about development. Not "why do poor economies lack capital?" but "what, other than
+someone's prior accumulation, could ever start the accumulating?"
+
+**The trap survives its sharpest challenge, and its anatomy is measured.** Before building any escape, the
+program instrumented the allocation contest itself: a pure-observation slice — provably inert down to a
+two-byte digest delta, with a pinned oracle reproducing every landed verdict under observation — assigned
+every failed saving bid exactly one cause. The verdict, on every seed, was a three-way split of economic
+causes at roughly a third each: no purchasable offer in the window, the price contest lost to hungrier
+higher-limit bidders, and no bid posted at all under the bidder's own reservation logic. The family built
+to *disconfirm* the economic reading — deterministic queue artifacts of the double-auction — explained two
+to seven percent. The trap is economic, and its three walls are correlated facets of one impoverished
+upstream economy, which selected the escape lever: direct stock provision, the only intervention that
+bypasses all three walls at once, to be tested as ignition with a withdrawal bar — never assumed
+sufficient.
+
+**The escape experiment ran, and the demand horizon closed it before the question could be asked.** Three
+finite interventions — a one-shot conserved redistribution of twenty-four loaves, a generation-time
+endowment of the same size, and the landed subsidy pair withdrawn whole at tick 400 — ran on two disclosed
+regimes against the strictest bar the program has preregistered: a launder-proof intervention-origin flag
+on every subsidized loaf (surviving even market resale), global exhaustion before any measurement window
+opens, births funded only from bought or self-produced lots, structure and flow and *live external demand*
+for five consecutive six-lifetime windows, and a matched no-ignition twin that must stay trapped. The
+preregistered ladder returned undetermined-class verdicts across the grid — and that refusal is the
+finding. The redistribution moved not one loaf: every original producer founder was already dead by tick
+36, so the intervention arrived at households of heirs or ashes. The regime engineered to supply durable
+demand — producers buying warmth from gatherers, the gatherer class doubled — proved markedly less robust
+than the economy it was meant to repair: even *permanent* support failed to sustain structure on four of
+five seeds, with the added producer expense the leading mechanism. And in every measurement window that
+any cell on either regime ever reached, external demand was already dead. No relapse was proven; no claim
+that the trap is unescapable is licensed; the matched references stayed trapped ten out of ten. What is
+proven is sharper: **the program's oldest wall — no demand base survives; the finding of the scarcity
+probe, the wage-labor null, and the earned-provisioning slice alike — stands directly in front of the
+trap's exit.** An economy in which no class earns recurring income cannot even be *tested* for escape,
+because the demand it would re-enter against dies first.
+
+**The keystone's synthesis.** Five slices, each removing the wall the previous one exposed, compose into a
+single figure. A mortal production chain collapses because capital cannot cross the generational gap;
+carry the capital across and the structure holds but the subsidy that makes heirs possible drowns the
+market; retire the subsidy and everyone eats but no one saves the stock a birth requires; supply the
+saving behavior and it works — into a market that almost never lets it win; intervene with finite stock or
+subsidy and the intervention's own preconditions fail before persistence can be measured. At every layer
+the same praxeological grammar: the mechanism supplied works exactly as built, and the *precondition* it
+needed — capital continuity, un-subsidized demand, prior saving, winnable surplus, a demand base that
+outlives the support — was the thing the economy could not yet produce. The keystone thus ends where
+development economics begins, having arrived from the inside: not "why do poor economies lack capital?"
+but "what, other than someone's prior accumulation, could ever start the accumulating?" — and, behind even
+that: who buys, forever, from the first accumulators?
+
+---
+
+## 10. Discussion
 
 The two arcs are mirror images under the same discipline. For **money**, we found a set of conditions and
 *met* them, and emergence followed — but only inside a disclosed envelope, and partly by repairing a
@@ -426,7 +689,7 @@ results.
 
 ---
 
-## 9. Limitations and threats to validity
+## 11. Limitations and threats to validity
 
 We state the scaffolds plainly; a hostile reader should attack these first.
 
@@ -455,13 +718,27 @@ We state the scaffolds plainly; a hostile reader should attack these first.
 - **Part of S20 repairs a self-imposed artifact.** The one-offer book was our constraint; the S19→S20
   result is part institutional insight, part removal of a modeling limitation. Stated as such it is a
   result; stated as a universal law it would be an overclaim.
+- **The keystone results are bounded to a small, specific topology.** Six producer households at cap two,
+  one chain, forty-four endowed consumers, and integer-floored prices; the durable-demand regime is a
+  disclosed composite (its two changes are not causally separated); the escape verdicts are
+  undetermined-class, not impossibility proofs; and two instrumentation gaps are open debt (the
+  redistribution-gate decomposition; a result-neutral eligibility boundary). Scale, topology, and
+  microstructure robustness sweeps are future work, preregistered as such.
 - **All of the above are model findings, not theorems.** The contribution is a disciplined decomposition
   within one simulator, not a proof about economies in general.
 
 ---
 
-## 10. Future work
+## 12. Future work
 
+- **The demand horizon — the frontier the keystone isolated.** Every path into and out of the bootstrap
+  trap dies on the same fact: no class in the mortal economy earns recurring income forever, so every
+  demand base is a depleting stock and every persistence question becomes unmeasurable past a few hundred
+  ticks. The next milestone is a genuinely closed multi-class circulation — every class earns *and* spends,
+  with no depleting endowments and no mints — after which the ignition/withdrawal oracle re-runs as-is.
+  This is the program's last unconquered wall, and the keystone's five slices are the argument that nothing
+  else is worth building until it falls. (Prerequisite debt: the redistribution-gate decomposition and one
+  result-neutral eligibility-boundary fix, both named in the record.)
 - **Why the committed core does not spread colony-wide.** S22f's exit-overriding institution stabilizes an
   occupational *core* but leaves a churning fluid majority, so aggregate churn stays high. The live question
   is what would convert the two-tier structure into colony-wide occupational order — a stronger or
@@ -483,204 +760,9 @@ We state the scaffolds plainly; a hostile reader should attack these first.
   load-bearing or whether the contract remains the real stabilizer (with a commitment-off control to rule out
   the market merely inheriting the thin/collapsed regime). Deferred, because attribution is messy when the
   contract is already solving the exit problem.
-- **A demand-side income loop — the constraint the generational-land strand has now isolated.** S23c's secure
-  heritable-title engine works but is vacuous on a base where owners are immortal and reproducers are landless;
-  S23d fixed that (mortal reproducing owners, inheritance fires endogenously) but the base was subsistence-bound
-  under an unlimited own-labor floor; and S23e then *tried* the disciplined repair — a finite, regenerating rival
-  commons whose scarcity was pinned to a measured baseline and swept, not searched — and it did **not** rescue the
-  base at any scarcity level. A result review with code evidence ruled out both a wiring confound and the
-  short-lifespan wall: the owners produce and sell a surplus, and the buy path is real but untaken. The isolated
-  constraint is that the non-owner demand side has **no sustained purchasing power** — a one-time money endowment
-  that depletes, with no wage, rent, or payment stream — so scarcity merely starves buyers rather than sending
-  them to the market. The next lever is therefore a **buyer-income / money-circulation mechanism**: a labor
-  market, or a wage/rent/payment loop that gives non-owners recurring earnings, so a hungry buyer can actually
-  *pay* an owner for bread. Only once the demand side can earn does re-running the S23c generational tenure study
-  become meaningful; until then it stays deferred, and the three milestones (S23c/d/e) remain branch-preserved
-  nulls. That lever has since been *built* — **C1, the keystone of a civilization-core arc** (a full C1–C10
-  praxeology-consistent roadmap): a voluntary wage market on the S23e marginal base, an owner hiring a hungry
-  non-owner for a money wage paid *now* from the owner's own prior bread-sale earnings, with an ordinal worker ask
-  and an own-money employer appraisal (no smuggled credit) imputed from the low realized bread price the poor buyers
-  actually pay. It produced a *third, sharper* null — **`WageMarketVacuous`**: across all seeds and the whole
-  scarcity sweep, no voluntary wage contract clears *at all*, because the owner's willingness-to-pay sits below the
-  worker's reservation ask. The machinery is proven functional (a fiat-wage control forces eight hires), so the null
-  is economic, not a wiring artifact: voluntary bilateral wage contracting cannot **self-start** the circular flow —
-  the bid–ask gap will not close while owners cannot sell for enough because buyers cannot earn because there are no
-  wages. This is neither the hoped-for `CircularFlowForms` nor even the anticipated `WageInertDemandStillDead` (wages
-  clear but demand stays dead); the wage market never opens. The scoping matters: C1 ruled out exactly *one*
-  voluntary institution — post-money **money-wage** contracts — on a base with no accumulated savings, which is what
-  the Austrian wages-fund doctrine predicts (a wage is an advance of present goods out of *prior saving*; no fund,
-  no money-wage market). Read correctly, the null *confirms* the sequencing that capital accumulation precedes wage
-  labor; it does not indict voluntary exchange. The levers it points to, untested and first in line, are voluntary:
-  **in-kind (natural) wages** (the measured gap is a *money* gap — a hungry worker paid in bread has essentially no
-  reservation ask), **share contracts / tenancy** (no wage advance needed — historically the institution of
-  thin-capital economies), and the **accumulation horizon** (can a wages-fund form endogenously?). A state that
-  hires and spends first, or a credit advance against future output, remain interesting *interventionist
-  comparisons* — in the game, the state is an optional intervention the player can try, never a requirement — but
-  not the implied fix. C1 is preserved as a branch-only null, not merged. The first of those voluntary levers has
-  since been *built* — **C1R, the output-share tenancy** — and it produced the strand's first partial positive:
-  **the no-advance contract clears voluntarily** (31–54 contracts per seed, real bread moving at exact split
-  ratios, the same-seed money-wage cell printing its null beside it — the advance/money-gap reading demonstrated,
-  not argued; zero uptake under an abundant commons, so contracting is a genuine scarcity phenomenon). But it
-  clears only as **transient scarcity relief**: no voluntary contract is ever renewed, because the contract feeds
-  the worker *out of the hungry eligibility pool* by term end, and share bread substitutes one-for-one for commons
-  draws — consumption is re-sourced, not raised, so no survival lift forms (`ShareClearsButNoLift`, honest and
-  traced to economics rather than wiring). The follow-ons it names: a forward-provisioning persistence probe
-  (renewal chosen *before* hunger returns), and in-kind wages from the **owner bread fund the share contracts have
-  now created** — the wages-fund whose absence made the money-wage market vacuous. The persistence probe has since
-  been built — **P1.5, forward provisioning**: the worker's outside-option question extended from *this tick* to a
-  **term-horizon pure forecast of its own deterministic need** (the engine's need law is closed-form, so the
-  forecast is derived from digested state, never configured — no new want, no history, no self-justifying income).
-  Its telemetry first *measured* the C1R null (fed-out is ~100% of renewal fates) and *corrected* part of its story
-  (substitution is ~3–37%, not 1:1 — the missing lift was income magnitude, not crowd-out). Its headline answers
-  "was it myopia?" with **no — and removing the myopia still does not create tenure**: the fed-out fate *survives*
-  the forward gate, because one term's share income rationally covers the next term's forecast need. What forms
-  instead is a **standing rotational labor market** — near-universal participation, 4–10× contract volume, ~10×
-  worker income, doubled consumption, a real survival lift (+8 colonists) in pockets, and exactly one
-  threshold-marginal `StandingTenancyLifts` cell at the pre-declared bars — plus a second named wall: **tenure is
-  mortality-bounded** (most contracts end at an owner's death, not at a renewal decision; term=24: 1,172 contracts,
-  55 live-live expiries). Provisioning for the future, handed to the worker as a derived faculty, *reshaped* the
-  institution rather than perpetuating its pairings — rotational labor, not tenure. Contiguous tenancy now has two
-  named preconditions this base lacks: a reason to prefer the *same* counterparty, and **succession across owner
-  death** — the heir assuming the live contract, the next probe the traces name alongside C1N in-kind wages. That
-  wage probe has since been built — **C1N, in-kind (bread) wages**: the fixed-advance twin of the share contract,
-  where the owner advances a bread wage *up front* out of its own realized cultivation surplus and takes the whole
-  product. Its result completes the wage/share strand's central claim: on the same base and seed where the **money**
-  wage clears zero, the **in-kind** advance clears real contracts (3–47 hires a seed), because the in-kind fund
-  exists and the money fund does not — the wages-fund doctrine (a wage is an advance of prior saving) confirmed a
-  third time, now in its sharpest form, with the binding margin the *size of the fund* exactly as the doctrine
-  predicts (the dominant decline is the owner lacking enough saved bread to advance). Its persistence is
-  scarcity-dependent: at the scarce commons it sustains and *raises survival* (the first advance-based labor to lift
-  the survival needle), at the marginal commons it clears then fades, at the abundant commons it never forms. So the
-  honest close on voluntary labor is layered rather than flat: **the exchange itself clears** — money-wage nulls
-  were a *fund* gap, not a labor-exchange gap, and both the share and the fixed-wage form prove it — but **continuity
-  does not**, for the same reason across all three probes (the fund exhausts, the mortal counterparties die), which
-  is why the arc turns next to succession across death, not to another contract form. That final probe has since
-  been built — **C1S, tenure succession**: on a mortal owner's death the heir who inherits the plot assumes the
-  owner side of the live contract, if heir and worker both re-consent — and it is the arc's *closing* result. The
-  mechanism works: contracts genuinely survive their owner's death into the heir's ownership (dozens a run), heirs
-  sometimes decline to keep working the plot themselves and workers sometimes decline to continue, both as free
-  choices. But **standing tenure still does not form** — not a single succeeded relationship persists into the final
-  window on any seed — because the renewal ledger shows the worker is fed out of the pool at *every* term boundary,
-  exactly as before. Removing the mortality bound changed the cause of dissolution but not the outcome: the
-  owner-death seam was never the binding constraint; the worker's satiation exit is. This closes the strand as a
-  clean sequence of eliminations. The occupation levers (S22) each failed because they left the hunger/profit *exit*
-  intact; the contract probes then ruled out, one at a time, the candidate fixes for the exit itself — the output
-  share (fed out), the term-horizon forecast (myopia is not it — the market only rotates faster), the in-kind
-  advance (the money gap is not it — it clears and still fades), and succession (mortality is not it). Every
-  voluntary institution that leaves the worker free to stop contracting once its present need is met **clears but
-  does not persist**. The single located binding constraint on a standing occupational institution in this model is
-  therefore the **worker's satiation exit** — the freedom to exit when fed. What would override it is, by
-  construction, an institution that *removes* that freedom (coercion, debt-bondage, an exogenous standing
-  obligation) — which this study declines to smuggle in under the voluntary banner. Naming that boundary precisely,
-  rather than crossing it, is where the voluntary-labor arc honestly ends.
-- **Endogenous institution selection — the natural next frontier, now opened.** The study has shown that
-  *specific* hand-designed institutions make or break emergence (which exchange rule, which exit-cost
-  institution). The next question is not another hand-designed institution but whether agents or populations
-  can **select among institutions** based on their own survival and trade outcomes — i.e. whether the
-  institutional layer the experimenter has so far supplied can itself emerge. A three-slice arc
-  answers it with a clean triad of negatives. S24a (gate S22f's commitment behind an adopted-norm bit and let
-  it **spread by generic local imitation of observed success** — a generic survival score, never institution
-  identity, with a score-purity invariant and an outcome-blind null) gives a *mixed* result: the institution
-  propagates and recreates a core, but under *sticky* adoption it usually over-spreads or cannot be separated
-  from drift. S24b makes adoption **abandonable** — and the institution **dies back completely**, because on a
-  generic individual-welfare score the committed *producers* are not better off than the *buyers* they feed. S24c
-  changes the unit of imitation to the **local group** (imitate the practice of the better-off *neighbourhood*,
-  not the better-off individual) — and it **also dissolves**, because the best-fed group is itself
-  buyer-dominated, so the gradient still points away from the producing role. The three together are the
-  result: a working institution can be **supplied**, and can be made to **spread by ratchet**, but under
-  non-circular **local welfare-imitation — individual or group — it does not *select***. The unifying reason is
-  structural, a *tragedy of imitation* with a specific cause: **the value of a division-of-labor institution is
-  non-local — realized through exchange, flowing from producers to buyers across the market — so no purely
-  local welfare observable ever makes the producer role look best.** Selecting such an institution would need a
-  signal that sees past local welfare — a market-mediated or global payoff, explicit contribution accounting,
-  or group-level reproduction/selection — each a genuinely new mechanism, and the honest boundary at which this
-  study leaves the emergence of the institutional layer itself.
-- **The mortal production chain — the keystone the whole study was built toward, now opened.** Every result
-  above shared a quiet exemption: the *producers* — the miller and baker who own the mill and oven and turn
-  grain into flour into bread — were **immortal**. The economy that emerged, and every labor institution
-  probed on it, rested on practitioners who never died. C3R makes them mortal and asks the civilization
-  question directly: can a division of labor in *production* survive its practitioners dying? Its first slice
-  introduces producer mortality and **nothing else** — no succession, no inheritance — with one companion
-  guard: producer *formation* (building the tool, or adopting the role) is restricted to mortal agents, so
-  the immortal gatherers and consumers of the surrounding economy cannot quietly rebuild the chain and fake a
-  recovery (the immortal-producer count is provably zero). The result is uniform and unambiguous across every
-  seed: **the chain collapses.** And the collapse is instrumented to be *honest* rather than an artifact — it
-  is not a hidden immortal reservoir (zero), not a thin-population artifact (the eligible mortal pool stays
-  healthy), not apathy (agents re-adopt the vacated role a hundred and fifty times a run), and not an
-  investment freeze (mortal builders do complete the payback-16 mill, two or three times). The chain churns
-  through frantic re-adoption and the occasional rebuild but never *stabilizes*: a producer dies before its
-  capital has paid back, each dead producer's mill sinks to the commons where no one can use it, and the next
-  mortal must begin the roundabout investment from nothing — two or three builds against a hundred and fifty
-  deaths, the payback horizon biting exactly as Böhm-Bawerk's theory of capital predicts. Notably, the
-  satiation exit that closed the voluntary-labor arc does *not* govern here — a chain producer is
-  profitability-locked, not satiation-gated — so the constraint the keystone exposes is genuinely new:
-  **mortality and the payback horizon**, not the freedom to stop once fed. The finding names its own next two
-  probes precisely: the *role* is refilled only by ad-hoc re-adoption, never smooth transfer (role
-  succession), and the *capital* is destroyed to the commons on every death instead of being carried across
-  the generational gap (capital inheritance). This is where the study turns from *whether an economy can be
-  more than subsistence* to *whether it can stay that way once everyone in it is mortal*. The capital-inheritance
-  probe has since been built — **C3R.b**: give the mortal producers reproducing households so a dead producer's
-  mill passes to a live heir who re-adopts the role, all through machinery the engine already had. Its result is
-  the study's sharpest illustration of the difference between *having* capital and *using* it. Fixing the capital
-  destruction is not sufficient: in a narrow, honestly-reported window (and only four of five seeds) inheritance
-  does keep both stages of the chain continuously staffed — the first time the structure of a production chain
-  survives its mortal producers — yet in every one of those runs the chain produces almost no bread. The reason is
-  an intrinsic bind, and the model measures rather than asserts it: inheritance can sustain the chain's structure
-  only by keeping the producer households populated, and populated households reproduce; but the very reproduction
-  that supplies the heirs carries a household food subsidy that floods the market and collapses the demand for
-  bread, so the continuously-staffed chain has nothing to produce *for*. The matched control makes the trade-off
-  visible from the other side — deny the inheritance and the households die back, so the chain runs instead on
-  constant re-building, which produces real bread but cannot hold its stations manned. Continuity of capital, in
-  other words, buys structure at the cost of flow; rebuilding buys flow at the cost of structure. This is
-  Böhm-Bawerk's point turned inside out: capital that is continuously *possessed* is not thereby continuously
-  *used*, once the demographic machinery that carries it across the generations is itself a subsidy that suppresses
-  the market. And it moves the keystone's open question off the supply side entirely — the next binding constraint
-  is not how a role or a tool passes to the next generation (the engine already does that) but how a mortal economy
-  can reproduce its producers *without* the very act of reproduction drowning the demand they exist to serve.
-  That question has since been answered — **C3R.c, earned provisioning**: retire the subsidy entirely and let the
-  producers' externally-earned revenue provision their dependents through the market, with a strict ledger that
-  refuses to count self-dealing or producer-to-producer recirculation as genuine demand. The result reframed the
-  problem once more, and more fundamentally than any slice before it. Nobody starves: freed of the subsidy's price
-  flood, the adults feed themselves easily — so easily that the transfer mechanism built for the milestone never
-  fires at all, an economy that never demands the machinery designed for it (the same shape as the wage market
-  that never cleared). **What fails is reproduction.** Bearing a child in this model requires the parent to hand
-  over a small *saved* stock of food, and agents who buy only against present hunger eat every loaf they purchase:
-  income circulates, consumption is covered, and no one ever accumulates the four-loaf fund a birth requires — so
-  births collapse, heirs vanish, and the chain's structure dies of childlessness in an economy where everyone is
-  fed. The prior-saving problem, which the wage-labor null located in the employer's wages-fund, reappears here in
-  its most elemental form: **a mortal economy whose members demand only against present need cannot fund its own
-  reproduction.** Subsidize the family and the market drowns; unsubsidize it and the family disappears — unless
-  someone *saves ahead of need*, which no behavior in the model yet does. The keystone's remaining question is
-  therefore no longer institutional but behavioral, and it is the oldest one in capital theory: where does the
-  first act of saving come from? (One empirical gift along the way: the ledger's buyer-class split showed that the
-  only durable external demand in the economy comes from the one class with recurring *earned* income — the
-  gatherers — and not from the endowed consumers, whose one-time purse simply depletes.) That behavioral question
-  has since been put to the test — **C3R.d, the birth-stock motive**: give every member of a growable household a
-  standing, market-cleared want for exactly the four loaves a birth requires, expressed through the same machinery
-  a miller uses to want grain it will never eat, so that the existing market does the buying and the existing
-  reservation logic does the retaining. The behavior *works as built* — the wants are emitted, some bids clear, the
-  stock occasionally assembles, a few births follow — and the economy stays trapped. A sufficiency control puts the
-  question beyond doubt from the other side: inject the four loaves directly (a conserved transfer from the richest
-  outside holder, no minting) and *every one* of roughly seven hundred otherwise-eligible opportunities per run
-  becomes an immediate birth — possession of the stock is the sole missing condition, every single time. But the
-  unassisted market almost never lets a producer household assemble it: of some five hundred saving wants a run,
-  three to seven purchases clear, because the chain upstream produces nothing and what bread survives elsewhere is
-  either not offered or lost to hungrier bidders — the telemetry cannot yet say which, and the write-up is careful
-  to claim only that *no uncommitted surplus reaches saving*, not that nothing exists to save. The keystone's four
-  slices thus close into a single figure: a **bootstrap trap**. The chain is dead for want of heirs; heirs are
-  absent for want of the birth stock; the stock cannot be assembled for want of winnable bread; and bread goes
-  unmade for want of a chain. Each slice removed a wall — capital destruction, the subsidy flood, the absent
-  motive — and behind the last wall was not a missing behavior but a missing *starting point*: an economy already
-  inside the trap has no individual action that leads out of it. What the trap names as its own next question is,
-  for the first time in the keystone, not another refinement of individual choice but a **coordination or
-  transition problem** — a granary, a set-aside, a deliberately temporary subsidy withdrawn after ignition, an
-  initial endowment that bridges the first generation — which is to say: the model has arrived, from the inside,
-  at the oldest question about development. Not "why do poor economies lack capital?" but "what, other than
-  someone's prior accumulation, could ever start the accumulating?"
-
 ---
 
-## 11. Conclusion
+## 13. Conclusion
 
 OIKOS turns two slogans into ledgers. Mengerian money in this model did **not** emerge from direct demand,
 produced supply, or multi-good trade alone; it emerged only when a direct-use eligibility floor, medium-
@@ -697,9 +779,19 @@ institution that changes the *exit*, and even then stabilizes a core, not the wh
 substitute for the contract — **private property in land** — does not rescue occupation in either form
 tested: a forfeiture rule makes the exit cost churn, an alienable market thins out over owner-dominance, and
 both collapse the buyer economy a division of labor needs; what stabilized an occupation here was contract,
-not property, because the *design* of the exit-cost institution decides the outcome. Across all three arcs
-the method is the message: emergence claims in an ABM become trustworthy when the substrate conserves, the
-runs are deterministic and regression-pinned, parameters are swept rather than searched, an independent
+not property, because the *design* of the exit-cost institution decides the outcome. And the keystone turns the study's
+quietest assumption into its deepest result: everything above ran on immortal producers, and the moment
+production must survive the producer, the economy collapses into a bootstrap trap whose anatomy this study
+measured wall by wall — capital that cannot cross generations, subsidies that drown the market they enable,
+income that feeds the living but never funds reproduction, saving that works into a market it cannot win,
+and interventions whose preconditions die before persistence can be asked. The trap is economic (its
+microstructure share is a rounding error), its walls are correlated symptoms of one impoverished
+circulation, and its exit stands behind the oldest wall in the study: nobody in a mortal economy earns
+forever, so every demand base is a stock that depletes. The model arrived, from the inside and under
+adversarial review, at the founding question of development economics — what, other than someone's prior
+accumulation, starts the accumulating, and who buys, forever, from the first accumulators? Across all four
+arcs the method is the message: emergence claims in an ABM become trustworthy when the substrate conserves,
+the runs are deterministic and regression-pinned, parameters are swept rather than searched, an independent
 model audits design and result, and both the precisely-bounded "no" and the carefully-qualified "partial
 yes" are treated as real findings.
 
