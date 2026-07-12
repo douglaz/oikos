@@ -1784,6 +1784,62 @@ result-review ACCEPT-AS-HONEST-FINDING with the corrected framing. Preserved on
 
 ---
 
+## 33. The closed circulation — structure dies before the closure question can be posed (DH.a)
+
+The demand-horizon frontier opened with a subtraction, not a construction. Three research probes had
+established that the machinery of a closed multi-class circulation already existed and mostly already ran
+in the durable regime: a good-generic order book, a live WOOD market, producer input purchases on the real
+book, and an immortal buyer class (the gatherers) with recurring earned income — already ~87% of genuine
+external bread revenue. What violated closure was the endowed, non-producing surround: the forty-four
+chain consumers (a one-time purse and a finite wood battery, no earning stream) and the two legacy lineage
+households with per-tick hearth provisions. DH.a's regime (impl-68, tag 34) is the durable stack minus
+exactly that surround — consumers zero, the lineage households removed, and nothing else: no new
+mechanism, no tuned parameter, the seven-field identity test asserting the constructor equals the durable
+stack plus the preregistered edit list.
+
+The closure claim was made exact and adversarially instrumented. An observation-only, all-population
+provenance ledger tracks gold in earned/endowed buckets AND physical inventory in
+endowed/acquired/own-produced origin buckets (the physical shadow exists because monetary provenance alone
+is launderable: selling a construction-endowed loaf yields "earned" gold without any production — the
+spec-review rounds killed that false green, and its cousins, seven rounds deep). A raw event tape emitted
+at the committed mutation seams feeds two independent reducers — the production ledger and a
+test-local reference that byte-matches every sale split, every window-boundary origin inventory, and
+every debit family on a preregistered seed. Closure itself is a pure classifier over post-bootstrap
+160-tick windows: CC0 (every required class alive all window), CC1 (own-production sale consideration and
+market spending both positive), CC2 (zero endowed drawdown, monetary and physical), CC3 (zero drains into
+the two write-only commons pools). Window [0,160) is excluded by a two-case proof — the economy's first
+positive-consideration purchase must spend endowed gold, and a window without one fails the spend leg —
+so the exclusion is forced, not chosen. A per-tick force-disable comparison proves the whole apparatus
+observation-inert; the existing thirty-five-cell grid reproduces byte-for-byte against a golden captured
+from the unmodified base (the reviewer authenticated it by rebuilding the archived base commit and
+byte-matching its projection).
+
+The verdict, on every seed, identically: **`ClosureStructureAbsent { first_window: 160, class: Miller }`.**
+The class payload is the lowest-ordinal tie-break — BOTH producer classes have no living member by the
+first classified window. The A1 gate decomposition on the closed regime reads `extinct=6`, exactly as on
+the durable regime: all six producer households are gone by tick 50. The ladder beneath is subordinate and
+unsurprising — A1 `IgnitionShortfall` ×5 with dose 0; B and A2 voided by `SupportOnControlFails` on four
+seeds; on the one seed whose support-on control holds structure anywhere, `ExternalDemandDiedFirst` at
+windows 560 and 160.
+
+What the S-row permits, and no more: this closed regime cannot maintain its own class structure — the
+producer lineages are extinct before the closure question can be posed. The contrast with the durable
+regime is unpaired by design (removing the surround also removed 2,880 gold, forty-eight mouths, and
+their RNG draws), so no causal claim about the removal is available. But the program-level synthesis
+sharpens decisively: the wall in front of the trap's exit is not demand durability. Earned income
+(C3R.c), the saving motive (C3R.d), finite ignition (C3R.e), and now a demand base that cannot
+structurally die (DH.a) all fail at the same point — **no producer lineage survives to carry the
+structure**. Reproduction, not demand, is the binding constraint. The frontier this selects: producer
+succession and heir continuity first; estate recirculation and hoard carrying costs answer leak and drain
+diagnoses that were never reached.
+
+Disclosures: the run was rejected once at the results gate on three instrumentation findings (a
+snapshot-inferred event tape, a recount sharing production helpers, a pipeline test exercising
+duplicates) and repaired with the verdict grid byte-stable and a disclosed diagnostic delta of NONE;
+the 60-run suite costs ~95s, with the inertness and recount checks separately disclosed at ~2s and ~1s.
+Spec impl-68, SPEC-READY after seven xhigh rounds; build clean in five rb-lite rounds plus a two-round
+repair; final RoR re-check ACCEPT with zero findings at every severity.
+
 ## Appendix — milestone index
 
 | Sxx | Title | Outcome |
@@ -1836,3 +1892,4 @@ result-review ACCEPT-AS-HONEST-FINDING with the corrected framing. Preserved on
 | S24a | Endogenous commitment-norm spread (institution-selection arc, slice 1) | **MIXED FINDING — a working institution CAN propagate by generic local imitation of observed success, but cleanly only sometimes.** Gates S22f's commitment behind a per-agent adopts_commitment_norm bit; a deterministic minority seeds it; non-adopters copy a better-off observed neighbour's norm bit scored ONLY on a normalized GENERIC alive/hunger/food score (SALT excluded; score-purity invariant forbids reading institution/profit fields; S22f mechanism otherwise unchanged). Composes on S22f+S22c; digest tag 15 ON-only; goldens byte-identical off. Per-seed tally {3,7,11,19,23}: 3 UniversalCommitmentRePin (3,7,19 — adoption over-spreads past 0.6, fluid buyer tier collapses), 1 DriftNotSelection (11 — its matched random-imitation null also reproduces the core), 1 InstitutionSpreadSuccess (23 — bounded 0.57, surviving buyers, beats its random null). The norm genuinely spreads (seed ~12 → ~50 adopters), non-seed agents commit+renew, a core forms, all copy drivers generic (salt=0), money/mortality/provenance/conservation hold — but under STICKY (never-abandoned) adoption it usually over-spreads or isn't separable from drift; clean bounded selection-driven spread is the minority. Anti-smuggling held (generic score + score-purity + per-seed random null). PROCESS: the rb-lite run died in iteration 1 (main swept, codex implementer orphaned+hung after the suite passed; NO panel ran) → gated on independent verification + Codex review-of-results, which returned FAIL-as-classified → two test-only fixes (per-seed drift check [an aggregate gate had masked seed 11's drift]; honest unprofitable_seed reporting [term=1 still spreads the bit via transient food advantage but forms no core]) → post-patch tally matches Codex's predicted honest outcome. Clean positive (non-sticky/abandonable adoption) deferred to S24b. Workspace 97 suites, all goldens byte-identical (28 goldens_unchanged), commitment_norm_spread 12/12, fmt+clippy clean. |
 | S24b | Abandonable commitment-norm adoption (institution-selection arc, slice 2) | **FINDING — abandonable adoption DISSOLVES the institution; generic welfare-imitation doesn't preserve a division-of-labor institution (a "tragedy of imitation").** Makes exactly one change to S24a: imitation is BIDIRECTIONAL/abandonable — every agent each IMITATION_PERIOD copies the better-off observed neighbour's adopts_commitment_norm bit (adopter OR non-adopter) on the same generic alive/hunger/food score (SALT excluded; score-purity invariant); abandonment inside a binding S22f term is staged in next_norm_bit + applied at expiry before renewal (no mid-term break). Composes on S24a; digest tag 16 ON-only; goldens byte-identical off. Verdict NormDiesBack 5/5 {3,7,11,19,23}: the norm dies back COMPLETELY (final adopters=0 every seed; only flips are abandonment, adopt=0 abandon=7-10). MECHANISM (Codex-confirmed): on the generic welfare score the committed CULTIVATORS are not better off than the well-fed fluid BUYERS (buyers 37-48 alive, post_bought ~15k-32k — buyers eat plentifully by buying; cultivators bear the burden), so welfare-imitation flows AWAY from the productive role — nobody imitates into the committed role. S24a's institution only spread because sticky adoption RATCHETED it; remove the ratchet and generic-welfare selection dissolves it. NOT an artifact: the random null DOES adopt + sticky_reference forms cores (false→true path live); the 3 candidate artifact-bugs checked absent. INSIGHT: generic individual-welfare imitation does not preserve a division-of-labor institution when the producers who sustain it aren't individually better off than the buyers they feed. Together S24a (sticky→over-spread/drift) + S24b (abandonable→die-back) = generic-imitation institution selection is a KNIFE-EDGE; clean positive needs role-crediting/group-payoff imitation OR explicit hysteresis = S24c. rb-lite converged CLEAN in 3 rounds (fresh S24b reviewers file); Codex review-of-results PASS-WITH-CAVEATS. Workspace 98 suites, all goldens byte-identical (29 goldens_unchanged), abandonable_norm suite passes, fmt+clippy clean. |
 | S24c | Group-payoff imitation (institution-selection arc, slice 3 — ARC-CLOSING) | **FINDING — group-welfare imitation ALSO dissolves the institution; closes the S24 local-welfare-imitation arc as a clean TRIAD of negatives.** Reuses S24b abandonable adoption but scores imitation on local GROUP welfare: an agent selects the best-off nearby group by GENERIC welfare aggregates (alive share / mean hunger-relief / mean food; SALT excluded; group score-purity forbids reading any member's commitment identity), then copies toward that group's ADOPTER-SHARE GRADIENT (adopt if the better-welfare group has materially more adopters, abandon if fewer — the welfare picks the group, the share only sets copy direction). Group membership keyed on each colonist's economic anchor (home_node, canonicalized ON-only, digest-safe). Composes on S24b; digest tag 17 ON-only; goldens byte-identical off. Verdict NormDiesBack 5/5 {3,7,11,19,23}: the mechanism genuinely fires (group_copy_events=10/seed, covariance_samples ~5000) and the group signal is present (positive_group_copy_advantages=10; welfare↔adopter covariance positive in 4/5 seeds, adverse in 1) — but every copy is an ABANDONMENT (adoptions=0, abandonments=10) because the best-welfare GROUP is BUYER-heavy (buyers 37-48 alive, post_bought 15k-32k), so the gradient selects AWAY from adoption and even the seeded adopters drop the norm. TWO rigor catches: (1) a spatial-degeneracy ARTIFACT — rounds 1-2 keyed groups on literal position; the non-hauling majority shares the exchange tile so every group collapsed to the whole population (zero group-copy events); reviewers caught it empirically; round-3 keyed on home_node → groups genuinely differ. (2) a VERDICT MISLABEL (Codex review-of-results, S23a/S24a pattern) — GroupSignalVacuous was routed whenever no ALIGNED adoption occurred, but the spec defines vacuous as "no signal observed", contradicted by positive_group_copy_advantages=10 + positive covariance; test-only classifier fix → NormDiesBack (a signal that fires and selects away is not "no signal"; a negative covariance is an adverse signal). Disclosed scope: the mechanism fires for anchored agents; a synthetic anchor for the tile-sharing majority was rejected (broke the null/unprofitable controls), so S24c tests group-payoff as far as this base's spatial structure allows. ARC CONCLUSION: local welfare-imitation — sticky (S24a) / individual-abandonable (S24b) / group (S24c) — cannot SELECT a division-of-labor institution, because its value is NON-LOCAL (realized through exchange from producers to buyers), so no local welfare observable makes the producer role look best. Future work explicitly new: market-mediated/global signals, contribution accounting, or group reproduction/selection. rb-lite converged CLEAN in 3 rounds (fresh S24c reviewers file, 2nd clean run running); Codex review-of-results PASS-WITH-CAVEATS. Workspace 99 suites / 1581 tests, all goldens byte-identical (30 goldens_unchanged), group_payoff_imitation 14/14, fmt+clippy clean. |
+| DH.a | The closed circulation (the demand-horizon frontier's first slice) | **`ClosureStructureAbsent { first_window: 160, class: Miller }` ×5 seeds — both producer classes extinct before the first classified window; the closure question cannot be posed; reproduction, not demand, is the binding constraint. A1 `IgnitionShortfall` ×5 (dose 0, `extinct=6`, identical to durable); RoR REJECT (instrumentation) → repair (verdicts byte-stable) → ACCEPT (zero findings).** Regime = durable stack MINUS the endowed non-producing surround (consumers=0, legacy lineages removed; identity-tested); all-class gold+physical provenance (the liquidation-laundering false green killed at spec time); raw mutation-seam tape, two independent reducers, seed-3 byte-match recount; pure `classify_closure` over post-bootstrap windows (the [0,160) exclusion forced by proof); per-tick observation-inertness; existing 35-cell grid byte-identical vs a golden authenticated against the rebuilt archived base. 60 runs ~95s. | impl-68 (7 xhigh rounds); tag 34 |
