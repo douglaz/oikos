@@ -56,10 +56,19 @@ artifacts at two to seven percent — the trap survives its own disconfirmation 
 one-time stock or a withdrawn subsidy, under a launder-proof provenance regime and a preregistered
 hysteresis bar, and the interventions' preconditions fail before persistence can be measured — the
 producers' founders are dead before the aid arrives, and **external demand dies before any measurement
-window opens, on either tested regime**. The trap's exit is thereby located behind the study's oldest
-unsolved wall: no class in the mortal economy earns recurring income, so every demand base is a depleting
-stock. We report all of these as **model findings, not theorems**, and disclose the configured scaffolds
-that remain.
+window opens, on either tested regime**. The trap's exit thereby appeared to stand behind the study's
+oldest unsolved wall: no class in the mortal economy earns recurring income, so every demand base is a
+depleting stock. A sixth slice then attacked that wall directly with a **candidate
+closed circulation** built by subtraction (the durable regime minus every endowed, non-producing class) —
+a regime in which every remaining class *could* earn and spend from its own production, with an
+adversarially-instrumented provenance ledger preregistered to classify whether it actually did. The
+classification never got that far: **both producer classes were extinct before the first classified
+measurement window opened**, on every seed — the same structural failure the uncorrected regime shows,
+though the unpaired design licenses no causal comparison. The demand horizon could not even be posed as
+the binding wall. **Reproduction is the wall that binds first**: across every slice, the only structurally
+persistent producer regime observed was C3R.b's — subsidized, and flow-capped by that very subsidy —
+and succession that is both unsubsidized and flow-viable has never been observed. We report all of these as **model findings, not theorems**, and disclose the
+configured scaffolds that remain.
 
 ---
 
@@ -523,7 +532,7 @@ signal that sees past local welfare — a market-mediated or global payoff, expl
 or group-level reproduction/selection — each a genuinely new mechanism, and the honest boundary at which this
 study leaves the emergence of the institutional layer itself.
 
-## 9. The mortal economy: the keystone arc — a bootstrap trap, and the demand horizon in front of its exit
+## 9. The mortal economy: the keystone arc — a bootstrap trap, and the wall that turned out to be reproduction
 
 **The wall behind every prior result.** Every result
 above shared a quiet exemption: the *producers* — the miller and baker who own the mill and oven and turn
@@ -601,7 +610,7 @@ slices thus close into a single figure: a **bootstrap trap**. The chain is dead 
 absent for want of the birth stock; the stock cannot be assembled for want of winnable bread; and bread goes
 unmade for want of a chain. Each slice removed a wall — capital destruction, the subsidy flood, the absent
 motive — and behind the last wall was not a missing behavior but a missing *starting point*: an economy already
-inside the trap has no individual action that leads out of it. What the trap names as its own next question is,
+inside the trap found no exit in any individual behavior tested here. What the trap names as its own next question is,
 for the first time in the keystone, not another refinement of individual choice but a **coordination or
 transition problem** — a granary, a set-aside, a deliberately temporary subsidy withdrawn after ignition, an
 initial endowment that bridges the first generation — which is to say: the model has arrived, from the inside,
@@ -634,11 +643,12 @@ demand — producers buying warmth from gatherers, the gatherer class doubled �
 than the economy it was meant to repair: even *permanent* support failed to sustain structure on four of
 five seeds, with the added producer expense the leading mechanism. And in every measurement window that
 any cell on either regime ever reached, external demand was already dead. No relapse was proven; no claim
-that the trap is unescapable is licensed; the matched references stayed trapped ten out of ten. What is
-proven is sharper: **the program's oldest wall — no demand base survives; the finding of the scarcity
-probe, the wage-labor null, and the earned-provisioning slice alike — stands directly in front of the
-trap's exit.** An economy in which no class earns recurring income cannot even be *tested* for escape,
-because the demand it would re-enter against dies first.
+that the trap is unescapable is licensed; the matched references stayed trapped ten out of ten. What the
+slice established, as the arc then stood, was this: **the program's oldest wall — no demand base survives;
+the finding of the scarcity probe, the wage-labor null, and the earned-provisioning slice alike — appeared
+to stand directly in front of the trap's exit**, because an economy in which no class earns recurring
+income could not even be *tested* for escape: the demand it would re-enter against died first. The next
+slice (DH.a, below) tested that reading directly — and overturned it.
 
 **The keystone's synthesis.** Five slices, each removing the wall the previous one exposed, compose into a
 single figure. A mortal production chain collapses because capital cannot cross the generational gap;
@@ -651,7 +661,32 @@ needed — capital continuity, un-subsidized demand, prior saving, winnable surp
 outlives the support — was the thing the economy could not yet produce. The keystone thus ends where
 development economics begins, having arrived from the inside: not "why do poor economies lack capital?"
 but "what, other than someone's prior accumulation, could ever start the accumulating?" — and, behind even
-that: who buys, forever, from the first accumulators?
+that, the question as the keystone then posed it: who buys, forever, from the first accumulators?
+
+**The demand horizon, tested — and dissolved (DH.a).** The keystone's parting question was answerable, and
+the program answered it by subtraction. Three research probes established that a closed multi-class
+circulation mostly already existed: gold was already a strictly conserved stock with no faucet; the
+gatherers were already an undying class with recurring earned income (≈87% of genuine external bread
+revenue); every needed market — a good-generic order book, live WOOD trade, producer input purchases —
+was already running. What violated closure was the endowed, non-producing surround: forty-four consumers
+spending down a one-time purse, and two legacy households living on per-tick hearth provisions. The
+closed regime removed exactly that surround and nothing else (an identity test pins the constructor to
+the durable stack plus the preregistered edit list), and the closure claim itself was made exact under an
+adversarially-designed instrument: an observation-only provenance ledger tracking gold *and* physical
+inventory by origin (endowed / acquired / own-produced — because selling an endowed loaf is liquidation,
+not income), a raw event tape consumed by two independent reducers, a per-tick inertness proof, and a
+pure classifier over preregistered post-bootstrap windows whose first window is excluded by a two-case
+proof, not by choice. The verdict, on every seed, identically: **closure's structural precondition fails
+in the first classified window — both producer classes are already extinct.** All six producer households
+are gone by tick 50, exactly as on the uncorrected regime; the ignition ladder beneath is subordinate
+(the one-shot redistribution again found no living recipient). The contrast is unpaired by design —
+removing the surround also removed money stock, mouths, and their random draws — so no causal claim about
+the removal is licensed. What is licensed is the correction that re-frames the arc: **the wall in front
+of the trap's exit is not demand durability.** Earned income, the saving motive, finite ignition, and a
+demand base that cannot structurally die all fail at the same point — no producer lineage survives its
+founders. The question development economics inherits from this model is not "who buys, forever, from the
+first accumulators?" but the one standing behind it: **what lets the first accumulators have successors at
+all?**
 
 ---
 
@@ -721,9 +756,19 @@ We state the scaffolds plainly; a hostile reader should attack these first.
 - **The keystone results are bounded to a small, specific topology.** Six producer households at cap two,
   one chain, forty-four endowed consumers, and integer-floored prices; the durable-demand regime is a
   disclosed composite (its two changes are not causally separated); the escape verdicts are
-  undetermined-class, not impossibility proofs; and two instrumentation gaps are open debt (the
-  redistribution-gate decomposition; a result-neutral eligibility boundary). Scale, topology, and
+  undetermined-class, not impossibility proofs. The two instrumentation gaps once open as debt are now
+  closed and result-neutral: the redistribution-gate decomposition landed and resolved its own question
+  (every producer household extinct at the injection tick — no living recipient existed), and the
+  eligibility-boundary fix reproduced the verdict grid byte-for-byte. Scale, topology, and
   microstructure robustness sweeps are future work, preregistered as such.
+- **The closed-circulation regime carries mixed mortality.** Producer households are mortal; the gatherer
+  class that carries all recurring demand is deathless by construction (no lifespan, non-lethal hunger).
+  Closure was proven infeasible to *pose* on this base for structural reasons, but a fully mortal economy
+  — where the buyers age too — is a different, harder object no slice has yet built.
+- **The closed-vs-durable contrast is unpaired.** Removing the endowed surround also removed 2,880 gold
+  of monetary stock, forty-eight agents' demand, their agent-id positions, and their RNG draws. The DH.a
+  verdict classifies the closed regime; it does not measure the *effect of the removal*, and no reading
+  in the record claims it does.
 - **All of the above are model findings, not theorems.** The contribution is a disciplined decomposition
   within one simulator, not a proof about economies in general.
 
@@ -731,14 +776,21 @@ We state the scaffolds plainly; a hostile reader should attack these first.
 
 ## 12. Future work
 
-- **The demand horizon — the frontier the keystone isolated.** Every path into and out of the bootstrap
-  trap dies on the same fact: no class in the mortal economy earns recurring income forever, so every
-  demand base is a depleting stock and every persistence question becomes unmeasurable past a few hundred
-  ticks. The next milestone is a genuinely closed multi-class circulation — every class earns *and* spends,
-  with no depleting endowments and no mints — after which the ignition/withdrawal oracle re-runs as-is.
-  This is the program's last unconquered wall, and the keystone's five slices are the argument that nothing
-  else is worth building until it falls. (Prerequisite debt: the redistribution-gate decomposition and one
-  result-neutral eligibility-boundary fix, both named in the record.)
+- **Reproduction and succession — the frontier DH.a isolated.** The demand-horizon milestone was built
+  and it answered: with the endowed non-producing surround removed and the demand base carried by a
+  structurally deathless earning class, the producer lineages were extinct before closure — or realized
+  durable demand — could even be classified. The binding wall is reproduction. The next
+  slice is a **reproductive-burden robustness audit** on the closed base: a preregistered sweep of the
+  exogenous birth-provisioning burden (the four-loaf gate as imposed natural data, with the canonical
+  value retained regardless of outcome and the zero-cost cell barred from any success label), classified
+  by a new succession-survival oracle — post-founder, multi-generation continuity, real tool-and-role
+  succession, birth funding classified by origin — with the saving motive run against its matched
+  control. Behind it, in order: a pooled-heir succession institution across the producer households
+  (posed as a regime, as inheritance was) once any heirs exist to pool; and only after canonical-burden
+  survival, the closure + ignition oracle re-run. Deselected for now, with reasons in the record:
+  apprenticeship from the gatherer pool (the only candidates are deathless — promotion would reopen the
+  immortal-producer reservoir the keystone closed), household merger (pools people, creates none), and
+  succession-by-hiring (four institutions in one slice).
 - **Why the committed core does not spread colony-wide.** S22f's exit-overriding institution stabilizes an
   occupational *core* but leaves a churning fluid majority, so aggregate churn stays high. The live question
   is what would convert the two-tier structure into colony-wide occupational order — a stronger or
@@ -785,11 +837,17 @@ production must survive the producer, the economy collapses into a bootstrap tra
 measured wall by wall — capital that cannot cross generations, subsidies that drown the market they enable,
 income that feeds the living but never funds reproduction, saving that works into a market it cannot win,
 and interventions whose preconditions die before persistence can be asked. The trap is economic (its
-microstructure share is a rounding error), its walls are correlated symptoms of one impoverished
-circulation, and its exit stands behind the oldest wall in the study: nobody in a mortal economy earns
-forever, so every demand base is a stock that depletes. The model arrived, from the inside and under
-adversarial review, at the founding question of development economics — what, other than someone's prior
-accumulation, starts the accumulating, and who buys, forever, from the first accumulators? Across all four
+microstructure share is a rounding error), and its walls are correlated symptoms of one impoverished
+circulation. The study's last move took its own oldest wall at face value — nobody in a mortal economy
+earns forever — and built the candidate economy that removes it: a closed circulation in which every
+remaining class could earn and spend from its own production, instrumented to classify whether it did.
+The classification was never reached: on every seed the producer lineages were extinct before the first
+measurement window, the same structural failure as before the correction (a standalone result — the
+unpaired design permits no causal reading of the removal). The model arrived, from the inside and
+under adversarial review, at the founding question of development economics — what, other than someone's
+prior accumulation, starts the accumulating? — and then walked one step further down than "who buys,
+forever, from the first accumulators?", to the question this record now leaves open: what lets the first
+accumulators have successors at all? Across all four
 arcs the method is the message: emergence claims in an ABM become trustworthy when the substrate conserves,
 the runs are deterministic and regression-pinned, parameters are swept rather than searched, an independent
 model audits design and result, and both the precisely-bounded "no" and the carefully-qualified "partial
@@ -828,3 +886,10 @@ yes" are treated as real findings.
 | S22f | Voluntary fixed-term commitment | the turn: an exit-overriding voluntary contract forms a persistent, renewing, minority committed **core** + a two-tier market (first stable occupation); formal verdict still no-stickiness (colony-wide churn unchanged), not a re-pin |
 | S23a | Private land tenure (forfeiture) | finding: use-it-or-lose-it land *thrashes* (churn ~10× commons, no cohort); the exit cost itself churns. (A first run's hard-barrier was a capacity artifact, caught in review) |
 | S23b | Post-money alienable land market | finding: genuinely endogenous rent-tracking price, but the market goes *thin* (few trades, churn unchanged, no owner-cultivator cohort) over S23a's already owner-collapsed base; property does not rescue occupation, contract does |
+| C3R.a | Mortal producers | finding: the chain collapses on producer death ×5 — capital cannot cross the generational gap |
+| C3R.b | Capital inheritance | finding: inheritance restores *structure*; the heir-supplying subsidy floods the market and caps *flow* (narrow viable window) |
+| C3R.c | Earned provisioning | finding: earned income feeds the living but never funds reproduction — the prior-saving problem relocates to the family fund |
+| C3R.d | Birth-stock saving | finding: the saving motive works, into a market it almost never wins (a handful of attributable purchases against ~500 wants; a 4-loaf sufficiency control births at every otherwise-eligible opportunity) |
+| C3R.e-obs | Allocation-contest instrumentation | diagnosis: three correlated economic bottlenecks at ~⅓ each; microstructure 2–7% — the trap survives its sharpest disconfirmation challenge |
+| C3R.e | Ignition and withdrawal | finding: every finite intervention's preconditions fail before persistence can be measured — founders dead before aid arrives; external demand dead in every eligible measurement window any cell reached |
+| DH.a | The closed circulation | **finding: with the endowed non-producing surround removed and demand carried by a deathless earning class, both producer classes are extinct before the first classified window — closure was never classifiable; reproduction, not demand, binds first** |
