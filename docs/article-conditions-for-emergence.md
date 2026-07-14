@@ -67,7 +67,16 @@ measurement window opened**, on every seed — the same structural failure the u
 though the unpaired design licenses no causal comparison. The demand horizon could not even be posed as
 the binding wall. **Reproduction is the wall that binds first**: across every slice, the only structurally
 persistent producer regime observed was C3R.b's — subsidized, and flow-capped by that very subsidy —
-and succession that is both unsubsidized and flow-viable has never been observed. We report all of these as **model findings, not theorems**, and disclose the
+and succession that is both unsubsidized and flow-viable has never been observed. A seventh slice
+put that wall to a robustness test — sweeping the birth-provisioning burden from the canonical four
+loaves down to one and up to eight, on the exact closed base, against a matched saving-motive control —
+and the wall is not the number four: no birth occurs at the tested burdens of three, four, or eight
+loaves, a single loaf already lets children arrive into households that cannot hold a lineage through
+even one multi-generation window, and only literal costlessness restores mechanical replacement (and even then
+staffed production fails on four of five seeds). An individual saving motive changed no cell's
+classification (it engaged and slightly *reduced* births in two one-loaf cells, but improved none).
+The reproduction wall is robust across the sampled lattice and sharper than any single configured
+constant. We report all of these as **model findings, not theorems**, and disclose the
 configured scaffolds that remain.
 
 ---
@@ -688,6 +697,32 @@ founders. The question development economics inherits from this model is not "wh
 first accumulators?" but the one standing behind it: **what lets the first accumulators have successors at
 all?**
 
+**The reproduction wall, put to the burden test (DH.b).** The question is answerable one layer at a
+time, and the first layer is the burden itself: the four loaves a birth costs are exogenous natural
+data, and a robustness audit can ask whether the whole wall is an artifact of that particular number.
+Sixty cells sweep the birth-provisioning burden over {0, 1, 2, 3, 4, 8} loaves, crossed with a
+matched saving-motive control, over five seeds on the exact closed base — the canonical four-loaf cell
+held config-byte-identical to the landed regime, the value kept canonical regardless of outcome, a
+zero-cost cell barred from any success label — and scored by a new succession-survival oracle:
+post-founder multi-generation continuity, real tool-and-role succession joined at the inheritance and
+adoption seams with mill-and-oven stage correspondence, staffed production, and births classified by
+funding origin through the closed regime's provenance ledger. The grid is uniform and sharp. At three
+loaves, four, and eight, *no birth occurs at all* — the endowment gate never clears once, three loaves
+as absolutely as eight. At one and two loaves the demography restarts (six to fourteen births a run)
+but every cell dies childless of lineage: neither producer class ever holds even a private
+five-window continuity streak. Only at zero cost does the machine turn over — seven hundred births a
+run, real inheritance-to-adoption-to-execution chains at the live seams — and even there staffed
+production fails on four of five seeds, leaving exactly one seed at mechanical replacement. The saving
+motive engages (it emits its saving bids) but changes no cell's classification, and on two of the
+one-loaf seeds it slightly *reduces* births. So the tested transition sits between zero and one loaf:
+the reproduction wall is not the number four, and no positive provisioning burden the audit tried lets
+a producer lineage persist. The zero-cost arm doubles as the instrument's proof of life — continuity,
+real-seam succession, and staffed flow are all reachable states of this base — so the failures at
+positive burden are failures of the economy, not of the measure. The frontier the keystone named thus
+survives its own first robustness test, and narrows: not "lower the burden" (nothing positive passed,
+and the burden is natural data anyway) but whether any *institution* — an heir pooled across producer
+households, say — can carry a lineage across a wall now demonstrated at a single loaf.
+
 ---
 
 ## 10. Discussion
@@ -769,6 +804,11 @@ We state the scaffolds plainly; a hostile reader should attack these first.
   of monetary stock, forty-eight agents' demand, their agent-id positions, and their RNG draws. The DH.a
   verdict classifies the closed regime; it does not measure the *effect of the removal*, and no reading
   in the record claims it does.
+- **The reproductive-burden result is a sampled lattice on one base.** DH.b sweeps six burden values
+  over five seeds on the single closed regime; the "sits between zero and one loaf" boundary is between
+  the *tested* points (no fractional or sub-unit burdens, no other base). The audit shows the wall is
+  not the specific constant four and is robust across what it sampled; it is not a proof that no burden
+  regime anywhere admits a lineage.
 - **All of the above are model findings, not theorems.** The contribution is a disciplined decomposition
   within one simulator, not a proof about economies in general.
 
@@ -776,21 +816,20 @@ We state the scaffolds plainly; a hostile reader should attack these first.
 
 ## 12. Future work
 
-- **Reproduction and succession — the frontier DH.a isolated.** The demand-horizon milestone was built
-  and it answered: with the endowed non-producing surround removed and the demand base carried by a
-  structurally deathless earning class, the producer lineages were extinct before closure — or realized
-  durable demand — could even be classified. The binding wall is reproduction. The next
-  slice is a **reproductive-burden robustness audit** on the closed base: a preregistered sweep of the
-  exogenous birth-provisioning burden (the four-loaf gate as imposed natural data, with the canonical
-  value retained regardless of outcome and the zero-cost cell barred from any success label), classified
-  by a new succession-survival oracle — post-founder, multi-generation continuity, real tool-and-role
-  succession, birth funding classified by origin — with the saving motive run against its matched
-  control. Behind it, in order: a pooled-heir succession institution across the producer households
-  (posed as a regime, as inheritance was) once any heirs exist to pool; and only after canonical-burden
-  survival, the closure + ignition oracle re-run. Deselected for now, with reasons in the record:
-  apprenticeship from the gatherer pool (the only candidates are deathless — promotion would reopen the
-  immortal-producer reservoir the keystone closed), household merger (pools people, creates none), and
-  succession-by-hiring (four institutions in one slice).
+- **Succession, now that the burden sweep is done.** The reproduction frontier's first slice (DH.b) is
+  done: the burden sweep showed the wall is not the four-loaf constant, and no positive provisioning
+  transfer the audit tried admits a persisting lineage (the tested transition sits between zero and one
+  loaf; even costless replacement fails staffed flow on four of five seeds). Because nothing at
+  canonical burden produced a surviving heir, the closure-plus-ignition oracle re-run stays
+  unauthorized, and the retained institutional candidate — a **pooled-heir succession** across the six
+  producer households, posed as a regime as inheritance was — is non-vacuous only on the one-and-two-loaf
+  *sensitivity* cells where any heirs exist at all. Two coherent next moves: pose pooled-heir succession
+  explicitly on a one-loaf sensitivity base (a sensitivity-regime institution slice, not a canonical
+  claim), or take the structural diagnostic the grid opened — *why does the birth gate never clear
+  at the tested burdens of three, four, and eight loaves, where no birth occurs at all, while one and
+  two loaves produce a childless trickle?* The recorded deselections stand: apprenticeship from the gatherer pool (the only candidates
+  are deathless — promotion would reopen the immortal-producer reservoir the keystone closed), household
+  merger (pools people, creates none), and succession-by-hiring (four institutions in one slice).
 - **Why the committed core does not spread colony-wide.** S22f's exit-overriding institution stabilizes an
   occupational *core* but leaves a churning fluid majority, so aggregate churn stays high. The live question
   is what would convert the two-tier structure into colony-wide occupational order — a stronger or
@@ -847,7 +886,12 @@ unpaired design permits no causal reading of the removal). The model arrived, fr
 under adversarial review, at the founding question of development economics — what, other than someone's
 prior accumulation, starts the accumulating? — and then walked one step further down than "who buys,
 forever, from the first accumulators?", to the question this record now leaves open: what lets the first
-accumulators have successors at all? Across all four
+accumulators have successors at all? A first robustness test of that wall — sweeping the birth burden
+from one loaf to eight — found it sharper than any single number: no producer lineage in this model
+survives its founders at any positive provisioning burden tried, and only literal costlessness even
+restores mechanical replacement, itself flow-broken on all but one seed; so the open question is not
+the sampled burden magnitudes but whether any institution can carry a lineage across a wall that stands
+already at a single loaf. Across all four
 arcs the method is the message: emergence claims in an ABM become trustworthy when the substrate conserves,
 the runs are deterministic and regression-pinned, parameters are swept rather than searched, an independent
 model audits design and result, and both the precisely-bounded "no" and the carefully-qualified "partial
@@ -893,3 +937,4 @@ yes" are treated as real findings.
 | C3R.e-obs | Allocation-contest instrumentation | diagnosis: three correlated economic bottlenecks at ~⅓ each; microstructure 2–7% — the trap survives its sharpest disconfirmation challenge |
 | C3R.e | Ignition and withdrawal | finding: every finite intervention's preconditions fail before persistence can be measured — founders dead before aid arrives; external demand dead in every eligible measurement window any cell reached |
 | DH.a | The closed circulation | **finding: with the endowed non-producing surround removed and demand carried by a deathless earning class, both producer classes are extinct before the first classified window — closure was never classifiable; reproduction, not demand, binds first** |
+| DH.b | Reproductive-burden robustness audit | **finding: the reproduction wall is not the four-loaf constant — no birth at the tested burdens of 3, 4, and 8, a childless trickle at 1–2, mechanical replacement only at zero cost (flow-broken on 4/5 seeds); the tested transition sits between zero and one loaf, and an individual saving motive changes no verdict rung (it slightly reduces births in two one-loaf cells)** |
