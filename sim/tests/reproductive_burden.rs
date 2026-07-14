@@ -23,6 +23,7 @@ use sim::{
 };
 
 const PRODUCER_FOUNDERS: usize = 6;
+const CELL_AUDIT_GOLDEN: &str = include_str!("goldens/reproductive_burden_cells.txt");
 
 /// The per-cell config: `frontier_closed_circulation()` + EXACTLY {child_food_endowment=q, the
 /// two-field saving arm} and nothing else (§2). q=4 stays canonical in every constructor — the
@@ -285,6 +286,8 @@ fn run_cell(q: u32, arm: BurdenSavingArm, seed: u64) -> CellRun {
 fn reproductive_burden_sixty_cell_audit() {
     let wall = Instant::now();
     let mut cells: Vec<BurdenCellResult> = Vec::new();
+    let mut births_by_cell: BTreeMap<(u32, BurdenSavingArm, u64), usize> = BTreeMap::new();
+    let mut audit_rows: Vec<String> = Vec::new();
     let mut any_guard_failure = false;
 
     for &seed in &BURDEN_SEEDS {
@@ -313,6 +316,13 @@ fn reproductive_burden_sixty_cell_audit() {
                     );
                 }
                 println!("  verdict[rung {}]: {:?}", run.verdict.rung(), run.verdict);
+                births_by_cell.insert((q, arm, seed), run.births);
+                audit_rows.push(format!(
+                    "audit_cell|seed={seed}|q={q}|arm={arm:?}|births={}|rung={}|verdict={:?}",
+                    run.births,
+                    run.verdict.rung(),
+                    run.verdict
+                ));
                 cells.push(BurdenCellResult {
                     q,
                     arm,
@@ -321,6 +331,38 @@ fn reproductive_burden_sixty_cell_audit() {
                 });
             }
         }
+    }
+
+    // Stable, machine-bound evidence for every published cell figure (P2-4): unlike the
+    // diagnostic prose above, each row binds births and verdict in one fixed-format record and
+    // the committed golden makes drift a test failure.
+    let cell_audit = format!("{}\n", audit_rows.join("\n"));
+    println!("\nstructured per-cell audit:\n{cell_audit}");
+    assert_eq!(
+        cell_audit, CELL_AUDIT_GOLDEN,
+        "the published 60-cell verdict+birth figures changed"
+    );
+
+    // Compact paired evidence for the rung-level motive null (P1-1). Deltas are On minus Off;
+    // all six burdens print, including the q=0 reachability control.
+    println!("paired births table (delta = On - Off):");
+    for &q in &BURDEN_QS {
+        let off: Vec<usize> = BURDEN_SEEDS
+            .iter()
+            .map(|&seed| births_by_cell[&(q, BurdenSavingArm::Off, seed)])
+            .collect();
+        let on: Vec<usize> = BURDEN_SEEDS
+            .iter()
+            .map(|&seed| births_by_cell[&(q, BurdenSavingArm::On, seed)])
+            .collect();
+        let delta: Vec<i64> = on
+            .iter()
+            .zip(&off)
+            .map(|(&on, &off)| on as i64 - off as i64)
+            .collect();
+        println!(
+            "paired_births|q={q}|seeds={BURDEN_SEEDS:?}|off={off:?}|on={on:?}|delta={delta:?}"
+        );
     }
 
     // The full per-arm per-seed rung table (always printed, R1-3).

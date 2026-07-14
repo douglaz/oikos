@@ -2618,6 +2618,142 @@ mod real_seam_tests {
         );
     }
 
+    /// The remaining isolated criterion-2 negatives, each derived from ONE complete chain
+    /// emitted by the live estate → role-choice → production seams. The baseline is kept
+    /// byte-for-byte from the live events; each case changes only the observation named by the
+    /// case so an earlier failed link cannot mask the intended diagnostic.
+    #[test]
+    fn isolated_role_recipe_ordering_and_possession_negatives_from_live_chain() {
+        let cfg = cell_config(0, false);
+        let mut s = Settlement::generate(3, &cfg);
+        for _ in 0..400 {
+            s.econ_tick();
+        }
+        let (mill, oven) = mill_oven(&s);
+        let born: BTreeSet<AgentId> = s.burden_birth_events().iter().map(|b| b.child).collect();
+
+        let (inheritance, adoption, execution) = s
+            .burden_tool_inheritances()
+            .iter()
+            .filter(|i| i.class == ClosureClass::Miller && i.tool == mill && born.contains(&i.heir))
+            .find_map(|&inheritance| {
+                s.burden_role_adoptions()
+                    .iter()
+                    .filter(|a| {
+                        a.class == ClosureClass::Miller
+                            && a.heir == inheritance.heir
+                            && a.tool == inheritance.tool
+                            && a.role == Vocation::Miller
+                            && inheritance.tick <= a.tick
+                            && a.holds_tool
+                    })
+                    .find_map(|&adoption| {
+                        s.burden_stage_executions()
+                            .iter()
+                            .find(|e| {
+                                e.agent == adoption.heir
+                                    && e.recipe == RecipeId::Mill
+                                    && e.tick >= adoption.tick
+                            })
+                            .copied()
+                            .map(|execution| (inheritance, adoption, execution))
+                    })
+            })
+            .expect("a complete Miller chain is emitted at all three live seams");
+
+        let live_input = BurdenCellInput {
+            q: 0,
+            mill_good: mill,
+            oven_good: oven,
+            windows: Vec::new(),
+            inheritances: vec![inheritance],
+            adoptions: vec![adoption],
+            executions: vec![execution],
+            births: vec![BurdenBirthObs {
+                tick: 0,
+                child: inheritance.heir,
+                funding: FundingBits::default(),
+            }],
+        };
+        assert_eq!(
+            succession_for_class(
+                &live_input,
+                ClosureClass::Miller,
+                (0, BURDEN_RUN_TICKS),
+                &born
+            ),
+            Ok(()),
+            "the unmodified live chain is the positive control"
+        );
+
+        let mut wrong_role = live_input.clone();
+        wrong_role.adoptions[0].role = Vocation::Baker;
+        assert_eq!(
+            succession_for_class(
+                &wrong_role,
+                ClosureClass::Miller,
+                (0, BURDEN_RUN_TICKS),
+                &born
+            ),
+            Err(SuccessionBits {
+                adoption_event: true,
+                ..Default::default()
+            }),
+            "wrong role is isolated: class/heir/tool and the live predecessor are unchanged"
+        );
+
+        let mut wrong_recipe = live_input.clone();
+        wrong_recipe.executions[0].recipe = RecipeId::Bake;
+        assert_eq!(
+            succession_for_class(
+                &wrong_recipe,
+                ClosureClass::Miller,
+                (0, BURDEN_RUN_TICKS),
+                &born
+            ),
+            Err(SuccessionBits {
+                successor_execution: true,
+                ..Default::default()
+            }),
+            "wrong recipe leaves the complete live inheritance/adoption chain intact"
+        );
+
+        let mut reversed = live_input.clone();
+        reversed.adoptions[0].tick = inheritance
+            .tick
+            .checked_sub(1)
+            .expect("the live inheritance occurs after tick 0");
+        assert_eq!(
+            succession_for_class(
+                &reversed,
+                ClosureClass::Miller,
+                (0, BURDEN_RUN_TICKS),
+                &born
+            ),
+            Err(SuccessionBits {
+                strict_ordering: true,
+                ..Default::default()
+            }),
+            "only the live adoption's ordering observation is reversed"
+        );
+
+        let mut lost_possession = live_input;
+        lost_possession.adoptions[0].holds_tool = false;
+        assert_eq!(
+            succession_for_class(
+                &lost_possession,
+                ClosureClass::Miller,
+                (0, BURDEN_RUN_TICKS),
+                &born
+            ),
+            Err(SuccessionBits {
+                possession_at_adoption: true,
+                ..Default::default()
+            }),
+            "only the live adoption's possession observation is removed"
+        );
+    }
+
     /// The manufactured wrong-tool / wrong-role negative at the REAL seams: a Miller-class
     /// producer dies holding ONLY an oven (the wrong stage tool for its class), the heir
     /// inherits it through the live estate seam and — holding only that oven — adopts BAKER
@@ -2741,14 +2877,28 @@ mod real_seam_tests {
     }
 
     /// q=1 funding records: each drawn-lot set sums exactly to q, the two streams stay
-    /// complete, and every Bought funding lot joins exactly one settled-trade record by
-    /// identity (the R4-1 split/inheritance join positive on live data).
+    /// complete, and a positive live Bought-funded birth joins exactly one settled trade. The
+    /// child's post-birth holding proves purchase identity + taint survived the REAL conserved
+    /// birth-transfer seam.
     #[test]
     fn q1_funding_records_sum_to_q_and_join_by_identity() {
         let cfg = cell_config(1, false);
         let mut s = Settlement::generate(7, &cfg);
+        let mut bought_funding = None;
         for _ in 0..600 {
             s.econ_tick();
+            bought_funding = s
+                .burden_birth_funding_records()
+                .iter()
+                .find(|f| {
+                    f.lots
+                        .iter()
+                        .any(|lot| lot.channel == BurdenChannel::Bought && lot.qty > 0)
+                })
+                .cloned();
+            if bought_funding.is_some() {
+                break;
+            }
         }
         let births = s.burden_birth_events();
         let funding = s.burden_birth_funding_records();
@@ -2761,6 +2911,55 @@ mod real_seam_tests {
             assert!(
                 !bits.unverifiable,
                 "every live funding lot joins cleanly: {f:?}"
+            );
+        }
+        let bought_funding = bought_funding.expect("seed 7 q=1 produces a Bought-funded birth");
+        let birth = births
+            .iter()
+            .find(|b| b.child == bought_funding.child)
+            .expect("the independent BirthOccurred stream contains the Bought-funded child");
+        assert_eq!(
+            (birth.tick, birth.class, birth.parent),
+            (
+                bought_funding.tick,
+                bought_funding.class,
+                bought_funding.parent
+            )
+        );
+        let bought_lots: Vec<&BurdenLot> = bought_funding
+            .lots
+            .iter()
+            .filter(|lot| lot.channel == BurdenChannel::Bought && lot.qty > 0)
+            .collect();
+        assert!(
+            bought_lots.iter().map(|lot| lot.qty).sum::<u64>() > 0,
+            "the positive is non-vacuous"
+        );
+        let child_lots = s
+            .acquisition
+            .lots
+            .get(&bought_funding.child)
+            .expect("the newborn holds the conserved birth transfer after the live seam");
+        for lot in bought_lots {
+            let trade_id = lot.identity.expect("every live Bought lot has an identity");
+            let joined: Vec<&BurdenTradeRecord> = s
+                .burden_trade_records()
+                .iter()
+                .filter(|trade| trade.trade_id == trade_id)
+                .collect();
+            assert_eq!(joined.len(), 1, "purchase identity joins exactly one trade");
+            // Deliberately NO buyer comparison here: downstream split/inheritance/birth
+            // fragments join by purchase identity ONLY (R4-1) — an inherited Bought lot
+            // legitimately reaches a parent who is not the original buyer. Buyer/good/quantity
+            // validation lives at the purchase-credit seam.
+            assert!(
+                child_lots.iter().any(|child_lot| {
+                    child_lot.channel == FoodChannel::Bought
+                        && child_lot.qty == lot.qty
+                        && child_lot.identity == lot.identity
+                        && child_lot.taint == lot.taint
+                }),
+                "the REAL birth transfer preserves quantity, identity, and taint: {lot:?}"
             );
         }
         assert!(s.burden_seam_violations().is_empty());
