@@ -258,6 +258,23 @@ Falsifiable bar: production survives the death of producers.
 >   the wage-employer route reframed as succession-by-hiring). Estate recirculation and hoard carrying
 >   costs are DESELECTED for now — they answer leak/drain diagnoses that were never reached. Scoping
 >   pending user.**
+>
+>   **DH.b LANDED AND ACCEPTED (impl-69; spec 092c90a SPEC-READY after 5 xhigh rounds; branch
+>   feat/reproductive-burden-impl-rb = 1cf6260 + repair; RoR REJECT (writeup/battery, grid verified) →
+>   repair, verdict grid byte-stable → re-check ACCEPT; master merge 3265680).** The 60-cell burden sweep
+>   answered: **synthesis = CostlessOnlyReplacement — the sustained-lineage boundary sits BETWEEN ZERO
+>   AND ONE loaf.** q∈{3,4,8}: NoBirth ×30 (not one birth at canonical burden, ever); q∈{1,2}:
+>   BirthsButLineageExtinct ×20 (6–14 births/run; one loaf already defeats continuity); q=0:
+>   FunctionalSuccessionFlowAbsent ×8 + CostlessReplacement ×2 (even free reproduction mostly fails
+>   staffed flow). The saving motive: a RUNG-LEVEL null — it engages, never improves a rung, and reduces
+>   births on two q=1 seeds (13→12, 11→8). Nonmonotone: none. **A future DH.c grand-oracle rerun is NOT
+>   authorized** (no canonical pass). Report DH.b section + the committed audit-table golden. **THE OPEN
+>   SCOPING QUESTION (next decision): the retained DH.b+1 set has NO non-vacuous canonical-q=4 repair —
+>   pooled-heir succession needs heirs (only q=1/2 sensitivity cells produce any); apprenticeship (deathless
+>   pool), merger (pools-not-creates), and hiring (four institutions) stay deselected. Candidate framings
+>   for the next consultation: pooled-heir posed on a q=1 sensitivity base (explicitly a sensitivity-regime
+>   institution slice, not canonical); an income-vs-burden structural slice (why does even one loaf never
+>   accumulate?); or article/report consolidation of the DH arc first. Scoping pending user.**
 
 **P5+ — re-derive the institutional stack on the living base.** Firms (C2R) and rent/factor markets
 (C4R) once solvent counterparties exist; the classes/mobility measurement (C9) over whatever forms;
