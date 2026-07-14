@@ -281,7 +281,8 @@ fn run_cell(q: u32, arm: BurdenSavingArm, seed: u64) -> CellRun {
 }
 
 /// The 60-cell audit: serial, seeds outermost, q ascending, Off-then-On (§3). Scientific
-/// outcomes print; only the hard guards assert.
+/// outcomes print AND are machine-bound against the committed audit-table golden; the hard
+/// guards additionally fail the suite on violation.
 #[test]
 fn reproductive_burden_sixty_cell_audit() {
     let wall = Instant::now();
