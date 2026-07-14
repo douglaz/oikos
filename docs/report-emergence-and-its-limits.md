@@ -1840,6 +1840,85 @@ the 60-run suite costs ~95s, with the inertness and recount checks separately di
 Spec impl-68, SPEC-READY after seven xhigh rounds; build clean in five rb-lite rounds plus a two-round
 repair; final RoR re-check ACCEPT with zero findings at every severity.
 
+## 34. The reproductive-burden audit — the wall is the transfer itself, not the number four (DH.b)
+
+DH.a ended on one exogenous number: the four-loaf birth-provisioning burden
+(`child_food_endowment`), which simultaneously gates a birth, debits the parent, and endows the
+newborn. The preregistered question was narrow and honest: is producer-lineage extinction on the
+exact closed base robust to that configured burden, or is the "reproduction wall" substantially an
+artifact of requiring one parent to hold and transfer four loaves at once? Sweeping imposed natural
+data is not an institution, and the canonical value stays canonical regardless of outcome — a
+passing lower value would be a sensitivity boundary, not permission to change the default.
+
+The audit runs sixty cells on the exact closed base: burden q ∈ {0,1,2,3,4,8} × the two-field
+saving arm {(false, Off), (true, Motive)} × the landed seeds [3,7,11,19,23], serial, seeds
+outermost, q ascending, Off-then-On, 1600 ticks each, with the (q=4, Off) cell asserted
+config-byte-identical to the landed `frontier_closed_circulation()`. Scoring is a NEW
+succession-survival oracle: W=36-tick windows (the actual maximum producer lifespan), M=5
+consecutive windows, per-seed start = 36×ceil((last_founder_death+1)/36), founders pinned to the
+generation-time closure-registry snapshot of the six initial Miller/Baker ids. Four criteria build
+the nested common-streak sets C ⊇ S ⊇ F ⊇ E — nonfounder continuity, causal succession (the real
+seams' `ToolInherited`/`InheritedToolRoleAdopted` events joined on the same born-in-simulation
+(class, heir, tool) with stage correspondence Miller↔mill↔`Vocation::Miller`+`RecipeId::Mill` and
+Baker↔oven↔`Vocation::Baker`+`RecipeId::Bake`, evaluated once per streak with the successor's
+execution inside it), staffed flow, and economically-funded births — classified highest-to-lowest
+into a seven-rung ladder whose payloads name exactly what failed (per-class `SuccessionBits`,
+ordered class sets, a `FundingBits` reason bitset). Birth funding rides a new provenance layer over
+the DH.a machinery: every settled trade records the earned/endowed gold split at event time, food
+lots gain a purchase identity (resale-overwritten) and an orthogonal
+ultimate-construction-endowment taint (construction-set, never cleared, preserved through split,
+inheritance, birth, and the market retag), and per-birth funding records join by identity only —
+with buyer/good/aggregate-quantity validated at the purchase-credit seam and every corruption
+condition a suite-failing hard guard. q=0 is capped: a costless cell that would reach rung 6/7
+returns `CostlessReplacement` and carries no economic rank.
+
+The grid is stark and uniform. At q=4 — and at q=8 AND q=3 — every seed, both arms: `NoBirth`.
+Zero qualifying births in 1600 ticks; the endowment gate never clears once, three loaves as
+absolutely as eight. At q ∈ {1,2} the demography restarts — 6–14 births per run — but
+every cell lands `BirthsButLineageExtinct` with `MissingPrivateStreaks{Miller, Baker}`: neither
+class ever holds even a PRIVATE five-window nonfounder-continuity streak, let alone a common one.
+Only at q=0, the costless-birth reachability control, does the machine turn over: 702–720 births
+per run, real inheritance→adoption→execution chains at the live seams, and on four of five seeds
+the cells reach rung 5: seed 7 reports `FunctionalSuccessionFlowAbsent { classes: [Miller, Baker] }`,
+while seeds 11, 19, and 23 report `FunctionalSuccessionFlowAbsent { classes: [Baker] }`. Continuity
+and causal succession hold for both classes, but flow gaps remain in every candidate streak. On seed 3 all
+of criteria 1–3 hold on a common streak and the cell caps at `CostlessReplacement`. The synthesis
+row is therefore `CostlessOnlyReplacement`: replacement is mechanically possible exactly when
+provisioning costs nothing, and every positive burden — down to a single loaf — is at rungs 2–3.
+The `motive_effect` payload is empty in BOTH directions: the saving arm changed no cell's rung
+anywhere on the grid, the same ~500:1 allocation loss C3R.d measured now visible as a flat
+On-column. The `nonmonotone` payload is empty. The DH.c gate is NOT authorized — no q=4 arm at
+rung 6+/7 on 5/5 seeds — so no grand-oracle rerun is licensed.
+
+The answer to the preregistered question: the wall is robust, and it is sharper than the constant.
+Producer-lineage extinction is not an artifact of the number four — the binding edge sits between
+q=0 and q=1. ANY positive provisioning transfer keeps this closed colony from reproducing its
+producer classes: at three-or-more loaves the gate never opens; at one or two the children arrive
+into households that cannot hold a lineage through even one 180-tick streak; only literal
+costlessness yields mechanical replacement, and there the economically-funded question is mooted by
+construction. The q=0 arm doubles as the oracle's reachability proof: continuity, real-seam
+succession, and (on one seed) staffed flow are all attainable states of this base, so the q>0
+verdicts are failures of the economy, not of the instrument. The reproduction frontier's next
+slice inherits a tightened target: not "lower the burden" (no relaxation short of zero passes, and
+the constant is imposed natural data) but the retained institutional option — pooled-heir
+succession — now facing a wall known to bind at the very first loaf of provisioning.
+
+Disclosures: the 60-cell suite costs ~105s wall (≈1.8s/run against the spec's ~1.6s estimate; the
+per-tick guard sampling and lot audits ride the run). The succession events' tick stamp is
+phase-coarse — within one econ tick the real seams run estate → role-choice → production in a
+fixed order, so an heir genuinely inherits, adopts, and first executes on the SAME tick; ordering
+is therefore enforced on the (tick, seam-phase) pair, with synthetic strictly-earlier-tick
+reversals still failing. The acquisition-channel lot ledger activates under `closure_active()`
+(the identical predicate DH.a's force-disable control flips) so the canonical cell needs no config
+flag: the DH.a per-tick inertness comparison and the committed ignition-withdrawal golden re-run
+UNCHANGED with the telemetry compiled in. No digest tag: the twelve arm configurations are
+pairwise distinguished by existing canonical state (q rides the demography bytes; the motive emits
+tag 31), asserted directly. Hard guards all green across the grid: conservation and money
+conservation every tick, the closure-registry invariant, zero immortal producers, zero
+intervention/support-origin stock, two-stream birth completeness with multiplicity one, drawn
+quantities summing exactly to q, and a clean purchase-credit seam on every cell. Spec impl-69,
+SPEC-READY after five xhigh rounds.
+
 ## Appendix — milestone index
 
 | Sxx | Title | Outcome |
@@ -1893,3 +1972,4 @@ repair; final RoR re-check ACCEPT with zero findings at every severity.
 | S24b | Abandonable commitment-norm adoption (institution-selection arc, slice 2) | **FINDING — abandonable adoption DISSOLVES the institution; generic welfare-imitation doesn't preserve a division-of-labor institution (a "tragedy of imitation").** Makes exactly one change to S24a: imitation is BIDIRECTIONAL/abandonable — every agent each IMITATION_PERIOD copies the better-off observed neighbour's adopts_commitment_norm bit (adopter OR non-adopter) on the same generic alive/hunger/food score (SALT excluded; score-purity invariant); abandonment inside a binding S22f term is staged in next_norm_bit + applied at expiry before renewal (no mid-term break). Composes on S24a; digest tag 16 ON-only; goldens byte-identical off. Verdict NormDiesBack 5/5 {3,7,11,19,23}: the norm dies back COMPLETELY (final adopters=0 every seed; only flips are abandonment, adopt=0 abandon=7-10). MECHANISM (Codex-confirmed): on the generic welfare score the committed CULTIVATORS are not better off than the well-fed fluid BUYERS (buyers 37-48 alive, post_bought ~15k-32k — buyers eat plentifully by buying; cultivators bear the burden), so welfare-imitation flows AWAY from the productive role — nobody imitates into the committed role. S24a's institution only spread because sticky adoption RATCHETED it; remove the ratchet and generic-welfare selection dissolves it. NOT an artifact: the random null DOES adopt + sticky_reference forms cores (false→true path live); the 3 candidate artifact-bugs checked absent. INSIGHT: generic individual-welfare imitation does not preserve a division-of-labor institution when the producers who sustain it aren't individually better off than the buyers they feed. Together S24a (sticky→over-spread/drift) + S24b (abandonable→die-back) = generic-imitation institution selection is a KNIFE-EDGE; clean positive needs role-crediting/group-payoff imitation OR explicit hysteresis = S24c. rb-lite converged CLEAN in 3 rounds (fresh S24b reviewers file); Codex review-of-results PASS-WITH-CAVEATS. Workspace 98 suites, all goldens byte-identical (29 goldens_unchanged), abandonable_norm suite passes, fmt+clippy clean. |
 | S24c | Group-payoff imitation (institution-selection arc, slice 3 — ARC-CLOSING) | **FINDING — group-welfare imitation ALSO dissolves the institution; closes the S24 local-welfare-imitation arc as a clean TRIAD of negatives.** Reuses S24b abandonable adoption but scores imitation on local GROUP welfare: an agent selects the best-off nearby group by GENERIC welfare aggregates (alive share / mean hunger-relief / mean food; SALT excluded; group score-purity forbids reading any member's commitment identity), then copies toward that group's ADOPTER-SHARE GRADIENT (adopt if the better-welfare group has materially more adopters, abandon if fewer — the welfare picks the group, the share only sets copy direction). Group membership keyed on each colonist's economic anchor (home_node, canonicalized ON-only, digest-safe). Composes on S24b; digest tag 17 ON-only; goldens byte-identical off. Verdict NormDiesBack 5/5 {3,7,11,19,23}: the mechanism genuinely fires (group_copy_events=10/seed, covariance_samples ~5000) and the group signal is present (positive_group_copy_advantages=10; welfare↔adopter covariance positive in 4/5 seeds, adverse in 1) — but every copy is an ABANDONMENT (adoptions=0, abandonments=10) because the best-welfare GROUP is BUYER-heavy (buyers 37-48 alive, post_bought 15k-32k), so the gradient selects AWAY from adoption and even the seeded adopters drop the norm. TWO rigor catches: (1) a spatial-degeneracy ARTIFACT — rounds 1-2 keyed groups on literal position; the non-hauling majority shares the exchange tile so every group collapsed to the whole population (zero group-copy events); reviewers caught it empirically; round-3 keyed on home_node → groups genuinely differ. (2) a VERDICT MISLABEL (Codex review-of-results, S23a/S24a pattern) — GroupSignalVacuous was routed whenever no ALIGNED adoption occurred, but the spec defines vacuous as "no signal observed", contradicted by positive_group_copy_advantages=10 + positive covariance; test-only classifier fix → NormDiesBack (a signal that fires and selects away is not "no signal"; a negative covariance is an adverse signal). Disclosed scope: the mechanism fires for anchored agents; a synthetic anchor for the tile-sharing majority was rejected (broke the null/unprofitable controls), so S24c tests group-payoff as far as this base's spatial structure allows. ARC CONCLUSION: local welfare-imitation — sticky (S24a) / individual-abandonable (S24b) / group (S24c) — cannot SELECT a division-of-labor institution, because its value is NON-LOCAL (realized through exchange from producers to buyers), so no local welfare observable makes the producer role look best. Future work explicitly new: market-mediated/global signals, contribution accounting, or group reproduction/selection. rb-lite converged CLEAN in 3 rounds (fresh S24c reviewers file, 2nd clean run running); Codex review-of-results PASS-WITH-CAVEATS. Workspace 99 suites / 1581 tests, all goldens byte-identical (30 goldens_unchanged), group_payoff_imitation 14/14, fmt+clippy clean. |
 | DH.a | The closed circulation (the demand-horizon frontier's first slice) | **`ClosureStructureAbsent { first_window: 160, class: Miller }` ×5 seeds — both producer classes extinct before the first classified window; the closure question cannot be posed; reproduction, not demand, is the binding constraint. A1 `IgnitionShortfall` ×5 (dose 0, `extinct=6`, identical to durable); RoR REJECT (instrumentation) → repair (verdicts byte-stable) → ACCEPT (zero findings).** Regime = durable stack MINUS the endowed non-producing surround (consumers=0, legacy lineages removed; identity-tested); all-class gold+physical provenance (the liquidation-laundering false green killed at spec time); raw mutation-seam tape, two independent reducers, seed-3 byte-match recount; pure `classify_closure` over post-bootstrap windows (the [0,160) exclusion forced by proof); per-tick observation-inertness; existing 35-cell grid byte-identical vs a golden authenticated against the rebuilt archived base. 60 runs ~95s. | impl-68 (7 xhigh rounds); tag 34 |
+| DH.b | The reproductive-burden robustness audit (the reproduction frontier's first slice) | **`CostlessOnlyReplacement` — the wall is the transfer itself, not the number four; DH.c gate NOT authorized.** 60 cells on the EXACT closed base: q∈{0,1,2,3,4,8} × saving arm {Off, Motive} × 5 seeds, (q=4, Off) config-byte-identical to `frontier_closed_circulation()`. New succession-survival oracle (W=36, M=5, start=36×ceil((last_founder_death+1)/36), founders = the generation-time registry snapshot; nested streak sets C⊇S⊇F⊇E; real-seam `ToolInherited`/`InheritedToolRoleAdopted` events with Miller↔Mill / Baker↔Bake stage correspondence; birth funding by purchase identity + construction taint over the DH.a gold split, joins by identity only). Grid: q≥3 `NoBirth` ×30 (the gate never clears once — three loaves as absolute as eight); q∈{1,2} `BirthsButLineageExtinct` / `MissingPrivateStreaks{Miller,Baker}` ×20 (6–14 births/run, no class holds even a private 5-window streak); q=0 has 702–720 births/run, rung 5 `FunctionalSuccessionFlowAbsent { classes: [Miller, Baker] }` on seed 7 and `FunctionalSuccessionFlowAbsent { classes: [Baker] }` on seeds 11/19/23, plus `CostlessReplacement` on seed 3 (continuity + causal succession + flow all reachable states of the base — the instrument is proven live). `motive_effect` empty BOTH directions (the saving arm changed no cell's rung — C3R.d's 500:1 loss as a flat column); `nonmonotone` empty. The binding edge sits between q=0 and q=1: ANY positive provisioning transfer blocks producer-class reproduction. Hard guards all green (conservation, registry, zero immortal producers, zero intervention stock, two-stream birth completeness, purchase-credit seam). ~105s/60 cells; ordering on the (tick, seam-phase) pair disclosed (same-tick inherit→adopt→execute is real); acquisition-lot ledger activated under `closure_active()` so the canonical cell needs no config flag; DH.a inertness + ignition golden re-run unchanged with the telemetry compiled in. | impl-69 (5 xhigh rounds); NO digest tag (12 arms pairwise distinguished by canonical state) |

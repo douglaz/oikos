@@ -908,11 +908,12 @@ impl ClosureLedger {
         self.gold_credit(to, endowed, false);
     }
 
-    /// Rule 3: debit a buyer's purchase earned-first, then endowed. Returns the ENDOWED portion —
-    /// the endowed-purchase-debit that feeds CC2 (liquidation-funded demand).
-    fn gold_purchase_debit(&mut self, buyer: AgentId, paid: Gold) -> Gold {
-        let (_earned, endowed) = self.gold_debit(buyer, paid);
-        endowed
+    /// Rule 3: debit a buyer's purchase earned-first, then endowed. Returns the actual
+    /// `(earned_taken, endowed_taken)` split — the endowed portion feeds CC2
+    /// (liquidation-funded demand), and DH.b's settled-trade record captures both takes at
+    /// event time (R4-1).
+    fn gold_purchase_debit(&mut self, buyer: AgentId, paid: Gold) -> (Gold, Gold) {
+        self.gold_debit(buyer, paid)
     }
 
     /// Rule 2: credit a seller's sale proceeds split by the sale's physical decomposition — the
@@ -1246,12 +1247,23 @@ impl Settlement {
             // Gold: buyer debits earned-first (endowed portion feeds CC2); seller proceeds split by
             // the physical decomposition (endowed-origin proceeds → endowed gold, else → earned).
             let paid = price.mul_qty(qty).unwrap_or(Gold::ZERO);
-            let endowed_paid = self.closure.gold_purchase_debit(buyer, paid);
+            let (earned_paid, endowed_paid) = self.closure.gold_purchase_debit(buyer, paid);
             if let Some(bc) = self.closure.class_of(buyer) {
                 let slot = &mut self.closure.cur.endowed_purchase_debits[bc.index()];
                 *slot = slot.saturating_add(endowed_paid.0);
             }
             self.closure.gold_sale_credit(seller, price, split);
+            // DH.b (impl-69, R4-1): the settled-trade record, taken from the gold split AT
+            // EVENT TIME. Downstream birth-funding joins are by `trade_id` (identity) ONLY.
+            self.burden.trades.push(super::burden::BurdenTradeRecord {
+                trade_id,
+                buyer,
+                good,
+                quantity: qty,
+                earned_paid: earned_paid.0,
+                endowed_paid: endowed_paid.0,
+                positive_consideration: paid.0 > 0,
+            });
         }
         self.closure_reconcile("post-market-batch");
     }
@@ -1587,7 +1599,7 @@ mod reducer_tests {
         let mut l = ClosureLedger::default();
         l.gold_credit(a, Gold(10), true);
         l.gold_credit(a, Gold(5), false);
-        assert_eq!(l.gold_purchase_debit(a, Gold(4)), Gold(0));
+        assert_eq!(l.gold_purchase_debit(a, Gold(4)), (Gold(4), Gold(0)));
         assert_eq!(
             l.gold[&a],
             GoldBuckets {
@@ -1599,7 +1611,7 @@ mod reducer_tests {
         let mut l = ClosureLedger::default();
         l.gold_credit(a, Gold(10), true);
         l.gold_credit(a, Gold(5), false);
-        assert_eq!(l.gold_purchase_debit(a, Gold(10)), Gold(0));
+        assert_eq!(l.gold_purchase_debit(a, Gold(10)), (Gold(10), Gold(0)));
         assert_eq!(
             l.gold[&a],
             GoldBuckets {
@@ -1611,7 +1623,7 @@ mod reducer_tests {
         let mut l = ClosureLedger::default();
         l.gold_credit(a, Gold(10), true);
         l.gold_credit(a, Gold(5), false);
-        assert_eq!(l.gold_purchase_debit(a, Gold(12)), Gold(2));
+        assert_eq!(l.gold_purchase_debit(a, Gold(12)), (Gold(10), Gold(2)));
         assert_eq!(
             l.gold[&a],
             GoldBuckets {

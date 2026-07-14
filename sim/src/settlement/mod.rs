@@ -2690,6 +2690,8 @@ pub struct SettlementConfig {
     pub closed_circulation: bool,
 }
 
+pub mod burden;
+
 pub mod closure;
 
 mod in_kind_wage;
@@ -7804,6 +7806,11 @@ pub struct Settlement {
     /// maintained only when `closed_circulation` is on. Pure observation — runtime-only, never
     /// serialized in `canonical_bytes`, and provably behaviour-inert (the DH.a inertness test).
     closure: closure::ClosureLedger,
+    /// DH.b (impl-69): the reproductive-burden audit telemetry (succession events, per-birth
+    /// funding records, settled-trade records). Maintained only when [`Self::closure_active`]
+    /// holds — the same predicate the DH.a force-disable control flips — so it is inert on every
+    /// non-closed run. Runtime-only, never serialized in `canonical_bytes`.
+    burden: burden::BurdenTelemetry,
 }
 
 /// The G8c-3 tax-overlay runtime (held on a finance [`Settlement`]). Reused econ M21
@@ -9164,6 +9171,17 @@ struct FoodLot {
     channel: FoodChannel,
     qty: u64,
     intervention: bool,
+    /// DH.b (impl-69): the **purchase identity** — the settled spot-trade id whose credit created
+    /// this `Bought` lot. `None` off the closed marker (so every existing ledger run coalesces
+    /// byte-identically) and for every non-`Bought` construction channel. Lifecycle (R2-7):
+    /// splitting, inheritance, and birth transfer PRESERVE it; a resale OVERWRITES it with the
+    /// new trade id; coalescing requires equality.
+    identity: Option<u64>,
+    /// DH.b (impl-69): the orthogonal **ultimate-construction-endowment taint** — set at
+    /// construction for `SeededMinted` lots (the closed base's construction stock) and NEVER
+    /// cleared; preserved through every transfer INCLUDING the market-sale retag. `false` off
+    /// the closed marker. Coalescing requires equality.
+    taint: bool,
 }
 
 /// S21d.1: the **acquisition-channel ledger** — a sim-side, runtime-only per-agent FIFO balance
@@ -9214,6 +9232,16 @@ struct AcquisitionLedger {
     /// cohort (e.g. non-owners) actually ate, instead of by the whole colony's consumption.
     /// Never digested.
     consumed_food_by_agent: BTreeMap<AgentId, u64>,
+    /// DH.b (impl-69): whether the burden provenance extension (purchase identity +
+    /// construction taint on every lot) is maintained — set at ledger init from
+    /// `closure_active()`, so DH.a's force-disable control governs it. `false` everywhere else:
+    /// every lot then carries `identity: None, taint: false` and the ledger behaves
+    /// byte-identically to the landed one.
+    burden_provenance: bool,
+    /// DH.b (impl-69): live channel violations under the burden extension (a `Foraged`/`Commons`
+    /// credit — hard-asserted unreachable on the closed base). The integration suite hard-fails
+    /// on any entry; the runtime only records.
+    burden_violations: Vec<String>,
 }
 
 impl AcquisitionLedger {
@@ -9233,10 +9261,22 @@ impl AcquisitionLedger {
         if qty == 0 {
             return;
         }
+        // DH.b (impl-69): construction taint — a fresh `SeededMinted` lot is construction stock
+        // on the closed base; `Foraged`/`Commons` are unreachable there (recorded as a violation
+        // the live suite hard-fails on). Both inert off the burden extension.
+        let taint = self.burden_provenance && channel == FoodChannel::SeededMinted;
+        if self.burden_provenance && matches!(channel, FoodChannel::Foraged | FoodChannel::Commons)
+        {
+            self.burden_violations.push(format!(
+                "unreachable construction channel {channel:?} credited to {agent:?}"
+            ));
+        }
         self.lots.entry(agent).or_default().push_back(FoodLot {
             channel,
             qty,
             intervention,
+            identity: None,
+            taint,
         });
         self.credited_by_channel[channel.index()] += qty;
         // S22a: track per-agent cumulative bought food (market purchases) for the rolling
@@ -9263,10 +9303,10 @@ impl AcquisitionLedger {
                 break;
             };
             let take = front.qty.min(qty);
+            // DH.b: a split preserves BOTH the purchase identity and the taint (R2-7).
             drawn.push(FoodLot {
-                channel: front.channel,
                 qty: take,
-                intervention: front.intervention,
+                ..*front
             });
             front.qty -= take;
             qty -= take;
@@ -9339,6 +9379,33 @@ impl AcquisitionLedger {
         to: AgentId,
         qty: u64,
     ) -> [u64; FoodChannel::COUNT] {
+        self.transfer_as_bought_identified(from, to, qty, None).0
+    }
+
+    /// DH.b (impl-69): [`Self::transfer_as_bought`] with the resale rule of the R2-7 lifecycle
+    /// table — every fresh `Bought` lot's purchase identity is OVERWRITTEN with the settling
+    /// trade's id while its taint (and intervention origin) is PRESERVED. Coalescing now
+    /// requires the FULL equality set: channel (uniformly `Bought` here), intervention, taint,
+    /// and identity (constant per call). With `identity: None` and all-false taints (every
+    /// non-closed run) the run key degrades to the landed intervention-only rule, so this is
+    /// byte-behaviour-identical off the extension. Also returns the fresh `Bought` total — the
+    /// purchase-credit-seam aggregate the R4-1 validation compares against the trade record.
+    fn transfer_as_bought_identified(
+        &mut self,
+        from: AgentId,
+        to: AgentId,
+        qty: u64,
+        identity: Option<u64>,
+    ) -> ([u64; FoodChannel::COUNT], u64) {
+        // DH.b: under the extension EVERY fresh `Bought` lot must carry a purchase identity —
+        // an identity-less credit (e.g. a barter bread trade, unreachable on the closed base)
+        // is instrumentation corruption, recorded at ITS creation seam so it cannot be eaten
+        // away before an audit sees it. The live suite hard-fails on the record.
+        if self.burden_provenance && identity.is_none() && qty > 0 {
+            self.burden_violations.push(format!(
+                "Bought credit without purchase identity ({from:?} → {to:?}, qty {qty})"
+            ));
+        }
         let drawn = self.draw_lots(from, qty);
         let mut breakdown = [0u64; FoodChannel::COUNT];
         let mut run: Vec<FoodLot> = Vec::new();
@@ -9346,11 +9413,15 @@ impl AcquisitionLedger {
             breakdown[lot.channel.index()] += lot.qty;
             self.other_outflow_by_channel[lot.channel.index()] += lot.qty;
             match run.last_mut() {
-                Some(last) if last.intervention == lot.intervention => last.qty += lot.qty,
+                Some(last) if last.intervention == lot.intervention && last.taint == lot.taint => {
+                    last.qty += lot.qty
+                }
                 _ => run.push(FoodLot {
                     channel: FoodChannel::Bought,
                     qty: lot.qty,
                     intervention: lot.intervention,
+                    identity,
+                    taint: lot.taint,
                 }),
             }
         }
@@ -9360,7 +9431,7 @@ impl AcquisitionLedger {
             self.credited_by_channel[FoodChannel::Bought.index()] += total;
             *self.bought_credited_by_agent.entry(to).or_insert(0) += total;
         }
-        breakdown
+        (breakdown, total)
     }
 
     /// An ORIGIN-PRESERVING transfer (birth endowment / estate→heir): draw FIFO from `from` and
@@ -9419,11 +9490,7 @@ impl AcquisitionLedger {
             while let Some(mut lot) = queue.pop_front() {
                 if lot.channel == FoodChannel::SelfProduced && remaining > 0 {
                     let take = lot.qty.min(remaining);
-                    moved.push_back(FoodLot {
-                        channel: lot.channel,
-                        qty: take,
-                        intervention: lot.intervention,
-                    });
+                    moved.push_back(FoodLot { qty: take, ..lot });
                     lot.qty -= take;
                     remaining -= take;
                 }
@@ -9466,11 +9533,7 @@ impl AcquisitionLedger {
                         break;
                     }
                     let take = back.qty.min(remaining);
-                    moved.push(FoodLot {
-                        channel: back.channel,
-                        qty: take,
-                        intervention: back.intervention,
-                    });
+                    moved.push(FoodLot { qty: take, ..*back });
                     back.qty -= take;
                     remaining -= take;
                     back.qty == 0
@@ -11251,6 +11314,7 @@ impl Settlement {
             // non-closed settlement is byte-identical.
             closed_circulation: config.closed_circulation,
             closure: closure::ClosureLedger::default(),
+            burden: burden::BurdenTelemetry::default(),
         };
         // S22e: endow a minority of lineage households with a plow at generation (a
         // conservation-safe INITIAL endowment, no earning required). A no-op off the gate, so
@@ -11793,6 +11857,7 @@ impl Settlement {
             // DH.a (impl-68): a finance settlement is never closed-circulation.
             closed_circulation: false,
             closure: closure::ClosureLedger::default(),
+            burden: burden::BurdenTelemetry::default(),
         }
     }
 
@@ -12213,6 +12278,10 @@ impl Settlement {
         // buckets post-market-batch.
         if self.closure_active() {
             self.closure_observe_market(provenance_spot_trades_start);
+            // DH.b (impl-69, R4-1): validate this tick's purchase-credit-seam facts against the
+            // settled-trade records the observation above just recorded. Mismatches are seam
+            // violations the integration suite hard-fails on.
+            self.burden_validate_purchase_credits();
         }
         // §5 money/escrow invariant, asserted each tick the wage escrow can hold funds: total
         // gold (agents + commons + land-fee pool + wage escrow) after the market equals the
@@ -14843,6 +14912,26 @@ impl Settlement {
                         self.producer_tool_inheritances =
                             self.producer_tool_inheritances.saturating_add(placed);
                         self.producer_tool_inheritors.insert((heir, good));
+                        // DH.b (impl-69): the inheritance-identity succession event at the real
+                        // estate seam — a producer subject's tool actually PLACED with a living
+                        // heir. The class is the heir's fixed registry class (the deceased's is
+                        // the same household class).
+                        if self.closure_active() {
+                            if let Some(class) = self.closure_class_of(heir) {
+                                debug_assert_eq!(
+                                    self.closure_class_of(id),
+                                    Some(class),
+                                    "heir and deceased share the fixed household class"
+                                );
+                                self.burden.inheritances.push(burden::BurdenToolInherited {
+                                    tick: self.econ_tick,
+                                    class,
+                                    deceased: id,
+                                    heir,
+                                    tool: good,
+                                });
+                            }
+                        }
                     }
                     // S22e (runtime diagnostic): a plow that lands with a LIVING heir is a real
                     // inheritance transfer (conserved, never a mint — the tool-stock total is
@@ -15998,6 +16087,7 @@ impl Settlement {
             // S21d.1: the same conserved bread endowment transfer for the acquisition ledger —
             // origin preserved (an inherited bought loaf stays bought). A no-op off the bread
             // endowment / off the ledger.
+            let mut burden_funding_lots: Vec<burden::BurdenLot> = Vec::new();
             if self.acquisition_ledger_active() && Some(staple) == self.acquisition_food_good() {
                 let drawn = self.acquisition.transfer_preserve(
                     parent_id,
@@ -16014,6 +16104,25 @@ impl Settlement {
                             self.producer_birth_funded_intervention += lot.qty;
                         }
                     }
+                }
+                if self.closure_active() {
+                    burden_funding_lots = drawn.iter().map(burden::burden_lot_of).collect();
+                }
+            }
+            // DH.b (impl-69): stream (b) — the per-birth funding record, emitted AFTER the exact
+            // conserved lot transfer above (its own emission site, distinct from the
+            // BirthOccurred stream below — R2-5). The class is the household's fixed closure
+            // class; every household on the closed base carries one.
+            if self.closure_active() {
+                if let Some(&class) = self.closure.household_class.get(&h) {
+                    self.burden.funding.push(burden::BurdenBirthFunding {
+                        tick: self.econ_tick,
+                        class,
+                        parent: parent_id,
+                        child: child_id,
+                        q: demo.child_food_endowment,
+                        lots: burden_funding_lots,
+                    });
                 }
             }
             if gold_endow > 0 {
@@ -16087,6 +16196,24 @@ impl Settlement {
                 demo.child_food_endowment,
                 Gold(gold_endow),
             );
+            // DH.b (impl-69): stream (a) — `BirthOccurred` at successful newborn INSERTION into a
+            // fixed Miller/Baker closure class (the qualifying-birth definition; `birth_id` = the
+            // child `AgentId`). Read back through the registry the note above just updated — a
+            // derivation independent of the funding record's `household_class` lookup, so the
+            // completeness equality between the two streams is not tautological (R2-5).
+            if self.closure_active() {
+                if let Some(
+                    class @ (closure::ClosureClass::Miller | closure::ClosureClass::Baker),
+                ) = self.closure_class_of(child_id)
+                {
+                    self.burden.births.push(burden::BurdenBirthOccurred {
+                        tick: self.econ_tick,
+                        class,
+                        parent: parent_id,
+                        child: child_id,
+                    });
+                }
+            }
             // S13: a spatial-households newborn gets a world agent at its EXACT econ id
             // (a reused arena `slot#gen` after a death recycled the slot), so
             // world_id == econ_id holds mid-run too. The slot's prior world occupant was
@@ -16428,6 +16555,18 @@ impl Settlement {
                                 output_qty: out_qty,
                             },
                         );
+                        // DH.b (impl-69): the stage-execution record (Mill/Bake only) — the
+                        // successor-execution and staffed-flow evidence, recorded at the same
+                        // real application seam with the ACTUAL `RecipeId` (R4-4). The same
+                        // partial-borrow discipline: a direct field push, never a `&mut self`
+                        // method.
+                        if matches!(recipe_id, RecipeId::Mill | RecipeId::Bake) {
+                            self.burden.executions.push(burden::BurdenStageExecution {
+                                tick: closure_tick,
+                                agent: id,
+                                recipe: recipe_id,
+                            });
+                        }
                     }
                 }
                 // Conserved good INPUTS to any recipe — research included — are accounted
@@ -18464,8 +18603,59 @@ impl Settlement {
                     if inherited_tool && still_holds_tool {
                         self.heir_tool_adoptions = self.heir_tool_adoptions.saturating_add(1);
                     }
+                    // DH.b (impl-69): the re-adoption succession event at the real role-choice
+                    // seam — an heir with an inheritance record for the ADOPTED role's tool
+                    // flips into the producer vocation. Possession at the adoption instant is
+                    // recorded, not assumed (the classifier's possession bit reads it).
+                    if self.closure_active() && inherited_tool {
+                        let tool = match next {
+                            Vocation::Miller => mill_good,
+                            _ => oven_good,
+                        };
+                        if let Some(class) = self.closure_class_of(id) {
+                            self.burden.adoptions.push(burden::BurdenRoleAdopted {
+                                tick: self.econ_tick,
+                                class,
+                                heir: id,
+                                tool,
+                                role: next,
+                                holds_tool: still_holds_tool,
+                            });
+                        }
+                    }
                 }
+                // R1-8 (DH.b): a vocation transition is a role RELABEL only — it must preserve
+                // the colonist's identity row (age, lifespan, seed, parent, household) and its
+                // fixed closure class, and an adoption never creates or refreshes a lifespan.
+                #[cfg(debug_assertions)]
+                let identity_before = {
+                    let c = &self.colonists[slot];
+                    (
+                        c.age,
+                        c.lifespan,
+                        c.seed,
+                        c.parent,
+                        c.household,
+                        self.closure_class_of(id),
+                    )
+                };
                 self.colonists[slot].vocation = next;
+                #[cfg(debug_assertions)]
+                {
+                    let c = &self.colonists[slot];
+                    debug_assert_eq!(
+                        identity_before,
+                        (
+                            c.age,
+                            c.lifespan,
+                            c.seed,
+                            c.parent,
+                            c.household,
+                            self.closure_class_of(id),
+                        ),
+                        "a vocation transition preserves identity, lifespan, and class (R1-8)"
+                    );
+                }
                 changed = true;
             }
         }
@@ -21903,10 +22093,19 @@ impl Settlement {
     /// flag is on AND the chain carries a bread good to track. Off (every existing config),
     /// the ledger stays the empty default, no hook fires, and the run is byte-identical
     /// (the ledger is never digested regardless).
+    ///
+    /// DH.b (impl-69): the ledger ALSO runs under `closure_active()` — the birth-funding
+    /// telemetry needs the lot lifecycle on the exact closed base without touching the cell
+    /// config (§5.6b pins the (q=4, Off) cell byte-identical to
+    /// `frontier_closed_circulation()`, so the chain flag cannot be set there). Gating through
+    /// `closure_active()` keeps DH.a's force-disable control governing it, and the ledger is
+    /// pure observation, so the DH.a inertness comparison still holds.
     fn acquisition_ledger_active(&self) -> bool {
-        self.chain
+        (self
+            .chain
             .as_ref()
             .is_some_and(|chain| chain.acquisition_ledger)
+            || self.closure_active())
             && self.provenance_bread_good().is_some()
     }
 
@@ -22509,6 +22708,10 @@ impl Settlement {
         let Some(food) = self.acquisition_food_good() else {
             return;
         };
+        // DH.b (impl-69): latch the burden provenance extension (purchase identity +
+        // construction taint) with the same predicate the DH.a force-disable control flips,
+        // BEFORE the seed sweep below so the swept `SeededMinted` lots carry construction taint.
+        self.acquisition.burden_provenance = self.closure_active();
         let endow = self
             .chain
             .as_ref()
@@ -22592,48 +22795,72 @@ impl Settlement {
         // is the money good): the S21h.0 hard invariant tallies the `SeededMinted` share of
         // exactly those sales.
         let money_is_salt = self.society.current_money_good() == Some(SALT);
-        let mut bread_trades: Vec<(AgentId, AgentId, u64, bool)> = self.society.barter_trades
-            [barter_trades_start..]
-            .iter()
-            .filter_map(|trade| {
-                if trade.a_gives == food {
-                    Some((
-                        trade.a,
-                        trade.b,
-                        u64::from(trade.qty),
-                        trade.b_gives == SALT,
-                    ))
-                } else if trade.b_gives == food {
-                    Some((
-                        trade.b,
-                        trade.a,
-                        u64::from(trade.qty),
-                        trade.a_gives == SALT,
-                    ))
-                } else {
-                    None
-                }
-            })
-            .collect();
+        // DH.b (impl-69): under the closed marker every settled SPOT bread trade stamps its
+        // fresh `Bought` lots with its globally-derivable trade id (the index into
+        // `society.trades` — the same id the DH.a gold split records). A barter bread trade has
+        // no spot identity (`None`) — unreachable on the closed base (no barter overlay), and if
+        // one ever fired there the identity-less `Bought` lot would fail the live lot audit.
+        let identity_on = self.closure_active();
+        let mut bread_trades: Vec<(AgentId, AgentId, u64, bool, Option<u64>)> =
+            self.society.barter_trades[barter_trades_start..]
+                .iter()
+                .filter_map(|trade| {
+                    if trade.a_gives == food {
+                        Some((
+                            trade.a,
+                            trade.b,
+                            u64::from(trade.qty),
+                            trade.b_gives == SALT,
+                            None,
+                        ))
+                    } else if trade.b_gives == food {
+                        Some((
+                            trade.b,
+                            trade.a,
+                            u64::from(trade.qty),
+                            trade.a_gives == SALT,
+                            None,
+                        ))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
         bread_trades.extend(
             self.society.trades[spot_trades_start..]
                 .iter()
-                .filter_map(|trade| {
+                .enumerate()
+                .filter_map(|(offset, trade)| {
                     (trade.good == food).then_some((
                         trade.seller,
                         trade.buyer,
                         u64::from(trade.qty),
                         money_is_salt,
+                        identity_on.then_some(spot_trades_start as u64 + offset as u64),
                     ))
                 }),
         );
         let mut producer_buyers: BTreeSet<AgentId> = BTreeSet::new();
-        for (seller, buyer, qty, received_salt) in bread_trades {
-            let drawn = self.acquisition.transfer_as_bought(seller, buyer, qty);
+        for (seller, buyer, qty, received_salt, identity) in bread_trades {
+            let (drawn, fresh_bought) = self
+                .acquisition
+                .transfer_as_bought_identified(seller, buyer, qty, identity);
             if received_salt {
                 self.seeded_minted_bread_sold_for_salt = self
                     .seeded_minted_bread_sold_for_salt
                     .saturating_add(drawn[FoodChannel::SeededMinted.index()]);
+            }
+            // DH.b (R4-1): capture the purchase-credit-seam fact for the same-tick validation
+            // against the settled-trade record (buyer / good / aggregate quantity).
+            if let Some(trade_id) = identity {
+                self.burden
+                    .pending_purchase_credits
+                    .push(burden::PendingPurchaseCredit {
+                        trade_id,
+                        buyer,
+                        good: food,
+                        credited: fresh_bought,
+                    });
             }
             if producers.contains(&buyer) {
                 producer_buyers.insert(buyer);
@@ -35317,11 +35544,15 @@ mod tests {
                     channel: FoodChannel::SeededMinted,
                     qty: 3,
                     intervention: true,
+                    identity: None,
+                    taint: false,
                 },
                 FoodLot {
                     channel: FoodChannel::Bought,
                     qty: 1,
                     intervention: false,
+                    identity: None,
+                    taint: false,
                 },
             ],
             "the drawn breakdown preserves FIFO order and each lot's origin flag"
@@ -35361,11 +35592,15 @@ mod tests {
                     channel: FoodChannel::Bought,
                     qty: 4,
                     intervention: false,
+                    identity: None,
+                    taint: false,
                 },
                 FoodLot {
                     channel: FoodChannel::Bought,
                     qty: 3,
                     intervention: true,
+                    identity: None,
+                    taint: false,
                 },
             ])),
             "the retag preserves FIFO order + the origin flag, coalescing only adjacent equal-origin"
@@ -36394,6 +36629,8 @@ mod tests {
                 channel: FoodChannel::Bought,
                 qty: 4,
                 intervention: false,
+                identity: None,
+                taint: false,
             }]))
         );
     }
