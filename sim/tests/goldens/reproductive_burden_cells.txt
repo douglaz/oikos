@@ -1,0 +1,60 @@
+audit_cell|seed=3|q=0|arm=Off|births=707|rung=0|verdict=CostlessReplacement
+audit_cell|seed=3|q=0|arm=On|births=707|rung=0|verdict=CostlessReplacement
+audit_cell|seed=3|q=1|arm=Off|births=10|rung=3|verdict=BirthsButLineageExtinct { detail: MissingPrivateStreaks { classes: [Miller, Baker] } }
+audit_cell|seed=3|q=1|arm=On|births=10|rung=3|verdict=BirthsButLineageExtinct { detail: MissingPrivateStreaks { classes: [Miller, Baker] } }
+audit_cell|seed=3|q=2|arm=Off|births=6|rung=3|verdict=BirthsButLineageExtinct { detail: MissingPrivateStreaks { classes: [Miller, Baker] } }
+audit_cell|seed=3|q=2|arm=On|births=6|rung=3|verdict=BirthsButLineageExtinct { detail: MissingPrivateStreaks { classes: [Miller, Baker] } }
+audit_cell|seed=3|q=3|arm=Off|births=0|rung=2|verdict=NoBirth { q: 3 }
+audit_cell|seed=3|q=3|arm=On|births=0|rung=2|verdict=NoBirth { q: 3 }
+audit_cell|seed=3|q=4|arm=Off|births=0|rung=2|verdict=NoBirth { q: 4 }
+audit_cell|seed=3|q=4|arm=On|births=0|rung=2|verdict=NoBirth { q: 4 }
+audit_cell|seed=3|q=8|arm=Off|births=0|rung=2|verdict=NoBirth { q: 8 }
+audit_cell|seed=3|q=8|arm=On|births=0|rung=2|verdict=NoBirth { q: 8 }
+audit_cell|seed=7|q=0|arm=Off|births=705|rung=5|verdict=FunctionalSuccessionFlowAbsent { classes: [Miller, Baker] }
+audit_cell|seed=7|q=0|arm=On|births=705|rung=5|verdict=FunctionalSuccessionFlowAbsent { classes: [Miller, Baker] }
+audit_cell|seed=7|q=1|arm=Off|births=14|rung=3|verdict=BirthsButLineageExtinct { detail: MissingPrivateStreaks { classes: [Miller, Baker] } }
+audit_cell|seed=7|q=1|arm=On|births=14|rung=3|verdict=BirthsButLineageExtinct { detail: MissingPrivateStreaks { classes: [Miller, Baker] } }
+audit_cell|seed=7|q=2|arm=Off|births=6|rung=3|verdict=BirthsButLineageExtinct { detail: MissingPrivateStreaks { classes: [Miller, Baker] } }
+audit_cell|seed=7|q=2|arm=On|births=6|rung=3|verdict=BirthsButLineageExtinct { detail: MissingPrivateStreaks { classes: [Miller, Baker] } }
+audit_cell|seed=7|q=3|arm=Off|births=0|rung=2|verdict=NoBirth { q: 3 }
+audit_cell|seed=7|q=3|arm=On|births=0|rung=2|verdict=NoBirth { q: 3 }
+audit_cell|seed=7|q=4|arm=Off|births=0|rung=2|verdict=NoBirth { q: 4 }
+audit_cell|seed=7|q=4|arm=On|births=0|rung=2|verdict=NoBirth { q: 4 }
+audit_cell|seed=7|q=8|arm=Off|births=0|rung=2|verdict=NoBirth { q: 8 }
+audit_cell|seed=7|q=8|arm=On|births=0|rung=2|verdict=NoBirth { q: 8 }
+audit_cell|seed=11|q=0|arm=Off|births=702|rung=5|verdict=FunctionalSuccessionFlowAbsent { classes: [Baker] }
+audit_cell|seed=11|q=0|arm=On|births=702|rung=5|verdict=FunctionalSuccessionFlowAbsent { classes: [Baker] }
+audit_cell|seed=11|q=1|arm=Off|births=13|rung=3|verdict=BirthsButLineageExtinct { detail: MissingPrivateStreaks { classes: [Miller, Baker] } }
+audit_cell|seed=11|q=1|arm=On|births=13|rung=3|verdict=BirthsButLineageExtinct { detail: MissingPrivateStreaks { classes: [Miller, Baker] } }
+audit_cell|seed=11|q=2|arm=Off|births=6|rung=3|verdict=BirthsButLineageExtinct { detail: MissingPrivateStreaks { classes: [Miller, Baker] } }
+audit_cell|seed=11|q=2|arm=On|births=6|rung=3|verdict=BirthsButLineageExtinct { detail: MissingPrivateStreaks { classes: [Miller, Baker] } }
+audit_cell|seed=11|q=3|arm=Off|births=0|rung=2|verdict=NoBirth { q: 3 }
+audit_cell|seed=11|q=3|arm=On|births=0|rung=2|verdict=NoBirth { q: 3 }
+audit_cell|seed=11|q=4|arm=Off|births=0|rung=2|verdict=NoBirth { q: 4 }
+audit_cell|seed=11|q=4|arm=On|births=0|rung=2|verdict=NoBirth { q: 4 }
+audit_cell|seed=11|q=8|arm=Off|births=0|rung=2|verdict=NoBirth { q: 8 }
+audit_cell|seed=11|q=8|arm=On|births=0|rung=2|verdict=NoBirth { q: 8 }
+audit_cell|seed=19|q=0|arm=Off|births=720|rung=5|verdict=FunctionalSuccessionFlowAbsent { classes: [Baker] }
+audit_cell|seed=19|q=0|arm=On|births=720|rung=5|verdict=FunctionalSuccessionFlowAbsent { classes: [Baker] }
+audit_cell|seed=19|q=1|arm=Off|births=13|rung=3|verdict=BirthsButLineageExtinct { detail: MissingPrivateStreaks { classes: [Miller, Baker] } }
+audit_cell|seed=19|q=1|arm=On|births=12|rung=3|verdict=BirthsButLineageExtinct { detail: MissingPrivateStreaks { classes: [Miller, Baker] } }
+audit_cell|seed=19|q=2|arm=Off|births=6|rung=3|verdict=BirthsButLineageExtinct { detail: MissingPrivateStreaks { classes: [Miller, Baker] } }
+audit_cell|seed=19|q=2|arm=On|births=6|rung=3|verdict=BirthsButLineageExtinct { detail: MissingPrivateStreaks { classes: [Miller, Baker] } }
+audit_cell|seed=19|q=3|arm=Off|births=0|rung=2|verdict=NoBirth { q: 3 }
+audit_cell|seed=19|q=3|arm=On|births=0|rung=2|verdict=NoBirth { q: 3 }
+audit_cell|seed=19|q=4|arm=Off|births=0|rung=2|verdict=NoBirth { q: 4 }
+audit_cell|seed=19|q=4|arm=On|births=0|rung=2|verdict=NoBirth { q: 4 }
+audit_cell|seed=19|q=8|arm=Off|births=0|rung=2|verdict=NoBirth { q: 8 }
+audit_cell|seed=19|q=8|arm=On|births=0|rung=2|verdict=NoBirth { q: 8 }
+audit_cell|seed=23|q=0|arm=Off|births=717|rung=5|verdict=FunctionalSuccessionFlowAbsent { classes: [Baker] }
+audit_cell|seed=23|q=0|arm=On|births=717|rung=5|verdict=FunctionalSuccessionFlowAbsent { classes: [Baker] }
+audit_cell|seed=23|q=1|arm=Off|births=11|rung=3|verdict=BirthsButLineageExtinct { detail: MissingPrivateStreaks { classes: [Miller, Baker] } }
+audit_cell|seed=23|q=1|arm=On|births=8|rung=3|verdict=BirthsButLineageExtinct { detail: MissingPrivateStreaks { classes: [Miller, Baker] } }
+audit_cell|seed=23|q=2|arm=Off|births=6|rung=3|verdict=BirthsButLineageExtinct { detail: MissingPrivateStreaks { classes: [Miller, Baker] } }
+audit_cell|seed=23|q=2|arm=On|births=6|rung=3|verdict=BirthsButLineageExtinct { detail: MissingPrivateStreaks { classes: [Miller, Baker] } }
+audit_cell|seed=23|q=3|arm=Off|births=0|rung=2|verdict=NoBirth { q: 3 }
+audit_cell|seed=23|q=3|arm=On|births=0|rung=2|verdict=NoBirth { q: 3 }
+audit_cell|seed=23|q=4|arm=Off|births=0|rung=2|verdict=NoBirth { q: 4 }
+audit_cell|seed=23|q=4|arm=On|births=0|rung=2|verdict=NoBirth { q: 4 }
+audit_cell|seed=23|q=8|arm=Off|births=0|rung=2|verdict=NoBirth { q: 8 }
+audit_cell|seed=23|q=8|arm=On|births=0|rung=2|verdict=NoBirth { q: 8 }

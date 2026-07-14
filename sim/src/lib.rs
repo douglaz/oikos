@@ -100,6 +100,25 @@ pub use settlement::closure::{
     ClosureVerdict, ClosureWindow, CLOSURE_GRID_WINDOW,
 };
 
+/// DH.b (impl-69): the reproductive-burden audit vocabulary — the pinned grid constants, the
+/// telemetry event records, the pure per-cell succession-survival classifier with its nested
+/// streak sets and exhaustive payloads, and the pure precedence-ordered cross-grid synthesis.
+/// Re-exported so the `reproductive_burden` suite names them through `sim` alone. See
+/// [`settlement::burden`].
+pub use settlement::burden::{
+    build_burden_windows, burden_dh_c_gate, burden_motive_effect, burden_nonmonotone_pairs,
+    burden_start_tick, classify_birth_funding, classify_burden_cell, synthesize_burden_grid,
+    BurdenBirthFunding, BurdenBirthObs, BurdenBirthOccurred, BurdenCellInput, BurdenCellResult,
+    BurdenCellVerdict, BurdenChannel, BurdenLineageExtinctDetail, BurdenLot, BurdenMotiveEffect,
+    BurdenRoleAdopted, BurdenSavingArm, BurdenStageExecution, BurdenSynthesis, BurdenToolInherited,
+    BurdenTradeRecord, BurdenWindowObs, FundingBits, SuccessionBits, BURDEN_PRODUCER_CLASSES,
+    BURDEN_QS, BURDEN_RUN_TICKS, BURDEN_SEEDS, BURDEN_STREAK_WINDOWS, BURDEN_WINDOW_TICKS,
+};
+
+/// DH.b: the stage-recipe id the succession classifier names exactly (R4-4 — `RecipeId::Mill` /
+/// `RecipeId::Bake`), re-exported so the suite depends on `sim` alone.
+pub use econ::project::RecipeId;
+
 pub use content::ContentSet;
 pub use demography::{DemographyConfig, HouseholdSpec};
 pub use era::{
