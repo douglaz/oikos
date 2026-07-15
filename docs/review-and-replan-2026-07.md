@@ -275,6 +275,26 @@ Falsifiable bar: production survives the death of producers.
 >   for the next consultation: pooled-heir posed on a q=1 sensitivity base (explicitly a sensitivity-regime
 >   institution slice, not canonical); an income-vs-burden structural slice (why does even one loaf never
 >   accumulate?); or article/report consolidation of the DH arc first. Scoping pending user.**
+>
+>   **DH.b CONSOLIDATED + DH.b-obs LANDED AND ACCEPTED (impl-70; spec 6110d44 SPEC-READY after 4 xhigh
+>   rounds; branch feat/birth-gate-obs-impl-rb = b670e70 + repair; RoR REJECT (test rigor, science
+>   reproduced) → repair (decomposition byte-stable) → ACCEPT zero findings, SHA-pinned; master merge
+>   5fa4ee6).** Consolidation done first (user choice): DH.b absorbed into report §34 + article (3
+>   verification rounds). Then the income-vs-burden diagnostic (DH.b-obs, report §35) answered it by pure
+>   observation on the DH.b grid: **the reproduction wall is INCOME/PRODUCTION STARVATION, not atomicity.
+>   Of 4,023 endowment-gate failures, 3,920 are `NeverReachedQ` (the household never assembles q free
+>   loaves; ~⅞ hold ZERO free bread at any point in the tick); `SplitAtGate`=0 and
+>   `HouseholdDrainedBeforeGate`=0 on EVERY cell; the only other mode is a ~6-8% saving-arm
+>   `MemberDrainedBeforeGate` tail (member reaches q, then eats it — survival>saving).** The measured
+>   decomposition **DESELECTS pooling** as the canonical-burden lever (pooled-heir, within-household
+>   aggregation, gate-instant pooling — no dispersed stock to pool) and **SELECTS the income/supply side**:
+>   baker net surplus vs household consumption; miller income + bread access. Persistent/cross-household
+>   pooling that changes stock BEFORE WindowStart is not ruled out; reservation-strengthening / a
+>   non-eaten birth good is a secondary lever for the small drained tail. **NEXT SCOPING (income-side):
+>   why does a producer household net ~0 free bread — is it throughput=1 baker production ≈ member
+>   consumption (a production-capacity slice), the miller's zero bread output + lost buy-contest (a
+>   trade-access slice), or the survival-consumption drain (a distinct-birth-good slice)? Pending user /
+>   next consultation.**
 
 **P5+ — re-derive the institutional stack on the living base.** Firms (C2R) and rent/factor markets
 (C4R) once solvent counterparties exist; the classes/mobility measurement (C9) over whatever forms;

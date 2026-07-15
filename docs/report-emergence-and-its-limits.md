@@ -1939,6 +1939,82 @@ intervention/support-origin stock, two-stream birth completeness with multiplici
 quantities summing exactly to q, and a clean purchase-credit seam on every cell. Spec impl-69,
 SPEC-READY after five xhigh rounds.
 
+## 35. Where the loaves never assemble — the wall is income, not atomicity (DH.b-obs)
+
+DH.b left one measurable question behind its headline. The reproduction wall is not the four-loaf
+constant — no birth ever occurs at three loaves or more, and the birth gate is an atomic,
+single-member hold: one household member must hold q FREE loaves of the staple simultaneously at
+the end-of-tick births phase, and that staple is the same bread every member eats each tick, on a
+base with no bread mint. So the whole wall reduces to a decomposition: WHY does no producer-household
+member ever hold q≥3 free loaves at the gate, and is the failure production/income starvation
+(the household never assembles the stock), intra-household atomicity (the household holds q spread
+across members but no single member does), or a drain-before-gate (a member reaches q and loses it
+to consumption or sale before the check)? These are distinguishable, and the answer selects the
+next lever.
+
+The diagnostic is pure observation on the exact DH.b 60-cell grid, run once under observation, on
+the C3R.e-obs template. Because consumption and every settled trade happen inside the market step,
+phase-seam sampling cannot see the intra-tick peak; the observer instead records a Society-owned
+ordered tape of atomic LOGICAL staple-stock events — consumption (emitted after the market's
+reservation strip is restored), a settled trade as one two-member group (so a same-household
+transfer produces no phantom seller-dip or buyer-peak), and standalone ask changes (including the
+scale-regeneration cancellations) — each carrying the post-event physical/reserved/free split for
+the affected producer-household members. A per-tick window runs from a `WindowStart` baseline
+(snapshotted right after the death/estate phase, so an inherited loaf is in the baseline, not a
+mid-window event) to a cursor captured immediately before the births-phase gate read; a pure
+classifier replays that window and assigns each endowment-gate failure exactly one outcome by the
+LAST ≥q→<q crossing event — `MemberDrainedBeforeGate`, `SplitAtGate`, `HouseholdDrainedBeforeGate`,
+or `NeverReachedQ` — with a `GateDecisionMismatch` guard (asserted zero) catching any observer/gate
+disagreement. Everything is digest-inert (tag 35 keyed on a "configured" predicate so the closure
+force-disable twins carry the identical tag while one records nothing), the DH.b verdict grid
+reproduces byte-identically under observation through a shared harness both suites call, and the
+shares are printed, never asserted — every share forced through the single classifier by one typed
+reducer, with a live-emitter battery proving the atomic emission against the real market seams so a
+missed rise-and-fall cannot inflate any outcome.
+
+The decomposition is stark and uniform. Across the whole grid there are 4,023 endowment-gate
+failures; **3,920 of them — and every one of the 444 at canonical q=4 in the no-saving arm — are
+`NeverReachedQ`: the producer household never assembles q free loaves at any point in the tick.**
+`SplitAtGate` is **zero on every cell**, and so is `HouseholdDrainedBeforeGate`: the loaves are not
+held spread across members, and the household total does not reach q and then fall. The household
+free-bread PEAK over each failing tick is 0 in 3,506 of the 4,023 failures — **in roughly seven of
+every eight failures the household does not hold even one free loaf** — with a thin tail reaching 2
+(326), 3 (97), or 4 (92), those higher peaks being the single-member cases. The one non-`NeverReachedQ`
+mode is small and appears only when the saving motive is on: at q=4 the On arm shows a ~6–8%
+`MemberDrainedBeforeGate` tail (103 cases grid-wide, all consumption-attributed), a member that
+briefly reaches q and then eats the reserved loaf — because the C3R.d birth-stock reservation is
+subordinate to present hunger, survival strictly outranks saving, and the loaf is consumed before
+the gate. At one and two loaves the picture is the same (0.96–1.00 `NeverReachedQ`); at zero cost
+every otherwise-eligible opportunity PASSES (the instrument's own reachability proof — continuity,
+the real inheritance/adoption/execution seams, and the gate are all attainable states of this base,
+so the q>0 failures are failures of the economy, not the measure).
+
+The answer to the decomposition question: **the wall is income, not atomicity.** The producer
+household does not fail to concentrate its stock in one member's hands; it fails to have the stock
+at all. This is throughput-one baker production running out against ~one loaf per member per tick of
+survival consumption, and millers who bake no bread and lose the buy-bread contest — the household
+nets essentially nothing, and usually holds nothing free. The consequence for the program's next
+move is sharp and evidence-based: it **deselects pooling as the canonical-burden lever** — pooled-heir
+succession, within-household aggregation, any same-tick gate-instant pooling — because with
+`SplitAtGate` identically zero there is no dispersed stock to pool. It **selects the income/supply
+side**: baker net surplus relative to household consumption, and the miller's income and access to
+bread. A stronger reservation or a distinct non-eaten birth good remains a secondary lever, but only
+for the small consumption-drained tail — not the dominant failure. For the first time in the arc the
+next lever is chosen by measurement rather than intuition.
+
+Disclosures: the diagnostic reproduces byte-for-byte across independent reruns (the full
+decomposition block is SHA-256-pinned); the acceptance contract is deliberately strict and was
+tightened at the results gate (the live-emitter battery from "at least one event" to exact event
+vectors, the plumbing false-green guard to mutating a real tape event, the oracle to the full
+per-type recount + paired-table + `gate_phase == post_production` binding, and the identity test to
+the single constructor the grid runs) with the decomposition unchanged — the guards were
+strengthened, not the measurement, and no phantom event surfaced. The `MemberDrainedBeforeGate` tail
+is consumption-attributed via the crossing event; `HouseholdDrainedBeforeGate`, being zero, is
+untriggered. The 60-cell suite costs ~105s and is executed ONCE, the diagnosis riding the same
+execution as the DH.b oracle. Spec impl-70, SPEC-READY after four xhigh rounds; rb-lite clean in
+three rounds; RoR REJECT on four test-rigor findings (the science reproduced) → repair (decomposition
+byte-identical) → ACCEPT with zero findings at every severity.
+
 ## Appendix — milestone index
 
 | Sxx | Title | Outcome |
@@ -1993,3 +2069,4 @@ SPEC-READY after five xhigh rounds.
 | S24c | Group-payoff imitation (institution-selection arc, slice 3 — ARC-CLOSING) | **FINDING — group-welfare imitation ALSO dissolves the institution; closes the S24 local-welfare-imitation arc as a clean TRIAD of negatives.** Reuses S24b abandonable adoption but scores imitation on local GROUP welfare: an agent selects the best-off nearby group by GENERIC welfare aggregates (alive share / mean hunger-relief / mean food; SALT excluded; group score-purity forbids reading any member's commitment identity), then copies toward that group's ADOPTER-SHARE GRADIENT (adopt if the better-welfare group has materially more adopters, abandon if fewer — the welfare picks the group, the share only sets copy direction). Group membership keyed on each colonist's economic anchor (home_node, canonicalized ON-only, digest-safe). Composes on S24b; digest tag 17 ON-only; goldens byte-identical off. Verdict NormDiesBack 5/5 {3,7,11,19,23}: the mechanism genuinely fires (group_copy_events=10/seed, covariance_samples ~5000) and the group signal is present (positive_group_copy_advantages=10; welfare↔adopter covariance positive in 4/5 seeds, adverse in 1) — but every copy is an ABANDONMENT (adoptions=0, abandonments=10) because the best-welfare GROUP is BUYER-heavy (buyers 37-48 alive, post_bought 15k-32k), so the gradient selects AWAY from adoption and even the seeded adopters drop the norm. TWO rigor catches: (1) a spatial-degeneracy ARTIFACT — rounds 1-2 keyed groups on literal position; the non-hauling majority shares the exchange tile so every group collapsed to the whole population (zero group-copy events); reviewers caught it empirically; round-3 keyed on home_node → groups genuinely differ. (2) a VERDICT MISLABEL (Codex review-of-results, S23a/S24a pattern) — GroupSignalVacuous was routed whenever no ALIGNED adoption occurred, but the spec defines vacuous as "no signal observed", contradicted by positive_group_copy_advantages=10 + positive covariance; test-only classifier fix → NormDiesBack (a signal that fires and selects away is not "no signal"; a negative covariance is an adverse signal). Disclosed scope: the mechanism fires for anchored agents; a synthetic anchor for the tile-sharing majority was rejected (broke the null/unprofitable controls), so S24c tests group-payoff as far as this base's spatial structure allows. ARC CONCLUSION: local welfare-imitation — sticky (S24a) / individual-abandonable (S24b) / group (S24c) — cannot SELECT a division-of-labor institution, because its value is NON-LOCAL (realized through exchange from producers to buyers), so no local welfare observable makes the producer role look best. Future work explicitly new: market-mediated/global signals, contribution accounting, or group reproduction/selection. rb-lite converged CLEAN in 3 rounds (fresh S24c reviewers file, 2nd clean run running); Codex review-of-results PASS-WITH-CAVEATS. Workspace 99 suites / 1581 tests, all goldens byte-identical (30 goldens_unchanged), group_payoff_imitation 14/14, fmt+clippy clean. |
 | DH.a | The closed circulation (the demand-horizon frontier's first slice) | **`ClosureStructureAbsent { first_window: 160, class: Miller }` ×5 seeds — both producer classes extinct before the first classified window; the closure question cannot be posed; reproduction, not demand, is the binding constraint. A1 `IgnitionShortfall` ×5 (dose 0, `extinct=6`, identical to durable); RoR REJECT (instrumentation) → repair (verdicts byte-stable) → ACCEPT (zero findings).** Regime = durable stack MINUS the endowed non-producing surround (consumers=0, legacy lineages removed; identity-tested); all-class gold+physical provenance (the liquidation-laundering false green killed at spec time); raw mutation-seam tape, two independent reducers, seed-3 byte-match recount; pure `classify_closure` over post-bootstrap windows (the [0,160) exclusion forced by proof); per-tick observation-inertness; existing 35-cell grid byte-identical vs a golden authenticated against the rebuilt archived base. 60 runs ~95s. | impl-68 (7 xhigh rounds); tag 34 |
 | DH.b | The reproductive-burden robustness audit (the reproduction frontier's first slice) | **`CostlessOnlyReplacement` — the sampled wall persists down to one loaf, not only at four; DH.c gate NOT authorized.** 60 cells on the EXACT closed base: q∈{0,1,2,3,4,8} × saving arm {Off, Motive} × 5 seeds, (q=4, Off) config-byte-identical to `frontier_closed_circulation()`. New succession-survival oracle (W=36, M=5, start=36×ceil((last_founder_death+1)/36), founder death ticks 5–35, founders = the generation-time registry snapshot; nested streak sets C⊇S⊇F⊇E; real-seam `ToolInherited`/`InheritedToolRoleAdopted` events with Miller↔Mill / Baker↔Bake stage correspondence; birth funding by purchase identity + construction taint over the DH.a gold split, joins by identity only). Grid: q∈{3,4,8} `NoBirth` ×30 (the gate never clears once — three loaves as absolute as eight); q∈{1,2} `BirthsButLineageExtinct` / `MissingPrivateStreaks{Miller,Baker}` ×20 (6–14 births/run, no class holds even a private 5-window streak); q=0 has 702–720 births/run, rung 5 `FunctionalSuccessionFlowAbsent { classes: [Miller, Baker] }` on seed 7 and `FunctionalSuccessionFlowAbsent { classes: [Baker] }` on seeds 11/19/23, plus `CostlessReplacement` on seed 3 (continuity + causal succession + flow all reachable states of the base — the instrument is proven live). `motive_effect` empty BOTH directions at the RUNG level: the On arm emits its q-matched `Next` wants and q=1 births differ on seed 19 (13→12) and seed 23 (11→8), but no verdict rung changes; the suite prints every paired delta and asserts a committed 60-row verdict+birth golden. `nonmonotone` empty. The tested transition sits between q=0 and q=1: every tested positive provisioning transfer (q∈{1,2,3,4,8}) prevents sustained producer-lineage replacement. Hard guards all green (conservation, registry, zero immortal producers, zero intervention stock, two-stream birth completeness, purchase-credit seam). ~105s/60 cells; ordering on the (tick, seam-phase) pair disclosed (same-tick inherit→adopt→execute is real); acquisition-lot ledger activated under `closure_active()` so the canonical cell needs no config flag; DH.a inertness + ignition golden re-run unchanged with the telemetry compiled in. | impl-69 (5 xhigh rounds); NO digest tag (12 arms pairwise distinguished by canonical state) |
+| DH.b-obs | The birth-gate-stock diagnostic (why the loaves never assemble) | **finding: the reproduction wall is INCOME, not atomicity — of 4,023 endowment-gate failures, 3,920 are `NeverReachedQ` (the household never assembles q free loaves; ~⅞ hold ZERO free bread), `SplitAtGate`=0 and `HouseholdDrainedBeforeGate`=0 on every cell; the only other mode is a ~6-8% saving-arm `MemberDrainedBeforeGate` tail (a member reaches q then eats it, survival>saving). Deselects pooling; selects the income/supply side. Pure observation, DH.b grid byte-identical under it, SHA-pinned. RoR REJECT (test rigor)→repair (numbers byte-stable)→ACCEPT (zero findings).** | impl-70 (4 xhigh rounds); tag 35 (keyed on configured; ON=OFF+[35,1]) |
