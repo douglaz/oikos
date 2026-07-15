@@ -284,8 +284,8 @@ Falsifiable bar: production survives the death of producers.
 >   observation on the DH.b grid: **the reproduction wall is INCOME/PRODUCTION STARVATION, not atomicity.
 >   Of 4,023 endowment-gate failures, 3,920 are `NeverReachedQ` (the household never assembles q free
 >   loaves; ~⅞ hold ZERO free bread at any point in the tick); `SplitAtGate`=0 and
->   `HouseholdDrainedBeforeGate`=0 on EVERY cell; the only other mode is a ~6-8% saving-arm
->   `MemberDrainedBeforeGate` tail (member reaches q, then eats it — survival>saving).** The measured
+>   `HouseholdDrainedBeforeGate`=0 on EVERY cell; the only other mode is a small
+>   `MemberDrainedBeforeGate` tail (103 cases grid-wide, ~⅓ in the no-saving Off arm; member reaches q, then eats it — survival>saving).** The measured
 >   decomposition **DESELECTS pooling** as the canonical-burden lever (pooled-heir, within-household
 >   aggregation, gate-instant pooling — no dispersed stock to pool) and **SELECTS the income/supply side**:
 >   baker net surplus vs household consumption; miller income + bread access. Persistent/cross-household
@@ -298,7 +298,7 @@ Falsifiable bar: production survives the death of producers.
 >   good+buyer-class, and the authoritative fate of bread bids) — to SEPARATE the baker-capacity wall
 >   from the miller-trade-access wall before any treatment. CRITICAL CORRECTION the consultation
 >   surfaced: the "throughput=1 ≈ consumption, net≈0" premise is WRONG — a Bake application yields
->   BREAD_PER_BAKE=3 loaves (content.rs:21), Mill yields FLOUR_PER_MILL=3; a baker that bakes is NOT
+>   BREAD_PER_BAKE=3 loaves (content.rs:90), Mill yields FLOUR_PER_MILL=3; a baker that bakes is NOT
 >   consumption-limited, so the household holding zero free bread is an UNestablished submechanism
 >   (not-baking / selling-all / input-starved), which is exactly what this slice measures. Reuses the
 >   DH.a event tape + C3R.e-obs quote trace + closure class registry; adds only a stable actor→household
