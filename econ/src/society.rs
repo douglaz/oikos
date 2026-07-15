@@ -161,6 +161,48 @@ pub enum AllocationExecutionStatus {
     Rejected,
 }
 
+/// DH.b-obs (impl-70): one affected agent's staple free-stock state AFTER a logical event is
+/// fully applied. `free` = `free_stock_after_all_reserves(agent, staple)` (physical minus every
+/// spot + barter reservation); `reserved` = `physical − free`. Runtime-only diagnostic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StapleAgentState {
+    pub physical: u32,
+    pub reserved: u32,
+    pub free: u32,
+}
+
+/// DH.b-obs (impl-70): the pure-observation staple-stock event tape. Runtime-only, opt-in
+/// (`begin_staple_obs_window`), NEVER serialized, and NEVER read by any decision path — the
+/// market steps exactly as it would with observation off. Society is authoritative for exactly
+/// these three atomic LOGICAL economic events on one staple good's FREE stock (each carrying the
+/// affected agents' post-event state); `Production` and the gate/`BirthDebit` events are appended
+/// by the settlement join, not here. The settlement drains the batch after the step
+/// (`take_staple_stock_events`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StapleStockEvent {
+    /// A consumption drain, recorded AFTER the step restores stripped reservations (recording
+    /// mid-strip would double-subtract). Carries the agent's post-consume state.
+    Consumption {
+        agent: AgentId,
+        state: StapleAgentState,
+    },
+    /// One settled trade — ONE two-member group carrying BOTH members' post-states with the
+    /// fill's reservation release folded in (no phantom seller-dip/buyer-peak).
+    SettledTrade {
+        seller: AgentId,
+        seller_state: StapleAgentState,
+        buyer: AgentId,
+        buyer_state: StapleAgentState,
+    },
+    /// A standalone reserve/cancel/expiry that moved free stock and is NOT part of a settlement
+    /// (a posted-but-unfilled ask lowering free stock, an ordinary/rewrite cancel, a TTL expiry,
+    /// or a `regenerate_scales` quote cancellation). Carries the agent's post-event state.
+    AskChange {
+        agent: AgentId,
+        state: StapleAgentState,
+    },
+}
+
 /// The outcome of a single `ensure_bid`/`ensure_ask` quote attempt (C3R.e-obs).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QuoteOutcome {
@@ -481,6 +523,16 @@ pub struct Society {
     /// Persistent `seq → first-unprovided want` captured at post time and pruned to live
     /// orders at each pass start — the carried intent map for `winner_intent`.
     allocation_intent: BTreeMap<u64, TracedWant>,
+    /// DH.b-obs (impl-70): the pure-observation staple-stock event tape. Off by default and
+    /// read by NO engine path, so every conformance golden is byte-identical; the birth-gate
+    /// obs settlement opens a per-tick window via [`Society::begin_staple_obs_window`]. All
+    /// fields runtime-only — NEVER serialized (see [`StapleStockEvent`]).
+    staple_obs_active: bool,
+    /// The observed staple good, set by the settlement at window start. Read ONLY by the
+    /// recording branches — never by a decision path.
+    staple_obs_good: Option<GoodId>,
+    /// This tick's staple-stock logical-event batch, drained by the settlement after the step.
+    staple_stock_events: Vec<StapleStockEvent>,
 }
 
 impl Society {
@@ -635,6 +687,9 @@ impl Society {
             allocation_trace_order_pos: 0,
             allocation_trace: Vec::new(),
             allocation_intent: BTreeMap::new(),
+            staple_obs_active: false,
+            staple_obs_good: None,
+            staple_stock_events: Vec::new(),
         })
     }
 
@@ -847,6 +902,15 @@ impl Society {
             .expect("legacy market runner requires a current money good")
     }
 
+    /// Whether this society steps through the M1 legacy market runner (mirrors the
+    /// [`Self::try_step_inner`] dispatch). The DH.b-obs staple-stock tape's `Consumption` events are
+    /// emitted only from [`Self::step_m1`]; the V2/M2/M3 consumption loops and pre-promotion V2
+    /// barter reservations bypass that instrumentation, so observation may only be ACTIVATED on an
+    /// M1 runner (enforced in [`Self::begin_staple_obs_window`]).
+    fn is_m1_runner(&self) -> bool {
+        self.legacy_runner_enabled && !self.v2_enabled && !self.m2_enabled && !self.m3_enabled
+    }
+
     fn step_m1(&mut self) {
         let money_good = self.legacy_money_good();
         self.tick_labor_used.clear();
@@ -858,6 +922,13 @@ impl Society {
 
         for order_pos in 0..self.agent_order.len() {
             let index = self.agent_order[order_pos];
+            // DH.b-obs: the pre-consume staple free stock, captured BEFORE the reservation strip
+            // (during the strip physical stock is reduced but the reservation table is not, so a
+            // mid-strip free read would be wrong — the reason the event is emitted post-restore).
+            let staple_agent = self.agents[index].id;
+            let staple_free_before = self
+                .staple_obs_recording()
+                .then(|| self.staple_agent_state(staple_agent).free);
             let reserved_assets = self.take_reserved_assets(index);
             self.agents[index].clear_satisfaction();
             self.agents[index].recompute_satisfaction_for_money(money_good);
@@ -868,6 +939,19 @@ impl Society {
             self.agents[index]
                 .recompute_satisfaction_with_provisions_for_money(&provisions, money_good);
             self.restore_reserved_assets(index, reserved_assets);
+            // DH.b-obs: one atomic Consumption event iff the agent's free staple stock changed
+            // over the (now reservation-consistent) consume/provision iteration — the drain the
+            // birth-gate replay attributes to Consumption.
+            if let Some(before) = staple_free_before {
+                let state = self.staple_agent_state(staple_agent);
+                if state.free != before {
+                    self.staple_stock_events
+                        .push(StapleStockEvent::Consumption {
+                            agent: staple_agent,
+                            state,
+                        });
+                }
+            }
         }
 
         self.cancel_changed_live_quotes();
@@ -2010,11 +2094,33 @@ impl Society {
     }
 
     fn purge_expired_orders(&mut self) -> u32 {
+        // DH.b-obs: snapshot the staple asks about to expire so each TTL expiry emits an
+        // AskChange (the reservation release raises free staple stock with no physical move).
+        // Empty off an active window.
+        let expiring_staple_ask_agents: Vec<AgentId> = match self.staple_obs_good {
+            Some(staple) if self.staple_obs_active => {
+                let tick = self.tick.0;
+                self.books
+                    .iter()
+                    .filter(|book| book.good == staple)
+                    .flat_map(|book| {
+                        book.asks
+                            .values()
+                            .filter(move |order| order.expires_tick <= tick)
+                            .map(|order| order.agent)
+                    })
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
         let mut expired = 0;
         for book in &mut self.books {
             expired += book.purge_expired(self.tick.0, &mut self.reservations);
         }
         self.sync_live_quotes();
+        for agent in expiring_staple_ask_agents {
+            self.staple_obs_record_ask_change(agent);
+        }
         expired
     }
 
@@ -3316,6 +3422,12 @@ impl Society {
             );
             return;
         }
+        // DH.b-obs: capture the posted staple ASK identity here; whether it emits a standalone
+        // AskChange (rested, R1-3) or is folded into a SettledTrade (immediately filled) is
+        // decided AFTER matching below.
+        let posted_staple_ask = (order.side == OrderSide::Ask
+            && self.is_staple_obs_good(order.good))
+        .then_some(order.agent);
         self.live_quotes.push(LiveQuote {
             agent: order.agent,
             side: plan.side,
@@ -3416,8 +3528,15 @@ impl Society {
             });
         }
         let mut affected_agents = Vec::new();
+        // DH.b-obs: did the just-posted staple ask cross and fill this pass? A filled ask is
+        // recorded as the folded SettledTrade below; only a RESTING ask emits a standalone
+        // AskChange (see after the loop).
+        let mut posted_staple_ask_filled = false;
         for execution in executions {
             let trade = execution.trade;
+            if posted_staple_ask == Some(trade.seller) {
+                posted_staple_ask_filled = true;
+            }
             if let Some(payment) = execution.payment {
                 let amount = payment.total();
                 let demand_claims = payment
@@ -3438,6 +3557,14 @@ impl Society {
             }
             affected_agents.push(trade.buyer);
             affected_agents.push(trade.seller);
+            // DH.b-obs: one atomic SettledTrade event carrying both post-fill states. The fill's
+            // reservation release + stock move already committed inside `add_order` above, so the
+            // free reads here are the folded post-states — no phantom seller-dip/buyer-peak, even
+            // for a same-household transfer. Orders are qty-1, so at most one staple trade per
+            // `ensure_order`, and this state is exact for it.
+            if self.is_staple_obs_good(trade.good) {
+                self.staple_obs_record_settled_trade(trade.seller, trade.buyer);
+            }
             filled.push(FillKey {
                 agent: trade.buyer,
                 side: OrderSide::Bid,
@@ -3453,6 +3580,15 @@ impl Society {
             }
             self.record_realized_trade_price(&trade);
             self.trades.push(trade);
+        }
+        // DH.b-obs: a staple ask that posted but did NOT fill this pass now rests with its stock
+        // reserved — a standalone AskChange lowering the poster's free staple stock (the R1-3
+        // posted-but-unfilled case). A filled ask emitted a SettledTrade instead, so it gets no
+        // standalone reservation dip.
+        if let Some(agent) = posted_staple_ask {
+            if !posted_staple_ask_filled {
+                self.staple_obs_record_ask_change(agent);
+            }
         }
         self.sync_live_quotes();
         if !affected_agents.is_empty() {
@@ -3688,6 +3824,12 @@ impl Society {
                     quote.seq,
                     &mut self.reservations,
                 );
+            }
+            // DH.b-obs: cancelling a staple ASK releases its stock reservation, raising the
+            // agent's free staple stock with no physical move — a standalone AskChange (covers
+            // ordinary/rewrite cancellation AND `regenerate_scales`'s stale-quote cancellations).
+            if quote.side == OrderSide::Ask && self.is_staple_obs_good(quote.good) {
+                self.staple_obs_record_ask_change(quote.agent);
             }
         }
     }
@@ -4694,6 +4836,100 @@ impl Society {
     /// Whether the allocation trace is recording (C3R.e-obs).
     pub fn allocation_trace_enabled(&self) -> bool {
         self.allocation_trace_enabled
+    }
+
+    /// DH.b-obs (impl-70): open a staple-stock observation window — clear this tick's tape, pin
+    /// the observed staple good, and (de)activate recording. Called by the settlement at
+    /// `WindowStart` (after death/estate, before `regenerate_scales`); observation stays live
+    /// through `regenerate_scales` and the step, then the settlement drains and disables it.
+    /// Record-only: no decision path reads the tape or the active bit, so a society observing
+    /// steps byte-identically to one that is not. `active=false` disables recording (the
+    /// closure-force-disable / non-closed twin), leaving the tape empty.
+    pub fn begin_staple_obs_window(&mut self, staple: GoodId, active: bool) {
+        // DH.b-obs is an M1-only diagnostic. `Consumption` events come solely from `step_m1`
+        // (SettledTrade/AskChange ride the shared order-book paths, but the V2/M2/M3 consumption
+        // passes and pre-promotion V2 barter reservations bypass this instrumentation). Activating
+        // observation on a non-M1 runner would silently drop drains and desync the WindowStart→gate
+        // replay, so reject it at the seam rather than emit an incomplete tape. An INACTIVE window
+        // records nothing regardless of runner, so only activation is gated.
+        assert!(
+            !active || self.is_m1_runner(),
+            "staple-stock observation may only be activated on the M1 market runner"
+        );
+        self.staple_stock_events.clear();
+        self.staple_obs_good = if active { Some(staple) } else { None };
+        self.staple_obs_active = active;
+    }
+
+    /// DH.b-obs: disable staple-stock recording (called by the settlement immediately after the
+    /// step drain). Leaves the drained tape empty.
+    pub fn end_staple_obs_window(&mut self) {
+        self.staple_obs_active = false;
+        self.staple_obs_good = None;
+    }
+
+    /// DH.b-obs: drain this tick's staple-stock logical-event batch. Empty unless a window was
+    /// opened active this tick.
+    pub fn take_staple_stock_events(&mut self) -> Vec<StapleStockEvent> {
+        std::mem::take(&mut self.staple_stock_events)
+    }
+
+    /// True when the staple-stock tape should record — a window is open and active.
+    #[inline]
+    fn staple_obs_recording(&self) -> bool {
+        self.staple_obs_active && self.staple_obs_good.is_some()
+    }
+
+    /// The affected agent's staple free-stock state AFTER a logical event is applied (pure read;
+    /// `free_stock_after_all_reserves` folds every spot + barter reservation). Requires an open
+    /// window (`staple_obs_good` set).
+    fn staple_agent_state(&self, agent: AgentId) -> StapleAgentState {
+        let good = self
+            .staple_obs_good
+            .expect("staple state requires an open observation window");
+        let physical = self.agents.get(agent).map_or(0, |a| a.stock.get(good));
+        let free = self.free_stock_after_all_reserves(agent, good);
+        StapleAgentState {
+            physical,
+            reserved: physical.saturating_sub(free),
+            free,
+        }
+    }
+
+    /// Record a standalone `AskChange` staple event for `agent` iff a window is active (an ask
+    /// reservation was posted, cancelled, or expired — no settlement).
+    fn staple_obs_record_ask_change(&mut self, agent: AgentId) {
+        if !self.staple_obs_recording() {
+            return;
+        }
+        let state = self.staple_agent_state(agent);
+        self.staple_stock_events
+            .push(StapleStockEvent::AskChange { agent, state });
+    }
+
+    /// Record one `SettledTrade` staple event iff a window is active — ONE two-member group
+    /// carrying both post-fill states (the fill's reservation release + stock move already folded
+    /// in by the time the caller invokes this).
+    fn staple_obs_record_settled_trade(&mut self, seller: AgentId, buyer: AgentId) {
+        if !self.staple_obs_recording() {
+            return;
+        }
+        let seller_state = self.staple_agent_state(seller);
+        let buyer_state = self.staple_agent_state(buyer);
+        self.staple_stock_events
+            .push(StapleStockEvent::SettledTrade {
+                seller,
+                seller_state,
+                buyer,
+                buyer_state,
+            });
+    }
+
+    /// Whether `good` is the currently observed staple (used to gate emission at the mutation
+    /// sites without borrowing the whole tape).
+    #[inline]
+    fn is_staple_obs_good(&self, good: GoodId) -> bool {
+        self.staple_obs_active && self.staple_obs_good == Some(good)
     }
 
     /// Drain this tick's spot-pass allocation-trace batch (C3R.e-obs). Empty on a tick
@@ -10020,6 +10256,453 @@ mod tests {
         );
         assert_eq!(society.trades.len(), 1);
         assert_eq!(society.trades[0].seller, AgentId(3));
+    }
+
+    // =======================================================================================
+    // DH.b-obs (impl-70) §6.6 — the LIVE-EMITTER battery. Proves the ATOMIC staple-stock
+    // emission against the real `step_m1`/`apply_trade` semantics (a constructed classifier
+    // table + terminal reconciliation cannot catch a phantom intermediate peak). Each test
+    // opens a staple observation window on FOOD, drives a real micro-run, and asserts the exact
+    // emitted event SEQUENCE + per-event free values.
+    // =======================================================================================
+
+    fn staple_obs_agent(
+        id: u64,
+        food: u32,
+        gold: u64,
+        wants: &[(WantKind, Horizon, usize)],
+    ) -> Agent {
+        let mut stock = Stock::new(SALT.0);
+        if food > 0 {
+            stock.add(FOOD, food);
+        }
+        let mut agent = test_capitalist(stock);
+        agent.id = AgentId(id);
+        agent.gold = Gold(gold);
+        agent.scale = scale_entries(wants);
+        agent
+    }
+
+    fn staple_obs_society(agents: Vec<Agent>) -> Society {
+        Society::from_scenario(MarketScenario {
+            name: "staple-obs-market",
+            scenario: ScenarioName::MarketPriceDiscovery,
+            seed: 1,
+            periods: 1,
+            agents,
+            recipes: Vec::new(),
+            events: Vec::new(),
+            money: MarketMoneyConfig::Designated(DesignatedMoney { good: GOLD }),
+        })
+    }
+
+    fn ask_changes(events: &[StapleStockEvent]) -> usize {
+        events
+            .iter()
+            .filter(|e| matches!(e, StapleStockEvent::AskChange { .. }))
+            .count()
+    }
+
+    fn settled_trades(events: &[StapleStockEvent]) -> usize {
+        events
+            .iter()
+            .filter(|e| matches!(e, StapleStockEvent::SettledTrade { .. }))
+            .count()
+    }
+
+    fn consumptions(events: &[StapleStockEvent]) -> usize {
+        events
+            .iter()
+            .filter(|e| matches!(e, StapleStockEvent::Consumption { .. }))
+            .count()
+    }
+
+    #[test]
+    fn staple_obs_records_nothing_when_inactive() {
+        let mut society = staple_obs_society(vec![staple_obs_agent(
+            1,
+            3,
+            10,
+            &[(WantKind::Good(FOOD), Horizon::Now, 1)],
+        )]);
+        // No window opened → the tape records nothing regardless of behavior.
+        society.step();
+        assert!(society.take_staple_stock_events().is_empty());
+        // Opened INACTIVE → still nothing.
+        society.begin_staple_obs_window(FOOD, false);
+        society.step();
+        assert!(society.take_staple_stock_events().is_empty());
+    }
+
+    /// An emergent-money society routes through the V2/deferred path, not `step_m1`, so its
+    /// consumption never feeds the staple-stock tape. Activating observation there would silently
+    /// drop drains, so the seam rejects it (the reviewer's "explicitly reject unsupported
+    /// scenarios").
+    fn emergent_money_society() -> Society {
+        Society::from_scenario(MarketScenario {
+            name: "non-m1-runner",
+            scenario: ScenarioName::MarketPriceDiscovery,
+            seed: 1,
+            periods: 1,
+            agents: vec![staple_obs_agent(
+                1,
+                3,
+                10,
+                &[(WantKind::Good(FOOD), Horizon::Now, 1)],
+            )],
+            recipes: Vec::new(),
+            events: Vec::new(),
+            money: MarketMoneyConfig::Emergent(MengerianConfig {
+                candidate_goods: vec![SALT],
+                ..MengerianConfig::default()
+            }),
+        })
+    }
+
+    #[test]
+    #[should_panic(expected = "M1 market runner")]
+    fn staple_obs_activation_rejected_on_non_m1_runner() {
+        let mut society = emergent_money_society();
+        // ACTIVE observation on a non-M1 runner is rejected at the seam.
+        society.begin_staple_obs_window(FOOD, true);
+    }
+
+    #[test]
+    fn staple_obs_inactive_window_allowed_on_non_m1_runner() {
+        let mut society = emergent_money_society();
+        // An INACTIVE window records nothing regardless of runner, so it is always permitted.
+        society.begin_staple_obs_window(FOOD, false);
+        society.step();
+        assert!(society.take_staple_stock_events().is_empty());
+    }
+
+    #[test]
+    fn consumption_emits_exactly_one_post_restore_event() {
+        // A hungry agent with FOOD stock eats one loaf: exactly one Consumption event carrying the
+        // post-consume free stock.
+        let mut society = staple_obs_society(vec![staple_obs_agent(
+            1,
+            3,
+            10,
+            &[(WantKind::Good(FOOD), Horizon::Now, 1)],
+        )]);
+        society.begin_staple_obs_window(FOOD, true);
+        society.step();
+        let events = society.take_staple_stock_events();
+        assert_eq!(consumptions(&events), 1, "one Consumption: {events:?}");
+        assert_eq!(ask_changes(&events), 0, "no ask change: {events:?}");
+        assert_eq!(settled_trades(&events), 0, "no trade: {events:?}");
+        let StapleStockEvent::Consumption { agent, state } = events[0] else {
+            panic!("first event is a Consumption: {events:?}");
+        };
+        assert_eq!(agent, AgentId(1));
+        assert_eq!(state.free, 2, "ate one of three free loaves");
+        assert_eq!(state.reserved, 0);
+    }
+
+    #[test]
+    fn reserved_stock_consumption_records_post_restore_state() {
+        // §6.6 (R3-3): RESERVED-STOCK consumption emits exactly ONE post-restore Consumption with
+        // NO mid-strip dip. The agent sells (a GOLD (Next) want posts a resting FOOD ask reserving
+        // one loaf across ticks) AND eats (a FOOD (Now) want, one loaf each tick). Tick 0's
+        // consumption precedes the ask post, so the reservation only stands from tick 1 on — where
+        // `step_m1` strips the reserved loaf (reducing physical while the reservation table stays
+        // populated) BEFORE the eat and restores it after. A mid-strip free read double-subtracts
+        // the reservation (a phantom dip); the emitter records post-restore, so the event's free is
+        // the correct reservation-consistent value. (The no-reservation baseline is the test above.)
+        let mut society = staple_obs_society(vec![staple_obs_agent(
+            1,
+            5,
+            0,
+            &[
+                (WantKind::Good(FOOD), Horizon::Now, 1),
+                (WantKind::Good(GOLD), Horizon::Next, 1),
+            ],
+        )]);
+        // Tick 0: eats one loaf (no reservation yet), then posts the resting FOOD ask.
+        society.begin_staple_obs_window(FOOD, true);
+        society.step();
+        let tick0 = society.take_staple_stock_events();
+        assert_eq!(consumptions(&tick0), 1, "tick 0 eats once: {tick0:?}");
+        assert_eq!(ask_changes(&tick0), 1, "tick 0 rests the ask: {tick0:?}");
+
+        // Tick 1: the resting ask reserves one loaf THROUGH the consume-strip. Exactly one
+        // Consumption, no phantom AskChange, the reservation intact in the post-restore state.
+        society.begin_staple_obs_window(FOOD, true);
+        society.step();
+        let tick1 = society.take_staple_stock_events();
+        assert_eq!(
+            consumptions(&tick1),
+            1,
+            "reserved-stock consumption emits exactly one Consumption: {tick1:?}"
+        );
+        assert_eq!(
+            ask_changes(&tick1),
+            0,
+            "the standing reservation is untouched — no phantom AskChange: {tick1:?}"
+        );
+        assert_eq!(settled_trades(&tick1), 0, "no trade: {tick1:?}");
+        let StapleStockEvent::Consumption { agent, state } = tick1
+            .iter()
+            .find(|e| matches!(e, StapleStockEvent::Consumption { .. }))
+            .copied()
+            .expect("a Consumption")
+        else {
+            unreachable!()
+        };
+        assert_eq!(agent, AgentId(1));
+        // Post-restore: physical 3 (ate one of four), the reservation 1 intact, free 2 — never the
+        // phantom mid-strip free of 1 (physical 2 after the strip minus the still-listed reservation
+        // of 1).
+        assert_eq!(state.physical, 3);
+        assert_eq!(state.reserved, 1, "the resting ask's reservation is intact");
+        assert_eq!(
+            state.free, 2,
+            "post-restore free = physical 3 − reserved 1, not a mid-strip dip"
+        );
+    }
+
+    #[test]
+    fn unfilled_ask_posting_emits_exactly_one_ask_change() {
+        // A seller with FOOD stock and a GOLD want posts a FOOD ask that rests (no buyer): exactly
+        // one AskChange, the reservation lowering free stock with no physical move.
+        let mut society = staple_obs_society(vec![staple_obs_agent(
+            1,
+            2,
+            0,
+            &[(WantKind::Good(GOLD), Horizon::Next, 1)],
+        )]);
+        society.begin_staple_obs_window(FOOD, true);
+        society.step();
+        let events = society.take_staple_stock_events();
+        assert_eq!(ask_changes(&events), 1, "one AskChange: {events:?}");
+        assert_eq!(settled_trades(&events), 0, "no trade: {events:?}");
+        let StapleStockEvent::AskChange { agent, state } = events
+            .iter()
+            .find(|e| matches!(e, StapleStockEvent::AskChange { .. }))
+            .copied()
+            .expect("an AskChange")
+        else {
+            unreachable!()
+        };
+        assert_eq!(agent, AgentId(1));
+        assert_eq!(
+            state.physical, 2,
+            "physical stock unchanged by the reservation"
+        );
+        assert_eq!(state.free, 1, "one unit reserved for the ask");
+        assert_eq!(state.reserved, 1);
+    }
+
+    #[test]
+    fn immediately_filled_ask_emits_one_trade_and_no_dip() {
+        // The buyer (posted first) rests a FOOD bid; the seller's ask immediately crosses it — the
+        // fill is ONE folded SettledTrade with NO standalone reservation dip for the seller.
+        let mut society = staple_obs_society(vec![
+            staple_obs_agent(1, 0, 10, &[(WantKind::Good(FOOD), Horizon::Next, 1)]),
+            staple_obs_agent(2, 3, 0, &[(WantKind::Good(GOLD), Horizon::Next, 1)]),
+        ]);
+        society.set_bid_override(AgentId(1), FOOD, Gold(5), Gold(3));
+        society.begin_staple_obs_window(FOOD, true);
+        society.step();
+        let events = society.take_staple_stock_events();
+        assert_eq!(society.trades.len(), 1, "one realized trade");
+        assert_eq!(settled_trades(&events), 1, "one SettledTrade: {events:?}");
+        assert_eq!(
+            ask_changes(&events),
+            0,
+            "an immediately-filled ask emits NO standalone reservation dip: {events:?}"
+        );
+        let StapleStockEvent::SettledTrade {
+            seller,
+            seller_state,
+            buyer,
+            buyer_state,
+        } = events
+            .iter()
+            .find(|e| matches!(e, StapleStockEvent::SettledTrade { .. }))
+            .copied()
+            .expect("a SettledTrade")
+        else {
+            unreachable!()
+        };
+        assert_eq!(seller, AgentId(2));
+        assert_eq!(buyer, AgentId(1));
+        // The seller's folded post-fill free = 2 (sold one of three, none reserved), never a
+        // phantom peak of 3 from the mid-`apply_trade` reservation release.
+        assert_eq!(seller_state.free, 2);
+        assert_eq!(seller_state.reserved, 0);
+        assert_eq!(
+            buyer_state.free, 1,
+            "the buyer holds the one loaf it bought"
+        );
+    }
+
+    #[test]
+    fn resting_ask_filled_by_incoming_bid_no_phantom_seller_peak() {
+        // The seller posts a FOOD ask tick 0 (rests); an incoming bid crosses it tick 1. The fill
+        // releases the seller's reservation (a mid-`apply_trade` free spike) BEFORE moving stock —
+        // proving that release-only peak never escapes as an event: tick 1 emits ONE SettledTrade
+        // whose seller free is the folded post-move value, and NO AskChange.
+        let mut society = staple_obs_society(vec![
+            staple_obs_agent(1, 0, 10, &[(WantKind::Good(FOOD), Horizon::Next, 1)]),
+            staple_obs_agent(2, 3, 0, &[(WantKind::Good(GOLD), Horizon::Next, 1)]),
+        ]);
+        // Tick 0: only the seller has stock; the buyer's bid is withheld so the ask rests.
+        society.set_bid_override(AgentId(1), FOOD, Gold(0), Gold(0));
+        society.begin_staple_obs_window(FOOD, true);
+        society.step();
+        let tick0 = society.take_staple_stock_events();
+        assert_eq!(ask_changes(&tick0), 1, "tick 0 rests the ask: {tick0:?}");
+        assert_eq!(settled_trades(&tick0), 0);
+
+        // Tick 1: the buyer bids high; the incoming bid crosses the seller's RESTING ask.
+        society.set_bid_override(AgentId(1), FOOD, Gold(5), Gold(3));
+        society.begin_staple_obs_window(FOOD, true);
+        society.step();
+        let tick1 = society.take_staple_stock_events();
+        assert_eq!(
+            tick1,
+            vec![StapleStockEvent::SettledTrade {
+                seller: AgentId(2),
+                seller_state: StapleAgentState {
+                    physical: 2,
+                    reserved: 0,
+                    free: 2,
+                },
+                buyer: AgentId(1),
+                buyer_state: StapleAgentState {
+                    physical: 1,
+                    reserved: 0,
+                    free: 1,
+                },
+            }],
+            "the resting-ask fill is exactly one folded two-member trade, with no standalone \
+             AskChange or release-only seller peak"
+        );
+    }
+
+    #[test]
+    fn ttl_expiry_emits_ask_change() {
+        // A resting FOOD ask that is never filled expires after `ORDER_TTL` ticks; the TTL purge
+        // (`OrderBook::purge_expired`) releases its reservation, emitting an AskChange that restores
+        // the seller's free stock.
+        let mut society = staple_obs_society(vec![staple_obs_agent(
+            1,
+            2,
+            0,
+            &[(WantKind::Good(GOLD), Horizon::Next, 1)],
+        )]);
+        // Tick 0: post the resting ask (free 2 → 1).
+        society.begin_staple_obs_window(FOOD, true);
+        society.step();
+        let tick0 = society.take_staple_stock_events();
+        assert_eq!(ask_changes(&tick0), 1, "tick 0 posts the ask: {tick0:?}");
+        society.end_staple_obs_window();
+
+        // Advance to (but do not run) the expiry tick with observation inactive. Calling the real
+        // purge seam directly isolates the TTL release from the later quote-regeneration pass,
+        // making the emitter contract an exact-vector assertion rather than an "event occurred
+        // somewhere in this step" check.
+        for _ in 1..ORDER_TTL {
+            society.step();
+        }
+        assert_eq!(society.tick.0, ORDER_TTL, "the ask expires at this tick");
+        society.begin_staple_obs_window(FOOD, true);
+        assert_eq!(
+            society.purge_expired_orders(),
+            1,
+            "exactly one order expires"
+        );
+        let events = society.take_staple_stock_events();
+        assert_eq!(
+            events,
+            vec![StapleStockEvent::AskChange {
+                agent: AgentId(1),
+                state: StapleAgentState {
+                    physical: 2,
+                    reserved: 0,
+                    free: 2,
+                },
+            }],
+            "the TTL purge emits exactly one post-release AskChange"
+        );
+    }
+
+    #[test]
+    fn rewrite_cancel_emits_ask_change() {
+        // A resting FOOD ask whose backing stock is REMOVED between ticks is cancelled by
+        // `cancel_changed_live_quotes` (the same `cancel_existing` seam `regenerate_scales` uses),
+        // emitting an AskChange that releases the stale reservation.
+        let mut society = staple_obs_society(vec![staple_obs_agent(
+            1,
+            2,
+            0,
+            &[(WantKind::Good(GOLD), Horizon::Next, 1)],
+        )]);
+        society.begin_staple_obs_window(FOOD, true);
+        society.step();
+        let tick0 = society.take_staple_stock_events();
+        assert_eq!(ask_changes(&tick0), 1, "tick 0 posts the ask: {tick0:?}");
+
+        // Drop the seller's want so its resting ask is no longer valid — the next pass cancels it.
+        society.agents[0].scale = scale_entries(&[]);
+        society.begin_staple_obs_window(FOOD, true);
+        society.step();
+        let tick1 = society.take_staple_stock_events();
+        assert_eq!(
+            tick1,
+            vec![StapleStockEvent::AskChange {
+                agent: AgentId(1),
+                state: StapleAgentState {
+                    physical: 2,
+                    reserved: 0,
+                    free: 2,
+                },
+            }],
+            "ordinary rewrite cancellation emits exactly one post-release AskChange"
+        );
+    }
+
+    #[test]
+    fn regenerate_scales_cancel_emits_ask_change() {
+        // `regenerate_scales` cancels a producer's stale resting staple ask through
+        // `cancel_changed_live_quotes_for_agents` — a DISTINCT caller from the step-internal
+        // `cancel_changed_live_quotes` the rewrite-cancel test drives, though it shares the
+        // `cancel_existing` release seam. The observation window is opened at WindowStart BEFORE
+        // `regenerate_scales` runs (mod.rs), so this exact batch cancel must land a standalone
+        // AskChange releasing the reservation with no physical move.
+        let mut society = staple_obs_society(vec![staple_obs_agent(
+            1,
+            2,
+            0,
+            &[(WantKind::Good(GOLD), Horizon::Next, 1)],
+        )]);
+        // Tick 0: post the resting FOOD ask (free 2 -> 1).
+        society.begin_staple_obs_window(FOOD, true);
+        society.step();
+        let tick0 = society.take_staple_stock_events();
+        assert_eq!(ask_changes(&tick0), 1, "tick 0 posts the ask: {tick0:?}");
+
+        // Drop the seller's want so its resting ask is stale, reopen the window (as WindowStart
+        // does before `regenerate_scales`), and invoke the EXACT batch cancel `regenerate_scales`
+        // uses — the release must emit one AskChange raising free back to 2.
+        society.agents[0].scale = scale_entries(&[]);
+        society.begin_staple_obs_window(FOOD, true);
+        society.cancel_changed_live_quotes_for_agents(&[AgentId(1)]);
+        let events = society.take_staple_stock_events();
+        assert_eq!(
+            events,
+            vec![StapleStockEvent::AskChange {
+                agent: AgentId(1),
+                state: StapleAgentState {
+                    physical: 2,
+                    reserved: 0,
+                    free: 2,
+                },
+            }],
+            "the regenerate-seam batch cancel emits exactly one post-release AskChange"
+        );
     }
 
     #[test]

@@ -115,6 +115,16 @@ pub use settlement::burden::{
     BURDEN_QS, BURDEN_RUN_TICKS, BURDEN_SEEDS, BURDEN_STREAK_WINDOWS, BURDEN_WINDOW_TICKS,
 };
 
+/// DH.b-obs (impl-70) — the birth-gate-stock diagnostic: the pure classifier, the sole report
+/// reducer, the shared harness, and the recount snapshot. See [`settlement::birth_gate`].
+pub use settlement::birth_gate::{
+    birth_gate_replay_reconciles, burden_cell_config, classify_birth_gate_opportunity,
+    run_burden_grid, BirthGateCellKey, BirthGateCellObs, BirthGateEvent, BirthGateOutcome,
+    BirthGatePhase, BirthGateRawOpportunity, BirthGateRecountSnapshot, BirthGateReport,
+    BirthGateReportRow, BirthGateState, BirthGateTally, BurdenCellRunSummary, BurdenGridResult,
+    ClassifiedBirthGateOpportunity, EventCause, Ratio,
+};
+
 /// DH.b: the stage-recipe id the succession classifier names exactly (R4-4 — `RecipeId::Mill` /
 /// `RecipeId::Bake`), re-exported so the suite depends on `sim` alone.
 pub use econ::project::RecipeId;

@@ -1519,6 +1519,13 @@ pub struct ChainConfig {
     /// is the ON-only tag-32 emission (`[32, 1]`). Off (and thus digest-absent) for every
     /// existing config.
     pub saving_allocation_obs: bool,
+    /// DH.b-obs (impl-70) — the PURE-OBSERVATION birth-gate-stock diagnostic. Configured by
+    /// `demography.is_some() && birth_gate_obs` (a `Society`-owned staple-stock event tape plus
+    /// the `Settlement` join); it changes NO behavior, so its ONLY digest footprint is the
+    /// configured-only tag-35 emission (`[35, 1]`), UNAFFECTED by the closure force-disable (the
+    /// tape WRITES additionally gate on `closure_active()`). Off (and thus digest-absent) for
+    /// every existing config.
+    pub birth_gate_obs: bool,
     /// C1R worker share in basis points. Pinned/swept, never searched.
     pub share_bps: u16,
     /// C1R fixed contract term in econ ticks. Pinned/swept, never searched.
@@ -1978,6 +1985,7 @@ impl ChainConfig {
             birth_stock_saving: false,
             birth_stock_saving_mode: BirthStockSavingMode::Off,
             saving_allocation_obs: false,
+            birth_gate_obs: false,
             share_bps: SHARE_TENANCY_BPS_DEFAULT,
             share_term: SHARE_TENANCY_TERM_DEFAULT,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
@@ -2181,6 +2189,7 @@ impl ChainConfig {
             birth_stock_saving: false,
             birth_stock_saving_mode: BirthStockSavingMode::Off,
             saving_allocation_obs: false,
+            birth_gate_obs: false,
             share_bps: SHARE_TENANCY_BPS_DEFAULT,
             share_term: SHARE_TENANCY_TERM_DEFAULT,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
@@ -2363,6 +2372,7 @@ impl ChainConfig {
             birth_stock_saving: false,
             birth_stock_saving_mode: BirthStockSavingMode::Off,
             saving_allocation_obs: false,
+            birth_gate_obs: false,
             share_bps: SHARE_TENANCY_BPS_DEFAULT,
             share_term: SHARE_TENANCY_TERM_DEFAULT,
             land_carrying_cost: LAND_CARRYING_COST_DEFAULT,
@@ -2689,6 +2699,8 @@ pub struct SettlementConfig {
     /// inertness test). See [`mod@closure`].
     pub closed_circulation: bool,
 }
+
+pub mod birth_gate;
 
 pub mod burden;
 
@@ -7378,6 +7390,9 @@ pub struct Settlement {
     /// C3R.e-obs (impl-66): the runtime-only §2 loss-decomposition accumulator. NEVER
     /// serialized; populated only when `saving_allocation_obs_active()`.
     saving_allocation_obs: SavingAllocationObs,
+    /// DH.b-obs (impl-70): the runtime-only birth-gate opportunity/recount accumulator. NEVER
+    /// serialized; populated only when `birth_gate_obs_active()`.
+    birth_gate_obs: birth_gate::BirthGateObs,
     /// Current tick's runtime-only §3.2c stock seam cursor.
     saving_obs_stock_tick: Option<SavingStockTick>,
     /// C3R.e-obs (§3.2a/§5): this tick's PRE-market offerable-seller counts (member,
@@ -8044,6 +8059,7 @@ struct ChainRuntime {
     birth_stock_saving: bool,
     birth_stock_saving_mode: BirthStockSavingMode,
     saving_allocation_obs: bool,
+    birth_gate_obs: bool,
     share_bps: u16,
     share_term: u16,
     land_carrying_cost: u64,
@@ -11006,6 +11022,7 @@ impl Settlement {
                 birth_stock_saving: chain.birth_stock_saving,
                 birth_stock_saving_mode: chain.birth_stock_saving_mode,
                 saving_allocation_obs: chain.saving_allocation_obs,
+                birth_gate_obs: chain.birth_gate_obs,
                 share_bps: chain.share_bps,
                 share_term: chain.share_term,
                 land_carrying_cost: chain.land_carrying_cost,
@@ -11104,6 +11121,7 @@ impl Settlement {
             birth_stock_births_by_household: vec![0; households.len()],
             last_birth_stock_attribution_snapshot: BTreeSet::new(),
             saving_allocation_obs: SavingAllocationObs::default(),
+            birth_gate_obs: birth_gate::BirthGateObs::default(),
             saving_obs_stock_tick: None,
             saving_obs_pending_offerable: None,
             bootstrap_trace: BootstrapTrace::default(),
@@ -11676,6 +11694,7 @@ impl Settlement {
             birth_stock_births_by_household: Vec::new(),
             last_birth_stock_attribution_snapshot: BTreeSet::new(),
             saving_allocation_obs: SavingAllocationObs::default(),
+            birth_gate_obs: birth_gate::BirthGateObs::default(),
             saving_obs_stock_tick: None,
             saving_obs_pending_offerable: None,
             bootstrap_trace: BootstrapTrace::default(),
@@ -11981,6 +12000,12 @@ impl Settlement {
             self.closure_observe_estates();
         }
 
+        // DH.b-obs: open the staple-stock observation window at WindowStart — RIGHT AFTER
+        // death/estate (so estate-to-heir credits fold into the baseline) and BEFORE
+        // `regenerate_scales` (whose quote cancellations emit AskChange). Observation stays live
+        // through `regenerate_scales` and `society.step()`, drained/disabled right after.
+        self.birth_gate_obs_begin_window();
+
         // ---- 4. SCALES.
         self.regenerate_scales();
 
@@ -12175,6 +12200,10 @@ impl Settlement {
         } else {
             self.society.step();
         }
+        // DH.b-obs: drain the Society staple-stock tape (Consumption/SettledTrade/AskChange) into
+        // the joined event tape and disable recording immediately after the step. Production and
+        // the gate/BirthDebit events are appended by the settlement below.
+        self.birth_gate_obs_drain_after_step();
         self.finalize_bootstrap_bid_attempts(provenance_spot_trades_start);
         for (agent, labor) in capital_labor_used {
             self.society.record_external_labor_used(agent, labor);
@@ -12389,6 +12418,10 @@ impl Settlement {
         // matches this tick.
         self.run_birth_stock_ignition();
         self.observe_birth_stock_holdings();
+        // DH.b-obs: the independent denominator recount snapshot — a pre-`run_births` capture of
+        // every producer household's gate inputs, from which the recount replays the strata
+        // WITHOUT reading the observer or any `birth_block_*` counter (§4a).
+        self.capture_birth_gate_recount();
         report.births = self.run_births();
         self.record_birth_stock_control_results(&birth_stock_injections);
         self.saving_obs_capture_post_birth();
@@ -16028,6 +16061,15 @@ impl Settlement {
                     let gold = self.society.free_gold_after_all_reserves(pid).0;
                     (gold, std::cmp::Reverse(slot))
                 });
+            // DH.b-obs: this producer household reached the endowment gate (interval/non-empty/
+            // size-cap/hunger-ceiling passed). Capture the opportunity BEFORE the debit
+            // (`event_end` excludes it); `recorded_pass` = a member can endow (a birth follows).
+            self.birth_gate_obs_capture_opportunity(
+                h,
+                &member_slots,
+                demo.child_food_endowment,
+                parent_slot.is_some(),
+            );
             let Some(parent_slot) = parent_slot else {
                 // No member holds the child's food endowment. On the forage-commons path
                 // the FORAGE selector keeps this rare (parents forage their own food);
@@ -16054,6 +16096,9 @@ impl Settlement {
             {
                 continue; // guarded above; defensive
             }
+            // DH.b-obs: append the post-debit BirthDebit event (tape completeness only — it is
+            // past every opportunity's `event_end`, so it never enters a classification).
+            self.birth_gate_obs_append_birth_debit(parent_id);
             let parent_gold = self.society.free_gold_after_all_reserves(parent_id).0;
             let gold_endow = demo.child_gold_endowment.min(parent_gold);
 
@@ -16467,6 +16512,11 @@ impl Settlement {
         // `&self.live_colonist_slots` iterator.
         let closure_on = self.closure_active();
         let closure_tick = self.econ_tick;
+        // DH.b-obs: precomputed like `closure_on` above so the per-execution Production append
+        // inside the id-loop is a partial borrow (`self.birth_gate_obs`/`self.society`), never a
+        // `&mut self` method that would conflict with the `&self.live_colonist_slots` iterator.
+        let birth_gate_obs_on = self.birth_gate_obs_active();
+        let birth_gate_staple = self.birth_food();
         // `chain`/`colonists` (immutable) and `society` (mutable) are disjoint
         // fields, so id-ordered iteration here borrows them side by side. The
         // recipe ids are content data; mutation delegates to econ's existing
@@ -16516,6 +16566,15 @@ impl Settlement {
                     // Out of input, missing tool, or a gated recipe: nothing more.
                     break;
                 };
+                // DH.b-obs: one Production event per successful recipe execution for a
+                // producer-house member (the post-market staple source; the tape is drained/
+                // disabled by now, so this is a settlement-side append). A no-op off a member.
+                if birth_gate_obs_on && self.birth_gate_obs.tracks(id) {
+                    let free = self
+                        .society
+                        .free_stock_after_all_reserves(id, birth_gate_staple);
+                    self.birth_gate_obs.push_production(id, free);
+                }
                 let (out_good, out_qty) = applied.output;
                 if is_research {
                     // G6b: Knowledge is an ACCUMULATOR, not a tradeable good. Drain the
@@ -19501,6 +19560,24 @@ impl Settlement {
                 .chain
                 .as_ref()
                 .is_some_and(chain_runtime_saving_allocation_obs_active)
+    }
+
+    /// DH.b-obs (impl-70): the CONFIGURED predicate — demography present AND the flag set. Drives
+    /// the tag-35 serialization AND construction-time tape allocation, and is UNAFFECTED by the
+    /// closure force-disable, so the two force-disable twins carry the identical tag (§4b).
+    fn birth_gate_obs_configured(&self) -> bool {
+        self.demography.is_some()
+            && self
+                .chain
+                .as_ref()
+                .is_some_and(|chain| chain.birth_gate_obs)
+    }
+
+    /// DH.b-obs (impl-70): the ACTIVE predicate — configured AND the closure observation is live.
+    /// Drives event WRITES only; under the closure force-disable this goes false (the tape records
+    /// nothing) while the tag byte is unchanged (§2).
+    fn birth_gate_obs_active(&self) -> bool {
+        self.birth_gate_obs_configured() && self.closure_active()
     }
 
     fn producer_stock_provisioning_control_active(&self) -> bool {
@@ -27001,6 +27078,15 @@ impl Settlement {
             if self.closed_circulation {
                 out.push(34);
                 out.push(1);
+            }
+            // DH.b-obs (impl-70): pure observation. The ENTIRE digest footprint is these two bytes
+            // emitted whenever CONFIGURED (demography + flag), UNAFFECTED by the closure
+            // force-disable so both twins carry the identical tag — removing this block yields the
+            // OFF stream byte-for-byte (a dedicated test pins ON = OFF + [35, 1]). No tape, event,
+            // or aggregate is ever serialized.
+            if self.birth_gate_obs_configured() {
+                out.push(35);
+                out.push(u8::from(chain.birth_gate_obs));
             }
             // S23b: the post-money land market extends S23a's registry with an endogenous-price
             // state, listings, last-sale anchors, and the non-agent fee sink. Emitted only when the
