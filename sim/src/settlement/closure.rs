@@ -1944,4 +1944,55 @@ mod inertness_tests {
             );
         }
     }
+
+    /// DH.b-obs (impl-70) §4b(b): the FORCE-DISABLE twins test, placed BESIDE the closure library
+    /// unit tests where `closure_ledger_force_disable_for_test` is visible. Two marker-CONFIGURED
+    /// closed runs (both `birth_gate_obs = true`), one with the closure ledger force-disabled: both
+    /// are configured ⇒ both carry the tag-35 `[35, 1]` byte, so they are LITERALLY
+    /// canonical-byte-identical after generation and after every tick — the disabled twin's
+    /// `birth_gate_obs_active()` is false (no writes, no behavior change), while its tag is
+    /// unchanged (keyed on `configured`, UNAFFECTED by the force-disable).
+    #[test]
+    fn birth_gate_obs_force_disable_twins_are_byte_identical_seed3() {
+        let mut cfg = SettlementConfig::frontier_closed_circulation();
+        cfg.chain
+            .as_mut()
+            .expect("the closed base carries a chain")
+            .birth_gate_obs = true;
+        let mut on = Settlement::generate(SEED3, &cfg);
+        let mut off = Settlement::generate(SEED3, &cfg);
+        // Force-disable the ledger on `off` (before the first econ_tick) — this drives
+        // `birth_gate_obs_active()` false while `birth_gate_obs_configured()` (the tag) stays true.
+        off.closure_ledger_force_disable_for_test();
+        assert_eq!(
+            on.canonical_bytes(),
+            off.canonical_bytes(),
+            "the two configured twins must be byte-identical after generation (both carry [35, 1])"
+        );
+        // A shorter run than the ledger control above; the observation window opens every tick, so
+        // this exercises the whole tape lifecycle many times over.
+        const TWIN_TICKS: u64 = 600;
+        for tick in 0..TWIN_TICKS {
+            let report_on = on.econ_tick();
+            let report_off = off.econ_tick();
+            assert_eq!(
+                report_on, report_off,
+                "the EconTickReport must be identical for the configured force-disable twins (tick {tick})"
+            );
+            assert_eq!(
+                on.canonical_bytes(),
+                off.canonical_bytes(),
+                "canonical_bytes must be identical for the configured force-disable twins (tick {tick})"
+            );
+        }
+        // The active twin observed; the force-disabled twin recorded nothing.
+        assert!(
+            !on.birth_gate_opportunities().is_empty(),
+            "the active twin must capture opportunities"
+        );
+        assert!(
+            off.birth_gate_opportunities().is_empty(),
+            "the force-disabled twin must record no opportunities"
+        );
+    }
 }
