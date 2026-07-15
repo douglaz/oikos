@@ -1991,14 +1991,20 @@ so the q>0 failures are failures of the economy, not the measure).
 
 The answer to the decomposition question: **the wall is income, not atomicity.** The producer
 household does not fail to concentrate its stock in one member's hands; it fails to have the stock
-at all. This is throughput-one baker production running out against ~one loaf per member per tick of
-survival consumption, and millers who bake no bread and lose the buy-bread contest — the household
-nets essentially nothing, and usually holds nothing free. The consequence for the program's next
-move is sharp and evidence-based: it **deselects pooling as the canonical-burden lever** — pooled-heir
-succession, within-household aggregation, any same-tick gate-instant pooling — because with
-`SplitAtGate` identically zero there is no dispersed stock to pool. It **selects the income/supply
-side**: baker net surplus relative to household consumption, and the miller's income and access to
-bread. A stronger reservation or a distinct non-eaten birth good remains a secondary lever, but only
+at all — it holds no free bread to hold at the gate, usually not even one loaf. What this slice does
+NOT establish is WHY the household nets nothing: whether bakers fail to bake (flour- or
+tool-starved), bake but dispose of the output (a bake application yields three loaves against a
+member's roughly two-thirds-loaf-equivalent per-tick need, so a baker that bakes is not
+consumption-limited — the naive "produces one, eats one" reading is contradicted by the recipe
+yield), or something else; and whether millers, who bake no bread and must buy it, fail on income,
+on offer scarcity, or on the allocation contest. Those are distinct submechanisms, plausibly
+different for the two producer classes, and measuring them is the next slice, not this one. The
+consequence that IS evidence-based here: the decomposition **deselects pooling as the
+canonical-burden lever** — pooled-heir succession, within-household aggregation, any same-tick
+gate-instant pooling — because with `SplitAtGate` identically zero there is no dispersed stock to
+pool. It **selects the income/supply side**: the producer-household bread budget, measured per class
+before any treatment. A stronger reservation or a distinct non-eaten birth good remains a secondary
+lever, but only
 for the small consumption-drained tail — not the dominant failure. For the first time in the arc the
 next lever is chosen by measurement rather than intuition.
 

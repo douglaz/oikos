@@ -290,11 +290,25 @@ Falsifiable bar: production survives the death of producers.
 >   aggregation, gate-instant pooling — no dispersed stock to pool) and **SELECTS the income/supply side**:
 >   baker net surplus vs household consumption; miller income + bread access. Persistent/cross-household
 >   pooling that changes stock BEFORE WindowStart is not ruled out; reservation-strengthening / a
->   non-eaten birth good is a secondary lever for the small drained tail. **NEXT SCOPING (income-side):
->   why does a producer household net ~0 free bread — is it throughput=1 baker production ≈ member
->   consumption (a production-capacity slice), the miller's zero bread output + lost buy-contest (a
->   trade-access slice), or the survival-consumption drain (a distinct-birth-good slice)? Pending user /
->   next consultation.**
+>   non-eaten birth good is a secondary lever for the small drained tail. **NEXT SLICE SCOPED (Codex
+>   xhigh consultation 2026-07-15): DH.b-income-obs — a UNIFIED, CLASS-SEPARATED pure-observation
+>   producer-household BREAD-BUDGET decomposition, on the 10 canonical cells (q=4 × {Off,Motive} × 5
+>   seeds), measuring per household/class the full bread+gold flow (opening/free stock, successful bake
+>   applications + exact output, purchases, consumption, sales, spoilage/estate, market income by
+>   good+buyer-class, and the authoritative fate of bread bids) — to SEPARATE the baker-capacity wall
+>   from the miller-trade-access wall before any treatment. CRITICAL CORRECTION the consultation
+>   surfaced: the "throughput=1 ≈ consumption, net≈0" premise is WRONG — a Bake application yields
+>   BREAD_PER_BAKE=3 loaves (content.rs:21), Mill yields FLOUR_PER_MILL=3; a baker that bakes is NOT
+>   consumption-limited, so the household holding zero free bread is an UNestablished submechanism
+>   (not-baking / selling-all / input-starved), which is exactly what this slice measures. Reuses the
+>   DH.a event tape + C3R.e-obs quote trace + closure class registry; adds only a stable actor→household
+>   join, bid-time budget context, one typed reducer; report per household/class/seed/arm, normalized by
+>   household-tick and person-tick, promote a class diagnosis only on a strict 5/5-seed majority else
+>   Mixed. DESELECT: (a) throughput sweep now (throughput is imposed production-technology, not natural
+>   data like the burden — a later technology-shock sensitivity only, canonical stays 1); (c) distinct
+>   birth good / hard reservation (2.6% of failures; a hard reservation overturns survival ordering and
+>   risks a starve-while-holding false green). (b) trade-access is absorbed INTO the unified observer.
+>   Pending user go-ahead to spec DH.b-income-obs.**
 
 **P5+ — re-derive the institutional stack on the living base.** Firms (C2R) and rent/factor markets
 (C4R) once solvent counterparties exist; the classes/mobility measurement (C9) over whatever forms;
