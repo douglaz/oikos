@@ -10562,30 +10562,24 @@ mod tests {
         society.step();
         let tick1 = society.take_staple_stock_events();
         assert_eq!(
-            settled_trades(&tick1),
-            1,
-            "tick 1 fills the resting ask: {tick1:?}"
+            tick1,
+            vec![StapleStockEvent::SettledTrade {
+                seller: AgentId(2),
+                seller_state: StapleAgentState {
+                    physical: 2,
+                    reserved: 0,
+                    free: 2,
+                },
+                buyer: AgentId(1),
+                buyer_state: StapleAgentState {
+                    physical: 1,
+                    reserved: 0,
+                    free: 1,
+                },
+            }],
+            "the resting-ask fill is exactly one folded two-member trade, with no standalone \
+             AskChange or release-only seller peak"
         );
-        let StapleStockEvent::SettledTrade {
-            seller,
-            seller_state,
-            buyer,
-            ..
-        } = tick1
-            .iter()
-            .find(|e| matches!(e, StapleStockEvent::SettledTrade { .. }))
-            .copied()
-            .expect("a SettledTrade")
-        else {
-            unreachable!()
-        };
-        assert_eq!(seller, AgentId(2));
-        assert_eq!(buyer, AgentId(1));
-        // Post-move: physical 2, no reservation (the resting ask filled), free 2 — never a phantom
-        // 3 from the reservation-release-before-stock-move ordering.
-        assert_eq!(seller_state.physical, 2);
-        assert_eq!(seller_state.free, 2);
-        assert_eq!(seller_state.reserved, 0);
     }
 
     #[test]
@@ -10604,24 +10598,34 @@ mod tests {
         society.step();
         let tick0 = society.take_staple_stock_events();
         assert_eq!(ask_changes(&tick0), 1, "tick 0 posts the ask: {tick0:?}");
+        society.end_staple_obs_window();
 
-        // Step until the ask's TTL expires; the expiry purge emits an AskChange raising free back.
-        let mut saw_expiry_release = false;
-        for _ in 0..(ORDER_TTL + 2) {
-            society.begin_staple_obs_window(FOOD, true);
+        // Advance to (but do not run) the expiry tick with observation inactive. Calling the real
+        // purge seam directly isolates the TTL release from the later quote-regeneration pass,
+        // making the emitter contract an exact-vector assertion rather than an "event occurred
+        // somewhere in this step" check.
+        for _ in 1..ORDER_TTL {
             society.step();
-            let events = society.take_staple_stock_events();
-            if events
-                .iter()
-                .any(|e| matches!(e, StapleStockEvent::AskChange { state, .. } if state.free == 2))
-            {
-                saw_expiry_release = true;
-                break;
-            }
         }
-        assert!(
-            saw_expiry_release,
-            "the TTL expiry must emit an AskChange releasing the ask reservation (free back to 2)"
+        assert_eq!(society.tick.0, ORDER_TTL, "the ask expires at this tick");
+        society.begin_staple_obs_window(FOOD, true);
+        assert_eq!(
+            society.purge_expired_orders(),
+            1,
+            "exactly one order expires"
+        );
+        let events = society.take_staple_stock_events();
+        assert_eq!(
+            events,
+            vec![StapleStockEvent::AskChange {
+                agent: AgentId(1),
+                state: StapleAgentState {
+                    physical: 2,
+                    reserved: 0,
+                    free: 2,
+                },
+            }],
+            "the TTL purge emits exactly one post-release AskChange"
         );
     }
 
@@ -10646,11 +10650,17 @@ mod tests {
         society.begin_staple_obs_window(FOOD, true);
         society.step();
         let tick1 = society.take_staple_stock_events();
-        assert!(
-            tick1.iter().any(
-                |e| matches!(e, StapleStockEvent::AskChange { agent, .. } if *agent == AgentId(1))
-            ),
-            "cancelling the stale ask must emit an AskChange: {tick1:?}"
+        assert_eq!(
+            tick1,
+            vec![StapleStockEvent::AskChange {
+                agent: AgentId(1),
+                state: StapleAgentState {
+                    physical: 2,
+                    reserved: 0,
+                    free: 2,
+                },
+            }],
+            "ordinary rewrite cancellation emits exactly one post-release AskChange"
         );
     }
 
@@ -10682,24 +10692,17 @@ mod tests {
         society.cancel_changed_live_quotes_for_agents(&[AgentId(1)]);
         let events = society.take_staple_stock_events();
         assert_eq!(
-            ask_changes(&events),
-            1,
-            "the regenerate-seam batch cancel emits one AskChange: {events:?}"
+            events,
+            vec![StapleStockEvent::AskChange {
+                agent: AgentId(1),
+                state: StapleAgentState {
+                    physical: 2,
+                    reserved: 0,
+                    free: 2,
+                },
+            }],
+            "the regenerate-seam batch cancel emits exactly one post-release AskChange"
         );
-        let StapleStockEvent::AskChange { agent, state } = events
-            .iter()
-            .find(|e| matches!(e, StapleStockEvent::AskChange { .. }))
-            .copied()
-            .expect("an AskChange")
-        else {
-            unreachable!()
-        };
-        assert_eq!(agent, AgentId(1));
-        assert_eq!(
-            state.free, 2,
-            "cancelling the stale ask releases its reservation (free back to 2)"
-        );
-        assert_eq!(state.reserved, 0);
     }
 
     #[test]

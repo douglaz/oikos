@@ -12,34 +12,12 @@
 //! rung 6+/7 on 5/5 seeds authorizes a FUTURE rerun, never executed here.
 
 use sim::{
-    burden_dh_c_gate, burden_motive_effect, burden_nonmonotone_pairs, run_burden_grid,
-    BirthStockSavingMode, BurdenCellVerdict, BurdenSavingArm, BurdenSynthesis, Settlement,
-    SettlementConfig, BURDEN_QS, BURDEN_SEEDS,
+    burden_cell_config, burden_dh_c_gate, burden_motive_effect, burden_nonmonotone_pairs,
+    run_burden_grid, BirthStockSavingMode, BurdenCellVerdict, BurdenSavingArm, BurdenSynthesis,
+    Settlement, SettlementConfig, BURDEN_QS, BURDEN_SEEDS,
 };
 
 const CELL_AUDIT_GOLDEN: &str = include_str!("goldens/reproductive_burden_cells.txt");
-
-/// The per-cell config: `frontier_closed_circulation()` + EXACTLY {child_food_endowment=q, the
-/// two-field saving arm} and nothing else (§2). q=4 stays canonical in every constructor — the
-/// sweep lives only here, in the test.
-fn cell_config(q: u32, arm: BurdenSavingArm) -> SettlementConfig {
-    let mut cfg = SettlementConfig::frontier_closed_circulation();
-    cfg.demography
-        .as_mut()
-        .expect("the closed base carries demography")
-        .child_food_endowment = q;
-    if arm == BurdenSavingArm::On {
-        let chain = cfg.chain.as_mut().expect("the closed base carries a chain");
-        chain.birth_stock_saving = true;
-        chain.birth_stock_saving_mode = BirthStockSavingMode::Motive;
-    }
-    // SufficiencyControl is unreachable in every cell (§2).
-    assert_ne!(
-        cfg.chain.as_ref().expect("chain").birth_stock_saving_mode,
-        BirthStockSavingMode::SufficiencyControl
-    );
-    cfg
-}
 
 /// The 60-cell audit: serial, seeds outermost, q ascending, Off-then-On (§3). Scientific
 /// outcomes print AND are machine-bound against the committed audit-table golden; the hard
@@ -160,7 +138,7 @@ fn twelve_arm_configs_are_pairwise_distinguished_by_canonical_state() {
     let mut bytes: Vec<((u32, BurdenSavingArm), Vec<u8>)> = Vec::new();
     for &q in &BURDEN_QS {
         for arm in [BurdenSavingArm::Off, BurdenSavingArm::On] {
-            let mut cfg = cell_config(q, arm);
+            let mut cfg = burden_cell_config(q, arm, false);
             // Nothing-else-changed: reverting the two swept fields restores the exact base.
             cfg.demography
                 .as_mut()
@@ -174,7 +152,7 @@ fn twelve_arm_configs_are_pairwise_distinguished_by_canonical_state() {
                 SettlementConfig::frontier_closed_circulation(),
                 "cell (q={q}, {arm:?}) must differ from the base by exactly the two fields"
             );
-            let s = Settlement::generate(3, &cell_config(q, arm));
+            let s = Settlement::generate(3, &burden_cell_config(q, arm, false));
             bytes.push(((q, arm), s.canonical_bytes()));
         }
     }
@@ -195,12 +173,12 @@ fn twelve_arm_configs_are_pairwise_distinguished_by_canonical_state() {
 #[test]
 fn canonical_cell_config_is_identical_to_the_landed_closed_base() {
     assert_eq!(
-        cell_config(4, BurdenSavingArm::Off),
+        burden_cell_config(4, BurdenSavingArm::Off, false),
         SettlementConfig::frontier_closed_circulation(),
         "the (q=4, Off) cell IS the landed closed base"
     );
     // …and its generated settlement is byte-identical too.
-    let cell = Settlement::generate(3, &cell_config(4, BurdenSavingArm::Off));
+    let cell = Settlement::generate(3, &burden_cell_config(4, BurdenSavingArm::Off, false));
     let base = Settlement::generate(3, &SettlementConfig::frontier_closed_circulation());
     assert_eq!(cell.canonical_bytes(), base.canonical_bytes());
 }

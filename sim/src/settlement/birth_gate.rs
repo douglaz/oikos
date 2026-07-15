@@ -797,6 +797,18 @@ pub struct BirthGateCellObs {
     pub recount: Vec<BirthGateRecountSnapshot>,
     pub births: u64,
     pub birth_block_endowment: u64,
+    /// The actual stock-mutation phase at the birth gate. The sufficiency-control and ignition
+    /// hooks are the only mutation seams between post-production and `run_births`; a completed
+    /// injection therefore moves this to `PostIntervention`. The DH.b grid hard-asserts the
+    /// measured value stays `PostProduction` rather than inferring that from configuration.
+    pub gate_phase: BirthGatePhase,
+}
+
+/// The measured stock phase supplying the authoritative birth-gate read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BirthGatePhase {
+    PostProduction,
+    PostIntervention,
 }
 
 /// One cell's run summary — the diagnostic figures both suites print and guard on.
@@ -834,7 +846,7 @@ pub struct BurdenGridResult {
 /// The per-cell config: `frontier_closed_circulation()` + EXACTLY {child_food_endowment=q, the
 /// two-field saving arm}, plus the pure-observation `birth_gate_obs` flag when observing (which
 /// changes NO behavior). q=4 stays canonical; the sweep lives only in the harness.
-fn cell_config(q: u32, arm: BurdenSavingArm, observe: bool) -> SettlementConfig {
+pub fn burden_cell_config(q: u32, arm: BurdenSavingArm, observe: bool) -> SettlementConfig {
     let mut cfg = SettlementConfig::frontier_closed_circulation();
     cfg.demography
         .as_mut()
@@ -862,7 +874,7 @@ struct CellRunFull {
 /// Run one cell through the REAL burden pipeline (identical to the landed DH.b `run_cell`), and,
 /// when observing, collect the birth-gate opportunities + recount.
 fn run_burden_cell(q: u32, arm: BurdenSavingArm, seed: u64, observe: bool) -> CellRunFull {
-    let cfg = cell_config(q, arm, observe);
+    let cfg = burden_cell_config(q, arm, observe);
     let mut s = Settlement::generate(seed, &cfg);
     let mut guards: Vec<String> = Vec::new();
 
@@ -1066,6 +1078,11 @@ fn run_burden_cell(q: u32, arm: BurdenSavingArm, seed: u64, observe: bool) -> Ce
         recount: s.birth_gate_recount_snapshots().to_vec(),
         births: s.burden_birth_events().len() as u64,
         birth_block_endowment: s.birth_block_endowment(),
+        gate_phase: if s.birth_stock_injections_completed() == 0 {
+            BirthGatePhase::PostProduction
+        } else {
+            BirthGatePhase::PostIntervention
+        },
     });
 
     CellRunFull {
@@ -1168,5 +1185,112 @@ pub fn run_burden_grid(observe: bool) -> BurdenGridResult {
         wall_secs: wall.elapsed().as_secs_f64(),
         opportunities_by_cell: observe.then_some(opportunities_by_cell),
         recount_by_cell: observe.then_some(recount_by_cell),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use econ::agent::{Want, WantKind};
+    use econ::good::{Gold, Horizon, GOLD};
+
+    fn want(kind: WantKind) -> Vec<Want> {
+        vec![Want {
+            kind,
+            horizon: Horizon::Next,
+            qty: 1,
+            satisfied: false,
+        }]
+    }
+
+    #[test]
+    fn live_same_household_trade_joins_as_one_two_member_event() {
+        let mut cfg = SettlementConfig::frontier_closed_circulation();
+        cfg.demography
+            .as_mut()
+            .expect("closed circulation has demography")
+            .households[0]
+            .founders = 2;
+        cfg.chain
+            .as_mut()
+            .expect("closed base has a chain")
+            .birth_gate_obs = true;
+        let mut settlement = Settlement::generate(1, &cfg);
+        let staple = settlement.birth_food();
+        let mut household_members: Vec<AgentId> = settlement
+            .live_colonist_slots
+            .iter()
+            .filter_map(|&slot| {
+                (settlement.colonists[slot].household == Some(0))
+                    .then_some(settlement.colonists[slot].id)
+            })
+            .collect();
+        household_members.sort();
+        assert!(
+            household_members.len() >= 2,
+            "the test household must contain at least two live members"
+        );
+        let (buyer, seller) = (household_members[0], household_members[1]);
+
+        // Silence every unrelated quote, then give the two same-household members the exact
+        // buyer/seller setup used by the econ live-emitter battery.
+        let agent_ids: Vec<AgentId> = settlement
+            .society
+            .agents
+            .iter()
+            .map(|agent| agent.id)
+            .collect();
+        for id in agent_ids {
+            let agent = settlement.society.agents.get_mut(id).expect("live agent");
+            agent.scale = want(WantKind::Leisure);
+            agent.gold = Gold::ZERO;
+            let held = agent.stock.get(staple);
+            if held > 0 {
+                assert!(agent.stock.remove(staple, held));
+            }
+        }
+        {
+            let buyer_agent = settlement.society.agents.get_mut(buyer).expect("buyer");
+            buyer_agent.gold = Gold(10);
+            buyer_agent.scale = want(WantKind::Good(staple));
+        }
+        {
+            let seller_agent = settlement.society.agents.get_mut(seller).expect("seller");
+            seller_agent.stock.add(staple, 3);
+            seller_agent.scale = want(WantKind::Good(GOLD));
+        }
+
+        // Tick 0 leaves the seller's ask resting.
+        settlement
+            .society
+            .set_bid_override(buyer, staple, Gold::ZERO, Gold::ZERO);
+        settlement.birth_gate_obs_begin_window();
+        settlement.society.step();
+        settlement.birth_gate_obs_drain_after_step();
+        assert_eq!(
+            settlement.birth_gate_obs.joined_events,
+            vec![BirthGateEvent {
+                cause: EventCause::AskChange,
+                updates: vec![(seller, 2)],
+            }],
+            "the setup tick must contain only the resting-ask reservation"
+        );
+
+        // Tick 1's incoming bid fills that resting ask. The LIVE Settlement join must preserve the
+        // Society event's atomic two-member grouping, with no standalone release AskChange.
+        settlement
+            .society
+            .set_bid_override(buyer, staple, Gold(5), Gold(3));
+        settlement.birth_gate_obs_begin_window();
+        settlement.society.step();
+        settlement.birth_gate_obs_drain_after_step();
+        assert_eq!(
+            settlement.birth_gate_obs.joined_events,
+            vec![BirthGateEvent {
+                cause: EventCause::SettledTradeSell,
+                updates: vec![(seller, 2), (buyer, 1)],
+            }],
+            "the same-household fill must join as exactly one two-member event"
+        );
     }
 }

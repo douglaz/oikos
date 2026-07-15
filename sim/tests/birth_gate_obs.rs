@@ -14,13 +14,21 @@ use std::time::Instant;
 
 use sim::{
     birth_gate_replay_reconciles, classify_birth_gate_opportunity, run_burden_grid, AgentId,
-    BirthGateEvent, BirthGateOutcome, BirthGateRawOpportunity, BirthGateReport, BirthGateReportRow,
-    BirthGateState, BirthGateTally, BirthStockSavingMode, BurdenSavingArm, BurdenSynthesis,
-    ClosureClass, EventCause, Settlement, SettlementConfig, BURDEN_PRODUCER_CLASSES, BURDEN_QS,
-    BURDEN_SEEDS,
+    BirthGateEvent, BirthGateOutcome, BirthGatePhase, BirthGateRawOpportunity, BirthGateReport,
+    BirthGateReportRow, BirthGateState, BirthGateTally, BirthStockSavingMode, BurdenSavingArm,
+    BurdenSynthesis, ClosureClass, EventCause, Settlement, SettlementConfig,
+    BURDEN_PRODUCER_CLASSES, BURDEN_QS, BURDEN_SEEDS,
 };
 
 const CELL_AUDIT_GOLDEN: &str = include_str!("goldens/reproductive_burden_cells.txt");
+const PAIRED_TABLE_GOLDEN: [&str; 6] = [
+    "paired_births|q=0|seeds=[3, 7, 11, 19, 23]|off=[707, 705, 702, 720, 717]|on=[707, 705, 702, 720, 717]|delta=[0, 0, 0, 0, 0]",
+    "paired_births|q=1|seeds=[3, 7, 11, 19, 23]|off=[10, 14, 13, 13, 11]|on=[10, 14, 13, 12, 8]|delta=[0, 0, 0, -1, -3]",
+    "paired_births|q=2|seeds=[3, 7, 11, 19, 23]|off=[6, 6, 6, 6, 6]|on=[6, 6, 6, 6, 6]|delta=[0, 0, 0, 0, 0]",
+    "paired_births|q=3|seeds=[3, 7, 11, 19, 23]|off=[0, 0, 0, 0, 0]|on=[0, 0, 0, 0, 0]|delta=[0, 0, 0, 0, 0]",
+    "paired_births|q=4|seeds=[3, 7, 11, 19, 23]|off=[0, 0, 0, 0, 0]|on=[0, 0, 0, 0, 0]|delta=[0, 0, 0, 0, 0]",
+    "paired_births|q=8|seeds=[3, 7, 11, 19, 23]|off=[0, 0, 0, 0, 0]|on=[0, 0, 0, 0, 0]|delta=[0, 0, 0, 0, 0]",
+];
 
 // ===========================================================================================
 // The shared-harness behavioral oracle (asserted) + the printed decomposition — ONE execution
@@ -55,6 +63,11 @@ fn birth_gate_obs_oracle_and_decomposition() {
         "the landed DH.b synthesis is CostlessOnlyReplacement, got {:?}",
         grid.synthesis
     );
+    let paired_table: Vec<&str> = grid.paired_table.iter().map(String::as_str).collect();
+    assert_eq!(
+        paired_table, PAIRED_TABLE_GOLDEN,
+        "the landed paired-birth table must reproduce byte-identically under observation"
+    );
 
     let opportunities_by_cell = grid
         .opportunities_by_cell
@@ -64,6 +77,17 @@ fn birth_gate_obs_oracle_and_decomposition() {
         .recount_by_cell
         .as_ref()
         .expect("observe=true yields Some(recount)");
+
+    // ---- HARD guard: the authoritative stock gate is still the measured post-production state.
+    // This reads the actual completed-intervention seam from each executed cell; it does not infer
+    // the phase from the configured saving/control/ignition modes.
+    for (&(q, arm, seed), obs) in recount_by_cell {
+        assert_eq!(
+            obs.gate_phase,
+            BirthGatePhase::PostProduction,
+            "gate_phase == post_production (q={q}, {arm:?}, seed={seed})"
+        );
+    }
 
     // ---- The report (the SOLE reducer): classify every raw opportunity exactly once.
     let rows: Vec<BirthGateReportRow<'_>> = opportunities_by_cell
@@ -127,14 +151,14 @@ fn birth_gate_obs_oracle_and_decomposition() {
         if q != 4 {
             continue;
         }
-        let (r_opp, _r_pass, r_fail, _by_type) = recount_tally(obs);
+        let (recount, _by_type) = recount_tally(obs);
         assert!(
-            r_opp > 0,
+            recount.opportunities > 0,
             "q=4 non-vacuity: cell (q={q}, {arm:?}, seed={seed}) must have >0 independent \
              opportunities"
         );
         assert_eq!(
-            r_fail, r_opp,
+            recount.failures, recount.opportunities,
             "q=4 non-vacuity: cell (q={q}, {arm:?}, seed={seed}) — every otherwise-eligible \
              opportunity must fail the endowment gate"
         );
@@ -144,7 +168,7 @@ fn birth_gate_obs_oracle_and_decomposition() {
     // pre-run_births snapshot (never reading the observer or birth_block_* counters); the full
     // component-wise equality set + Miller + Baker = global (component-wise).
     for (&(q, arm, seed), obs) in recount_by_cell {
-        let (r_opp, r_pass, r_fail, r_by_type) = recount_tally(obs);
+        let (recount, recount_by_type) = recount_tally(obs);
         // The observer tally for this cell (classified independently of the recount).
         let opportunities = &opportunities_by_cell[&(q, arm, seed)];
         let cell_report = BirthGateReport::from_traces(
@@ -159,33 +183,57 @@ fn birth_gate_obs_oracle_and_decomposition() {
                 .collect::<Vec<_>>(),
         );
         assert_eq!(
-            r_opp, cell_report.global.opportunities,
+            recount.opportunities, cell_report.global.opportunities,
             "recount opportunities == observer opportunities (q={q}, {arm:?}, seed={seed})"
         );
         assert_eq!(
-            r_pass, cell_report.global.passes,
+            recount.passes, cell_report.global.passes,
             "recount passes == observer passes (q={q}, {arm:?}, seed={seed})"
         );
         assert_eq!(
-            r_fail, cell_report.global.failures,
+            recount.failures, cell_report.global.failures,
             "recount failures == observer failures (q={q}, {arm:?}, seed={seed})"
         );
         assert_eq!(
-            r_pass, obs.births,
+            recount.passes, obs.births,
             "recount passes == births delta (q={q}, {arm:?}, seed={seed})"
         );
         assert_eq!(
-            r_fail, obs.birth_block_endowment,
+            recount.failures, obs.birth_block_endowment,
             "recount failures == birth_block_endowment delta (q={q}, {arm:?}, seed={seed})"
         );
-        // Miller + Baker = global (component-wise) for the recount opportunities.
-        let miller_opp = r_by_type.get(&ClosureClass::Miller).copied().unwrap_or(0);
-        let baker_opp = r_by_type.get(&ClosureClass::Baker).copied().unwrap_or(0);
-        assert_eq!(
-            miller_opp + baker_opp,
-            r_opp,
-            "recount Miller + Baker == global opportunities (q={q}, {arm:?}, seed={seed})"
-        );
+        // Miller + Baker = global component-wise for the INDEPENDENT recount, and each type's
+        // opportunities/passes/failures independently equals the observer's corresponding type.
+        let miller = recount_by_type
+            .get(&ClosureClass::Miller)
+            .copied()
+            .unwrap_or_default();
+        let baker = recount_by_type
+            .get(&ClosureClass::Baker)
+            .copied()
+            .unwrap_or_default();
+        assert_recount_component_wise_sum(&miller, &baker, &recount, q, arm, seed);
+        for (producer_type, independent) in
+            [(ClosureClass::Miller, miller), (ClosureClass::Baker, baker)]
+        {
+            let observed = cell_report
+                .by_type
+                .get(&producer_type)
+                .cloned()
+                .unwrap_or_default();
+            assert_eq!(
+                independent.opportunities, observed.opportunities,
+                "recount {producer_type:?} opportunities == observer (q={q}, {arm:?}, seed={seed})"
+            );
+            assert_eq!(
+                independent.passes, observed.passes,
+                "recount {producer_type:?} passes == observer (q={q}, {arm:?}, seed={seed})"
+            );
+            assert_eq!(
+                independent.failures, observed.failures,
+                "recount {producer_type:?} failures == observer (q={q}, {arm:?}, seed={seed})"
+            );
+        }
     }
 
     // ---- The decomposition — PRINTED, never asserted.
@@ -260,25 +308,67 @@ fn assert_component_wise_sum(
     }
 }
 
-/// Recount tallies over one cell's independent snapshots: `(opportunities, passes, failures,
-/// opportunities-by-producer-type)`. Reads NEITHER the observer NOR any birth_block_* counter.
-fn recount_tally(obs: &sim::BirthGateCellObs) -> (u64, u64, u64, BTreeMap<ClosureClass, u64>) {
-    let mut opp = 0u64;
-    let mut pass = 0u64;
-    let mut fail = 0u64;
-    let mut by_type: BTreeMap<ClosureClass, u64> = BTreeMap::new();
-    for snap in &obs.recount {
-        if snap.reached_endowment_gate() {
-            opp += 1;
-            *by_type.entry(snap.producer_type).or_insert(0) += 1;
-            if snap.gate_passed() {
-                pass += 1;
-            } else {
-                fail += 1;
-            }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct RecountTally {
+    opportunities: u64,
+    passes: u64,
+    failures: u64,
+}
+
+impl RecountTally {
+    fn record(&mut self, passed: bool) {
+        self.opportunities += 1;
+        if passed {
+            self.passes += 1;
+        } else {
+            self.failures += 1;
         }
     }
-    (opp, pass, fail, by_type)
+}
+
+/// Recount tallies over one cell's independent snapshots, globally and by producer type. Reads
+/// NEITHER the observer NOR any `birth_block_*` counter.
+fn recount_tally(
+    obs: &sim::BirthGateCellObs,
+) -> (RecountTally, BTreeMap<ClosureClass, RecountTally>) {
+    let mut global = RecountTally::default();
+    let mut by_type: BTreeMap<ClosureClass, RecountTally> = BTreeMap::new();
+    for snap in &obs.recount {
+        if snap.reached_endowment_gate() {
+            let passed = snap.gate_passed();
+            global.record(passed);
+            by_type
+                .entry(snap.producer_type)
+                .or_default()
+                .record(passed);
+        }
+    }
+    (global, by_type)
+}
+
+fn assert_recount_component_wise_sum(
+    miller: &RecountTally,
+    baker: &RecountTally,
+    global: &RecountTally,
+    q: u32,
+    arm: BurdenSavingArm,
+    seed: u64,
+) {
+    assert_eq!(
+        miller.opportunities + baker.opportunities,
+        global.opportunities,
+        "recount Miller + Baker == global opportunities (q={q}, {arm:?}, seed={seed})"
+    );
+    assert_eq!(
+        miller.passes + baker.passes,
+        global.passes,
+        "recount Miller + Baker == global passes (q={q}, {arm:?}, seed={seed})"
+    );
+    assert_eq!(
+        miller.failures + baker.failures,
+        global.failures,
+        "recount Miller + Baker == global failures (q={q}, {arm:?}, seed={seed})"
+    );
 }
 
 fn print_decomposition(report: &BirthGateReport) {
@@ -586,6 +676,25 @@ fn classifier_member_drained_by_ask_change_only() {
 }
 
 #[test]
+fn classifier_member_drain_uses_the_last_downward_crossing() {
+    // Member 1 crosses below q twice. The later Consumption transition, not the first AskChange,
+    // is the cause immediately preceding the gate.
+    let events = [
+        ev(EventCause::AskChange, &[(a(1), 1)]),
+        ev(EventCause::Production, &[(a(1), 5)]),
+        ev(EventCause::Consumption, &[(a(1), 2)]),
+    ];
+    let outcome = classify(&[(a(1), 4)], &events, &[(a(1), 2)], false, 4);
+    assert_eq!(
+        outcome,
+        BirthGateOutcome::MemberDrainedBeforeGate {
+            crossing: EventCause::Consumption,
+            member: a(1),
+        }
+    );
+}
+
+#[test]
 fn classifier_split_at_gate() {
     // No single member ever reaches q, but the household TOTAL is ≥ q at the gate.
     let outcome = classify(
@@ -624,6 +733,30 @@ fn classifier_household_drained() {
         &[(a(1), 2), (a(2), 2)],
         &events,
         &[(a(1), 0), (a(2), 2)],
+        false,
+        4,
+    );
+    assert_eq!(
+        outcome,
+        BirthGateOutcome::HouseholdDrainedBeforeGate {
+            crossing: EventCause::SettledTradeSell,
+        }
+    );
+}
+
+#[test]
+fn classifier_household_drain_uses_the_last_downward_crossing() {
+    // No member reaches q alone, while the household total crosses below q twice. The final
+    // SettledTradeSell transition wins over the earlier AskChange.
+    let events = [
+        ev(EventCause::AskChange, &[(a(1), 0)]),
+        ev(EventCause::Production, &[(a(1), 2)]),
+        ev(EventCause::SettledTradeSell, &[(a(2), 0)]),
+    ];
+    let outcome = classify(
+        &[(a(1), 2), (a(2), 2)],
+        &events,
+        &[(a(1), 2), (a(2), 0)],
         false,
         4,
     );
@@ -724,7 +857,10 @@ fn plumbing_moving_a_trace_moves_exactly_one_bucket() {
         producer_type: ClosureClass::Baker,
         q: 4,
         window_start: vec![(a(1), 1), (a(2), 1)],
-        events: vec![],
+        events: vec![
+            ev(EventCause::Production, &[(a(1), 2)]),
+            ev(EventCause::Consumption, &[(a(1), 1)]),
+        ],
         gate: BirthGateState {
             members: vec![(a(1), 1), (a(2), 1)],
             recorded_pass: false,
@@ -737,18 +873,26 @@ fn plumbing_moving_a_trace_moves_exactly_one_bucket() {
         opportunity: &base,
     }];
     let before = BirthGateReport::from_traces(&rows);
-    // The base opportunity: total 2 < 4, never reached → NeverReachedQ.
-    assert_eq!(before.global.never_reached_q, 1);
-    assert_eq!(before.global.split_at_gate, 0);
+    // The base event raises the household peak only to 3, then the fixed terminal Consumption
+    // restores the fixed gate state: NeverReachedQ, peak=3, gap=1, with no crossing cause.
+    assert_eq!(
+        before.global,
+        BirthGateTally {
+            opportunities: 1,
+            failures: 1,
+            never_reached_q: 1,
+            peak_hist: BTreeMap::from([(3, 1)]),
+            gap_hist: BTreeMap::from([(1, 1)]),
+            ..BirthGateTally::default()
+        }
+    );
 
-    // Mutate the trace so the household total reaches q at the gate (SplitAtGate). Exactly one
-    // bucket must move: never_reached_q 1→0, split_at_gate 0→1.
+    // Hold the baseline and authoritative gate FIXED. Mutate only the real Production event so
+    // the household reaches q before the same Consumption returns it to the same gate state.
+    let mut moved_events = base.events.clone();
+    moved_events[0] = ev(EventCause::Production, &[(a(1), 3)]);
     let mutated = BirthGateRawOpportunity {
-        window_start: vec![(a(1), 2), (a(2), 2)],
-        gate: BirthGateState {
-            members: vec![(a(1), 2), (a(2), 2)],
-            recorded_pass: false,
-        },
+        events: moved_events,
         ..base.clone()
     };
     let rows = [BirthGateReportRow {
@@ -758,10 +902,21 @@ fn plumbing_moving_a_trace_moves_exactly_one_bucket() {
         opportunity: &mutated,
     }];
     let after = BirthGateReport::from_traces(&rows);
-    assert_eq!(after.global.never_reached_q, 0, "never_reached_q must drop");
-    assert_eq!(after.global.split_at_gate, 1, "split_at_gate must rise");
-    assert_eq!(after.global.opportunities, before.global.opportunities);
-    assert_eq!(after.global.failures, before.global.failures);
+    // Exactly the event-dependent projections move: scientific bucket, peak/gap distribution,
+    // and the crossing cause. Denominators and all unrelated buckets stay byte-for-byte pinned by
+    // the full tally equality.
+    assert_eq!(
+        after.global,
+        BirthGateTally {
+            opportunities: 1,
+            failures: 1,
+            household_drained: 1,
+            crossing_causes: BTreeMap::from([(EventCause::Consumption, 1)]),
+            peak_hist: BTreeMap::from([(4, 1)]),
+            gap_hist: BTreeMap::from([(0, 1)]),
+            ..BirthGateTally::default()
+        }
+    );
 }
 
 // ===========================================================================================
@@ -942,22 +1097,42 @@ fn production_live_emitter_fires_on_a_real_closed_run() {
             break;
         }
     }
-    let mut production_events = 0usize;
+    let mut matched_successful_executions = 0usize;
     for opp in run.birth_gate_opportunities() {
+        let members: std::collections::BTreeSet<AgentId> =
+            opp.window_start.iter().map(|&(agent, _)| agent).collect();
+        let mut successful_by_member: BTreeMap<AgentId, usize> = BTreeMap::new();
+        for execution in run
+            .burden_stage_executions()
+            .iter()
+            .filter(|execution| execution.tick == opp.tick && members.contains(&execution.agent))
+        {
+            *successful_by_member.entry(execution.agent).or_insert(0) += 1;
+        }
+
+        let mut production_by_member: BTreeMap<AgentId, usize> = BTreeMap::new();
         for event in &opp.events {
             if event.cause == EventCause::Production {
-                production_events += 1;
                 assert_eq!(
                     event.updates.len(),
                     1,
                     "each `push_production` emits exactly one single-member Production event: \
                      {event:?}"
                 );
+                *production_by_member.entry(event.updates[0].0).or_insert(0) += 1;
             }
         }
+        assert_eq!(
+            production_by_member, successful_by_member,
+            "each successful checked Mill/Bake executor return for this live household/tick must \
+             map one-for-one to exactly one Production event (tick {}, household {})",
+            opp.tick, opp.household
+        );
+        matched_successful_executions += successful_by_member.values().sum::<usize>();
     }
     assert!(
-        production_events > 0,
-        "the Settlement-side Production emitter must fire on a real closed-base burden run"
+        matched_successful_executions > 0,
+        "the exact one-event-per-success assertion must exercise a successful checked executor \
+         return on a real closed-base burden run"
     );
 }
