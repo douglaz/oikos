@@ -1,0 +1,56 @@
+name: CI
+
+# Fast conformance tier: every push and PR must pass formatting, strict
+# clippy, and the full workspace test suite minus the heavy multi-seed
+# grid binaries (those run nightly — see nightly.yml). Any test failure,
+# fmt drift, clippy warning, or golden-file mutation fails the run.
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  conformance:
+    name: Conformance (fast tier)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      # The excluded binaries are the multi-seed conformance grids that take
+      # 30–120s+ each; nightly.yml runs them (and everything else) unfiltered.
+      - name: Tests (heavy grids excluded)
+        run: >
+          cargo nextest run --workspace -E
+          'not binary(/^(birth_gate_obs|birth_stock_saving|earned_provisioning|ignition_withdrawal|in_kind_wage|mortal_producer_inheritance|reproductive_burden|saving_allocation_obs|share_tenancy)$/)'
+
+      - name: Doc tests
+        run: cargo test --workspace --doc
+
+      # Conformance tests must only COMPARE against goldens; a run that
+      # rewrites one (or any tracked file) is a gate violation.
+      - name: Tracked files unchanged
+        run: git diff --exit-code

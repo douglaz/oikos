@@ -1,0 +1,47 @@
+name: Nightly conformance (heavy grids)
+
+# The unfiltered gate: the entire workspace test suite including the heavy
+# multi-seed conformance grids (e.g. the DH.b 60-cell reproductive-burden
+# audit and the birth-gate observation grids) that the per-push tier skips.
+# Also runnable on demand via workflow_dispatch.
+
+on:
+  schedule:
+    - cron: '30 3 * * *'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  full-suite:
+    name: Full suite (all grids)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Full test suite (including heavy grids)
+        run: cargo nextest run --workspace
+
+      - name: Doc tests
+        run: cargo test --workspace --doc
+
+      - name: Tracked files unchanged
+        run: git diff --exit-code
