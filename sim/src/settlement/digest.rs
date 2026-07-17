@@ -86,6 +86,21 @@ impl Settlement {
             out.push(u8::from(chain.subsistence_advance));
             out.push(u8::from(chain.input_advance));
             out.extend_from_slice(&chain.perishable_decay_bps.to_le_bytes());
+            // Outstanding capital-advance loans are live future-behaviour state under
+            // the flag: the repayment phase drains them from post-market sales and the
+            // advance phase skips borrowers that still owe, so two settlements equal in
+            // every holding but differing in an owed balance diverge on later ticks.
+            // Emitted only when the flag is armed (the same gated-block discipline as
+            // the blocks below), so a capital-advance-OFF run stays byte-identical to
+            // the pre-existing stream. BTreeMap iteration order is deterministic.
+            if chain.capital_advance {
+                out.extend_from_slice(&(self.capital_loans.len() as u32).to_le_bytes());
+                for (borrower, (lender, owed)) in &self.capital_loans {
+                    out.extend_from_slice(&borrower.0.to_le_bytes());
+                    out.extend_from_slice(&lender.0.to_le_bytes());
+                    out.extend_from_slice(&owed.0.to_le_bytes());
+                }
+            }
             // The S6 productive-re-entry state steers future ticks only while the
             // phase can actually feed a colonist: the gate is on, raw grain is the
             // subsistence fallback, AND a grain-yielding node exists. When it cannot
@@ -2006,4 +2021,570 @@ pub(super) fn push_recipe_id_bytes(out: &mut Vec<u8>, id: RecipeId) {
         RecipeId::CycleB => 9,
         RecipeId::CycleC => 10,
     });
+}
+
+// ---------------------------------------------------------------------------
+// DIGEST-COVERAGE GUARD (compile-time exhaustiveness)
+//
+// `canonical_bytes` is a hand-maintained, per-flag serialization implementing
+// "byte-identical iff future behavior identical". Its failure mode is SILENT:
+// a new behavior-steering field omitted from the digest lets two divergent
+// settlements digest equal, quietly voiding the determinism tripwire and every
+// byte-identity regression.
+//
+// The functions below destructure each behavior-steering struct WITHOUT `..`.
+// Adding a field to any of them is therefore a compile error on this file
+// until the field is classified into one of the two groups — the digest-or-
+// inert decision can no longer be skipped by accident, and the classification
+// line lands in the same diff as the field, where review can see it.
+//
+// Scope notes:
+// - Enums need no guard: every `match` in this file is wildcard-free, so a new
+//   variant is already a compile error in its push_* helper.
+// - `SettlementConfig` itself is deliberately absent: generate-time knobs are
+//   captured by the digested initial state, and every knob that steers a LATER
+//   tick does so through a `Settlement` field or a stored overlay config — all
+//   of which are guarded below.
+// - The per-flag `canonical_bytes_include_*` tests remain the value-level
+//   check that DIGESTED fields actually reach the byte stream.
+// ---------------------------------------------------------------------------
+
+#[allow(dead_code)]
+fn digest_coverage_settlement(v: &Settlement) {
+    let Settlement {
+        // DIGESTED — serialized (directly or via a push_* helper) by canonical_bytes:
+        generation_seed: _,
+        world: _,
+        society: _,
+        colonists: _,
+        dynamics: _,
+        known: _,
+        exchange: _,
+        carry_cap: _,
+        goods: _,
+        pending_deposits: _,
+        chain: _,
+        capital_builds: _,
+        capital_loans: _,
+        next_capital_project_id: _,
+        bread_provenance: _,
+        subsistence_commons_stock: _,
+        subsistence_commons_cap: _,
+        subsistence_commons_regen: _,
+        wage_escrow_gold: _,
+        wage_escrows: _,
+        next_wage_contract_id: _,
+        wage_retained_earnings: _,
+        wage_proceeds_buckets: _,
+        share_contracts: _,
+        next_share_contract_id: _,
+        in_kind_contracts: _,
+        next_in_kind_contract_id: _,
+        cultivation_tool_builds: _,
+        next_cultivation_tool_project_id: _,
+        endowed_households: _,
+        land_plots: _,
+        land_market_plots: _,
+        land_fee_pool_salt: _,
+        econ_tick: _,
+        commons_gold: _,
+        commons_stock: _,
+        demography: _,
+        households: _,
+        birth_seq: _,
+        births_total: _,
+        old_age_deaths_total: _,
+        birth_block_interval: _,
+        birth_block_size_cap: _,
+        birth_block_hunger_ceiling: _,
+        birth_block_endowment: _,
+        barter: _,
+        knowledge: _,
+        tier2_unlocked_at: _,
+        bank: _,
+        cycle: _,
+        bench: _,
+        tax: _,
+        closed_circulation: _,
+        // NOT DIGESTED — inherited baseline at guard introduction (each was
+        // implicitly omitted by the hand-maintained digest; kept as-is so the
+        // guard lands with zero byte-stream change). Every NEW field added below
+        // must instead be classified deliberately: digest it, or move it here
+        // with a one-line rationale for why it cannot steer a future tick.
+        live_colonist_slots: _,
+        colonist_slot_by_id: _,
+        forage_node_id: _,
+        // derived-inert: every living world agent digests its own move_speed
+        // (world.rs), and births require a living parent, so this stored copy
+        // can never be the only divergence between two digest-equal settlements.
+        move_speed: _,
+        money_rejection_goods: _,
+        trader_ids: _,
+        tools_built: _,
+        mortal_producer_old_age_deaths: _,
+        role_readoptions: _,
+        mortal_capital_builds: _,
+        producer_tool_inheritances: _,
+        heirless_producer_deaths: _,
+        heir_tool_adoptions: _,
+        producer_house_hearth_food_minted: _,
+        non_producer_hearth_food_minted: _,
+        producer_house_births: _,
+        producer_house_deaths: _,
+        producer_house_person_ticks: _,
+        producer_recipe_pay_rejections: _,
+        producer_build_rejections: _,
+        producer_adoption_rejections: _,
+        producer_tool_inheritors: _,
+        last_capital_decisions: _,
+        peak_pre_promotion_hunger: _,
+        critical_ticks_pre_promotion: _,
+        multigood: _,
+        acquisition: _,
+        earned_provisioning: _,
+        birth_stock_wants_emitted: _,
+        birth_stock_attributable_purchases: _,
+        birth_stock_below_target_agents: _,
+        birth_stock_reached_agents: _,
+        birth_stock_held_max: _,
+        birth_stock_held_at_death: _,
+        birth_stock_eligible_opportunities: _,
+        birth_stock_injections_completed: _,
+        birth_stock_source_shortfalls: _,
+        ignition_injected_qty: _,
+        ignition_gate_blocked_interval: _,
+        ignition_gate_extinct: _,
+        ignition_gate_blocked_cap: _,
+        ignition_gate_blocked_hunger: _,
+        ignition_gate_suppressed_at_target: _,
+        ignition_gate_donor_shortfall: _,
+        producer_birth_funded_by_channel: _,
+        producer_birth_funded_intervention: _,
+        birth_stock_injection_records: _,
+        birth_stock_births_by_household: _,
+        last_birth_stock_attribution_snapshot: _,
+        saving_allocation_obs: _,
+        birth_gate_obs: _,
+        saving_obs_stock_tick: _,
+        saving_obs_pending_offerable: _,
+        bootstrap_trace: _,
+        bread_seller_trace: _,
+        seeded_surplus_trace: _,
+        seeded_minted_bread_sold_for_salt: _,
+        emergency_bread_provisioned: _,
+        subsistence_commons_phi_bps: _,
+        subsistence_commons_drawn_total: _,
+        subsistence_commons_unmet_total: _,
+        subsistence_commons_depleted_ticks: _,
+        subsistence_commons_shortfall_ticks: _,
+        subsistence_commons_eligible_need_total: _,
+        wage_workers_ever: _,
+        wage_employers_ever: _,
+        wage_hires_total: _,
+        wage_hires_post_promotion: _,
+        wage_below_ask_not_hired: _,
+        wage_endowment_funded_wages: _,
+        wage_financed_output_buys: _,
+        wage_nonowner_output_buys: _,
+        wage_circular_loop_turnovers: _,
+        share_workers_ever: _,
+        share_owners_ever: _,
+        share_contracts_total: _,
+        share_voluntary_contracts_total: _,
+        share_forced_contracts_total: _,
+        share_renewals_total: _,
+        share_worker_bread_income: _,
+        share_owner_bread_income: _,
+        share_worker_declined: _,
+        share_worker_unmatched: _,
+        share_forward_only_eligibility: _,
+        share_renewal_hints_total: _,
+        share_renewal_fed_out: _,
+        share_renewal_base_ineligible: _,
+        share_renewal_owner_not_candidate: _,
+        share_renewal_bread_declined: _,
+        share_renewal_matched_elsewhere: _,
+        share_owner_candidates_total: _,
+        share_owner_no_atcap_plot: _,
+        share_stock_opportunity_refusal: _,
+        share_reservation_collision: _,
+        share_stock_drawdown: _,
+        share_unattributed_share_deposit: _,
+        share_owner_grain_settled: _,
+        share_successions_total: _,
+        share_succession_heir_declined: _,
+        share_succession_worker_re_declined: _,
+        share_post_succession_renewals: _,
+        share_succeeded_live_ids: _,
+        in_kind_workers_ever: _,
+        in_kind_employers_ever: _,
+        in_kind_hires_total: _,
+        in_kind_worker_advance_bread: _,
+        in_kind_employer_bread_income: _,
+        in_kind_expected_output_total: _,
+        in_kind_worker_declined: _,
+        in_kind_worker_unmatched: _,
+        in_kind_owner_candidates_total: _,
+        in_kind_owner_no_atcap_plot: _,
+        in_kind_owner_insufficient_fund: _,
+        in_kind_productivity_declined: _,
+        in_kind_reservation_collision: _,
+        in_kind_stock_drawdown: _,
+        in_kind_unattributed_deposit: _,
+        in_kind_employer_grain_settled: _,
+        in_kind_endowment_funded_hires: _,
+        in_kind_term_starvations: _,
+        ever_landowner_ids: _,
+        owner_first_claim_tick: _,
+        owner_age_at_first_claim: _,
+        owner_tenure_before_death: _,
+        owner_bread_consumed: _,
+        owner_surplus_sold_before_death: _,
+        owner_inventory_at_death: _,
+        inherited_stock_to_heirs: _,
+        buyer_purchases_by_owner_age_cohort: _,
+        owner_seller_attributed_bought: _,
+        cultivation_skill_producers: _,
+        cultivation_grain_harvested: _,
+        cultivation_bread_produced: _,
+        cultivation_proceeds_scratch: _,
+        profit_retained_ids: _,
+        profit_retained_ever: _,
+        commitment_committed_ever: _,
+        commitment_uptake: _,
+        commitment_fiat_ever: _,
+        commitment_below_floor_ever: _,
+        commitment_exit_override_ids: _,
+        commitment_exit_override_ever: _,
+        commitment_norm_copy_events: _,
+        commitment_norm_flip_events: _,
+        commitment_norm_adoptions: _,
+        commitment_norm_abandonments: _,
+        commitment_norm_imitation_adopters: _,
+        commitment_norm_group_covariance_sum: _,
+        commitment_norm_group_covariance_count: _,
+        cultivation_tool_producers: _,
+        cultivation_tools_built: _,
+        cultivation_tool_wood_consumed: _,
+        cultivation_tools_destroyed: _,
+        endowed_cultivation_tools_total: _,
+        endowed_member_ids: _,
+        cultivation_tool_inherited_total: _,
+        cultivation_tool_inheritor_ids: _,
+        secure_land_inheritance_events: _,
+        secure_land_owner_old_age_deaths_total: _,
+        secure_land_inherit_eligible_owner_deaths_total: _,
+        secure_land_stranded_shares_total: _,
+        land_claims_total: _,
+        land_idle_losses_total: _,
+        land_harvest_denials_total: _,
+        land_owner_gate_denials_total: _,
+        land_nonowner_harvest_of_owned_total: _,
+        land_reclaims_by_other_total: _,
+        land_marginal_nonowner_claims_total: _,
+        land_lapsed_reentry_worse_total: _,
+        land_plot_harvest_totals: _,
+        land_lapsed_losses: _,
+        land_lost_prior_owners: _,
+        land_market_yield_this_tick: _,
+        land_market_sales: _,
+        land_market_trade_count: _,
+        land_market_pre_promotion_trade_count: _,
+        land_market_carrying_paid_total: _,
+        land_market_pre_promotion_charges: _,
+        land_market_foreclosure_listings_total: _,
+        land_market_priced_out_total: _,
+        land_market_lapsed_priced_out_total: _,
+        land_market_ask_bid_gap_sum: _,
+        land_market_ask_bid_gap_count: _,
+        land_market_title_history: _,
+        last_report: _,
+        starvation_deaths_total: _,
+        barter_medium: _,
+        salt_direct_use: _,
+        shadow_cycle_cache: _,
+        closure: _,
+        burden: _,
+        #[cfg(test)]
+            test_fault_mint_birth_gold: _,
+    } = *v;
+}
+
+#[allow(dead_code)]
+fn digest_coverage_chain_config(v: &ChainConfig) {
+    let ChainConfig {
+        // DIGESTED — serialized (directly or via a push_* helper) by canonical_bytes:
+        content: _,
+        operating_cost: _,
+        subsistence_on_grain: _,
+        forage_yield: _,
+        forage_hunger_in: _,
+        forage_hunger_out: _,
+        cultivate_hunger_in: _,
+        cultivate_hunger_out: _,
+        cultivate_consume: _,
+        cultivate_patience: _,
+        cultivation_skill: _,
+        return_window: _,
+        retention_margin_bps: _,
+        retention_material_floor: _,
+        skill_gain: _,
+        skill_decay: _,
+        skill_cap: _,
+        skill_haul_ceiling: _,
+        tool_build_patience: _,
+        cultivation_tool_haul_ceiling: _,
+        cultivation_tool_non_durable: _,
+        endowed_tool_count: _,
+        cultivation_tool_inheritance: _,
+        commitment_term: _,
+        commitment_entry_floor: _,
+        commitment_fiat_pin: _,
+        abandonable_norm: _,
+        group_payoff_imitation: _,
+        fixed_commitment_norm_prevalence: _,
+        commitment_seed_share_bps: _,
+        imitation_period: _,
+        imitation_window: _,
+        imitation_margin_bps: _,
+        imitation_radius: _,
+        imitation_max_models: _,
+        food_window_target: _,
+        no_imitation: _,
+        random_imitation: _,
+        salt_in_score: _,
+        land_idle_limit: _,
+        reclaim_reserved_for_prior_owner: _,
+        land_good_plots: _,
+        land_marginal_plots: _,
+        land_marginal_regen: _,
+        secure_land_tenure: _,
+        inheritance_regime: _,
+        mortal_landowner_demography: _,
+        rival_subsistence_commons: _,
+        rival_subsistence_commons_phi_bps: _,
+        wage_labor: _,
+        wage_labor_mode: _,
+        share_tenancy: _,
+        share_tenancy_mode: _,
+        share_forward_provisioning: _,
+        share_contract_succession: _,
+        in_kind_wage: _,
+        mortal_chain_producers: _,
+        mortal_producer_inheritance: _,
+        mortal_producer_tool_inheritance: _,
+        producer_house_cap: _,
+        earned_provisioning: _,
+        producer_stock_provisioning_control: _,
+        birth_stock_saving: _,
+        birth_stock_saving_mode: _,
+        saving_allocation_obs: _,
+        birth_gate_obs: _,
+        share_bps: _,
+        share_term: _,
+        land_carrying_cost: _,
+        land_price_cap_factor: _,
+        retire_food_mints: _,
+        capital_advance: _,
+        perishable_decay_bps: _,
+        subsistence_advance: _,
+        input_advance: _,
+        recurring_motive: _,
+        project_input_bids: _,
+        producer_subsistence: _,
+        reentry_hunger_in: _,
+        reentry_hunger_out: _,
+        per_agent_capital: _,
+        capital_payback_cycles: _,
+        tool_build_wood: _,
+        tool_build_labor: _,
+        capital_build_hunger_max: _,
+        throughput: _,
+        seeded_surplus_bread: _,
+        tier2_threshold: _,
+        gatherer_food_cushion: _,
+        emergency_hunger_threshold: _,
+        birth_stock_ignition_at: _,
+        producer_house_starting_staple: _,
+        producer_support_until_tick: _,
+        // NOT DIGESTED — inherited baseline at guard introduction (each was
+        // implicitly omitted by the hand-maintained digest; kept as-is so the
+        // guard lands with zero byte-stream change). Every NEW field added below
+        // must instead be classified deliberately: digest it, or move it here
+        // with a one-line rationale for why it cannot steer a future tick.
+        millers: _,
+        bakers: _,
+        latent_millers: _,
+        latent_bakers: _,
+        bread_is_staple: _,
+        own_labor_subsistence: _,
+        forage_commons: _,
+        own_use_cultivation: _,
+        cultivation_sells_surplus: _,
+        multigood_money: _,
+        household_barter_cultivation: _,
+        endogenous_cultivation_entry: _,
+        profit_driven_retention: _,
+        durable_cultivation_tool: _,
+        endowed_cultivation_capital: _,
+        voluntary_cultivation_commitment: _,
+        commitment_norm_spread: _,
+        private_land_tenure: _,
+        harvest_gate: _,
+        forfeit_on_idle: _,
+        land_market: _,
+        acquisition_ledger: _,
+        productive_reentry: _,
+        tool_acquisition_eligibility: _,
+        producible_capital: _,
+        entrepreneurial_forecasts: _,
+        miller_grain_buffer: _,
+        baker_flour_buffer: _,
+        latent_flour_seed: _,
+        bread_buffer: _,
+        consumer_staple_buffer: _,
+        wood_buffer: _,
+        consumer_wood_buffer: _,
+        producer_gold: _,
+        scholars: _,
+        confectioners: _,
+        scholar_grain_buffer: _,
+        confectioner_flour_buffer: _,
+        cycle_a_producers: _,
+        cycle_b_producers: _,
+        cycle_c_producers: _,
+        cycle_a_input_buffer: _,
+        cycle_b_input_buffer: _,
+        cycle_c_input_buffer: _,
+    } = *v;
+}
+
+#[allow(dead_code)]
+fn digest_coverage_tender_policy(v: &TenderPolicy) {
+    let TenderPolicy {
+        // DIGESTED — serialized (directly or via a push_* helper) by canonical_bytes:
+        spot: _,
+        wage: _,
+        debt: _,
+        // NOT DIGESTED — inherited baseline at guard introduction (each was
+        // implicitly omitted by the hand-maintained digest; kept as-is so the
+        // guard lands with zero byte-stream change). Every NEW field added below
+        // must instead be classified deliberately: digest it, or move it here
+        // with a one-line rationale for why it cannot steer a future tick.
+        bank_repayment: _,
+        issuer_repayment: _,
+    } = *v;
+}
+
+#[allow(dead_code)]
+fn digest_coverage_tax_policy(v: &TaxPolicy) {
+    let TaxPolicy {
+        // DIGESTED — serialized (directly or via a push_* helper) by canonical_bytes:
+        receivability: _,
+        // NOT DIGESTED — inherited baseline at guard introduction (each was
+        // implicitly omitted by the hand-maintained digest; kept as-is so the
+        // guard lands with zero byte-stream change). Every NEW field added below
+        // must instead be classified deliberately: digest it, or move it here
+        // with a one-line rationale for why it cannot steer a future tick.
+        levies: _,
+    } = *v;
+}
+
+#[allow(dead_code)]
+fn digest_coverage_barter_config(v: &BarterConfig) {
+    let BarterConfig {
+        // DIGESTED — serialized (directly or via a push_* helper) by canonical_bytes:
+        menger: _,
+        medium_good: _,
+        medium_want_qty: _,
+        gatherer_medium_endowment: _,
+        consumer_medium_endowment: _,
+        cycle_producer_medium_endowment: _,
+        salt_direct_use_qty: _,
+        salt_direct_use_period: _,
+    } = *v;
+}
+
+#[allow(dead_code)]
+fn digest_coverage_demography_config(v: &DemographyConfig) {
+    let DemographyConfig {
+        // DIGESTED — serialized (directly or via a push_* helper) by canonical_bytes:
+        households: _,
+        ticks_per_year: _,
+        old_age_onset_years: _,
+        lifespan_span_years: _,
+        birth_interval: _,
+        birth_hunger_ceiling: _,
+        max_household_size: _,
+        child_food_endowment: _,
+        child_gold_endowment: _,
+        mutation_delta_bps: _,
+        spatial_households: _,
+    } = *v;
+}
+
+#[allow(dead_code)]
+fn digest_coverage_mengerian_config(v: &MengerianConfig) {
+    let MengerianConfig {
+        // DIGESTED — serialized (directly or via a push_* helper) by canonical_bytes:
+        candidate_goods: _,
+        min_total_acceptances: _,
+        promotion_threshold_bps: _,
+        lead_margin_bps: _,
+        min_acceptor_agents: _,
+        min_counterpart_goods: _,
+        stability_ticks: _,
+        indirect_min_acceptance_share_bps: _,
+        min_indirect_acceptances: _,
+        min_indirect_acceptor_agents: _,
+        min_indirect_target_goods: _,
+        allow_indirect_acceptance: _,
+        multi_offer_medium: _,
+        durability_aware_acceptance: _,
+        two_layer_saleability: _,
+        min_direct_use_acceptors: _,
+        marketability: _,
+    } = *v;
+}
+
+#[allow(dead_code)]
+fn digest_coverage_bank_policy(v: &BankPolicy) {
+    let BankPolicy {
+        // DIGESTED — serialized (directly or via a push_* helper) by canonical_bytes:
+        max_new_fiduciary_per_tick: _,
+        loan_present: _,
+        loan_horizon: _,
+        loan_future_due: _,
+        enabled: _,
+    } = *v;
+}
+
+#[allow(dead_code)]
+fn digest_coverage_issuer_policy(v: &econ::issuer::IssuerPolicy) {
+    let econ::issuer::IssuerPolicy {
+        // DIGESTED — serialized (directly or via a push_* helper) by canonical_bytes:
+        fiscal_enabled: _,
+        credit_enabled: _,
+        max_fiscal_issue_per_tick: _,
+        max_credit_issue_per_tick: _,
+        loan_present: _,
+        loan_horizon: _,
+        loan_future_due: _,
+    } = *v;
+}
+
+#[allow(dead_code)]
+fn digest_coverage_need_dynamics(v: &NeedDynamics) {
+    let NeedDynamics {
+        // DIGESTED — serialized (directly or via a push_* helper) by canonical_bytes:
+        need_max: _,
+        hunger_deplete: _,
+        warmth_deplete: _,
+        hunger_per_food: _,
+        warmth_per_wood: _,
+        rest_per_labor: _,
+        rest_recover: _,
+        hunger_critical: _,
+        death_window: _,
+    } = *v;
 }

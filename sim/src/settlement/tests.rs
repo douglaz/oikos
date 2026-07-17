@@ -8098,3 +8098,37 @@ fn money_identity_trips_on_a_deliberate_post_market_mint_in_the_births_phase() {
         "the identity must recover once the fault clears"
     );
 }
+
+#[test]
+fn canonical_bytes_include_outstanding_capital_advance_loans() {
+    // Under the capital-advance flag an outstanding loan steers future ticks
+    // (the repayment phase drains it from post-market sales and the advance
+    // phase skips borrowers that still owe), so two settlements equal in every
+    // holding but differing in an owed balance must digest apart.
+    let mut config = SettlementConfig::grain_flour_bread_chain();
+    config.chain.as_mut().expect("chain").capital_advance = true;
+    let base = Settlement::generate(7, &config);
+    let mut indebted = Settlement::generate(7, &config);
+    indebted
+        .capital_loans
+        .insert(AgentId(0), (AgentId(1), Gold(3)));
+    assert_ne!(
+        base.canonical_bytes(),
+        indebted.canonical_bytes(),
+        "an outstanding capital-advance loan must be part of the identity"
+    );
+    // Flag off, the loans block is omitted entirely: state the phase can never
+    // read must not split the digest, and the flag-off stream stays
+    // byte-identical to the pre-existing one (the pinned-digest tests hold).
+    let off_config = SettlementConfig::grain_flour_bread_chain();
+    let base_off = Settlement::generate(7, &off_config);
+    let mut loans_off = Settlement::generate(7, &off_config);
+    loans_off
+        .capital_loans
+        .insert(AgentId(0), (AgentId(1), Gold(3)));
+    assert_eq!(
+        base_off.canonical_bytes(),
+        loans_off.canonical_bytes(),
+        "loans no phase can read must not split a capital-advance-OFF digest"
+    );
+}
