@@ -1,10 +1,76 @@
-# impl-71 — C3R.c: The Producer Lifespan Ratio (does a longer producer life lift C3R.b's subsidy-bound limp into a subsidy-free sustain?)
+# impl-71 — C3R.f: Producer-Lineage Lifespan Sensitivity (does a longer producer-house life lift C3R.b's cushion-bound limp toward healthy flow?)
 
-Status (spec): **v1 — DRAFT** (pending Codex spec-review). Third slice of C3R, the direct
-successor to impl-62 (C3R.a: mortal chain-producers, no succession) and impl-63 (C3R.b: capital
-inheritance for mortal chain-producers). Design origin: `docs/design-mortal-producer-succession.md`
-(office-hours 2026-07-17) + the plan-eng-review that verified the C3R.b subsystem and re-scoped
-this milestone to its one unswept axis.
+Status (spec): **v2 — SPEC-READY** (Codex xhigh spec-review, 1 round: 1 P0 + 9 P1 folded into the
+authoritative `## −0` section below). Successor to impl-62 (C3R.a: mortal chain-producers, no
+succession) and impl-63 (C3R.b: capital inheritance). Renamed C3R.c → **C3R.f** (C3R.c is impl-64
+earned provisioning; C3R.d/e are also taken). Design origin:
+`docs/design-mortal-producer-succession.md` (office-hours 2026-07-17) + the plan-eng-review that
+verified the C3R.b subsystem. **v1 (superseded):** framed the sweep as a "subsidy-free ratio" —
+Codex's review showed `food_provision=0` is NOT subsidy-free (the `producer_subsistence` cushion
+and legacy-household provisioning remain), the "ratio" has no operational denominator, and the
+intervention is producer-house-LINEAGE lifespan (not producer lifespan), with a real demographic
+coupling. v2 reframes to an absolute lifespan-sensitivity experiment at the C3R.b minimal-cushion
+floor, with the coupling measured, not assumed away.
+
+## −0. v2 revision (AUTHORITATIVE — folds the Codex spec-review; supersedes §§0–7 where they conflict)
+
+**Reframed estimand (P0 + P1-denominator + P1-lineage).** This is NOT a "subsidy-free ratio"
+experiment. It is: *at the C3R.b minimal-cushion floor* (`food_provision = 0` on the six
+producer-house hearths, `producer_subsistence` RETAINED — exactly C3R.b's cleanest bracket, not a
+zeroed base that starves producers), *does raising producer-house-lineage **absolute** lifespan
+move the response toward `FlowRuns`?* The cushion is a **measured covariate**
+(`producer_house_hearth_food_minted`, and a new `producer_subsistence`-minted tally), not a claim
+of its absence. The swept quantity is **absolute integer lifespan**, published as an exact table;
+the life/payback *ratio* is an interpretation applied **only post-hoc**, after realized payback is
+measured (§7 assignment), and its absence does not block the experiment.
+
+**Resolutions, P0 + P1 (each maps to a Codex finding):**
+
+1. **[P0] Not subsidy-free → reframed + demand-viability control.** Drop every "first subsidy-free
+   sustain" claim. Add a **positive demand-viability control**: an immortal / no-mortality cell on
+   the same base that establishes `FlowRuns` is achievable on this substrate at all — so a null
+   reads as "lifespan not binding," not "the substrate expired." Report cushion magnitude per cell.
+2. **[P1] No denominator → absolute-lifespan experiment.** Sweep absolute
+   producer-house lifespan over a pinned integer set; publish the lifespan table. Realized-payback
+   measurement stays a prerequisite for the *ratio* narrative only, not for the run.
+3. **[P1] Lineage, not producer, lifespan → declared estimand + coupled telemetry.** The estimand
+   is producer-house-**lineage** lifespan. Add producer-house-scoped telemetry for the coupled
+   variables the longer life perturbs: producer-house population, Consumer-role person-ticks in
+   producer houses, births and deaths-by-cause, gold, food/cushion minted, inheritances, adoptions.
+   The coupling is characterized, not assumed inert.
+4. **[P1] Two-site implementation seam.** The override is consumed through a **household-aware
+   lifespan helper** applied at BOTH assignment sites — seeded generation (`generation.rs:542`) AND
+   birth (`phases.rs:532`) — or the treatment is lost after the first cohort. It scales the FULL
+   `old_age_onset + span` distribution (not onset-only), with `founder_start_age` scaled/clamped so
+   it can never meet or exceed a shortened lifespan, in checked integer arithmetic.
+5. **[P1] Untreated producers in the response.** Ordinary Consumer/Gatherer lineages can build
+   capital and adopt producer roles (`phases.rs:2217, 2813`); the override covers only the six
+   tagged houses. Scope the response (staffing/output) to producer-house producers, and report the
+   count of untreated adopter/latent producers so `FlowRuns` is attributable to treated lineages.
+6. **[P1] Exhaustive, non-overlapping verdicts + both negatives pinned.** Preconditions
+   (`BaseUnviable` / `ReservoirOpen` / `ConservationBroken` / `RegistryBroken`) are distinct from
+   outcomes. Separately pin **RATIO-NULL** (`StructureDoesNotPersist` at every lifespan) and
+   **STRUCTURE-ONLY** (`StructurePersistsUnderInheritance` but never `FlowRuns` at any lifespan) —
+   neither is "no FlowRuns" alone. Name the mixed-seed, control-sustains, top-edge-only, and
+   non-common-winning-ratio cases explicitly.
+7. **[P1] Run-length confound.** ONE common horizon sized for the longest-life cell (not per-cell
+   scaling, which confounds lifespan with calendar exposure). Normalize flow to **per-staffed-tick**
+   (`bread_per_staffed_tick`, already emitted), not the absolute 100-loaf threshold. Gate every
+   verdict on a **minimum count of completed succession events** (mill + oven deaths → inheritances
+   → adoptions) per cell — elapsed lifespans are not handovers. The final window must be ≥ one
+   longest-cell lifespan.
+8. **[P1] Digest.** `HouseholdSpec` is NOT in the digest-coverage guard (confirmed: the guard
+   destructures `DemographyConfig` at `digest.rs:2509`, not `HouseholdSpec`). Add a
+   `digest_coverage_household_spec` guard. Encode the lifespan override **all-`None`-silent** (emit
+   bytes only when `Some`, keyed by household index) so default-inherit is byte-identical, integer
+   only. Tests: identity (all-`None` → unchanged), divergence (a `Some` splits), injectivity
+   (distinct scales → distinct bytes).
+9. **[P1] Control attribution.** The tool-off `Control` estimates the marginal effect of tool
+   inheritance only; it does not remove cushion/demographic-demand/untreated-producer effects. The
+   demand-viability positive control (res. 1) is what licenses the "lifespan is not binding"
+   reading of a null.
+10. **[P2] Scope + naming.** Pin `producer_house_cap = 2`; all conclusions are cap-conditional.
+    Milestone renamed C3R.c → **C3R.f** (title above).
 
 ## 0. One-paragraph summary
 
