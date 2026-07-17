@@ -1262,6 +1262,8 @@ impl Settlement {
 
         let mut settlement = Self {
             generation_seed: seed,
+            #[cfg(test)]
+            test_fault_mint_birth_gold: 0,
             world,
             society,
             colonists,
@@ -1650,6 +1652,8 @@ impl Settlement {
 
         Self {
             generation_seed: seed,
+            #[cfg(test)]
+            test_fault_mint_birth_gold: 0,
             world,
             society,
             colonists: Vec::new(),

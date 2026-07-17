@@ -411,6 +411,17 @@ impl Settlement {
     /// (clamped to the parent's unreserved balance), so a gold-poor lineage still reproduces;
     /// poverty shapes a lineage's wealth, never its survival.
     pub(super) fn run_births(&mut self) -> u32 {
+        // TEST-ONLY fault injection: a deliberate post-market mint into the commons,
+        // proving the per-tick money identity spans the births phase (it must trip
+        // `EconTickReport::money_conserves`). Compiled out of non-test builds.
+        #[cfg(test)]
+        {
+            self.commons_gold = Gold(
+                self.commons_gold
+                    .0
+                    .saturating_add(self.test_fault_mint_birth_gold),
+            );
+        }
         let Some(demo) = self.demography.clone() else {
             return 0;
         };

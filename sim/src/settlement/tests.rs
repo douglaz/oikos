@@ -8070,3 +8070,31 @@ fn canonical_bytes_include_spatial_households() {
     );
     assert_ne!(off.digest(), on.digest());
 }
+
+#[test]
+fn money_identity_trips_on_a_deliberate_post_market_mint_in_the_births_phase() {
+    // Baseline: the per-tick money identity holds on clean ticks.
+    let mut s = Settlement::generate(1, &SettlementConfig::viable());
+    for _ in 0..3 {
+        let report = s.econ_tick();
+        assert!(report.money_conserves(), "clean ticks must conserve money");
+    }
+    // Fault: mint gold into the commons inside the births phase — AFTER the market.
+    // `total_gold_after_step` is snapshotted at true end-of-tick, so the identity
+    // must catch it. (Regression tripwire: the snapshot historically sat right
+    // after the market, so post-market phases re-baselined every tick and a
+    // birth-path mint/burn bug could never trip the check.)
+    s.test_fault_mint_birth_gold = 7;
+    let report = s.econ_tick();
+    assert!(
+        !report.money_conserves(),
+        "a post-market mint in the births phase must trip the per-tick money identity"
+    );
+    // The fault cleared: the next tick re-baselines and conserves again.
+    s.test_fault_mint_birth_gold = 0;
+    let report = s.econ_tick();
+    assert!(
+        report.money_conserves(),
+        "the identity must recover once the fault clears"
+    );
+}

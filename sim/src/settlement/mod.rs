@@ -5663,6 +5663,13 @@ pub struct Settlement {
     /// death. Empty until the first death, so a no-death run is byte-identical to G2b/G3.
     /// G4b will route the estate to heirs/households instead of pooling it here.
     commons_gold: Gold,
+    /// TEST-ONLY fault injection: gold minted into the commons inside the births
+    /// phase each tick (a deliberate conservation violation). Exists solely to prove
+    /// the per-tick money identity spans the whole tick — a post-market mint must
+    /// trip [`EconTickReport::money_conserves`]. Always zero except in the tripwire
+    /// unit test; absent entirely from non-test builds.
+    #[cfg(test)]
+    pub(crate) test_fault_mint_birth_gold: u64,
     /// The commons' physical-good holdings, `GoodId`-keyed (a subset of
     /// [`Settlement::goods`]). Joins [`Settlement::whole_system_total`].
     commons_stock: BTreeMap<GoodId, u64>,
@@ -7380,7 +7387,11 @@ impl Settlement {
         // This preserves the bootstrap and lets the budget-hysteresis test observe agents that spent
         // SALT on food before trying to re-buy land.
         self.run_land_market();
-        report.total_gold_after_step = self.total_gold().0;
+        // NOTE: `total_gold_after_step` is deliberately NOT snapshotted here. It is taken
+        // at true end-of-tick (after births, birth-stock injections, ignition, and
+        // spoilage) so the per-tick money identity covers the post-market phases too —
+        // a mint/burn bug in the birth-endowment or ignition path cannot re-baseline
+        // itself away each tick.
         // DH.a: observe the settled market batch in its real order — authoritative consumption log
         // first, then the tick's spot trades (both physical legs + the gold sale-split). Reconciles
         // buckets post-market-batch.
@@ -7391,17 +7402,6 @@ impl Settlement {
             // violations the integration suite hard-fails on.
             self.burden_validate_purchase_credits();
         }
-        // §5 money/escrow invariant, asserted each tick the wage escrow can hold funds: total
-        // gold (agents + commons + land-fee pool + wage escrow) after the market equals the
-        // pre-fast total plus only what the promotion channel minted. `report.conserves()` is
-        // per-good and does NOT cover money, so this is the escrow-inclusive money check. Scoped
-        // to `wage_labor_active()` (the closed-gold C1 configs the acceptance suite exercises)
-        // rather than unconditional, since ledger-money (M3) regimes are not a closed-gold total.
-        debug_assert!(
-            !self.wage_labor_active() || report.money_conserves(),
-            "wage-labor money/escrow invariant: gold + escrow must conserve across the step \
-             except at the promotion channel"
-        );
 
         // ---- 5b-ter. MULTI-GOOD MONEY INSTRUMENTATION (S18): trace this tick's barter
         // trades for the WOOD↔medium leg (the WOOD provenance bound) and the
@@ -7549,6 +7549,21 @@ impl Settlement {
             report.conserves(),
             "whole-system conservation broke at econ tick {}",
             self.econ_tick
+        );
+        // §5 money/escrow invariant, spanning the WHOLE tick: total gold (agents +
+        // commons + land-fee pool + wage escrow) at end-of-tick — after deaths/estates,
+        // the market, births, birth-stock injections, ignition, and spoilage — equals
+        // the pre-fast total plus only what the promotion channel minted. Every other
+        // phase may only transfer gold, never create or destroy it. `report.conserves()`
+        // is per-good and does NOT cover money, so this is the escrow-inclusive money
+        // check. The assert is scoped to `wage_labor_active()` (the closed-gold C1
+        // configs the acceptance suite exercises) rather than unconditional, since
+        // ledger-money (M3) regimes are not a closed-gold total.
+        report.total_gold_after_step = self.total_gold().0;
+        debug_assert!(
+            !self.wage_labor_active() || report.money_conserves(),
+            "wage-labor money/escrow invariant: gold + escrow must conserve across the \
+             whole tick except at the promotion channel"
         );
 
         // S8.0 emergence probe: while the colony is still pre-promotion, track the
