@@ -213,22 +213,37 @@ in order:
    (13,068 loaves, `FlowRuns`) on **only 1 of 5 seeds** (seed 3). The other four immortal seeds
    collapse the baker stage (`bakers=0`, ~400 loaves). The earlier "the substrate works" was an
    over-read of that single seed.
-2. **Lifespan is a weak, secondary lever.** A colony-wide lifespan probe (×1→×8) moved bread
-   54 → 389 (~7×, directional) but never sustained the baker stage at any finite life, and stayed
-   two orders below the functioning chain.
-3. **The real wall: the baker/oven stage is unprofitable under the role-choice appraisal —
-   mortality-independent.** On the failing seeds a bread market is *active* (≈390 trades,
-   price ~1, 4,300 bought) yet the baking role is never sustained (immortal agents adopt Miller
-   ×7, Baker ×0). The baker's build/adopt appraisal is
-   `capital_build_surplus(&bake_recipe, bread_price, flour_price, …)` (`phases.rs:2783`); with
-   bread clearing at ~1, the final-stage margin (`bread_price − flour_price − operating_cost`)
-   sits below the payback bar while milling's (`flour_price − grain_price`) clears it.
+2. **Lifespan did not restore sustain in the tested probe.** A colony-wide lifespan probe
+   (×1→×8) moved bread 54 → 389 but never sustained the baker stage at any tested life. "Weak
+   secondary lever" is the read, but calling it weak by comparison with the single lucky
+   13,068-loaf seed is itself unverified — the honest claim is only that the tested probe did not
+   restore a functioning chain.
+3. **The wall is in role adoption, not mortality — mechanism is a hypothesis, not established
+   (corrected after Codex review, 2026-07-18).** The failing immortal seeds end with the *Baker*
+   role rejected while *Miller* persists (endpoint role counts, e.g. millers/bakers = 7/0 —
+   end-of-run state, not an adoption tally). Producers here are latent agents holding their tools
+   that adopt via `run_role_choice`; the money and mortality gates are ruled out, so the rejection
+   is the role-choice **recipe-profit test** — `recipe_adoption_pays_for_money` + (under
+   `recurring_motive`) `recipe_is_profitable` (`phases.rs:2298-2318`) — returning `false` for
+   baking. This is **NOT** `capital_build_surplus` (a separate settlement-level tool-BUILD
+   heuristic; role-choice has no payback bar), and the earlier `bread_price − flour_price` margin
+   was wrong: both stages yield 3 per input (`BREAD_PER_BAKE = FLOUR_PER_MILL = 3`,
+   `content.rs:80,90`), so the baker margin is `3·P_bread − P_flour − operating_cost` and a bread
+   price of ~1 proves nothing without the flour price. **Yield-aware margin starvation of the
+   baking role is the leading hypothesis; its price path and structural cause are unmeasured.**
+   (The active bread market on failing seeds does not isolate baking: hearths and
+   `producer_subsistence` mint staple bread pre-market and agents consume owned bread before
+   posting asks, so ~4,300 traded against ~400 baker-produced loaves is mixed provenance, not
+   proof of baker demand. And the "seed 3 overproduces but doesn't trade" contradiction I first
+   cited was an artifact — 13,068 is cumulative over 1,600 ticks; `late_bread_trades` covers only
+   the final 160.)
 
 **Consequence:** lifespan and succession (impl-71 / C3R.f, and the whole C3R line) are downstream
-of a chain whose final stage does not economically sustain even without mortality. Sweeping
-lifespan on it builds on sand. **impl-71 is BLOCKED pending the baker-stage profitability
-diagnostic (impl-72 / C3R.g).** The payback measurement (§7) is subsumed: the binding number is
-the baker-role margin vs the payback bar, which impl-72 traces directly.
+of a chain whose final (baking) role is rejected by the role-choice profit test even without
+mortality. Sweeping lifespan on it builds on sand. **impl-71 is BLOCKED** — and, per Codex, does
+not unblock until an immortal five-seed viability gate passes (a functioning chain on all five
+seeds, not one). **impl-72 / C3R.g** traces the actual role-choice recipe-profit decision to
+localize why baking is rejected; the §7 payback idea is dropped (role-choice has no payback bar).
 
 ---
 

@@ -1,12 +1,14 @@
 # impl-71 — C3R.f: Producer-Lineage Lifespan Sensitivity (does a longer producer-house life lift C3R.b's cushion-bound limp toward healthy flow?)
 
-Status (spec): **BLOCKED** (grill-with-docs, 2026-07-18) — pending impl-72 (C3R.g), the
-baker-stage profitability diagnostic. A pre-check found this base's chain functions on only 1/5
-seeds *even with immortal producers*, and the binding constraint is the baker/oven stage being
-unprofitable under the role-choice appraisal (`bread_price − flour_price − operating_cost` below
-the payback bar; bread clears at ~1) — mortality-independent, upstream of any lifespan sweep.
-Do not build this milestone until impl-72 localizes and a fix restores a self-sustaining oven
-stage. See `docs/design-mortal-producer-succession.md` §8. Prior status (now blocked): **v2 —
+Status (spec): **BLOCKED** (grill-with-docs 2026-07-18; refined by Codex review same day) —
+pending impl-72 (C3R.g), the baker-role profit diagnostic. A pre-check found this base's chain
+functions on only 1/5 seeds *even with immortal producers*, and the binding constraint is the
+Baker *role* being rejected by the role-choice recipe-profit test
+(`recipe_adoption_pays_for_money` / `recipe_is_profitable`, `phases.rs:2298-2318`) — NOT a payback
+bar, and the margin is yield-aware (`3·P_bread − P_flour − cost`; bread price ~1 alone is
+inconclusive). Mortality-independent, upstream of any lifespan sweep. **Unblock condition (Codex):
+an immortal five-seed viability gate must pass first** — a functioning chain on all five seeds,
+not one — before this milestone is meaningful. See `docs/design-mortal-producer-succession.md` §8. Prior status (now blocked): **v2 —
 SPEC-READY** (Codex xhigh spec-review, 1 round: 1 P0 + 9 P1 folded into the authoritative `## −0`
 section below). Successor to impl-62 (C3R.a: mortal chain-producers, no
 succession) and impl-63 (C3R.b: capital inheritance). Renamed C3R.c → **C3R.f** (C3R.c is impl-64
