@@ -202,5 +202,35 @@ whether today's 27-tick lifespan is ratio ≈ 0.8 or ≈ 1.5, and where to cente
 
 ---
 
-*Design produced via an office-hours session, 2026-07-17. Next step is to convert §4 into a
-numbered impl-NN spec once the payback measurement (§7) lands.*
+## 8. Grill outcome (2026-07-18) — the wall is upstream of lifespan
+
+A grill-with-docs pass drove the plan down its dependency tree against the data and bottomed
+out somewhere neither the office-hours framing nor the impl-71 spec anticipated. Three findings,
+in order:
+
+1. **The substrate barely functions even immortally.** The demand-viability pre-check
+   (`FlagOffHeritable`, immortal producers on the same base) reaches a functioning chain
+   (13,068 loaves, `FlowRuns`) on **only 1 of 5 seeds** (seed 3). The other four immortal seeds
+   collapse the baker stage (`bakers=0`, ~400 loaves). The earlier "the substrate works" was an
+   over-read of that single seed.
+2. **Lifespan is a weak, secondary lever.** A colony-wide lifespan probe (×1→×8) moved bread
+   54 → 389 (~7×, directional) but never sustained the baker stage at any finite life, and stayed
+   two orders below the functioning chain.
+3. **The real wall: the baker/oven stage is unprofitable under the role-choice appraisal —
+   mortality-independent.** On the failing seeds a bread market is *active* (≈390 trades,
+   price ~1, 4,300 bought) yet the baking role is never sustained (immortal agents adopt Miller
+   ×7, Baker ×0). The baker's build/adopt appraisal is
+   `capital_build_surplus(&bake_recipe, bread_price, flour_price, …)` (`phases.rs:2783`); with
+   bread clearing at ~1, the final-stage margin (`bread_price − flour_price − operating_cost`)
+   sits below the payback bar while milling's (`flour_price − grain_price`) clears it.
+
+**Consequence:** lifespan and succession (impl-71 / C3R.f, and the whole C3R line) are downstream
+of a chain whose final stage does not economically sustain even without mortality. Sweeping
+lifespan on it builds on sand. **impl-71 is BLOCKED pending the baker-stage profitability
+diagnostic (impl-72 / C3R.g).** The payback measurement (§7) is subsumed: the binding number is
+the baker-role margin vs the payback bar, which impl-72 traces directly.
+
+---
+
+*Design produced via office-hours (2026-07-17) and re-diagnosed via grill-with-docs (2026-07-18).
+Next step is impl-72 (C3R.g): the per-tick baker-margin appraisal trace, not the lifespan sweep.*

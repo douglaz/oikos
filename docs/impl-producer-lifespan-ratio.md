@@ -1,7 +1,14 @@
 # impl-71 — C3R.f: Producer-Lineage Lifespan Sensitivity (does a longer producer-house life lift C3R.b's cushion-bound limp toward healthy flow?)
 
-Status (spec): **v2 — SPEC-READY** (Codex xhigh spec-review, 1 round: 1 P0 + 9 P1 folded into the
-authoritative `## −0` section below). Successor to impl-62 (C3R.a: mortal chain-producers, no
+Status (spec): **BLOCKED** (grill-with-docs, 2026-07-18) — pending impl-72 (C3R.g), the
+baker-stage profitability diagnostic. A pre-check found this base's chain functions on only 1/5
+seeds *even with immortal producers*, and the binding constraint is the baker/oven stage being
+unprofitable under the role-choice appraisal (`bread_price − flour_price − operating_cost` below
+the payback bar; bread clears at ~1) — mortality-independent, upstream of any lifespan sweep.
+Do not build this milestone until impl-72 localizes and a fix restores a self-sustaining oven
+stage. See `docs/design-mortal-producer-succession.md` §8. Prior status (now blocked): **v2 —
+SPEC-READY** (Codex xhigh spec-review, 1 round: 1 P0 + 9 P1 folded into the authoritative `## −0`
+section below). Successor to impl-62 (C3R.a: mortal chain-producers, no
 succession) and impl-63 (C3R.b: capital inheritance). Renamed C3R.c → **C3R.f** (C3R.c is impl-64
 earned provisioning; C3R.d/e are also taken). Design origin:
 `docs/design-mortal-producer-succession.md` (office-hours 2026-07-17) + the plan-eng-review that
