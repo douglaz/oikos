@@ -32,3 +32,15 @@ time (can a tenure outlast the cold start?), not how long a mill takes to pay fo
 
 A settlement-development label. **Not a monetization or chain-function signal:** a run can
 sit at `Forager` while producing 13,068 loaves. Do not read chain health off the era.
+
+## Realized price
+
+`Society::realized_price(good)` is the **last trade's price, persisted forever** (no recency
+gate; `econ/src/society.rs`). It is NOT a live/contemporaneous clearing price: if a good stops
+trading, its realized price stays frozen at the last trade indefinitely. Role-choice and
+producer appraisals read it raw, so a **margin computed from realized prices can be a phantom**
+— e.g. a baker rejected because flour "costs 12" when 12 was frozen from an early boom and no
+flour can currently clear above ~2. To reason about a good's *current* market, look at recent
+**trades** (and live bid/ask limits, order ages), never the realized-price snapshot alone. This
+distinction has repeatedly produced wrong diagnoses; treat realized-price arithmetic as a
+starting hypothesis to confirm with trade-level evidence.
