@@ -32,11 +32,15 @@ executed trade's resting-order limit (`econ/src/market.rs:441`), not yield arith
 - **Bread is live, not stale, and not a demand vacuum.** Bread trades run 240–385 *per window*
   the whole run at price 1 — a real active market floored at 1 (hearths + `producer_subsistence`
   mint bread → flooded supply → floor), NOT the absence of demand my v1 claimed.
-- **Open (do NOT guess): does L2 alone suffice?** A baker pays ≤ `3·P_bread − cost = 2` for flour
-  and a miller sells at ≥ ~1 (near cost), so a *fresh* flour price near 1 could give margin
-  `3·1 − 1 − 1 = +1` (positive) — but it is borderline and flour has no current market to observe.
-  The Phase-1 2×2 (base / L2 / L1 / L1+L2) resolves STALE-PRICE-SUFFICES vs BOTH-NEEDED; the
-  measurement narrows it but does not settle it.
+- **Live flour ask measured — STALE-PRICE-SUFFICES strongly indicated.** `order_stats_by_vocation`
+  at ticks 800 and 1200 shows **7 millers asking flour at price 1** the whole run (no baker bid —
+  there are no bakers), while the realized price sits stale at 12. So the flour supply side is
+  *alive and cheap*; the baker is blocked *solely* by appraising the stale 12. Against the live ask
+  the margin is `3·1 − 1 − 1 = +1 > 0` — baking is profitable. This also refutes the chicken-and-egg
+  worry: millers overproduce flour (3× yield) and ask continuously regardless of baker demand, so
+  there is always a live flour ask to appraise against; no bootstrap deadlock. The thin +1 margin
+  and second-order effects (does the ask hold once a baker buys? does bread stay at 1?) are what the
+  2×2 build confirms — not asserted from a static snapshot.
 
 **Corrected demand topology (P1).** Bread already *is* the preferred hunger staple
 (`generation.rs:83`); the fallback is **edible raw grain** (`subsistence_on_grain = true`,
@@ -48,14 +52,15 @@ and the raw-grain substitution* so market bread demand can form — not re-archi
 colony eats.
 
 **Levers (reprioritized):**
-- **L2 — stale-input-price fix (now primary).** The appraisal must not reject on a frozen input
-  price. Define the stale fallback precisely — **do NOT pass a stale price as `None`** (that zeros
-  the input cost, `mod.rs:14596/15418`, manufacturing a false positive while no flour is
-  purchasable). Options: use the current executable *ask*, an explicit price-discovery/probation
-  state, or refuse to appraise. Capital formation's recency gate is NOT a precedent (it gates the
-  output/demand signal, `phases.rs:2789`, not the input price). Needs a default-off `ChainConfig`
-  behavior flag with conditional digest bytes, coverage-guard classification, and off-identity /
-  on-divergence tests.
+- **L2 — stale-input-price fix (primary; mechanism now pinned by measurement).** The appraisal
+  must value the input at the **live executable ask**, not the stale realized price. The Phase-1
+  order-book measurement settles the mechanism: millers post a live flour ask at 1 the whole run,
+  so the fix is to prefer that ask (age-gate the realized input price and fall back to the current
+  best executable ask). **Do NOT pass a stale price as `None`** (that zeros the input cost,
+  `mod.rs:14596/15418`, manufacturing a false positive) — a live ask exists, so use it. Capital
+  formation's recency gate is NOT a precedent (it gates the output/demand signal, `phases.rs:2789`,
+  not the input price). Needs a default-off `ChainConfig` behavior flag with conditional digest
+  bytes, coverage-guard classification, and off-identity / on-divergence tests.
 - **L1 — retire bread mints + raw-grain substitution (secondary).** Compose *existing,
   already-digested* fields (`producer_subsistence` `digest.rs:61`, raw-grain subsistence
   `digest.rs:748`, food-mint retirement `digest.rs:229`, household provisions `digest.rs:1922`) so
