@@ -24,6 +24,20 @@ until late bread *trades* (not the realized price) are shown. The `+34` mill mar
 stale-based and does NOT establish flour overproduction/surplus capture — the 12 is the last
 executed trade's resting-order limit (`econ/src/market.rs:441`), not yield arithmetic.
 
+**Phase-1 measured (2026-07-19, trade-level, failing immortal seed 7).** Flour and bread
+*trades* per 100-tick window resolve the staleness question directly:
+- **Flour is stale — CONFIRMED.** Flour trades run 71 → 83 → 7 → **0**, and stay 0 from tick ~300
+  to 1600, while `realized_price(flour)` holds frozen at 12. The −10 appraisal reads a phantom
+  input cost with no live market. **L2 is real and primary.**
+- **Bread is live, not stale, and not a demand vacuum.** Bread trades run 240–385 *per window*
+  the whole run at price 1 — a real active market floored at 1 (hearths + `producer_subsistence`
+  mint bread → flooded supply → floor), NOT the absence of demand my v1 claimed.
+- **Open (do NOT guess): does L2 alone suffice?** A baker pays ≤ `3·P_bread − cost = 2` for flour
+  and a miller sells at ≥ ~1 (near cost), so a *fresh* flour price near 1 could give margin
+  `3·1 − 1 − 1 = +1` (positive) — but it is borderline and flour has no current market to observe.
+  The Phase-1 2×2 (base / L2 / L1 / L1+L2) resolves STALE-PRICE-SUFFICES vs BOTH-NEEDED; the
+  measurement narrows it but does not settle it.
+
 **Corrected demand topology (P1).** Bread already *is* the preferred hunger staple
 (`generation.rs:83`); the fallback is **edible raw grain** (`subsistence_on_grain = true`,
 `scenarios.rs:286`), not a distinct FORAGE good, and hearths + `producer_subsistence` **mint bread
