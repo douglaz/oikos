@@ -9,9 +9,10 @@ bar, and the margin is yield-aware (`3·P_bread − P_flour − cost`; bread pri
 inconclusive). Mortality-independent, upstream of any lifespan sweep. **Unblock condition (Codex):
 an immortal five-seed viability gate must pass first** — a functioning chain on all five seeds,
 not one — before this milestone is meaningful. **impl-73 (C3R.h) is that milestone**: the impl-72
-diagnostic + a price-path measurement pinned the wall to a chain price inversion (flour 12 / bread
-1 → bake margin −10), so impl-73 restores the final-stage margin and must clear the five-seed gate
-first. See `docs/impl-final-stage-demand.md` and `docs/design-mortal-producer-succession.md` §8. Prior status (now blocked): **v2 —
+diagnostic + a price-path measurement + a Codex review localized the wall to a **stale
+input-price appraisal** (the baker is rejected on a phantom flour price frozen from an early boom;
+`realized_price` has no recency gate) — with weak final demand a secondary contributor. impl-73
+fixes that and must clear the five-seed gate first. See `docs/impl-final-stage-demand.md` §−0. Prior status (now blocked): **v2 —
 SPEC-READY** (Codex xhigh spec-review, 1 round: 1 P0 + 9 P1 folded into the authoritative `## −0`
 section below). Successor to impl-62 (C3R.a: mortal chain-producers, no
 succession) and impl-63 (C3R.b: capital inheritance). Renamed C3R.c → **C3R.f** (C3R.c is impl-64

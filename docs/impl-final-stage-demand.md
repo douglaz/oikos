@@ -1,23 +1,86 @@
-# impl-73 — C3R.h: Final-Stage Demand (can the oven stage earn a positive margin — and does that let the chain sustain on all five seeds?)
+# impl-73 — C3R.h: Stale Input Price vs Final Demand (why the oven margin computes negative, and which fix clears the five-seed gate)
 
-Status (spec): **v1 — DRAFT** (fix milestone; pending Codex spec-review). Origin: the impl-72
-(C3R.g) diagnostic localized the baker collapse to a non-positive role-choice margin, and a
-price-path measurement (2026-07-19) pinned *why*. Successor to impl-72; it is the milestone that
-must clear the immortal five-seed viability gate before impl-71 (C3R.f, lifespan) is meaningful.
-**Unlike impl-72 this changes economics, not just telemetry** — so it lives behind a new
-scenario/flag and every non-target golden stays byte-identical.
+Status (spec): **v2 — DRAFT** (Codex xhigh spec-review folded, 1 round: DIAGNOSIS-OVER-READ + 6×P1
++ 2×P2 → the authoritative `## −0` section supersedes §§0–8 where they conflict). Successor to
+impl-72 (C3R.g); it must clear the immortal five-seed viability gate before impl-71 (C3R.f,
+lifespan). **v1 (superseded)** diagnosed a live "price inversion / final demand missing" and
+recommended restoring bread demand (L1). Codex's review — verified against the code — showed the
+primary mechanism is a **stale input-price appraisal**, not a live inversion: role-choice reads
+`realized_price(flour)` with no age gate (`phases.rs:2270`), and that accessor is the *last trade's
+price, persisted forever* (`econ/src/society.rs:4779`); with bread at 1 a baker's flour bid is
+capped near `3·1 − 1 = 2` (the Mengerian ceiling), so **no flour clears at 12** once bread is
+cheap — the `P_flour = 12` carried from tick ~300 to 1600 is a phantom frozen from the early boom.
 
-## 0. One-paragraph summary
+## −0. v2 revision (AUTHORITATIVE — folds the Codex spec-review; supersedes §§0–8 on conflict)
+
+**Corrected diagnosis (P0).** The baker's `MarginNonpositive` rejection is a **stale-input-price
+role-choice failure**, not a live economic price inversion. `3·P_bread − P_flour − cost = 3·1 − 12
+− 1 = −10` is the *appraisal's* arithmetic, but `P_flour = 12` is a stale last-trade
+(`realized_price` has no recency, `society.rs:4779`; the appraisal reads it raw, `phases.rs:2270`),
+and no flour can contemporaneously clear at 12 when bread is 1 (baker bid ceiling ≈ 2). So the
+baker is rejected on a **phantom input cost**. Weak final demand is retained as a *plausible
+secondary* contributor, not the primary cause. `P_bread = 1` is likewise unproven as a demand floor
+until late bread *trades* (not the realized price) are shown. The `+34` mill margin is also
+stale-based and does NOT establish flour overproduction/surplus capture — the 12 is the last
+executed trade's resting-order limit (`econ/src/market.rs:441`), not yield arithmetic.
+
+**Corrected demand topology (P1).** Bread already *is* the preferred hunger staple
+(`generation.rs:83`); the fallback is **edible raw grain** (`subsistence_on_grain = true`,
+`scenarios.rs:286`), not a distinct FORAGE good, and hearths + `producer_subsistence` **mint bread
+itself** (`demography.rs:1080`, `phases.rs:944`). The diagnostic `food = 0` zeros only the six
+appended producer-house hearths; two legacy hearths stay at 3 and `producer_subsistence = 4`
+remain. So "the population never needs bread" is **false**; the real L1 is *retiring the bread mints
+and the raw-grain substitution* so market bread demand can form — not re-architecting what the
+colony eats.
+
+**Levers (reprioritized):**
+- **L2 — stale-input-price fix (now primary).** The appraisal must not reject on a frozen input
+  price. Define the stale fallback precisely — **do NOT pass a stale price as `None`** (that zeros
+  the input cost, `mod.rs:14596/15418`, manufacturing a false positive while no flour is
+  purchasable). Options: use the current executable *ask*, an explicit price-discovery/probation
+  state, or refuse to appraise. Capital formation's recency gate is NOT a precedent (it gates the
+  output/demand signal, `phases.rs:2789`, not the input price). Needs a default-off `ChainConfig`
+  behavior flag with conditional digest bytes, coverage-guard classification, and off-identity /
+  on-divergence tests.
+- **L1 — retire bread mints + raw-grain substitution (secondary).** Compose *existing,
+  already-digested* fields (`producer_subsistence` `digest.rs:61`, raw-grain subsistence
+  `digest.rs:748`, food-mint retirement `digest.rs:229`, household provisions `digest.rs:1922`) so
+  market bread demand can form. Promote to primary only if the 2×2 (below) shows it independently
+  necessary. A new `HouseholdSpec` field, if introduced, needs its own coverage guard (the
+  `DemographyConfig` guard does not destructure `HouseholdSpec`).
+- **L3 — yield/cost rebalance (fallback), unchanged.**
+
+**Phase 1 (measure before choosing) — trade-level, not realized-price.** Record: flour and bread
+**last-trade ages**, live bid/ask limits, failed crossings, buyer class + acquisition channel,
+flour stocks/fills, and hunger/starvation. A bread trade at 1 does NOT prove a demand floor
+(abundant minted supply / low reservations / stale price all reproduce it). This must discriminate
+L1 vs L2 by running the actual **2×2 intervention: base / L2-only / L1-only / L1+L2**.
+
+**Outcomes (exhaustive, non-overlapping — replaces §2):**
+- **STALE-PRICE-SUFFICES** — L2 alone clears the gate.
+- **DEMAND-SUFFICES** — L1 alone clears the gate.
+- **EITHER-SUFFICES** — both single arms clear it independently.
+- **BOTH-NEEDED** — both single arms fail; L1+L2 clears it.
+- **DEEPER-WALL** — L1+L2 fails on ≥1 seed (flour supply/route, capacity/utilization, or
+  seed-fragile bootstrap; Phase 1's observables must cover these). Mixed-seed results classified
+  explicitly.
+
+**Acceptance (corrected — replaces §5).** Profitability is **strict** `revenue > input + cost`
+(`mod.rs:14587`; a *zero* margin is `MarginNonpositive`, `phases.rs:2321`), so require a
+**strictly positive** steady-state bake margin computed on **contemporaneous executed** prices —
+plus final-window flour fills, bake executions, bread output/trades, and a **starvation /
+bounded-hunger control**. `FlowRuns` on all five immortal seeds is the isolation gate; mortal
+`FlowRuns` belongs to impl-71, but add a **mortal non-regression smoke**.
+
+## 0. One-paragraph summary (superseded by §−0 where it conflicts)
 
 impl-72 showed the Baker role is rejected by `MarginNonpositive` on ~93% of appraisals on the
-failing seeds. A price-path probe on a failing immortal seed shows why, and it stabilizes by
-tick ~300 and holds for the rest of the run: `P_grain = 1`, `P_flour = 12`, `P_bread = 1`,
-`operating_cost = 1`. The chain is **price-inverted** — milling earns `3·12 − 1 − 1 = +34` while
-baking earns `3·1 − 12 − 1 = −10`. Milling captures the whole chain surplus (nearly-free foraged
-grain → flour at 3× yield); the final good, bread, is **floored at 1 because the population is fed
-by forage + the hearth subsidy and never needs to buy bread**, so the last stage cannot pay,
-mortality-independent. This milestone restores a viable final-stage margin and tests whether that
-lets a functioning chain (`FlowRuns`) appear on all five seeds — not just seed 3.
+failing seeds. A price-path probe on a failing immortal seed stabilizes by tick ~300 and holds:
+`P_grain = 1`, `P_flour = 12`, `P_bread = 1`, `operating_cost = 1`, so the *appraisal* computes
+mill `+34` / bake `−10`. **Per §−0 the `P_flour = 12` is a stale last-trade, not a live clearing
+price** — so the primary fix is the stale-input-price appraisal (L2), with weak final demand (L1)
+a secondary contributor, decided by the Phase-1 2×2. The milestone must let a functioning chain
+(`FlowRuns`) appear on all five immortal seeds — not just seed 3.
 
 ## 1. Base facts (measured 2026-07-19)
 
