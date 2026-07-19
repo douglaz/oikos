@@ -2163,6 +2163,8 @@ fn digest_coverage_settlement(v: &Settlement) {
         birth_stock_injection_records: _,
         birth_stock_births_by_household: _,
         last_birth_stock_attribution_snapshot: _,
+        // NOT DIGESTED: runtime-only diagnostics, including C3R.g's nested
+        // role-choice counters and Baker-hold ticks; no decision path reads them.
         saving_allocation_obs: _,
         birth_gate_obs: _,
         saving_obs_stock_tick: _,
@@ -2307,6 +2309,34 @@ fn digest_coverage_settlement(v: &Settlement) {
         burden: _,
         #[cfg(test)]
             test_fault_mint_birth_gold: _,
+    } = *v;
+}
+
+#[allow(dead_code)]
+fn digest_coverage_saving_allocation_obs(v: &SavingAllocationObs) {
+    let SavingAllocationObs {
+        // NOT DIGESTED: C3R.g runtime-only observation; no decision path reads it.
+        role_choice_diag: _,
+        filled: _,
+        no_bid_posted: _,
+        self_ask_only: _,
+        no_executable_ask_in_window: _,
+        all_asks_above_limit: _,
+        competitive_loss: _,
+        execution_residual: _,
+        no_spot_pass_ticks: _,
+        drops: _,
+        phys_produced: _,
+        phys_consumed: _,
+        phys_net_delta: _,
+        phys_within_phase_ambiguous: _,
+        death_phase: _,
+        pre_market_phase: _,
+        market_phase: _,
+        production_own_use_phase: _,
+        birth_phase: _,
+        end_of_tick_phase: _,
+        supply_series: _,
     } = *v;
 }
 

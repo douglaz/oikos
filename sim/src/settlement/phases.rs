@@ -2284,7 +2284,9 @@ impl Settlement {
                 // entrepreneurial forecasts are on, else the raw last realized price (the
                 // pre-S11 path). The market still clears at the REAL price either way.
                 let realized_output = self.society.realized_price(output_good);
-                let pays = {
+                // Return the exact appraised price and profit test with `pays`; the
+                // diagnostic observes the decision values without re-pricing.
+                let (pays, output_price, margin_positive) = {
                     let agent = self
                         .society
                         .agents
@@ -2308,15 +2310,27 @@ impl Settlement {
                     // is simply profitable at the appraised output price, so a producer
                     // whose savings ladder is full does not retire (consumption recurs — it
                     // keeps producing to keep eating). A no-op unless enabled.
-                    base_pays
-                        || (recurring_motive
-                            && recipe_is_profitable(
-                                recipe,
-                                output_price,
-                                input_price,
-                                operating_cost,
-                            ))
+                    let margin_positive =
+                        recipe_is_profitable(recipe, output_price, input_price, operating_cost);
+                    let pays = base_pays || (recurring_motive && margin_positive);
+                    (pays, output_price, margin_positive)
                 };
+                // C3R.g: classify without steering. `pays` is the ground truth of
+                // adoption, so it is matched FIRST — an accepted role is always Accepts
+                // regardless of margin. The rejection buckets are then ordered and
+                // disjoint: absent output price, then a non-positive yield-aware margin
+                // (`revenue > input cost + operating cost`), then an ordinal decline at a
+                // positive margin. Exhaustive by construction, without relying on any
+                // cross-crate appraisal invariant relating `pays` to the margin.
+                let reason = match output_price {
+                    None => RoleChoiceReason::PriceAbsent,
+                    Some(_) if pays => RoleChoiceReason::Accepts,
+                    Some(_) if !margin_positive => RoleChoiceReason::MarginNonpositive,
+                    Some(_) => RoleChoiceReason::OrdinalDecline,
+                };
+                self.saving_allocation_obs
+                    .role_choice_diag
+                    .observe(recipe_id, reason);
                 if pays {
                     adoption = Some(adopted);
                     break;
@@ -2430,6 +2444,14 @@ impl Settlement {
                     );
                 }
                 changed = true;
+            }
+            // Acceptance and occupancy are different observations: a Gatherer may
+            // accept Bake while the switch-readiness gate keeps it gathering. Stamp
+            // only the vocation actually held after role choice has settled.
+            if self.colonists[slot].vocation == Vocation::Baker {
+                self.saving_allocation_obs
+                    .role_choice_diag
+                    .observe_baker_hold(self.econ_tick);
             }
         }
         changed
