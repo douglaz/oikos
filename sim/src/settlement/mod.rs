@@ -4575,6 +4575,9 @@ pub struct SavingSupplyTick {
 /// Runtime-only per-run accumulator for the §2 loss decomposition. NEVER serialized.
 #[derive(Clone, Debug, Default)]
 pub struct SavingAllocationObs {
+    /// C3R.g runtime-only role-choice telemetry. Kept in this existing defaulted,
+    /// non-digested diagnostics store so settlement construction stays unchanged.
+    role_choice_diag: RoleChoiceDiag,
     /// Opportunities that Filled (a staple bought under the attribution predicate).
     pub filled: u64,
     pub no_bid_posted: u64,
@@ -5142,6 +5145,60 @@ fn winner_intent_from(
             _ => WinnerIntent::Other,
         },
         None => WinnerIntent::Other,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RoleChoiceReason {
+    PriceAbsent,
+    MarginNonpositive,
+    OrdinalDecline,
+    Accepts,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RoleChoiceHistogram {
+    pub attempts: u64,
+    pub price_absent: u64,
+    pub margin_nonpositive: u64,
+    pub ordinal_decline: u64,
+    pub accepts: u64,
+}
+
+impl RoleChoiceHistogram {
+    fn observe(&mut self, reason: RoleChoiceReason) {
+        self.attempts = self.attempts.saturating_add(1);
+        let bucket = match reason {
+            RoleChoiceReason::PriceAbsent => &mut self.price_absent,
+            RoleChoiceReason::MarginNonpositive => &mut self.margin_nonpositive,
+            RoleChoiceReason::OrdinalDecline => &mut self.ordinal_decline,
+            RoleChoiceReason::Accepts => &mut self.accepts,
+        };
+        *bucket = bucket.saturating_add(1);
+    }
+}
+
+/// Runtime-only C3R.g counters; excluded from `canonical_bytes`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RoleChoiceDiag {
+    pub mill: RoleChoiceHistogram,
+    pub bake: RoleChoiceHistogram,
+    pub baker_first_econ_tick: Option<u64>,
+    pub baker_last_econ_tick: Option<u64>,
+}
+
+impl RoleChoiceDiag {
+    fn observe(&mut self, recipe: RecipeId, reason: RoleChoiceReason) {
+        match recipe {
+            RecipeId::Mill => self.mill.observe(reason),
+            RecipeId::Bake => self.bake.observe(reason),
+            _ => {}
+        }
+    }
+
+    fn observe_baker_hold(&mut self, econ_tick: u64) {
+        self.baker_first_econ_tick.get_or_insert(econ_tick);
+        self.baker_last_econ_tick = Some(econ_tick);
     }
 }
 
@@ -12778,6 +12835,21 @@ impl Settlement {
     /// C3R.b v2 runtime-only telemetry: producer-role adoption switch rejections.
     pub fn producer_adoption_rejections(&self) -> u64 {
         self.producer_adoption_rejections
+    }
+
+    /// C3R.g (impl-72) Stage-1 diagnostic: the per-run mill/bake role-choice reason
+    /// histogram + Baker-hold econ-ticks. Runtime-only; excluded from `canonical_bytes`.
+    pub fn role_choice_diag(&self) -> RoleChoiceDiag {
+        self.saving_allocation_obs.role_choice_diag
+    }
+
+    /// Test-support (C3R.g digest tripwire): perturb the role-choice diagnostic so an
+    /// integration test can prove it is excluded from [`Self::canonical_bytes`]. Pure
+    /// telemetry mutation — it must never shift the byte stream.
+    pub fn debug_perturb_role_choice_diag(&mut self) {
+        let diag = &mut self.saving_allocation_obs.role_choice_diag;
+        diag.bake.observe(RoleChoiceReason::Accepts);
+        diag.baker_last_econ_tick = Some(diag.baker_last_econ_tick.unwrap_or(0).saturating_add(1));
     }
 
     /// C3R.a population-artifact guard: live mortal agents that can currently build
