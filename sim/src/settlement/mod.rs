@@ -10005,15 +10005,16 @@ impl Settlement {
     ///
     /// Deliberately the RESERVATION, not the executable quote. `Society::ensure_ask` posts
     /// `belief.shade_ask(reservation)` off a reservation-netted `available_agent` snapshot
-    /// (`econ/src/society.rs:3313,3343-3344,3599`), so a genuinely postable ask is never
-    /// CHEAPER than this value — `shade_ask` is `max(expected - step, reservation)`
-    /// (`econ/src/expect.rs:40-42`) — and a holder whose stock is already reserved may not
-    /// be able to post at all. A candidate can therefore adopt against a price the book
-    /// would not currently honor; the measurement reports that as bread output and baker
-    /// survival rather than suppressing it. It stays a reservation on purpose: the netting
-    /// reads `Society::reservations` / `live_quotes`, which `canonical_bytes` does NOT
-    /// serialize, so steering role choice by them would make this DIGESTED flag depend on
-    /// undigested order-book state — the determinism contract this lever is built on.
+    /// (`econ/src/society.rs:3313,3343-3344,3599`). That snapshot can produce a different
+    /// reservation than the raw agent used here, while `shade_ask` only floors the quote at
+    /// its OWN reservation (`econ/src/expect.rs:40-42`); a holder whose stock is already
+    /// reserved may not be able to post at all. This proxy therefore has no ordering
+    /// guarantee against a live ask. A candidate can adopt against a price the book would
+    /// not currently honor; the measurement reports that as bread output and baker survival
+    /// rather than suppressing it. It stays a reservation on purpose: the netting reads
+    /// `Society::reservations` / `live_quotes`, which `canonical_bytes` does NOT serialize,
+    /// so steering role choice by them would make this DIGESTED flag depend on undigested
+    /// order-book state — the determinism contract this lever is built on.
     ///
     /// Deliberately queried for ONE unit: `reservation_ask_for_money` prices the whole
     /// `qty` bundle (the gain enters gold once, `econ/src/agent.rs:449-488`), while both
