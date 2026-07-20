@@ -32,15 +32,21 @@ executed trade's resting-order limit (`econ/src/market.rs:441`), not yield arith
 - **Bread is live, not stale, and not a demand vacuum.** Bread trades run 240–385 *per window*
   the whole run at price 1 — a real active market floored at 1 (hearths + `producer_subsistence`
   mint bread → flooded supply → floor), NOT the absence of demand my v1 claimed.
-- **Live flour ask measured — STALE-PRICE-SUFFICES strongly indicated.** `order_stats_by_vocation`
-  at ticks 800 and 1200 shows **7 millers asking flour at price 1** the whole run (no baker bid —
-  there are no bakers), while the realized price sits stale at 12. So the flour supply side is
-  *alive and cheap*; the baker is blocked *solely* by appraising the stale 12. Against the live ask
-  the margin is `3·1 − 1 − 1 = +1 > 0` — baking is profitable. This also refutes the chicken-and-egg
-  worry: millers overproduce flour (3× yield) and ask continuously regardless of baker demand, so
-  there is always a live flour ask to appraise against; no bootstrap deadlock. The thin +1 margin
-  and second-order effects (does the ask hold once a baker buys? does bread stay at 1?) are what the
-  2×2 build confirms — not asserted from a static snapshot.
+- **Flour reservation ask ≈ 1 (reconstructed, not a live executable quote).**
+  `order_stats_by_vocation` at ticks 800/1200 shows ~7 millers with a *reservation* ask of 1
+  (`reservation_ask_for_money`, `mod.rs:13506` — a one-unit reconstruction, NOT a live
+  resting/matchable order; the real market shades the reservation, checks availability, can fail
+  posting, and trades at the resting limit). So cheap flour supply is *probable* but **not measured
+  as executable**. **Corrected conclusion (Codex review v3, 2026-07-20 — the session's fifth price
+  over-read, again a proxy read as ground truth): staleness is CONFIRMED, but L2-*sufficiency* is
+  UNVERIFIED and likely insufficient alone.** Two reasons: (1) `3·1 − 1 − 1 = +1` is a **knife-edge**
+  (at flour 2 it is exactly 0 and strict profitability fails; execution order decides which side's
+  limit fills, `market.rs:485`); (2) a positive *appraised* margin need not *realize* — bread is
+  minted-flooded (hearths + `producer_subsistence`), and the demand-responsive restock guard stops a
+  baker buying flour while its own bread sits **unsold** (`mod.rs:8480`), so the baker's bread may
+  never clear against minted bread. **L2 is a real contributor; `L1+L2` is the defensible combined
+  arm; whether L1 is necessary is exactly what the strengthened 2×2 resolves — measured on
+  baker-ORIGIN bread sales and realized round-trip margin, not global bread trades.**
 
 **Corrected demand topology (P1).** Bread already *is* the preferred hunger staple
 (`generation.rs:83`); the fallback is **edible raw grain** (`subsistence_on_grain = true`,
@@ -52,15 +58,17 @@ and the raw-grain substitution* so market bread demand can form — not re-archi
 colony eats.
 
 **Levers (reprioritized):**
-- **L2 — stale-input-price fix (primary; mechanism now pinned by measurement).** The appraisal
-  must value the input at the **live executable ask**, not the stale realized price. The Phase-1
-  order-book measurement settles the mechanism: millers post a live flour ask at 1 the whole run,
-  so the fix is to prefer that ask (age-gate the realized input price and fall back to the current
-  best executable ask). **Do NOT pass a stale price as `None`** (that zeros the input cost,
-  `mod.rs:14596/15418`, manufacturing a false positive) — a live ask exists, so use it. Capital
-  formation's recency gate is NOT a precedent (it gates the output/demand signal, `phases.rs:2789`,
-  not the input price). Needs a default-off `ChainConfig` behavior flag with conditional digest
-  bytes, coverage-guard classification, and off-identity / on-divergence tests.
+- **L2 — stale-input-price fix (a real contributor; mechanism pinned precisely).** Value the input
+  at a **candidate-specific actual quote: the lowest non-self, unexpired resting flour ask this
+  candidate can afford** — not the stale realized price. If no such ask exists, **decline
+  explicitly** (never pass `None` into the appraisal — that zeros the input cost, `mod.rs:14596/15418`,
+  manufacturing a false positive). Flag-off must retain the raw realized-price path **byte-for-byte**.
+  **Determinism/digest (Codex v3):** `canonical_bytes` serializes beliefs and realized prices
+  (`digest.rs:1007,1371`) but NOT live order books or last-trade timestamps; so either **derive the
+  appraisal input from already-serialized state** or **serialize the order-book/age state L2 reads,
+  ON-only** — the coverage-guard + off-identity/on-divergence tests do not close that gap by
+  themselves. Capital formation's recency gate is NOT a precedent (it gates the output/demand
+  signal, `phases.rs:2789`, not the input price).
 - **L1 — retire bread mints + raw-grain substitution (secondary).** Compose *existing,
   already-digested* fields (`producer_subsistence` `digest.rs:61`, raw-grain subsistence
   `digest.rs:748`, food-mint retirement `digest.rs:229`, household provisions `digest.rs:1922`) so
@@ -84,12 +92,18 @@ L1 vs L2 by running the actual **2×2 intervention: base / L2-only / L1-only / L
   seed-fragile bootstrap; Phase 1's observables must cover these). Mixed-seed results classified
   explicitly.
 
-**Acceptance (corrected — replaces §5).** Profitability is **strict** `revenue > input + cost`
-(`mod.rs:14587`; a *zero* margin is `MarginNonpositive`, `phases.rs:2321`), so require a
-**strictly positive** steady-state bake margin computed on **contemporaneous executed** prices —
-plus final-window flour fills, bake executions, bread output/trades, and a **starvation /
-bounded-hunger control**. `FlowRuns` on all five immortal seeds is the isolation gate; mortal
-`FlowRuns` belongs to impl-71, but add a **mortal non-regression smoke**.
+**Acceptance (corrected — replaces §5; strengthened by Codex v3).** Profitability is **strict**
+`revenue > input + cost` (`mod.rs:14587`; a *zero* margin is `MarginNonpositive`, `phases.rs:2321`),
+so require a **strictly positive realized round-trip margin, baker-attributed**: flour PURCHASES,
+bake executions, and **sales of baker-ORIGIN bread**, inventory change accounted, on
+**contemporaneous executed** prices (snapshot quotes and the knife-edge `+1` do not count — execution
+order decides the fill, `market.rs:485`). The existing `FlowRuns` (staffing + *cumulative*
+production) is **insufficient**: minted bread can supply every observed bread sale while the baker's
+own output never clears (`demography.rs:1087`, `phases.rs:944`; the restock guard `mod.rs:8480` then
+stalls its flour buying). A passing arm MUST show final-window **baker-origin bread actually sold**.
+Run the 2×2 (base / L2 / L1 / L1+L2) **per seed** across all five immortal seeds — report per-seed,
+do NOT pool — with a **starvation / bounded-hunger control**; `L1+L2` is the defensible combined
+arm. mortal `FlowRuns` belongs to impl-71, but add a **mortal non-regression smoke**.
 
 ## 0. One-paragraph summary (superseded by §−0 where it conflicts)
 
