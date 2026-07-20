@@ -163,6 +163,7 @@ fn run_arm(seed: u64, stale_input_price_fix: bool) -> Arm {
 fn l2_base_vs_fix_measurement() {
     let mut flipped_to_accepts = 0usize;
     let mut histograms_differ = 0usize;
+    let mut l2_declines = 0u64;
 
     for seed in SEEDS {
         let base = run_arm(seed, false);
@@ -185,6 +186,7 @@ fn l2_base_vs_fix_measurement() {
         if l2.diag.bake != base.diag.bake {
             histograms_differ += 1;
         }
+        l2_declines += l2.diag.bake.input_price_absent;
     }
 
     assert!(
@@ -195,5 +197,13 @@ fn l2_base_vs_fix_measurement() {
     assert!(
         histograms_differ > 0,
         "base and L2 role-choice histograms must differ on ≥1 seed"
+    );
+    // Regression guard for the new decline path: with the flag ON the fresh-ask lookup
+    // must sometimes find no holder and DECLINE (InputPriceAbsent) rather than falling
+    // back to a zero-cost input. It fires 600+/seed in practice; if a future change made
+    // that path unreachable (e.g. an unconditional fallback), this catches it.
+    assert!(
+        l2_declines > 0,
+        "the L2 decline path (InputPriceAbsent, no fresh input ask) must fire on the ON arm"
     );
 }
