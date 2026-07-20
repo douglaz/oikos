@@ -2214,6 +2214,9 @@ impl Settlement {
         // S11: route each colonist's per-agent fallible OUTPUT-price forecast into the
         // adopt appraisal instead of the raw realized price (input price stays observed).
         let entrepreneurial = chain.entrepreneurial_forecasts;
+        // C3R.h (L2): value the recipe INPUT at a fresh non-self reservation ask instead
+        // of the stale last-trade realized price. Off for every existing config.
+        let stale_input_price_fix = chain.stale_input_price_fix;
         let mortal_only = self.mortal_chain_producers_active();
         let count_c3rb_rejections = self.mortal_producer_inheritance_active();
         let tick = self.society.tick.0;
@@ -2264,7 +2267,7 @@ impl Settlement {
             // pre-S7 appraisal unchanged.
             let mut adoption: Option<Vocation> = None;
             for recipe_id in candidates.iter().flatten().copied() {
-                let (recipe, output_good, input_price, adopted) = match recipe_id {
+                let (recipe, output_good, stale_input_price, adopted) = match recipe_id {
                     RecipeId::Mill => (
                         &mill_recipe,
                         flour,
@@ -2280,23 +2283,65 @@ impl Settlement {
                     // No other recipe is a latent specialty (set only at generation).
                     _ => continue,
                 };
-                // The OUTPUT-price estimate: the colonist's grounded fallible forecast when
-                // entrepreneurial forecasts are on, else the raw last realized price (the
-                // pre-S11 path). The market still clears at the REAL price either way.
+                // Preserve C3R.g's rejection precedence: an absent OUTPUT price wins even
+                // when the L2 input proxy is also absent.
                 let realized_output = self.society.realized_price(output_good);
-                // Return the exact appraised price and profit test with `pays`; the
-                // diagnostic observes the decision values without re-pricing.
-                let (pays, output_price, margin_positive) = {
+                let output_price = {
                     let agent = self
                         .society
                         .agents
                         .get(id)
                         .expect("living colonist resolves in the arena");
-                    let output_price = if entrepreneurial {
+                    if entrepreneurial {
                         forecast_output_price(agent, output_good, realized_output, forecast_bias)
                     } else {
                         realized_output
-                    };
+                    }
+                };
+                if stale_input_price_fix && output_price.is_none() {
+                    self.saving_allocation_obs
+                        .role_choice_diag
+                        .observe(recipe_id, RoleChoiceReason::PriceAbsent);
+                    if count_c3rb_rejections {
+                        self.producer_recipe_pay_rejections =
+                            self.producer_recipe_pay_rejections.saturating_add(1);
+                    }
+                    continue;
+                }
+
+                // Off retains the stale realized-price path. On uses the minimum
+                // non-self holder reservation ask. With no proxy, decline explicitly:
+                // passing `None` to the appraisal would manufacture a free input.
+                let input_price = if stale_input_price_fix {
+                    match recipe.input_good {
+                        None => None,
+                        Some((input_good, input_qty)) => {
+                            match self.fresh_input_ask(id, input_good, input_qty, money_good) {
+                                Some(fresh) => Some(fresh),
+                                None => {
+                                    self.saving_allocation_obs
+                                        .role_choice_diag
+                                        .observe(recipe_id, RoleChoiceReason::InputPriceAbsent);
+                                    if count_c3rb_rejections {
+                                        self.producer_recipe_pay_rejections =
+                                            self.producer_recipe_pay_rejections.saturating_add(1);
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    stale_input_price
+                };
+                // Return the exact appraised price and profit test with `pays`; the
+                // diagnostic observes the decision values without re-pricing.
+                let (pays, margin_positive) = {
+                    let agent = self
+                        .society
+                        .agents
+                        .get(id)
+                        .expect("living colonist resolves in the arena");
                     let base_pays = recipe_adoption_pays_for_money(
                         agent,
                         recipe,
@@ -2313,7 +2358,7 @@ impl Settlement {
                     let margin_positive =
                         recipe_is_profitable(recipe, output_price, input_price, operating_cost);
                     let pays = base_pays || (recurring_motive && margin_positive);
-                    (pays, output_price, margin_positive)
+                    (pays, margin_positive)
                 };
                 // C3R.g: classify without steering. `pays` is the ground truth of
                 // adoption, so it is matched FIRST — an accepted role is always Accepts

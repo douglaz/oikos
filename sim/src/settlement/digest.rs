@@ -165,6 +165,12 @@ impl Settlement {
             if self.entrepreneurial_can_run() {
                 out.push(1);
             }
+            // C3R.h (L2): the fresh-input appraisal reads only serialized agent state,
+            // so only its behavior flag is new. Tag 36 is distinct from every adjacent
+            // ON-only block; the active-candidate gate avoids splitting inert configs.
+            if self.stale_input_price_fix_can_run() {
+                out.push(36);
+            }
             // S12: the own-labor subsistence gate retires the food mints and steers the
             // forage phase + the per-colonist `foraging` state below. When it can run,
             // serialize a marker + the forage knobs (yield + the hysteresis band) that
@@ -2468,6 +2474,7 @@ fn digest_coverage_chain_config(v: &ChainConfig) {
         tool_acquisition_eligibility: _,
         producible_capital: _,
         entrepreneurial_forecasts: _,
+        stale_input_price_fix: _,
         miller_grain_buffer: _,
         baker_flour_buffer: _,
         latent_flour_seed: _,
