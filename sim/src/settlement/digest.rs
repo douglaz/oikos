@@ -167,7 +167,9 @@ impl Settlement {
             }
             // C3R.h (L2): the fresh-input appraisal reads only serialized agent state,
             // so only its behavior flag is new. Tag 36 is distinct from every adjacent
-            // ON-only block; the active-candidate gate avoids splitting inert configs.
+            // ON-only block; the gate mirrors the phase's LIVE candidate roster, so an
+            // inert config — including one whose last latent candidate has died — does
+            // not split from the flag-off stream.
             if self.stale_input_price_fix_can_run() {
                 out.push(36);
             }
@@ -2443,6 +2445,10 @@ fn digest_coverage_chain_config(v: &ChainConfig) {
         birth_stock_ignition_at: _,
         producer_house_starting_staple: _,
         producer_support_until_tick: _,
+        // C3R.h (L2): steers `run_role_choice`'s input appraisal, so it is DIGESTED —
+        // as tag 36, pushed ON-only by `stale_input_price_fix_can_run` so a flag-off
+        // stream stays byte-identical to the pre-C3R.h one.
+        stale_input_price_fix: _,
         // NOT DIGESTED — inherited baseline at guard introduction (each was
         // implicitly omitted by the hand-maintained digest; kept as-is so the
         // guard lands with zero byte-stream change). Every NEW field added below
@@ -2474,7 +2480,6 @@ fn digest_coverage_chain_config(v: &ChainConfig) {
         tool_acquisition_eligibility: _,
         producible_capital: _,
         entrepreneurial_forecasts: _,
-        stale_input_price_fix: _,
         miller_grain_buffer: _,
         baker_flour_buffer: _,
         latent_flour_seed: _,

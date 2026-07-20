@@ -2,7 +2,7 @@
 //! fresh non-self reservation asks. The measurement reports, but does not gate on,
 //! bread output and baker survival.
 
-use sim::settlement::RoleChoiceHistogram;
+use sim::settlement::RoleChoiceDiag;
 use sim::{Settlement, SettlementConfig, Vocation};
 
 const SEEDS: [u64; 5] = [3, 7, 11, 19, 23];
@@ -112,9 +112,34 @@ fn flag_off_is_byte_identical() {
 }
 
 struct Arm {
-    bake: RoleChoiceHistogram,
+    diag: RoleChoiceDiag,
     bread_produced: u64,
     living_bakers: usize,
+}
+
+/// The C3R.h bucket invariants the new `InputPriceAbsent` reason documents
+/// (`sim/src/settlement/mod.rs`): every appraisal lands in exactly one bucket, and the
+/// new bucket is silent with the flag off — so the pre-C3R.h four-way partition that
+/// `baker_role_diagnostic.rs` pins still holds for every flag-off run. Without these, a
+/// double-observe or a dropped `continue` in the new branch would pass unnoticed.
+fn assert_partitions(diag: RoleChoiceDiag, stale_input_price_fix: bool) {
+    for histogram in [diag.mill, diag.bake] {
+        assert_eq!(
+            histogram.attempts,
+            histogram.price_absent
+                + histogram.input_price_absent
+                + histogram.margin_nonpositive
+                + histogram.ordinal_decline
+                + histogram.accepts,
+            "reason buckets must partition every appraisal: {histogram:?}"
+        );
+        if !stale_input_price_fix {
+            assert_eq!(
+                histogram.input_price_absent, 0,
+                "InputPriceAbsent is unreachable with the flag off: {histogram:?}"
+            );
+        }
+    }
 }
 
 fn run_arm(seed: u64, stale_input_price_fix: bool) -> Arm {
@@ -126,8 +151,9 @@ fn run_arm(seed: u64, stale_input_price_fix: bool) -> Arm {
         bread_produced = bread_produced.saturating_add(settlement.econ_tick().produced_of(bread));
     }
     let diag = settlement.role_choice_diag();
+    assert_partitions(diag, stale_input_price_fix);
     Arm {
-        bake: diag.bake,
+        diag,
         bread_produced,
         living_bakers: settlement.living_count(Vocation::Baker),
     }
@@ -144,19 +170,19 @@ fn l2_base_vs_fix_measurement() {
 
         println!(
             "C3R.h L2 seed={seed} arm=base bake={:?} bread_produced={} living_bakers={}",
-            base.bake, base.bread_produced, base.living_bakers,
+            base.diag.bake, base.bread_produced, base.living_bakers,
         );
         println!(
             "C3R.h L2 seed={seed} arm=l2 bake={:?} bread_produced={} living_bakers={}",
-            l2.bake, l2.bread_produced, l2.living_bakers,
+            l2.diag.bake, l2.bread_produced, l2.living_bakers,
         );
 
-        if l2.bake.accepts > base.bake.accepts
-            && l2.bake.margin_nonpositive < base.bake.margin_nonpositive
+        if l2.diag.bake.accepts > base.diag.bake.accepts
+            && l2.diag.bake.margin_nonpositive < base.diag.bake.margin_nonpositive
         {
             flipped_to_accepts += 1;
         }
-        if l2.bake != base.bake {
+        if l2.diag.bake != base.diag.bake {
             histograms_differ += 1;
         }
     }

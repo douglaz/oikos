@@ -2315,8 +2315,10 @@ impl Settlement {
                 let input_price = if stale_input_price_fix {
                     match recipe.input_good {
                         None => None,
-                        Some((input_good, input_qty)) => {
-                            match self.fresh_input_ask(id, input_good, input_qty, money_good) {
+                        // The per-unit ask, matching the per-unit `realized_price` it
+                        // replaces: both consumers scale it by the recipe's `input_qty`.
+                        Some((input_good, _input_qty)) => {
+                            match self.fresh_input_ask(id, input_good, money_good) {
                                 Some(fresh) => Some(fresh),
                                 None => {
                                     self.saving_allocation_obs

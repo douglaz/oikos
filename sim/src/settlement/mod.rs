@@ -5160,11 +5160,17 @@ fn winner_intent_from(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RoleChoiceReason {
     PriceAbsent,
-    /// C3R.h (L2, `stale_input_price_fix` only): no OTHER living holder of the recipe's
-    /// input has a reservation ask, so there is no fresh input price to appraise against
-    /// and the candidate declines. Distinct from [`Self::PriceAbsent`] (an absent OUTPUT
-    /// price) so the measurement can tell "the fix flipped the margin" apart from "the fix
-    /// starved the appraisal". Never observed with the flag off.
+    /// C3R.h (L2, `stale_input_price_fix` only): [`Settlement::fresh_input_ask`] yielded
+    /// no fresh input price, so the candidate declines rather than appraise a free input.
+    /// Two distinct causes share this bucket: no OTHER living colonist holds the recipe's
+    /// input with a reservation ask (a supply fact), OR the input good IS the current
+    /// money good, which `reservation_ask_for_money` declines to price unconditionally
+    /// (`econ/src/agent.rs:449`) — so every holder is skipped regardless of supply. No
+    /// chain config promotes a recipe input to money today, but nothing in `econ/menger`
+    /// forbids it; read this bucket as "no money-denominated input price", not "no stock".
+    /// Distinct from [`Self::PriceAbsent`] (an absent OUTPUT price) so the measurement can
+    /// tell "the fix flipped the margin" apart from "the fix starved the appraisal".
+    /// Never observed with the flag off.
     InputPriceAbsent,
     MarginNonpositive,
     OrdinalDecline,
@@ -9978,27 +9984,61 @@ impl Settlement {
     }
 
     /// C3R.h (L2): whether the fresh-input-price branch can steer role choice. Mirror
-    /// its candidate gate so an inert flag does not split behavior-equivalent digests.
+    /// [`Self::run_role_choice`]'s candidate gate — the LIVE roster's latent specialties
+    /// (`phases.rs`, `for &slot in &self.live_colonist_slots`), not `self.colonists`,
+    /// which retains dead historical entries — so an inert flag does not split
+    /// behavior-equivalent digests once the last latent candidate dies.
     fn stale_input_price_fix_can_run(&self) -> bool {
         self.chain
             .as_ref()
             .is_some_and(|chain| chain.stale_input_price_fix)
             && (self.tool_acquisition_can_run()
                 || self
-                    .colonists
+                    .live_colonist_slots
                     .iter()
-                    .any(|colonist| colonist.latent.is_some()))
+                    .any(|&slot| self.colonists[slot].latent.is_some()))
     }
 
-    /// Minimum reservation ask for the requested input bundle among other living
+    /// Minimum PER-UNIT reservation ask for the input good among other living colonist
     /// holders. This is an optimistic appraisal lower bound, not a live or matched quote.
     /// It reads only serialized agent state and iterates in deterministic roster order.
-    /// Both current chain recipes request one input unit (`content.rs:80,88`).
+    ///
+    /// Deliberately the RESERVATION, not the executable quote. `Society::ensure_ask` posts
+    /// `belief.shade_ask(reservation)` off a reservation-netted `available_agent` snapshot
+    /// (`econ/src/society.rs:3313,3343-3344,3599`), so a genuinely postable ask is never
+    /// CHEAPER than this value — `shade_ask` is `max(expected - step, reservation)`
+    /// (`econ/src/expect.rs:40-42`) — and a holder whose stock is already reserved may not
+    /// be able to post at all. A candidate can therefore adopt against a price the book
+    /// would not currently honor; the measurement reports that as bread output and baker
+    /// survival rather than suppressing it. It stays a reservation on purpose: the netting
+    /// reads `Society::reservations` / `live_quotes`, which `canonical_bytes` does NOT
+    /// serialize, so steering role choice by them would make this DIGESTED flag depend on
+    /// undigested order-book state — the determinism contract this lever is built on.
+    ///
+    /// Deliberately queried for ONE unit: `reservation_ask_for_money` prices the whole
+    /// `qty` bundle (the gain enters gold once, `econ/src/agent.rs:449-488`), while both
+    /// consumers multiply the returned price by the recipe's `input_qty`
+    /// ([`recipe_adoption_pays_for_money`], [`recipe_is_profitable`]) — as they must for
+    /// the flag-off substitute, the per-unit `realized_price`. Asking for the bundle here
+    /// would square the input cost for any recipe with `input_qty > 1`. Both current chain
+    /// recipes request one input unit (`content.rs:80,88`), so the two readings coincide
+    /// today; this keeps them coincident under a future yield-ratio change.
+    ///
+    /// Scope is the LIVE COLONIST roster, matching the phase that calls it. Resident
+    /// traders can hold tracked stock and quote in the same book, but only `region.rs`
+    /// seeds any (every `SettlementConfig` constructor leaves `resident_traders` empty),
+    /// and no region config runs a chain with this flag. The omission is safe in the one
+    /// direction that matters: dropping a holder can only leave the minimum higher or
+    /// absent, never cheaper than a real ask, so it cannot manufacture an adoption.
+    ///
+    /// Returns `None` when no other living colonist holds the good — and also when the
+    /// input good IS the current money good, which `reservation_ask_for_money` prices as
+    /// `None` unconditionally (`econ/src/agent.rs:449`). Both are declines, never a free
+    /// input; see [`RoleChoiceReason::InputPriceAbsent`].
     fn fresh_input_ask(
         &self,
         appraiser: AgentId,
         input_good: GoodId,
-        input_qty: u32,
         money_good: GoodId,
     ) -> Option<Gold> {
         let mut best: Option<Gold> = None;
@@ -10012,9 +10052,8 @@ impl Settlement {
             };
             // `reservation_ask_for_money` already returns `None` for a non-holder (it
             // requires `stock.can_remove(good, qty)`), so this is the "other living
-            // agents that currently hold the input good" filter.
-            let Some(ask) = agent.reservation_ask_for_money(input_good, input_qty, money_good)
-            else {
+            // colonists that currently hold the input good" filter.
+            let Some(ask) = agent.reservation_ask_for_money(input_good, 1, money_good) else {
                 continue;
             };
             best = Some(best.map_or(ask, |best: Gold| best.min(ask)));
