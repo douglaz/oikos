@@ -10021,9 +10021,12 @@ impl Settlement {
     /// consumers multiply the returned price by the recipe's `input_qty`
     /// ([`recipe_adoption_pays_for_money`], [`recipe_is_profitable`]) — as they must for
     /// the flag-off substitute, the per-unit `realized_price`. Asking for the bundle here
-    /// would square the input cost for any recipe with `input_qty > 1`. Both current chain
-    /// recipes request one input unit (`content.rs:80,88`), so the two readings coincide
-    /// today; this keeps them coincident under a future yield-ratio change.
+    /// would hand those consumers an already-`qty`-sized price to multiply by `input_qty`
+    /// a second time — a double-count that is at least quadratic in `input_qty`, since
+    /// `reservation_ask_for_money` is superadditive in `qty` (each further unit is given
+    /// up from a higher-ranked want). Both current chain recipes request one input unit
+    /// (`content.rs:80,88`), so the two readings coincide today; this keeps them
+    /// coincident under a future yield-ratio change.
     ///
     /// Scope is the LIVE COLONIST roster, matching the phase that calls it. Resident
     /// traders can hold tracked stock and quote in the same book, but only `region.rs`
@@ -10036,6 +10039,10 @@ impl Settlement {
     /// input good IS the current money good, which `reservation_ask_for_money` prices as
     /// `None` unconditionally (`econ/src/agent.rs:449`). Both are declines, never a free
     /// input; see [`RoleChoiceReason::InputPriceAbsent`].
+    ///
+    /// Cost: one full roster scan per candidate per recipe per tick, so role choice is
+    /// O(live colonists²) while the flag is on. Immaterial at the roster sizes this
+    /// default-off research lever is measured at; revisit before any default-on promotion.
     fn fresh_input_ask(
         &self,
         appraiser: AgentId,

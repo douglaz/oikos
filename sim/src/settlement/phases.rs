@@ -2283,8 +2283,9 @@ impl Settlement {
                     // No other recipe is a latent specialty (set only at generation).
                     _ => continue,
                 };
-                // Preserve C3R.g's rejection precedence: an absent OUTPUT price wins even
-                // when the L2 input proxy is also absent.
+                // The OUTPUT-price estimate: the colonist's grounded fallible forecast when
+                // entrepreneurial forecasts are on, else the raw last realized price (the
+                // pre-S11 path). The market still clears at the REAL price either way.
                 let realized_output = self.society.realized_price(output_good);
                 let output_price = {
                     let agent = self
@@ -2298,43 +2299,38 @@ impl Settlement {
                         realized_output
                     }
                 };
-                if stale_input_price_fix && output_price.is_none() {
-                    self.saving_allocation_obs
-                        .role_choice_diag
-                        .observe(recipe_id, RoleChoiceReason::PriceAbsent);
-                    if count_c3rb_rejections {
-                        self.producer_recipe_pay_rejections =
-                            self.producer_recipe_pay_rejections.saturating_add(1);
-                    }
-                    continue;
-                }
-
                 // Off retains the stale realized-price path. On uses the minimum
                 // non-self holder reservation ask. With no proxy, decline explicitly:
                 // passing `None` to the appraisal would manufacture a free input.
-                let input_price = if stale_input_price_fix {
-                    match recipe.input_good {
-                        None => None,
-                        // The per-unit ask, matching the per-unit `realized_price` it
-                        // replaces: both consumers scale it by the recipe's `input_qty`.
-                        Some((input_good, _input_qty)) => {
-                            match self.fresh_input_ask(id, input_good, money_good) {
-                                Some(fresh) => Some(fresh),
-                                None => {
-                                    self.saving_allocation_obs
-                                        .role_choice_diag
-                                        .observe(recipe_id, RoleChoiceReason::InputPriceAbsent);
-                                    if count_c3rb_rejections {
-                                        self.producer_recipe_pay_rejections =
-                                            self.producer_recipe_pay_rejections.saturating_add(1);
-                                    }
-                                    continue;
-                                }
+                let input_price = if !stale_input_price_fix {
+                    stale_input_price
+                } else if output_price.is_none() {
+                    // An absent OUTPUT price outranks an absent input proxy, and skipping
+                    // the lookup is what enforces that with ONE classification site: both
+                    // appraisals below return early on a `None` output price
+                    // (`recipe_adoption_pays_for_money` mod.rs:15518,
+                    // `recipe_is_profitable` mod.rs:14704) without reading the input
+                    // price, so `pays`/`margin_positive` are false and the fall-through
+                    // match observes `PriceAbsent` — never `InputPriceAbsent`.
+                    None
+                } else if let Some((input_good, _input_qty)) = recipe.input_good {
+                    // The per-unit ask, matching the per-unit `realized_price` it
+                    // replaces: both consumers scale it by the recipe's `input_qty`.
+                    match self.fresh_input_ask(id, input_good, money_good) {
+                        Some(fresh) => Some(fresh),
+                        None => {
+                            self.saving_allocation_obs
+                                .role_choice_diag
+                                .observe(recipe_id, RoleChoiceReason::InputPriceAbsent);
+                            if count_c3rb_rejections {
+                                self.producer_recipe_pay_rejections =
+                                    self.producer_recipe_pay_rejections.saturating_add(1);
                             }
+                            continue;
                         }
                     }
                 } else {
-                    stale_input_price
+                    None
                 };
                 // Return the exact appraised price and profit test with `pays`; the
                 // diagnostic observes the decision values without re-pricing.
