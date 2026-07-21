@@ -117,26 +117,53 @@ all five seeds** (0 → 9 bakers; bread ~400 → ~12,300, ~30×). **STALE-PRICE-
 result** — measured on cumulative *production* (a strong proxy: the restock guard stalls unsold
 output), not yet baker-origin *sales*.
 
-**Cut 2 — the rigorous close — SCOPED (this milestone).** A **test milestone, no new production
-code**: everything it needs already exists.
-- **L1 = an existing flag:** `ChainConfig::retire_food_mints` (`mod.rs:1519`, default off) retires
-  the bread/staple mints so market bread demand can form. No new mechanism — the 2×2's L1 arms are
-  config variants.
-- **Baker-origin sales = an existing accessor:** `bread_for_salt_volume_by_provenance() ->
-  (produced, minted)` (`mod.rs:13818`) gives *produced* (baker-origin) bread SOLD vs *minted* bread
-  sold — Codex's required signal, not global trades / cumulative production. Plus
-  `produced_bread_credited_and_sunk()` and the impl-72 role-choice histogram.
-- **The experiment:** the full **2×2 — base / L2 / L1 / L1+L2 — per seed** across the five immortal
-  seeds, plus a **starvation / bounded-hunger control** (max living hunger; non-lineage survivors),
-  reported per-seed (never pooled).
-- **Acceptance:** a "sufficient" arm must show, on **all five** seeds, **baker-origin bread SOLD**
-  (`salt_volume_produced`) substantial and a **strictly positive realized round-trip** (baker flour
-  purchases → bake → produced-bread sales, inventory-accounted) — not merely produced. Classify the
-  §−0 outcome: **STALE-PRICE-SUFFICES** (L2 alone), **DEMAND-SUFFICES** (L1 alone), **EITHER**,
-  **BOTH-NEEDED**, or **DEEPER-WALL**. Cut 1 points to STALE-PRICE-SUFFICES; cut 2 confirms it
-  rigorously or overturns it.
+**Cut 2 — the rigorous close — SCOPED (this milestone; v2 folds a Codex+Fable dual review).**
+Both reviews returned NEEDS-REVISION on the v1 scope; the corrections (all verified against the
+code) — the milestone is a small **default-off, non-steering telemetry trace** (impl-72-sized) +
+config arms + the 2×2 test:
+
+- **[P0] The v1 sales accessor is DEAD here — replaced.** `bread_for_salt_volume_by_provenance()`
+  is `(0,0)` on every arm: it populates only under `bread_provenance_active()` =
+  `cultivation_sells_surplus_active()` (`mod.rs:10639` → `gates.rs:169`), which the frontier chain
+  ancestry never sets, and it attributes only bread→`barter_medium` trades while
+  `frontier_endogenous` sets **`barter = None`** (designated GOLD, `scenarios.rs:283`) — bread
+  sells for **gold**. **Instead:** add a **default-off, non-steering, non-digested per-run
+  Baker-class accumulator** (like impl-72's `role_choice_diag`): gold spent buying flour, gold
+  earned selling bread, bread units produced, bread units sold — attributed to agents in the Baker
+  vocation at the trade/production instant (hook the spot-trade settlement + bake paths). Fable's
+  tape-only (`Society.trades` seller==Baker, `mod.rs:12158`) is a lighter fallback but is
+  **origin-contaminated** (a baker can resell minted/endowment bread), so the trace tracks origin
+  (produced-vs-sold) rather than trusting seller-vocation as a proxy — the whole point of cut 2.
+- **[P1] L1 = `retire_food_mints=true` AND `subsistence_on_grain=false`** (both existing
+  `ChainConfig` fields). `retire_food_mints` alone gates both recurring bread mints (demographic
+  hearth `demography.rs:1098`, producer staple leg `phases.rs:957` — verified complete for *mints*)
+  but leaves the **raw-grain substitution** (`subsistence_on_grain`, `scenarios.rs:290`) that §−0's
+  L1 also names, so hunger diverts to grain and bread demand still won't form. The L1 bundle
+  changes producer survival too, so rename the label **FOOD-FLOOR-RETIREMENT-SUFFICES** (not
+  "DEMAND-SUFFICES" — it is not pure demand isolation).
+- **[P1] Realized margin = executed cash flows** — per Baker class: bread-sale gold − flour-buy
+  gold, inventory-accounted (FIFO completed cycles), with `operating_cost` labeled **imputed**
+  (it is an appraisal threshold, never a real gold debit — `mod.rs:1019`, no payment site). Pin
+  which inequality gates: realized-cash-positive is the acceptance; note it can differ from the
+  appraised (cost-subtracted) margin at the knife-edge.
+- **[P1/P2] Outcome = a per-seed EXCLUSIVE truth table**, suite-labelled only when all five seeds
+  agree; evaluate the combined arm first: `DEEPER-WALL` iff L1+L2 fails; else
+  `STALE-PRICE-SUFFICES` / `FOOD-FLOOR-RETIREMENT-SUFFICES` / `EITHER` / `BOTH-NEEDED`; plus
+  `BASE-SUFFICES`, `NEGATIVE-INTERACTION` (a single arm passes but L1+L2 fails), and `MIXED-SEED`.
+- **[P2] Pin the executables:** final window = last 160 ticks; "substantial" baker-origin sales =
+  a pre-declared minimum (pick a number, e.g. ≥ a few ×100 bread sold/seed) so acceptance is
+  falsifiable; the hunger control samples `max_living_hunger()` **each tick** and keeps the window
+  max; the survivor floor is scoped to the **mortal lineage** side — the immortal base sets
+  `hunger_critical = need_max + 1` (`mod.rs:3665`) so producer starvation is vacuous; use
+  `population()/is_alive()/household_of()` for non-lineage survivors, not `living_count`.
+- **[P2] Assert (not just print) cut-1's result** — all five L2 arms sustain the baker stage and
+  raise output — and pin the **mortal smoke** (scenario/seed/arm/horizon + `starvation_deaths_total`
+  + living-floor).
+- **Determinism/goldens (both reviews: sound):** the new trace is non-steering + non-digested
+  (impl-72 pattern), the two treatment flags are default-off ON-only-digested, and the 2×2 arms are
+  additive in-test configs → every existing golden byte-identical.
 - **On confirmation, impl-71 (C3R.f, lifespan) unblocks** — the immortal five-seed viability gate is
-  met. Add a **mortal non-regression smoke** (mortal `FlowRuns` is impl-71's question).
+  met.
 
 ## 0. One-paragraph summary (superseded by §−0 where it conflicts)
 
