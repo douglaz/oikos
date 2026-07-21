@@ -1,10 +1,87 @@
 # impl-74 — C3R.i: Post-death flour re-ignition (can the flour market re-price a de-staffed chain, so production survives the producer?)
 
-Status (spec): **v1 — DRAFT** (pending Codex+Fable dual review). Successor to impl-73 (C3R.h). Origin:
+Status (spec): **v2 — DRAFT** (Codex+Fable dual review folded; both NEEDS-REVISION, "one revision from
+BUILD-READY"). The milestone survives but changes shape — see `## −0`. Successor to impl-73 (C3R.h). Origin:
 the impl-71 (C3R.f) redirect (`docs/impl-producer-lifespan-ratio.md` §−2) — a dual review proved
 lifespan is *not* the lever; the mortal chain dies via a flour-market **re-ignition deadlock**. This
 milestone attacks that deadlock directly. **Hard cap: ONE milestone.** If neither lever clears the
 five-seed gate, pin the null and STOP the C3R wall-chasing — do not chase a ninth "obvious lever".
+
+## −0. v2 revision (AUTHORITATIVE — folds the Codex+Fable dual review; supersedes §§0–8 on conflict)
+
+Both reviews verified against the code; the milestone is real but reshapes to **census-first**.
+
+1. **[P0 — census before R2] The restock gate already grants one full output batch of slack.** A
+   zero-flour miller passes the unsold-output guard because restocking stops only at `stock >=
+   output_qty` = 3 flour (`mod.rs:8569–8581`, `content.rs:79`). So a one-batch R2 dose is
+   *behaviorally inert* (byte-different, same behavior). **Do the branch census FIRST:** at the
+   zero-holder tick, a non-steering microtrace — living Miller? output price? gold? flour/grain
+   stock? imputed reservation? grain ask posted/filled? Mill execution? — to establish *why* no flour
+   exists (miller absent / can't fund the grain bid / produces-but-hoarded / one batch insufficient)
+   before naming R2's hook or cap. An R2 that never engages is **INTERVENTION-INVALID**, not
+   DEADLOCK-PERSISTS.
+2. **[P0 — CUT R1] Not computable.** `reservation_ask_for_money` requires held stock
+   (`agent.rs:449`); a no-flour miller has no reservation ask, so R1 would *synthesize* the exact
+   non-executable price the no-holder decline exists to prevent (`phases.rs:2302`). A later Bake
+   guards the outcome but does not validate an invented quote at adoption. **Drop R1 and R2+R1.** A
+   binding *forward order* (funded buyer, seller commitment, quantity, settlement) is a legitimate but
+   *separate* untested mechanism — the one-milestone cap excludes it as governance, so the null must
+   read "preregistered R2 failed," NOT "economic re-ignition cannot cross the wall."
+3. **[P0 — R2 = production + a reservation-respecting OFFER, reconciling the two reviews]** Fable
+   verified the auto-offer path exists (`ensure_ask` posts for any holder of unreserved stock,
+   `society.rs:961,3292`); Codex verified it *may not actuate* (production is post-market so flour is
+   offered next tick; the posted ask needs free stock + `reservation_ask_for_money` success and is
+   belief-*shaded above* the raw reservation `fresh_input_ask` reads, `mod.rs:10059`). So R2 must
+   **prove the normal ask path actuates** (the census shows it) or specify a **seller-authored,
+   reservation-respecting** bounded offer — never a forced below-reservation ask or forced fill. The
+   required manipulation trace: `paid grain fill → Mill → bounded holder stock → ordinary seller
+   reservation → posted ask → same-heir paid flour fill → Bake`. **Conservation:** an ordinary project
+   bid using the miller's OWN gold + a willing grain seller + unchanged `run_production` (consume 1
+   grain + labor, produce 3 flour, `mod.rs:8440`, `phases.rs:795`); **never credit flour directly**;
+   gold reserved/transferred, not consumed. **Cap (pending the census):** the smallest non-tunable
+   relaxation — `held + output_qty <= 2 × output_qty` (6 flour here), count reserved stock, replenish
+   only after sale. Plausible-but-unverified until the census proves the threshold is even the binding
+   branch (it may only *prevent* the gap, not *re-ignite* — if R2 keeps flour always present the gap
+   never forms; call that PREVENTION, not re-ignition, or activate R2 only after a verified deadlock).
+4. **[P0 — the join telemetry records NOTHING on this base]** `BurdenToolInherited/RoleAdopted/
+   StageExecution` emit only under `closure_active()` = `closed_circulation && !disabled`
+   (`closure.rs:1069`), which the mortal base never sets; the existing join also accepts same-tick
+   execution and has no exit event (`burden.rs:694`). **Add non-steering, closure-INDEPENDENT
+   telemetry** built from the `Trade` tape (tick/good/buyer/seller/price/qty, `market.rs:29`), cohort
+   = Baker/oven-owner deaths: `death → oven inheritance → same-heir adoption → same-heir PAID flour
+   Trade → no role exit → Bake`. (Per-heir purchase is measurable because `Trade` carries buyer.)
+5. **[P1 — no-death control is expressible TODAY without landing the impl-71 knob]** A GLOBAL all-house
+   no-death (`old_age_onset_years = 1`, `lifespan_span_years = 0`, `ticks_per_year > horizon`)
+   genuinely differs from the confounded immortal control because producer lifespans stay `Some` and
+   mortal eligibility/tagging remain active (`phases.rs:2220`). (Producer-*only* isolation would need
+   the per-house `lifespan_scale_bps` override at all three sites — deferred; not required for the
+   control.)
+6. **[P1 — lineage liquidity, buildable]** Freeze Baker-house IDs at generation (`generation.rs:560`),
+   sample each house every econ tick via `lineage_stats` (`mod.rs:13348`), score extinct houses zero,
+   report **per-house minima** over a window (an aggregate hides an extinct lineage).
+7. **[P0 — outcome tree, disjoint per arm×seed]** `REIGNITION-SUFFICES` (every qualifying gap
+   completes a paid flour Trade + Bake within pinned latency AND sustainability passes) /
+   `REIGNITES-BUT-DEEPER` (every gap re-ignites but sustainability fails for a named non-deadlock
+   reason) / `DEADLOCK-PERSISTS` (≥1 valid gap remains/recurs at the original no-holder wall) /
+   `INTERVENTION-INVALID` (R2 inert — never engaged) / `INCONCLUSIVE` (control/guard failure or
+   censoring); suite `MIXED` when seeds disagree. **Apply the hard one-milestone cap only after
+   treatment validity is demonstrated** (R2 actually actuated).
+8. **[P1/P2 — pin all placeholders before running]** exact base constructor (P2: §1 was pinned on
+   C3R.b food=3, §5 says food=0 — reconfirm the histogram on the run base), horizon, final/liquidity
+   windows, `N` completed joins, the qualifying-gap definition, the latency ceiling, the production
+   floor, censoring, whether retention requires a strictly-later Bake, and the commons-held-flour
+   residual counter (heirless death → `settle_estate_to_commons` makes flour invisible to
+   `fresh_input_ask` forever — record it in the DEADLOCK-PERSISTS residual; it also names the
+   estate/probate-liquidity lever the cap forecloses, keeping the STOP honest).
+9. **[P2 — determinism]** R2's flag + numeric cap + any steering inventory/commitment state DIGESTED
+   ON-only in `digest_coverage_chain_config`; the census/join/liquidity telemetry non-digested; prove
+   default-off == explicit-off tick-by-tick, ON differs, tags don't alias, telemetry perturbation
+   leaves `canonical_bytes` unchanged (`digest.rs:168,2034`, `baker_role_l2.rs:37`).
+
+**Net:** census-first; R1 cut; R2 = real production + reservation-respecting offer with a census-set
+cap; closure-independent paid-purchase join; global no-death control; per-house lineage-liquidity
+minima; a 6-way disjoint outcome set with validity-gated STOP. §§0–8 below are the v1 rationale,
+superseded by this section where they conflict.
 
 ## 0. One-paragraph summary
 
