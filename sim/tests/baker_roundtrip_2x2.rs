@@ -9,11 +9,12 @@
 //!
 //! The realized cash flows sharpen it further. L2 does not merely fail to clear, it runs
 //! the baker stage at a **loss**: ~4,100 gold of flour bought against ~900 of bread sold,
-//! a round trip near **−3,200** on every seed. The base and L1 arms, which staff far fewer
-//! bakers and bake far less, are cash-*positive* (+700 to +1,600). So L2 buys the input and
-//! bakes, and the output never converts back to money. Retiring the food floor (L1) does
-//! not rescue clearing either, and the combined L1+L2 arm collapses the baker stage
-//! outright (`living_bakers = 0`, 27 loaves).
+//! a round trip near **−3,200** on every seed. L1 stays cash-*positive* (+948 to +1,781),
+//! while base is positive on four seeds but enters the same high-output, cash-negative
+//! regime as L2 on seed 3 (13,068 loaves, −3,807). So L2 buys the input and bakes, and
+//! the output never converts back to money. Retiring the food floor (L1) does not rescue
+//! clearing either, and the combined L1+L2 arm collapses the baker stage outright
+//! (`living_bakers = 0`, 27 loaves).
 //!
 //! The assertions below therefore pin the NULL, in the same style as `WageMarketVacuous`
 //! and `ChainCollapsesOnProducerDeath`. They are written so that an economy change which
@@ -174,6 +175,10 @@ fn accumulator_delta(end: BakerRoundTrip, start: BakerRoundTrip) -> BakerRoundTr
 
 fn run_arm(seed: u64, arm: Arm) -> ArmResult {
     let cfg = config(arm);
+    // Read the flag actually configured, not the arm label. Assertion 4b's mint-free
+    // control is what carries the rejection of the seller-vocation attribution caveat,
+    // so it must fail if `config` ever stops retiring the mints on an L1 arm.
+    let mints_active = !cfg.chain.as_ref().expect("chain").retire_food_mints;
     let mut settlement = Settlement::generate(seed, &cfg);
     let window_start = RUN_TICKS - FINAL_WINDOW;
     let mut window_max_hunger = 0u16;
@@ -197,7 +202,7 @@ fn run_arm(seed: u64, arm: Arm) -> ArmResult {
         living_bakers: settlement.living_count(Vocation::Baker),
         window_max_hunger,
         nonlineage_survivors,
-        mints_active: !arm.l1,
+        mints_active,
     }
 }
 
