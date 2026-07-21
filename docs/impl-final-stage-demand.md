@@ -105,6 +105,39 @@ Run the 2×2 (base / L2 / L1 / L1+L2) **per seed** across all five immortal seed
 do NOT pool — with a **starvation / bounded-hunger control**; `L1+L2` is the defensible combined
 arm. mortal `FlowRuns` belongs to impl-71, but add a **mortal non-regression smoke**.
 
+## Cuts and status
+
+**Cut 1 — the L2 lever — LANDED** (master `0cb6f8d`, PR #2). A default-off
+`ChainConfig::stale_input_price_fix`: `run_role_choice` values the recipe input at the minimum
+non-self holder `reservation_ask_for_money` (pure over serialized `scale`/`stock`/`gold` — no
+order-book/timestamp reads, no new digest state), declining explicitly when no holder exists
+(never `None→0`); off is byte-identical. **Result:** on the immortal five-seed base, L2 collapses
+the stale-price rejection (`margin_nonpositive` ~8,400 → 0) and makes the baker stage **sustain on
+all five seeds** (0 → 9 bakers; bread ~400 → ~12,300, ~30×). **STALE-PRICE-SUFFICES is the leading
+result** — measured on cumulative *production* (a strong proxy: the restock guard stalls unsold
+output), not yet baker-origin *sales*.
+
+**Cut 2 — the rigorous close — SCOPED (this milestone).** A **test milestone, no new production
+code**: everything it needs already exists.
+- **L1 = an existing flag:** `ChainConfig::retire_food_mints` (`mod.rs:1519`, default off) retires
+  the bread/staple mints so market bread demand can form. No new mechanism — the 2×2's L1 arms are
+  config variants.
+- **Baker-origin sales = an existing accessor:** `bread_for_salt_volume_by_provenance() ->
+  (produced, minted)` (`mod.rs:13818`) gives *produced* (baker-origin) bread SOLD vs *minted* bread
+  sold — Codex's required signal, not global trades / cumulative production. Plus
+  `produced_bread_credited_and_sunk()` and the impl-72 role-choice histogram.
+- **The experiment:** the full **2×2 — base / L2 / L1 / L1+L2 — per seed** across the five immortal
+  seeds, plus a **starvation / bounded-hunger control** (max living hunger; non-lineage survivors),
+  reported per-seed (never pooled).
+- **Acceptance:** a "sufficient" arm must show, on **all five** seeds, **baker-origin bread SOLD**
+  (`salt_volume_produced`) substantial and a **strictly positive realized round-trip** (baker flour
+  purchases → bake → produced-bread sales, inventory-accounted) — not merely produced. Classify the
+  §−0 outcome: **STALE-PRICE-SUFFICES** (L2 alone), **DEMAND-SUFFICES** (L1 alone), **EITHER**,
+  **BOTH-NEEDED**, or **DEEPER-WALL**. Cut 1 points to STALE-PRICE-SUFFICES; cut 2 confirms it
+  rigorously or overturns it.
+- **On confirmation, impl-71 (C3R.f, lifespan) unblocks** — the immortal five-seed viability gate is
+  met. Add a **mortal non-regression smoke** (mortal `FlowRuns` is impl-71's question).
+
 ## 0. One-paragraph summary (superseded by §−0 where it conflicts)
 
 impl-72 showed the Baker role is rejected by `MarginNonpositive` on ~93% of appraisals on the
