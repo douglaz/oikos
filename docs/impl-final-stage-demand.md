@@ -113,11 +113,54 @@ non-self holder `reservation_ask_for_money` (pure over serialized `scale`/`stock
 order-book/timestamp reads, no new digest state), declining explicitly when no holder exists
 (never `None→0`); off is byte-identical. **Result:** on the immortal five-seed base, L2 collapses
 the stale-price rejection (`margin_nonpositive` ~8,400 → 0) and makes the baker stage **sustain on
-all five seeds** (0 → 9 bakers; bread ~400 → ~12,300, ~30×). **STALE-PRICE-SUFFICES is the leading
-result** — measured on cumulative *production* (a strong proxy: the restock guard stalls unsold
-output), not yet baker-origin *sales*.
+all five seeds** (0 → 9 bakers; bread ~400 → ~12,300, ~30×). ~~**STALE-PRICE-SUFFICES is the
+leading result**~~ — measured on cumulative *production* (a strong proxy: the restock guard stalls
+unsold output), not yet baker-origin *sales*. **FALSIFIED by cut 2 (below): the production proxy
+did not hold. The staffing and output result stands; the "suffices" reading does not.**
 
-**Cut 2 — the rigorous close — SCOPED (this milestone; v2 folds a Codex+Fable dual review).**
+**Cut 2 — the rigorous close — LANDED. Result: `BakerProducesButDoesNotSell` /
+`DEEPER-WALL`, 5/5 seeds.** The telemetry (a non-digested per-run Baker-class accumulator: flour
+gold spent, bread gold earned, bread units sold, bread units produced) plus the 2×2
+(`sim/tests/baker_roundtrip_2x2.rs`) measured *sales*, not production, and refuted cut 1's leading
+reading.
+
+| arm | living bakers | bread produced | bread sold | final-window sold | realized round trip |
+| --- | --- | --- | --- | --- | --- |
+| base | 0 (9 on seed 3) | 351-489 | 42-45 | **0** | +693 … +814 |
+| **L2** | **9** | **~12,000-12,400** | **46-59** | **0** | **−3,183 … −3,868** |
+| L1 | 3 | 4,065 | 28-32 | **0** | +948 … +1,781 |
+| L1+L2 | **0** | 27 | 15 | **0** | +78 |
+
+Readings, in order of how much they change the picture:
+
+- **The wall is CLEARING, not production.** L2 makes the stage staff and bake ~30× more bread, and
+  the extra loaves do not sell: 46-59 sold out of ~12,000 baked, and **zero** sold across the final
+  160-tick window on every arm and every seed. No arm reaches the pre-declared `SUBSTANTIAL = 300`
+  baker-origin sales floor. `DEEPER-WALL` (L1+L2 fails) on all five seeds, so neither lever alone
+  nor both together closes the loop.
+- **L2 runs the stage at a LOSS.** It buys ~4,100 gold of flour against ~900 of bread revenue — a
+  realized cash round trip near **−3,200**. The arms that bake far *less* (base, L1) are cash
+  *positive*. So L2 does not merely fail to convert output to money; it converts money to unsold
+  inventory. That is a stronger statement than "sales are low" and it is the thing impl-74 has to
+  explain.
+- **L1+L2 is a negative interaction on staffing.** L2 alone sustains 9 bakers, L1 alone 3, both
+  together **0** (27 loaves, the seed stock). Retiring the food floor removes the very subsistence
+  that let the stale-price fix keep producers alive long enough to adopt.
+- **The demand side is pinned at the hunger ceiling.** `window_max_hunger` is 11-12 against
+  `need_max = 12` on every arm, while ~12,000 loaves go unsold. Hunger is not the missing demand —
+  purchasing power is. (No starvation: this base inherits `hunger_critical = need_max + 1`, so the
+  ceiling is unreachable and a hunger *bound* would be a vacuous assertion; the mortal smoke is
+  where a reachable ceiling is exercised, at `starvation_deaths_total == 0`.)
+- **Attribution caveat, bounded.** Bread sales are attributed by seller vocation on the spot tape.
+  On `base`/`L2` a Baker can also be selling *minted* loaves (`phases.rs:971`,
+  `demography.rs:1101` both mint `known.hunger`, which is bread here, unless `retire_food_mints`).
+  The bias is strictly **upward on sales**, so it cannot manufacture this null — and the L1 arms
+  retire both mints, are contamination-free, and fail too. A per-loaf provenance ledger becomes
+  mandatory only if a future cut produces a *pass*.
+- **impl-71 (C3R.f, lifespan) does NOT unblock.** That gate was conditioned on confirmation; the
+  confirmation did not arrive.
+
+**Cut 2 — original scope (v2 folds a Codex+Fable dual review).**
 Both reviews returned NEEDS-REVISION on the v1 scope; the corrections (all verified against the
 code) — the milestone is a small **default-off, non-steering telemetry trace** (impl-72-sized) +
 config arms + the 2×2 test:
