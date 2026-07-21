@@ -1,11 +1,12 @@
 # impl-71 — C3R.f: Producer-Lineage Lifespan Sensitivity (does a longer producer-house life lift C3R.b's cushion-bound limp toward healthy flow?)
 
-Status (spec): **UNBLOCKED** (2026-07-21) — impl-73 (C3R.h) cut 2 met the immortal five-seed
-viability gate: with the stale-input-price fix (`stale_input_price_fix`, cut 1) the mortal-producer
-chain now functions and stays solvent on **all five** immortal seeds (result `EITHER_SUFFICES`; see
-`docs/impl-final-stage-demand.md`, "Cuts and status", master `b6404ba`). The blocker below is
-resolved; this lifespan-ratio milestone can now run on a substrate that functions. Re-review the v2
-spec's estimand against the now-functioning base before building.
+Status (spec): **REDIRECTED — do NOT build the lifespan sweep** (2026-07-21). A Codex + Fable dual
+review (Fable *ran* the sweep ×4/×8) proved **lifespan is not the causal lever**: the mortal chain
+collapses via a **flour-market re-ignition deadlock**, not life-length, and flow stays 0 across a
+16× lifespan range. See **§−2 (AUTHORITATIVE)** below. The successor milestone is the re-ignition
+deadlock; this lifespan axis is parked as at most a later mortality-*frequency* sensitivity. The
+immortal five-seed viability gate impl-73 cut 2 cleared is on the *immortal* base only — the mortal
+base still collapses (§−1).
 
 **Prior status: BLOCKED** (grill-with-docs 2026-07-18; refined by Codex review same day) —
 pending impl-72 (C3R.g), the baker-role profit diagnostic. A pre-check found this base's chain
@@ -31,6 +32,54 @@ and legacy-household provisioning remain), the "ratio" has no operational denomi
 intervention is producer-house-LINEAGE lifespan (not producer lifespan), with a real demographic
 coupling. v2 reframes to an absolute lifespan-sensitivity experiment at the C3R.b minimal-cushion
 floor, with the coupling measured, not assumed away.
+
+## −2. Dual-review outcome (AUTHORITATIVE, 2026-07-21): lifespan is NOT the lever — REDIRECT
+
+A Codex + Fable dual review of the §−1 re-scope both returned **NEEDS-REVISION**, and they
+converge (Fable *ran* the sweep; Codex reasoned it from the code): **raising producer lifespan does
+not fix the mortal collapse.** Fable's read-only probe swept lifespan ×4/×8 on the exact §−1 base
+and **final-window bread stayed 0 in 15/15 mortal runs across a 16× range** — re-adoption *attempts*
+rise with life, but flow never re-forms.
+
+**The real wall — a flour-market re-ignition deadlock (the sibling of cut 1's stale-price wall, on
+the supply side).** After the founder bakers die, the chain enters an **absorbing de-staffed state**:
+no baker → no flour demand → millers under working-capital discipline (`project_input_bids`) stop
+producing flour → no living agent holds flour → L2's own no-holder-decline (`fresh_input_ask`,
+`mod.rs:10103`; `phases.rs:2316`) rejects every heir's bake appraisal as **`InputPriceAbsent`
+(83–93% of bake rejections, `margin_nonpositive = 0`)**. The baker stage dies at the **first**
+founder die-off, not "across generations". Longer life only delays entry into this state. Both
+reviews also verified the code **rules out** a mandatory handover gap and "heir starts poor"
+(estate + tools transfer *before* same-tick role choice/production, `mod.rs:7183`,
+`demography.rs:366`) — so the cause is the market re-ignition, not the succession mechanics.
+
+**Confounds/proxies both reviews flagged (heed these in any successor):**
+- The "immortal control" is **not** `life = ∞` of the mortal system — with `mortal_chain_producers`
+  off, role-choice/capital admit `lifespan == None` adopters (`phases.rs:2220`) and producer-house
+  tagging changes (`generation.rs:560`), so "immortal sustains / mortal collapses" partly measures
+  **adopter-pool restriction**, not mortality. A no-death control must keep all mortal plumbing on
+  and give producer houses a lifespan beyond the horizon.
+- "Succession fires hard" over-reads proxy counters: `producer_tool_inheritances` counts tool
+  *units* not distinct handovers; `heir_tool_adoptions` is aggregate. Neither proves a
+  death→inherit→adopt→retain→**bake** join. Instrument the real join (`burden.rs:83`).
+- Current-vocation `baker_class_gold` (cut 2's metric) is churn-unstable for a mortal class (reads
+  0 during staffing gaps; loses estate gold on not-yet-promoted heirs). Use fixed producer-house
+  *lineage* liquidity over a window.
+
+**REDIRECT.** Do **not** build this lifespan sweep as the milestone — it would return a correct but
+**unattributed MORTALITY-BREAKS-IT** with a wrong causal frame (an eighth "obvious lever isn't the
+wall"). The next milestone is the **flour-market re-ignition deadlock** (make the flour market
+re-ignite after a producer die-off — e.g. millers keep a flour buffer / keep supplying without a
+current baker buyer, or a would-be baker may bootstrap-appraise against a miller *ask* even with no
+flour currently held). Lifespan is PARKED as at most a later mortality-*frequency* sensitivity axis
+— revisit only after the re-ignition seam is fixed and the mortal chain functions.
+
+**If ever built, fix these first (both reviews):** the lifespan mechanism has **three** construction
+sites (seeded producers `generation.rs:542`, ordinary founders `generation.rs:685`, births
+`phases.rs:532`) — scale the sampled lifespan AND founder age with checked integer arithmetic
+(`lifespan_scale_bps: Option<u32>`), clamp `founder_age < lifespan`; add a `HouseholdSpec`
+digest-coverage guard (the current guard hides `households: _`, `digest.rs:2553`) with emit-only-when-
+`Some` sparse encoding; one common horizon (delete §5 T2); a structure/flow split + exhaustive
+per-seed outcome tree (mixed-seed, non-monotonic, sustains-but-insolvent, right-censored).
 
 ## −1. Post-cut-2 re-scope (AUTHORITATIVE, 2026-07-21 — supersedes §−0 and §§0–7 where they conflict)
 
