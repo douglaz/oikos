@@ -32,6 +32,49 @@ intervention is producer-house-LINEAGE lifespan (not producer lifespan), with a 
 coupling. v2 reframes to an absolute lifespan-sensitivity experiment at the C3R.b minimal-cushion
 floor, with the coupling measured, not assumed away.
 
+## −1. Post-cut-2 re-scope (AUTHORITATIVE, 2026-07-21 — supersedes §−0 and §§0–7 where they conflict)
+
+**The v2 premise is now false.** v2 (and §2 below) assumed the mortal-producer chain *dies* at
+`food_provision = 0` and asked whether raising lifespan rescues it (RATIO-BAND / STRUCTURE-ONLY /
+RATIO-NULL). But the diagnosis journey (impl-72 + cut 1/2 of impl-73) found the wall was **not
+lifespan** — it was a **stale input-price appraisal**, fixed by `ChainConfig::stale_input_price_fix`
+(cut 1). With that fix the chain **functions and stays solvent** — on the *immortal* base, all five
+seeds sustain (impl-73 cut 2, result `EITHER_SUFFICES`; master `b6404ba`). So "does lifespan rescue
+a dying chain?" is the wrong question; the substrate no longer dies.
+
+**Re-scoped central question:** on the **mortal** producer base (producers die AND their oven/role
+inherit) **with the L2 fix on**, does the chain sustain *across producer deaths* — and does
+per-producer-house **lifespan** affect whether/how well it does? This is the office-hours
+life/payback intuition, finally testable on a substrate that functions.
+
+**Base (all arms):** `frontier_mortal_producers_heritable` with `stale_input_price_fix = true`,
+`mortal_chain_producers = true`, `mortal_producer_inheritance = true`,
+`mortal_producer_tool_inheritance = true`, `food_provision = 0`, `producer_house_cap = 2`,
+`SEEDS = [3,7,11,19,23]`. (Immortal is the cut-2 control that already sustains.)
+
+**Swept axis:** per-producer-house lifespan × `{0.5, 1, 2, 4, 8}` (the §3.1 per-`HouseholdSpec`
+lifespan override — still real code to build, with its digest/`HouseholdSpec`-guard obligations).
+
+**Metrics = cut 2's** (not the superseded `StructurePersists`/`FlowRuns`): per (ratio, seed) — the
+baker stage staffs to the final window, production sustains (`window_bread_produced ≥ floor`), and
+the baker class stays **solvent** (gold floors > 0 over a long horizon), all **across real producer
+deaths + successions** (assert deaths and heir-adoptions actually fire, so mortality is exercised).
+
+**Pre-named outcomes:**
+- **MORTALITY-TOLERANT** — the chain sustains (functions + solvent) at *every* ratio including the
+  shortest life: L2 + the existing succession machinery cross the generation on their own; lifespan
+  is not load-bearing for sustain. (Cut 1/2 make this the honest prior — succession already fires
+  200–750×/run and the immortal chain functions.)
+- **LIFESPAN-BAND** — a *minimum* lifespan is needed to sustain across deaths (short life →
+  collapse, long life → sustain): the office-hours ratio hypothesis confirmed on a functioning
+  substrate. Report the band.
+- **MORTALITY-BREAKS-IT** — the *mortal* chain fails to sustain even with L2 (unlike the immortal
+  control), at all tested ratios: death/succession is a wall L2 does not cross. A real negative.
+
+`food = 0` stays (the cushion is C3R.b territory); the per-house lifespan mechanism, the
+`subsistence_on_grain`/cap-fixed falsification guards, and the conservation/digest obligations
+below all still apply. §§2, 3.2, 5 are re-read against these metrics and outcomes.
+
 ## −0. v2 revision (AUTHORITATIVE — folds the Codex spec-review; supersedes §§0–7 where they conflict)
 
 **Reframed estimand (P0 + P1-denominator + P1-lineage).** This is NOT a "subsidy-free ratio"
