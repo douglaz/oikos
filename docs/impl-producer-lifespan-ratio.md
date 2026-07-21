@@ -1,6 +1,13 @@
 # impl-71 — C3R.f: Producer-Lineage Lifespan Sensitivity (does a longer producer-house life lift C3R.b's cushion-bound limp toward healthy flow?)
 
-Status (spec): **BLOCKED** (grill-with-docs 2026-07-18; refined by Codex review same day) —
+Status (spec): **UNBLOCKED** (2026-07-21) — impl-73 (C3R.h) cut 2 met the immortal five-seed
+viability gate: with the stale-input-price fix (`stale_input_price_fix`, cut 1) the mortal-producer
+chain now functions and stays solvent on **all five** immortal seeds (result `EITHER_SUFFICES`; see
+`docs/impl-final-stage-demand.md`, "Cuts and status", master `b6404ba`). The blocker below is
+resolved; this lifespan-ratio milestone can now run on a substrate that functions. Re-review the v2
+spec's estimand against the now-functioning base before building.
+
+**Prior status: BLOCKED** (grill-with-docs 2026-07-18; refined by Codex review same day) —
 pending impl-72 (C3R.g), the baker-role profit diagnostic. A pre-check found this base's chain
 functions on only 1/5 seeds *even with immortal producers*, and the binding constraint is the
 Baker *role* being rejected by the role-choice recipe-profit test
