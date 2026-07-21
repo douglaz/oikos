@@ -4587,6 +4587,8 @@ pub struct SavingAllocationObs {
     /// C3R.g runtime-only role-choice telemetry. Kept in this existing defaulted,
     /// non-digested diagnostics store so settlement construction stays unchanged.
     role_choice_diag: RoleChoiceDiag,
+    /// C3R.h cut-2 runtime-only Baker-class round-trip telemetry.
+    baker_round_trip: BakerRoundTrip,
     /// Opportunities that Filled (a staple bought under the attribution predicate).
     pub filled: u64,
     pub no_bid_posted: u64,
@@ -5203,6 +5205,21 @@ impl RoleChoiceHistogram {
         };
         *bucket = bucket.saturating_add(1);
     }
+}
+
+/// Per-run Baker-class cash and bread-flow telemetry. Always present, zero until an
+/// event, runtime-only, and excluded from `canonical_bytes`. Trade attribution uses
+/// each agent's current vocation at the once-per-tick observation point.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BakerRoundTrip {
+    /// Gold paid by Baker BUYERS for the recipe input (flour): Σ price×qty.
+    pub flour_gold_spent: u64,
+    /// Gold received by Baker SELLERS for bread: Σ price×qty.
+    pub bread_gold_earned: u64,
+    /// Σ qty of those Baker-sold bread units.
+    pub bread_units_sold: u64,
+    /// Bread booked by the Baker-only production phase over the run.
+    pub bread_units_produced: u64,
 }
 
 /// Runtime-only C3R.g counters; excluded from `canonical_bytes`.
@@ -7517,7 +7534,17 @@ impl Settlement {
         // whole-system ledger accounts every transformed unit. Runs after the
         // market (so the input a producer just bought is on hand) and is a no-op
         // for a plain settlement (no chain).
+        let bread_produced_before = self
+            .chain
+            .as_ref()
+            .map_or(0, |chain| report.produced_of(chain.content.bread()));
         self.run_production(&mut report);
+        // Capture the Baker-only phase delta before own-use cultivation widens the report.
+        let baker_bread_produced = self.chain.as_ref().map_or(0, |chain| {
+            report
+                .produced_of(chain.content.bread())
+                .saturating_sub(bread_produced_before)
+        });
         // DH.a: miller/baker recipe production (input debit, own_produced output).
         if self.closure_active() {
             self.closure_phase(closure::ClosurePhase::Production);
@@ -7679,9 +7706,39 @@ impl Settlement {
             self.closure_finalize_tick();
         }
         self.record_commitment_norm_observations();
+        // Pure observation after every phase that can move goods or gold this tick.
+        self.observe_baker_round_trip(provenance_spot_trades_start, baker_bread_produced);
         self.econ_tick += 1;
         self.last_report = report.clone();
         report
+    }
+
+    /// Fold this tick's tape suffix and Baker production into non-digested telemetry.
+    /// Vocations are read here so later ticks cannot relabel settled cash flows.
+    fn observe_baker_round_trip(&mut self, spot_trades_start: usize, bread_produced: u64) {
+        let Some(chain) = self.chain.as_ref() else {
+            return;
+        };
+        let flour = chain.content.flour();
+        let bread = chain.content.bread();
+        let mut flour_gold_spent = 0u64;
+        let mut bread_gold_earned = 0u64;
+        let mut bread_units_sold = 0u64;
+        for trade in &self.society.trades[spot_trades_start..] {
+            let value = trade.price.0.saturating_mul(u64::from(trade.qty));
+            if trade.good == flour && self.vocation_of_id(trade.buyer) == Some(Vocation::Baker) {
+                flour_gold_spent = flour_gold_spent.saturating_add(value);
+            }
+            if trade.good == bread && self.vocation_of_id(trade.seller) == Some(Vocation::Baker) {
+                bread_gold_earned = bread_gold_earned.saturating_add(value);
+                bread_units_sold = bread_units_sold.saturating_add(u64::from(trade.qty));
+            }
+        }
+        let acc = &mut self.saving_allocation_obs.baker_round_trip;
+        acc.flour_gold_spent = acc.flour_gold_spent.saturating_add(flour_gold_spent);
+        acc.bread_gold_earned = acc.bread_gold_earned.saturating_add(bread_gold_earned);
+        acc.bread_units_sold = acc.bread_units_sold.saturating_add(bread_units_sold);
+        acc.bread_units_produced = acc.bread_units_produced.saturating_add(bread_produced);
     }
 
     /// Run `ticks` economic ticks.
@@ -12968,6 +13025,22 @@ impl Settlement {
         let diag = &mut self.saving_allocation_obs.role_choice_diag;
         diag.bake.observe(RoleChoiceReason::Accepts);
         diag.baker_last_econ_tick = Some(diag.baker_last_econ_tick.unwrap_or(0).saturating_add(1));
+    }
+
+    /// Runtime-only per-run Baker-class round-trip counters.
+    pub fn baker_round_trip(&self) -> BakerRoundTrip {
+        self.saving_allocation_obs.baker_round_trip
+    }
+
+    /// Test-support digest tripwire for the runtime-only accumulator. Perturbs EVERY
+    /// field, so the `canonical_bytes` exclusion check covers all of them, not just the
+    /// first.
+    pub fn debug_perturb_baker_round_trip(&mut self) {
+        let acc = &mut self.saving_allocation_obs.baker_round_trip;
+        acc.flour_gold_spent = acc.flour_gold_spent.saturating_add(1);
+        acc.bread_gold_earned = acc.bread_gold_earned.saturating_add(1);
+        acc.bread_units_sold = acc.bread_units_sold.saturating_add(1);
+        acc.bread_units_produced = acc.bread_units_produced.saturating_add(1);
     }
 
     /// C3R.a population-artifact guard: live mortal agents that can currently build

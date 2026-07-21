@@ -113,11 +113,28 @@ non-self holder `reservation_ask_for_money` (pure over serialized `scale`/`stock
 order-book/timestamp reads, no new digest state), declining explicitly when no holder exists
 (never `None→0`); off is byte-identical. **Result:** on the immortal five-seed base, L2 collapses
 the stale-price rejection (`margin_nonpositive` ~8,400 → 0) and makes the baker stage **sustain on
-all five seeds** (0 → 9 bakers; bread ~400 → ~12,300, ~30×). **STALE-PRICE-SUFFICES is the leading
-result** — measured on cumulative *production* (a strong proxy: the restock guard stalls unsold
-output), not yet baker-origin *sales*.
+all five seeds** (0 → 9 bakers; bread ~400 → ~12,300, ~30×). STALE-PRICE-SUFFICES read on
+cumulative *production* — **refined by cut 2 (below) to EITHER_SUFFICES**.
 
-**Cut 2 — the rigorous close — SCOPED (this milestone; v2 folds a Codex+Fable dual review).**
+**Cut 2 — the rigorous close — LANDED (PR #3). Result: `EITHER_SUFFICES` with a negative
+interaction (5/5 seeds).** The build's first pass measured baker-origin bread *sold for gold* and
+labelled a null (`DEEPER_WALL`) — but that metric was **miscalibrated**: bread is the food *staple*
+here (`bread_is_staple`, `mod.rs:1025`), so a functioning chain's output is EATEN, not sold. Re-run
+on the right lens — does the chain FEED the colony (staff + produce sustainably) and stay SOLVENT
+(the baker class does not bleed gold to zero) — verified with a 2,400/4,000-tick solvency probe:
+- **base**: bakers collapse (fails; except seed 3, the one pre-viable seed).
+- **L2**: 9 bakers, ~12k loaves/run (eaten); baker class runs gold-LEAN but **SOLVENT** — gold
+  FLOORS at ~10–220 and never depletes; production holds. Passes.
+- **L1** (retire mints + raw-grain subsistence): 3 bakers, ~4k loaves, bread actually SELLS (cash
+  round-trip **+948…+1,781**). Passes.
+- **L1+L2**: **COLLAPSES** (0 bakers, 27 loaves) — a real negative interaction.
+
+So **EITHER lever alone makes the mortal-producer chain function and sustain**; combining them
+collapses it. Gold pools in the millers (~4,000) while bakers run lean — a monetary-*distribution*
+feature (bread eaten, not sold back), reported, not a sustainability failure. **The immortal
+five-seed viability gate is MET (L2 sustains all five) → impl-71 (C3R.f, lifespan) UNBLOCKS.**
+
+**Cut 2 build spec (v2, folded a Codex+Fable dual review).**
 Both reviews returned NEEDS-REVISION on the v1 scope; the corrections (all verified against the
 code) — the milestone is a small **default-off, non-steering telemetry trace** (impl-72-sized) +
 config arms + the 2×2 test:
