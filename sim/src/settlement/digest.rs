@@ -2325,6 +2325,9 @@ fn digest_coverage_saving_allocation_obs(v: &SavingAllocationObs) {
     let SavingAllocationObs {
         // NOT DIGESTED: C3R.g runtime-only observation; no decision path reads it.
         role_choice_diag: _,
+        // NOT DIGESTED: C3R.h (impl-73) cut-2 runtime-only Baker round-trip telemetry;
+        // written by pure observation of the trade tape, read by no decision path.
+        baker_round_trip: _,
         filled: _,
         no_bid_posted: _,
         self_ask_only: _,
