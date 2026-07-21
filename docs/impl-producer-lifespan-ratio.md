@@ -38,14 +38,21 @@ floor, with the coupling measured, not assumed away.
 `food_provision = 0` and asked whether raising lifespan rescues it (RATIO-BAND / STRUCTURE-ONLY /
 RATIO-NULL). But the diagnosis journey (impl-72 + cut 1/2 of impl-73) found the wall was **not
 lifespan** — it was a **stale input-price appraisal**, fixed by `ChainConfig::stale_input_price_fix`
-(cut 1). With that fix the chain **functions and stays solvent** — on the *immortal* base, all five
-seeds sustain (impl-73 cut 2, result `EITHER_SUFFICES`; master `b6404ba`). So "does lifespan rescue
-a dying chain?" is the wrong question; the substrate no longer dies.
+(cut 1). With that fix the *immortal* base **functions and stays solvent** — all five seeds sustain
+(impl-73 cut 2, `EITHER_SUFFICES`; master `b6404ba`). So the *stale-price* confound is gone.
 
-**Re-scoped central question:** on the **mortal** producer base (producers die AND their oven/role
-inherit) **with the L2 fix on**, does the chain sustain *across producer deaths* — and does
-per-producer-house **lifespan** affect whether/how well it does? This is the office-hours
-life/payback intuition, finally testable on a substrate that functions.
+**But the mortal base still collapses even with L2 — measured, 2026-07-21.** On
+`mortal_chain_producers + mortal_producer_inheritance + mortal_producer_tool_inheritance` with L2
+on at default lifespan, all five seeds end with **0 living bakers and 0 final-window bread** —
+*despite* succession firing hard (173–218 producer deaths, 165–202 heir-adoptions, hundreds–thousands
+of tool inheritances/run). So L2 + the existing succession machinery are **not sufficient** for the
+mortal chain at default life; the baker stage dies out across the generations.
+
+**Re-scoped central question:** the immortal limit (life = ∞) functions; the mortal default
+(life ≈ 27-tick tenure) collapses even with L2 and heavy succession. **Does raising
+per-producer-house lifespan bridge that gap** — is there a finite life at which the mortal chain
+sustains across deaths? The office-hours life/payback intuition, now with the stale-price confound
+removed and both endpoints pinned (immortal sustains, mortal-default collapses).
 
 **Base (all arms):** `frontier_mortal_producers_heritable` with `stale_input_price_fix = true`,
 `mortal_chain_producers = true`, `mortal_producer_inheritance = true`,
@@ -63,8 +70,9 @@ deaths + successions** (assert deaths and heir-adoptions actually fire, so morta
 **Pre-named outcomes:**
 - **MORTALITY-TOLERANT** — the chain sustains (functions + solvent) at *every* ratio including the
   shortest life: L2 + the existing succession machinery cross the generation on their own; lifespan
-  is not load-bearing for sustain. (Cut 1/2 make this the honest prior — succession already fires
-  200–750×/run and the immortal chain functions.)
+  is not load-bearing. **Now UNLIKELY** — the measured mortal-default (short life) *collapses* even
+  with L2 and heavy succession, so this would require the collapse to be seed/window noise, not a
+  real short-life failure.
 - **LIFESPAN-BAND** — a *minimum* lifespan is needed to sustain across deaths (short life →
   collapse, long life → sustain): the office-hours ratio hypothesis confirmed on a functioning
   substrate. Report the band.
