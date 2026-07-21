@@ -1246,6 +1246,7 @@ impl Settlement {
                 producible_capital: chain.producible_capital,
                 per_agent_capital: chain.per_agent_capital,
                 entrepreneurial_forecasts: chain.entrepreneurial_forecasts,
+                stale_input_price_fix: chain.stale_input_price_fix,
                 capital_payback_cycles: chain.capital_payback_cycles,
                 tool_build_wood: chain.tool_build_wood,
                 tool_build_labor: chain.tool_build_labor,

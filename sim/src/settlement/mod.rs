@@ -1686,6 +1686,12 @@ pub struct ChainConfig {
     /// is byte-identical to the pre-S11 stream. Heterogeneity comes from the heritable
     /// [`CultureParams::forecast_bias_bps`].
     pub entrepreneurial_forecasts: bool,
+    /// C3R.h (L2): value a recipe's input in `run_role_choice` at the minimum
+    /// non-self holder reservation ask instead of the stale last-trade realized price.
+    /// This is a fresh, deterministic appraisal proxy, not a guaranteed clearing price.
+    /// With no such ask the candidate declines rather than treating the input as free.
+    /// Default-off so existing runs keep the prior realized-price path byte-for-byte.
+    pub stale_input_price_fix: bool,
     /// S7.2: the amortization horizon for the build appraisal — a durable tool is
     /// multi-period capital, so a colonist builds only when its expected per-run margin
     /// over this many cycles repays the build cost: `expected_margin_per_run × N >
@@ -1986,6 +1992,7 @@ impl ChainConfig {
             producible_capital: false,
             per_agent_capital: false,
             entrepreneurial_forecasts: false,
+            stale_input_price_fix: false,
             capital_payback_cycles: 8,
             tool_build_wood: 6,
             tool_build_labor: 4,
@@ -2182,6 +2189,7 @@ impl ChainConfig {
             producible_capital: false,
             per_agent_capital: false,
             entrepreneurial_forecasts: false,
+            stale_input_price_fix: false,
             capital_payback_cycles: 8,
             tool_build_wood: 6,
             tool_build_labor: 4,
@@ -2367,6 +2375,7 @@ impl ChainConfig {
             producible_capital: false,
             per_agent_capital: false,
             entrepreneurial_forecasts: false,
+            stale_input_price_fix: false,
             capital_payback_cycles: 8,
             tool_build_wood: 6,
             tool_build_labor: 4,
@@ -5151,6 +5160,18 @@ fn winner_intent_from(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RoleChoiceReason {
     PriceAbsent,
+    /// C3R.h (L2, `stale_input_price_fix` only): [`Settlement::fresh_input_ask`] yielded
+    /// no fresh input price, so the candidate declines rather than appraise a free input.
+    /// Two distinct causes share this bucket: no OTHER living colonist holds the recipe's
+    /// input with a reservation ask (a supply fact), OR the input good IS the current
+    /// money good, which `reservation_ask_for_money` declines to price unconditionally
+    /// (`econ/src/agent.rs:449`) — so every holder is skipped regardless of supply. No
+    /// chain config promotes a recipe input to money today, but nothing in `econ/menger`
+    /// forbids it; read this bucket as "no money-denominated input price", not "no stock".
+    /// Distinct from [`Self::PriceAbsent`] (an absent OUTPUT price) so the measurement can
+    /// tell "the fix flipped the margin" apart from "the fix starved the appraisal".
+    /// Never observed with the flag off.
+    InputPriceAbsent,
     MarginNonpositive,
     OrdinalDecline,
     Accepts,
@@ -5160,6 +5181,11 @@ enum RoleChoiceReason {
 pub struct RoleChoiceHistogram {
     pub attempts: u64,
     pub price_absent: u64,
+    /// C3R.h (L2): declines for want of a fresh input price. Always `0` unless
+    /// [`ChainConfig::stale_input_price_fix`] is on, so the pre-C3R.h partition
+    /// `attempts == price_absent + margin_nonpositive + ordinal_decline + accepts`
+    /// still holds exactly for every flag-off run.
+    pub input_price_absent: u64,
     pub margin_nonpositive: u64,
     pub ordinal_decline: u64,
     pub accepts: u64,
@@ -5170,6 +5196,7 @@ impl RoleChoiceHistogram {
         self.attempts = self.attempts.saturating_add(1);
         let bucket = match reason {
             RoleChoiceReason::PriceAbsent => &mut self.price_absent,
+            RoleChoiceReason::InputPriceAbsent => &mut self.input_price_absent,
             RoleChoiceReason::MarginNonpositive => &mut self.margin_nonpositive,
             RoleChoiceReason::OrdinalDecline => &mut self.ordinal_decline,
             RoleChoiceReason::Accepts => &mut self.accepts,
@@ -6138,6 +6165,11 @@ struct ChainRuntime {
     /// existing config, so the appraisals read the raw realized price and the run is
     /// byte-identical.
     entrepreneurial_forecasts: bool,
+    /// C3R.h (L2): the role-choice appraisal values a recipe's input at a fresh, non-self
+    /// reservation ask instead of the stale realized price (see
+    /// [`ChainConfig::stale_input_price_fix`]). `false` for every existing config, so the
+    /// appraisal reads `realized_price` and the run is byte-identical.
+    stale_input_price_fix: bool,
     capital_payback_cycles: u32,
     tool_build_wood: u32,
     tool_build_labor: u32,
@@ -9949,6 +9981,92 @@ impl Settlement {
         self.chain
             .as_ref()
             .is_some_and(|chain| chain.entrepreneurial_forecasts)
+    }
+
+    /// C3R.h (L2): whether the fresh-input-price branch can steer role choice. Mirror
+    /// [`Self::run_role_choice`]'s candidate gate — the LIVE roster's latent specialties
+    /// (`phases.rs`, `for &slot in &self.live_colonist_slots`), not `self.colonists`,
+    /// which retains dead historical entries — so an inert flag does not split
+    /// behavior-equivalent digests once the last latent candidate dies.
+    fn stale_input_price_fix_can_run(&self) -> bool {
+        self.chain
+            .as_ref()
+            .is_some_and(|chain| chain.stale_input_price_fix)
+            && (self.tool_acquisition_can_run()
+                || self
+                    .live_colonist_slots
+                    .iter()
+                    .any(|&slot| self.colonists[slot].latent.is_some()))
+    }
+
+    /// Minimum PER-UNIT reservation ask for the input good among other living colonist
+    /// holders. This is an optimistic appraisal lower bound, not a live or matched quote.
+    /// It reads only serialized agent state and iterates in deterministic roster order.
+    ///
+    /// Deliberately the RESERVATION, not the executable quote. `Society::ensure_ask` posts
+    /// `belief.shade_ask(reservation)` off a reservation-netted `available_agent` snapshot
+    /// (`econ/src/society.rs:3313,3343-3344,3599`). That snapshot can produce a different
+    /// reservation than the raw agent used here, while `shade_ask` only floors the quote at
+    /// its OWN reservation (`econ/src/expect.rs:40-42`); a holder whose stock is already
+    /// reserved may not be able to post at all. This proxy therefore has no ordering
+    /// guarantee against a live ask. A candidate can adopt against a price the book would
+    /// not currently honor; the measurement reports that as bread output and baker survival
+    /// rather than suppressing it. It stays a reservation on purpose: the netting reads
+    /// `Society::reservations` / `live_quotes`, which `canonical_bytes` does NOT serialize,
+    /// so steering role choice by them would make this DIGESTED flag depend on undigested
+    /// order-book state — the determinism contract this lever is built on.
+    ///
+    /// Deliberately queried for ONE unit: `reservation_ask_for_money` prices the whole
+    /// `qty` bundle (the gain enters gold once, `econ/src/agent.rs:449-488`), while both
+    /// consumers multiply the returned price by the recipe's `input_qty`
+    /// ([`recipe_adoption_pays_for_money`], [`recipe_is_profitable`]) — as they must for
+    /// the flag-off substitute, the per-unit `realized_price`. Asking for the bundle here
+    /// would hand those consumers an already-`qty`-sized price to multiply by `input_qty`
+    /// a second time — a double-count that is at least quadratic in `input_qty`, since
+    /// `reservation_ask_for_money` is superadditive in `qty` (each further unit is given
+    /// up from a higher-ranked want). Both current chain recipes request one input unit
+    /// (`content.rs:80,88`), so the two readings coincide today; this keeps them
+    /// coincident under a future yield-ratio change.
+    ///
+    /// Scope is the LIVE COLONIST roster, matching the phase that calls it. Resident
+    /// traders can hold tracked stock and quote in the same book, but only `region.rs`
+    /// seeds any (every `SettlementConfig` constructor leaves `resident_traders` empty),
+    /// and no region config runs a chain with this flag. The omission is safe in the one
+    /// direction that matters: dropping a holder can only leave the minimum higher or
+    /// absent, never cheaper than a real ask, so it cannot manufacture an adoption.
+    ///
+    /// Returns `None` when no other living colonist holds the good — and also when the
+    /// input good IS the current money good, which `reservation_ask_for_money` prices as
+    /// `None` unconditionally (`econ/src/agent.rs:449`). Both are declines, never a free
+    /// input; see [`RoleChoiceReason::InputPriceAbsent`].
+    ///
+    /// Cost: one full roster scan per candidate per recipe per tick, so role choice is
+    /// O(live colonists²) while the flag is on. Immaterial at the roster sizes this
+    /// default-off research lever is measured at; revisit before any default-on promotion.
+    fn fresh_input_ask(
+        &self,
+        appraiser: AgentId,
+        input_good: GoodId,
+        money_good: GoodId,
+    ) -> Option<Gold> {
+        let mut best: Option<Gold> = None;
+        for &slot in &self.live_colonist_slots {
+            let id = self.colonists[slot].id;
+            if id == appraiser {
+                continue;
+            }
+            let Some(agent) = self.society.agents.get(id) else {
+                continue;
+            };
+            // `reservation_ask_for_money` already returns `None` for a non-holder (it
+            // requires `stock.can_remove(good, qty)`), so this is the "other living
+            // colonists that currently hold the input good" filter.
+            let Some(ask) = agent.reservation_ask_for_money(input_good, 1, money_good) else {
+                continue;
+            };
+            best = Some(best.map_or(ask, |best: Gold| best.min(ask)));
+        }
+        best
     }
 
     /// S12: whether the own-labor subsistence path is active — the food mints are
