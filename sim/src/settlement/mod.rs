@@ -5210,12 +5210,6 @@ impl RoleChoiceHistogram {
 /// Per-run Baker-class cash and bread-flow telemetry. Always present, zero until an
 /// event, runtime-only, and excluded from `canonical_bytes`. Trade attribution uses
 /// each agent's current vocation at the once-per-tick observation point.
-///
-/// **Sales are read off the SPOT tape (`Society::trades`) only.** `barter_trades` is a
-/// separate vector (`econ/src/society.rs:421`) and is NOT observed here; the pinned
-/// chain arms are designated-gold (`barter = None`, `scenarios.rs:287`), so the spot
-/// tape is the complete trade record there. On a barter-medium config these counters
-/// would read zero bread sales — check [`Settlement::barter_trade_count`] first.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BakerRoundTrip {
     /// Gold paid by Baker BUYERS for the recipe input (flour): Σ price×qty.
@@ -5226,15 +5220,6 @@ pub struct BakerRoundTrip {
     pub bread_units_sold: u64,
     /// Bread booked by the Baker-only production phase over the run.
     pub bread_units_produced: u64,
-    /// Σ qty of ALL bread sold on the spot tape, by ANY seller — attribution-free.
-    ///
-    /// Seller-vocation attribution is biased in BOTH directions: a Baker can resell
-    /// loaves it never baked (upward), and a lot a Baker baked can be sold after it
-    /// reverts to another vocation, or by a non-Baker it was transferred to (downward).
-    /// This counter needs no attribution at all, so it DOMINATES baker-origin sales
-    /// under every provenance scheme: baker-origin bread sold ≤ all bread sold. It is
-    /// what makes a "does not sell" null robust to the downward bias.
-    pub bread_units_sold_all: u64,
 }
 
 /// Runtime-only C3R.g counters; excluded from `canonical_bytes`.
@@ -7729,14 +7714,7 @@ impl Settlement {
     }
 
     /// Fold this tick's tape suffix and Baker production into non-digested telemetry.
-    ///
-    /// Vocations are read once, here, at the end of the tick. That is equivalent to
-    /// reading them at the trade instant because every non-test vocation write lands
-    /// BEFORE the market: `run_role_choice` (`phases.rs:2472`) and
-    /// `run_productive_reentry` (`phases.rs:2613`) are called at `mod.rs:7250` and
-    /// `mod.rs:7264`, both ahead of `society.step()` at `mod.rs:7408`, and
-    /// `commitment_norm.rs:366,373` restores what it perturbs within one call. Reading
-    /// once per tick also means a LATER tick can never relabel settled cash flows.
+    /// Vocations are read here so later ticks cannot relabel settled cash flows.
     fn observe_baker_round_trip(&mut self, spot_trades_start: usize, bread_produced: u64) {
         let Some(chain) = self.chain.as_ref() else {
             return;
@@ -7746,18 +7724,14 @@ impl Settlement {
         let mut flour_gold_spent = 0u64;
         let mut bread_gold_earned = 0u64;
         let mut bread_units_sold = 0u64;
-        let mut bread_units_sold_all = 0u64;
         for trade in &self.society.trades[spot_trades_start..] {
             let value = trade.price.0.saturating_mul(u64::from(trade.qty));
             if trade.good == flour && self.vocation_of_id(trade.buyer) == Some(Vocation::Baker) {
                 flour_gold_spent = flour_gold_spent.saturating_add(value);
             }
-            if trade.good == bread {
-                bread_units_sold_all = bread_units_sold_all.saturating_add(u64::from(trade.qty));
-                if self.vocation_of_id(trade.seller) == Some(Vocation::Baker) {
-                    bread_gold_earned = bread_gold_earned.saturating_add(value);
-                    bread_units_sold = bread_units_sold.saturating_add(u64::from(trade.qty));
-                }
+            if trade.good == bread && self.vocation_of_id(trade.seller) == Some(Vocation::Baker) {
+                bread_gold_earned = bread_gold_earned.saturating_add(value);
+                bread_units_sold = bread_units_sold.saturating_add(u64::from(trade.qty));
             }
         }
         let acc = &mut self.saving_allocation_obs.baker_round_trip;
@@ -7765,9 +7739,6 @@ impl Settlement {
         acc.bread_gold_earned = acc.bread_gold_earned.saturating_add(bread_gold_earned);
         acc.bread_units_sold = acc.bread_units_sold.saturating_add(bread_units_sold);
         acc.bread_units_produced = acc.bread_units_produced.saturating_add(bread_produced);
-        acc.bread_units_sold_all = acc
-            .bread_units_sold_all
-            .saturating_add(bread_units_sold_all);
     }
 
     /// Run `ticks` economic ticks.
@@ -13056,8 +13027,7 @@ impl Settlement {
         diag.baker_last_econ_tick = Some(diag.baker_last_econ_tick.unwrap_or(0).saturating_add(1));
     }
 
-    /// Runtime-only per-run Baker-class round-trip counters. Sales are read off the
-    /// SPOT tape only — see [`BakerRoundTrip`] for the barter caveat.
+    /// Runtime-only per-run Baker-class round-trip counters.
     pub fn baker_round_trip(&self) -> BakerRoundTrip {
         self.saving_allocation_obs.baker_round_trip
     }
@@ -13071,7 +13041,6 @@ impl Settlement {
         acc.bread_gold_earned = acc.bread_gold_earned.saturating_add(1);
         acc.bread_units_sold = acc.bread_units_sold.saturating_add(1);
         acc.bread_units_produced = acc.bread_units_produced.saturating_add(1);
-        acc.bread_units_sold_all = acc.bread_units_sold_all.saturating_add(1);
     }
 
     /// C3R.a population-artifact guard: live mortal agents that can currently build

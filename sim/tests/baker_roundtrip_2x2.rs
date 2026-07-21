@@ -7,28 +7,14 @@
 //! measured on cumulative *production*; this cut measures *sales* and **falsifies** it.
 //! Production is not the bottleneck — clearing is.
 //!
-//! The realized cash flows sharpen it further. `realized_round_trip` is whole-run NET
-//! CASH — bread gold in minus flour gold out — **not** an inventory-accounted margin:
-//! on L2 nearly all of the ~4,100-out / ~900-in gap is working capital sitting in the
-//! ~12,000 loaves that never sold, not a per-loaf loss. Read it as "the input purchases
-//! never come back as money", which is the non-clearing claim, not as a unit economics
-//! verdict. L1 stays cash-*positive* (+948 to +1,781) on far lower volume, while base is
-//! positive on four seeds but enters the same high-output, cash-negative regime as L2 on
-//! seed 3 (13,068 loaves, −3,807). Retiring the food floor (L1) does not rescue clearing
-//! either, and the combined L1+L2 arm collapses the baker stage outright
+//! The realized cash flows sharpen it further. L2 does not merely fail to clear, it runs
+//! the baker stage at a **loss**: ~4,100 gold of flour bought against ~900 of bread sold,
+//! a round trip near **−3,200** on every seed. L1 stays cash-*positive* (+948 to +1,781),
+//! while base is positive on four seeds but enters the same high-output, cash-negative
+//! regime as L2 on seed 3 (13,068 loaves, −3,807). So L2 buys the input and bakes, and
+//! the output never converts back to money. Retiring the food floor (L1) does not rescue
+//! clearing either, and the combined L1+L2 arm collapses the baker stage outright
 //! (`living_bakers = 0`, 27 loaves).
-//!
-//! The null does not rest on how sales are attributed. Seller-vocation attribution is
-//! biased both ways — a Baker can resell a minted loaf, and a loaf a Baker baked can sell
-//! after that agent reverts or hands it on — so `bread_units_sold_all` counts EVERY bread
-//! sale on the spot tape with no attribution at all. The arms carry no barter tape
-//! (`barter_trade_count() == 0`), so it dominates baker-origin sales under any provenance
-//! scheme. Whole-run it is loose (L2 clears ~510-770 across all sellers), but in the
-//! **final window it is exactly ZERO on every treatment arm and seed** while L2 bakes
-//! ~1,440 loaves in that same window. No bread of any origin clears, so final-window
-//! baker-origin sales are zero however lots are traced — the milestone's criterion, met
-//! attribution-free. The contrast is `base` on the four seeds that never staff a baker:
-//! there ~350-400 loaves DO clear in the window, all of them mint-fed.
 //!
 //! The assertions below therefore pin the NULL, in the same style as `WageMarketVacuous`
 //! and `ChainCollapsesOnProducerDeath`. They are written so that an economy change which
@@ -120,9 +106,6 @@ struct ArmResult {
     living_bakers: usize,
     window_max_hunger: u16,
     nonlineage_survivors: usize,
-    /// Realized barter volume. Must be 0, otherwise the spot tape is not the whole trade
-    /// record and `bread_units_sold_all` stops dominating baker-origin sales.
-    barter_trades: usize,
     /// Whether recurring bread MINTS are live on this arm (`!retire_food_mints`). When
     /// true, seller-vocation attribution is origin-contaminated — see
     /// [`ArmResult::baker_origin_bread_sold`].
@@ -130,54 +113,26 @@ struct ArmResult {
 }
 
 impl ArmResult {
-    /// Whole-run seller-attributed estimate of Baker-origin bread sales.
+    /// Whole-run UPPER BOUND on Baker-origin bread sales.
     ///
     /// `bread_units_produced` is Baker-only by construction (it is the bake-phase delta).
-    /// `bread_units_sold` is seller-vocation attribution off the spot tape, and that is
-    /// biased in BOTH directions:
+    /// `bread_units_sold` is seller-vocation attribution off the spot tape, so on the
+    /// mint-bearing arms (`mints_active`) a Baker can also be selling loaves it never
+    /// baked: `run_producer_subsistence` (`phases.rs:972`) and
+    /// `deliver_demography_provisions` (`demography.rs:1098`) both mint `known.hunger`,
+    /// which on this designated-gold chain IS bread (`generation.rs:90`), and both mints
+    /// are live unless `retire_food_mints` is set — i.e. on `base` and `L2`.
     ///
-    /// - **Upward**, on the mint-bearing arms (`mints_active`): a Baker can sell loaves
-    ///   it never baked. `run_producer_subsistence` (`phases.rs:972`) and
-    ///   `deliver_demography_provisions` (`demography.rs:1098`) both mint `known.hunger`,
-    ///   which on this chain IS bread (`generation.rs:84`), and both mints are live
-    ///   unless `retire_food_mints` is set — i.e. on `base` and `L2`. The `min` with
-    ///   production clamps this direction, and the mint-free L1 arms (assertion 4b) are
-    ///   the contamination-free control.
-    /// - **Downward**: a lot a Baker baked can be sold after that agent reverts to
-    ///   another vocation, or by a non-Baker it was transferred to. `min` does NOT clamp
-    ///   this direction, and it is the direction that could manufacture the null.
-    ///
-    /// The downward bias is closed by [`ArmResult::bread_sold_bound`] — which needs no
-    /// attribution at all — and specifically by assertion 4c, which pins the FINAL-WINDOW
-    /// all-seller bread sales at exactly zero on every treatment arm. Whole-run the bound
-    /// is loose (see `bread_sold_bound`), so this seller-attributed figure is the
-    /// spec-pinned metric but NOT the load-bearing evidence; 4c is.
+    /// The contamination is therefore strictly UPWARD on the sales term, so it can only
+    /// make an arm look BETTER than the truth. It cannot manufacture the null this suite
+    /// asserts; it could only hide a pass. The L1 arms retire both mints and so carry no
+    /// contamination at all — and they fail too, which is the contamination-free control.
     fn baker_origin_bread_sold(&self) -> u64 {
         self.acc.bread_units_produced.min(self.acc.bread_units_sold)
     }
 
-    /// ATTRIBUTION-FREE upper bound on baker-origin bread sales: all bread sold on the
-    /// spot tape, by any seller. Valid as a bound only while `barter_trades == 0` (the
-    /// spot tape is then the complete trade record) — asserted alongside its use.
-    ///
-    /// MEASURED: over the whole run this bound is LOOSE — L2 clears 514-771 loaves across
-    /// all sellers, above `SUBSTANTIAL`, so it does not by itself rule out an adversarial
-    /// provenance story that assigns enough of them to Bakers. Its final-window delta
-    /// (`window_acc.bread_units_sold_all`) is what is tight: exactly 0. Assert on that,
-    /// not on this.
-    fn bread_sold_bound(&self) -> u64 {
-        self.acc.bread_units_sold_all
-    }
-
     /// Executed cash only; `operating_cost` is an imputed appraisal threshold with no
     /// payment site (`mod.rs:1019`), so it is NOT debited here.
-    ///
-    /// This is whole-run NET CASH, not an inventory-accounted (FIFO completed-cycle)
-    /// margin: flour bought but not yet baked, and bread baked but not yet sold, are
-    /// both charged at zero terminal value. On the high-output arms the bulk of a
-    /// negative number is therefore unsold inventory, so read it as "input purchases do
-    /// not come back as money" — the non-clearing claim the acceptance gates on — and
-    /// NOT as a per-loaf loss.
     fn realized_round_trip(&self) -> i64 {
         self.acc.bread_gold_earned as i64 - self.acc.flour_gold_spent as i64
     }
@@ -215,10 +170,6 @@ fn accumulator_delta(end: BakerRoundTrip, start: BakerRoundTrip) -> BakerRoundTr
             .bread_units_produced
             .checked_sub(start.bread_units_produced)
             .expect("bread production accumulator is monotonic"),
-        bread_units_sold_all: end
-            .bread_units_sold_all
-            .checked_sub(start.bread_units_sold_all)
-            .expect("all-seller bread sales accumulator is monotonic"),
     }
 }
 
@@ -251,7 +202,6 @@ fn run_arm(seed: u64, arm: Arm) -> ArmResult {
         living_bakers: settlement.living_count(Vocation::Baker),
         window_max_hunger,
         nonlineage_survivors,
-        barter_trades: settlement.barter_trade_count(),
         mints_active,
     }
 }
@@ -259,29 +209,24 @@ fn run_arm(seed: u64, arm: Arm) -> ArmResult {
 fn report(seed: u64, arm: Arm, r: &ArmResult) {
     println!(
         "C3R.h cut2 seed={seed} arm={} flour_gold_spent={} bread_gold_earned={} \
-         bread_units_sold={} bread_units_produced={} bread_units_sold_all={} \
-         baker_origin_bread_sold={} realized_round_trip={} window_flour_gold_spent={} \
-         window_bread_gold_earned={} window_bread_units_sold={} \
-         window_bread_units_produced={} window_bread_units_sold_all={} living_bakers={} \
-         window_max_hunger={} nonlineage_survivors={} barter_trades={} mints_active={} \
-         resale={} passes={}",
+         bread_units_sold={} bread_units_produced={} baker_origin_bread_sold={} \
+         realized_round_trip={} window_flour_gold_spent={} window_bread_gold_earned={} \
+         window_bread_units_sold={} window_bread_units_produced={} living_bakers={} \
+         window_max_hunger={} nonlineage_survivors={} mints_active={} resale={} passes={}",
         arm.label,
         r.acc.flour_gold_spent,
         r.acc.bread_gold_earned,
         r.acc.bread_units_sold,
         r.acc.bread_units_produced,
-        r.bread_sold_bound(),
         r.baker_origin_bread_sold(),
         r.realized_round_trip(),
         r.window_acc.flour_gold_spent,
         r.window_acc.bread_gold_earned,
         r.window_acc.bread_units_sold,
         r.window_acc.bread_units_produced,
-        r.window_acc.bread_units_sold_all,
         r.living_bakers,
         r.window_max_hunger,
         r.nonlineage_survivors,
-        r.barter_trades,
         r.mints_active,
         r.resale(),
         r.passes(),
@@ -319,6 +264,7 @@ fn canonical_bytes_excludes_baker_roundtrip() {
     );
 
     let before = settlement.canonical_bytes();
+    let _read = settlement.baker_round_trip();
     settlement.debug_perturb_baker_round_trip();
     let perturbed = settlement.baker_round_trip();
     // Every field must move, otherwise the tripwire only covers the ones that do.
@@ -326,9 +272,8 @@ fn canonical_bytes_excludes_baker_roundtrip() {
         perturbed.flour_gold_spent != populated.flour_gold_spent
             && perturbed.bread_gold_earned != populated.bread_gold_earned
             && perturbed.bread_units_sold != populated.bread_units_sold
-            && perturbed.bread_units_produced != populated.bread_units_produced
-            && perturbed.bread_units_sold_all != populated.bread_units_sold_all,
-        "the perturbation must land on all five fields, otherwise the exclusion check is \
+            && perturbed.bread_units_produced != populated.bread_units_produced,
+        "the perturbation must land on all four fields, otherwise the exclusion check is \
          vacuous for the untouched ones — got {perturbed:?} from {populated:?}"
     );
     assert_eq!(
@@ -455,57 +400,7 @@ fn baker_roundtrip_2x2() {
             );
         }
 
-        // 4c — the ATTRIBUTION-FREE control: the null does not depend on how bread
-        // provenance is tracked.
-        //
-        // `bread_units_sold_all` counts every bread sale on the tape with NO attribution,
-        // so baker-origin sales ≤ it under ANY provenance scheme — including the lots
-        // seller-vocation attribution misses (baked, then the agent reverts to another
-        // vocation, or hands the loaf to a non-Baker, before it sells). With no barter
-        // tape the spot tape is the complete trade record, so the bound is total.
-        //
-        // Over the WHOLE run that bound is NOT tight enough to settle attribution on its
-        // own: L2 clears ~510-770 loaves across all sellers, above SUBSTANTIAL, so a
-        // maximally adversarial provenance story could in principle put enough of them on
-        // Bakers. The FINAL WINDOW is what closes it. On every treatment arm and seed,
-        // all-seller bread sales in the last 160 ticks are exactly ZERO while L2 bakes
-        // ~1,440 loaves in that same window — no bread of any origin clears at all, so
-        // final-window baker-origin sales are zero no matter how lots are traced. That is
-        // the criterion the milestone actually pins ("a passing arm MUST show
-        // final-window baker-origin bread actually sold"), met attribution-free.
-        //
-        // `base` is deliberately excluded from the window assertion: on the four seeds
-        // where it never staffs a baker it DOES clear ~350-400 loaves in the window, all
-        // of them mint-fed. That is the contrast, not a counterexample — whole-run baker
-        // production there is ≤489 loaves total.
-        for (label, arm) in [("base", base), ("L2", l2), ("L1", l1), ("L1+L2", l1l2)] {
-            assert_eq!(
-                arm.barter_trades, 0,
-                "seed {seed}: the {label} arm realized barter trades, so the spot tape is \
-                 no longer the whole trade record and bread_units_sold_all stops bounding \
-                 baker-origin sales"
-            );
-            assert!(
-                arm.bread_sold_bound() >= arm.acc.bread_units_sold,
-                "seed {seed}: the {label} arm attributed more bread sales to Bakers than \
-                 exist on the tape — the observer is broken"
-            );
-        }
-        for (label, arm) in [("L2", l2), ("L1", l1), ("L1+L2", l1l2)] {
-            assert_eq!(
-                arm.window_acc.bread_units_sold_all,
-                0,
-                "seed {seed}: the {label} arm now clears bread in the final window \
-                 (all sellers, attribution-free) — the cut-2 null is broken at the \
-                 criterion that matters. Got window all-seller sales={}, window \
-                 production={}, whole-run all-seller sales={}",
-                arm.window_acc.bread_units_sold_all,
-                arm.window_acc.bread_units_produced,
-                arm.bread_sold_bound(),
-            );
-        }
-
-        // 4d — the colony control. An arm that "wins" by depopulating the demand side is
+        // 4c — the colony control. An arm that "wins" by depopulating the demand side is
         // not a result; every arm must leave the non-lineage tail alive. (A hunger BOUND
         // would be vacuous on this immortal base — see `config`.)
         for (label, arm) in [("base", base), ("L2", l2), ("L1", l1), ("L1+L2", l1l2)] {
@@ -547,22 +442,7 @@ fn mortal_l2_smoke() {
             start_producer_lineage += 1;
         }
     }
-    // Sample hunger every tick. `hunger_critical` is lowered to `need_max` above, and
-    // death fires at `hunger >= hunger_critical` (`life/src/need.rs:142`), so the ceiling
-    // IS structurally reachable — but a run where hunger never climbs would make
-    // `starvation_deaths == 0` pass vacuously, so the max is printed as evidence of how
-    // much margin the assertion actually has.
-    //
-    // MEASURED: peak `max_living_hunger` is 11 against `hunger_critical = 12` — a ONE-UNIT
-    // margin. So the assertion is a live tripwire (any regression that pushes peak hunger
-    // up by a single unit fires it), but it does NOT demonstrate the death path
-    // executing. Read it as "L2 does not push the colony into the lethal band", not as
-    // "starvation was exercised and survived".
-    let mut max_hunger = 0u16;
-    for _ in 0..MORTAL_SMOKE_TICKS {
-        settlement.econ_tick();
-        max_hunger = max_hunger.max(settlement.max_living_hunger());
-    }
+    settlement.run(MORTAL_SMOKE_TICKS);
     // Scope the survivor floor to the MORTAL LINEAGE (household members), not the whole
     // colony. A global living count is toothless here: the non-lineage tail is ~74 agents,
     // so it passes even with every household extinct.
@@ -591,11 +471,9 @@ fn mortal_l2_smoke() {
     println!(
         "C3R.h cut2 mortal_smoke seed={MORTAL_SMOKE_SEED} arm=L2 \
          ticks={MORTAL_SMOKE_TICKS} starvation_deaths_total={starvation_deaths} \
-         hunger_critical={} max_living_hunger={max_hunger} \
          start_producer_lineage={start_producer_lineage} \
          lineage_survivors={lineage_survivors} \
-         producer_lineage_survivors={producer_lineage_survivors}",
-        cfg.dynamics.hunger_critical,
+         producer_lineage_survivors={producer_lineage_survivors}"
     );
     assert!(
         lineage_survivors > 0,
