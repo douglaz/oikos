@@ -13032,10 +13032,15 @@ impl Settlement {
         self.saving_allocation_obs.baker_round_trip
     }
 
-    /// Test-support digest tripwire for the runtime-only accumulator.
+    /// Test-support digest tripwire for the runtime-only accumulator. Perturbs EVERY
+    /// field, so the `canonical_bytes` exclusion check covers all of them, not just the
+    /// first.
     pub fn debug_perturb_baker_round_trip(&mut self) {
         let acc = &mut self.saving_allocation_obs.baker_round_trip;
         acc.flour_gold_spent = acc.flour_gold_spent.saturating_add(1);
+        acc.bread_gold_earned = acc.bread_gold_earned.saturating_add(1);
+        acc.bread_units_sold = acc.bread_units_sold.saturating_add(1);
+        acc.bread_units_produced = acc.bread_units_produced.saturating_add(1);
     }
 
     /// C3R.a population-artifact guard: live mortal agents that can currently build
