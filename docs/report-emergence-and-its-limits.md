@@ -2025,6 +2025,53 @@ execution as the DH.b oracle. Spec impl-70, SPEC-READY after four xhigh rounds; 
 three rounds; RoR REJECT on four test-rigor findings (the science reproduced) → repair (decomposition
 byte-identical) → ACCEPT with zero findings at every severity.
 
+## 36. The chain functions once the appraisal reads a live price — the mortal wall is a flour re-ignition deadlock, not lifespan (C3R.f–h)
+
+§35 localized the reproduction wall to income. The keystone's other half — whether the *production
+chain itself* survives its producers — turned on a defect one layer below any of the economic levers
+the C3R arc had tried. A baker-role diagnostic (C3R.g) attributed the baker stage's collapse not to
+mortality, capital, or demand but to the role-choice recipe-profit test *rejecting* baking on an
+input cost of 12 while fresh flour cleared at ~1. The cause was mechanical, not economic:
+`realized_price` returns the **last trade's price, persisted forever** (no recency gate), and the
+appraisal read it raw — so once flour stopped trading, the baker appraised every recipe against a
+**phantom** price frozen from an early boom. The wall the whole arc had read as income/atomicity/
+demand was, at the baker stage, a stale-price appraisal.
+
+The fix (C3R.h cut 1, `stale_input_price_fix`) is six lines: value the recipe input at the minimum
+non-self *holder reservation ask* — a pure function of already-serialized state, so determinism and
+every golden are untouched — and decline explicitly when no holder exists (never a free input). On
+the immortal-producer base it lights the chain up: the stale-price rejection collapses from ~8,400
+appraisals to 0 and the baker stage sustains on **all five seeds** (0 → 9 bakers; ~400 → ~12,300
+loaves). Cut 2 measured it rigorously and corrected a metric error the review process itself walked
+into: bread is the *eaten staple*, so a functioning chain's output is consumed, not sold for gold —
+measuring gold-sales made every arm look like a null. Scored on the right lens (feeds the colony +
+stays solvent, verified to a 4,000-tick gold *floor*), the result is **`EITHER_SUFFICES` with a
+negative interaction**: fixing the stale price (L2) *or* retiring the food-floor mints (L1) each
+sustains a solvent chain, but doing both collapses it — a reminder, echoing the arc's composition
+lesson, that isolated wins can reverse when stacked.
+
+The immortal chain works; the **mortal** chain — the actual keystone — does not, and a Codex+Fable
+dual review (one reviewer *ran* the sweep) closed the obvious next lever: **lifespan is not it.** On
+the mortal base with the fix and full succession machinery firing (165–202 heir-adoptions/run),
+final-window bread stays 0 across a **16× lifespan range**. The baker stage dies at the *first*
+founder die-off and enters an absorbing state: no baker ⇒ millers under working-capital discipline
+stop producing flour ⇒ no holder ⇒ the fix's own no-holder-decline rejects every heir's appraisal as
+`InputPriceAbsent` (83–93% of rejections). The mortal wall is a **flour-market re-ignition
+deadlock** — the exact sibling of the stale-price wall, on the supply side: cut 1 fixed a phantom
+*presence* (a frozen price), and what remains is a phantom *absence* (no price because no holder).
+Succession is not the problem (estate and tools transfer before same-tick role choice; heirless
+deaths are 3–5); the market cannot re-price a de-staffed chain.
+
+Methodological note, because it is the load-bearing part. Localizing this wall required correcting
+**a run of consecutive price over-reads** — realized prices read as live, reconstructed order-book
+*intent* read as executable liquidity, global bread trades read as baker-origin sales, cumulative
+production read as clearing, and gold-sales of an eaten staple read as function. Each was a *proxy*
+mistaken for ground truth; each was caught by verifying against the decision-path code and
+trade-level (not realized-price) evidence, and the recurring trap is pinned in the repository
+glossary (`CONTEXT.md`, "Realized price"). The honest state of the keystone: *production survives the
+producer* is now one **named, localized** seam away (C3R.i, post-death flour re-ignition), not
+achieved — and the discipline that got here is to keep measuring the mechanism, never the proxy.
+
 ## Appendix — milestone index
 
 | Sxx | Title | Outcome |

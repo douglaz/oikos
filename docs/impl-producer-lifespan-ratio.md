@@ -67,7 +67,8 @@ reviews also verified the code **rules out** a mandatory handover gap and "heir 
 
 **REDIRECT.** Do **not** build this lifespan sweep as the milestone — it would return a correct but
 **unattributed MORTALITY-BREAKS-IT** with a wrong causal frame (an eighth "obvious lever isn't the
-wall"). The next milestone is the **flour-market re-ignition deadlock** (make the flour market
+wall"). The successor milestone is **impl-74 (C3R.i), `docs/impl-flour-reignition.md`** — the
+**flour-market re-ignition deadlock** (make the flour market
 re-ignite after a producer die-off — e.g. millers keep a flour buffer / keep supplying without a
 current baker buyer, or a would-be baker may bootstrap-appraise against a miller *ask* even with no
 flour currently held). Lifespan is PARKED as at most a later mortality-*frequency* sensitivity axis
