@@ -1,7 +1,7 @@
 # impl-74 — C3R.i: Post-death flour re-ignition (can the flour market re-price a de-staffed chain, so production survives the producer?)
 
-Status (spec): **v2 — DRAFT** (Codex+Fable dual review folded; both NEEDS-REVISION, "one revision from
-BUILD-READY"). The milestone survives but changes shape — see `## −0`. Successor to impl-73 (C3R.h). Origin:
+Status (spec): **v2.1 — BUILD-READY (census cut)**. Second Codex+Fable consult converged: the census TRIGGER/schema is corrected to match the decision path (`InputPriceAbsent` proves no computable executable input, NOT zero physical flour). Build the one-seed `flour_reignition_census` test first; R2 stays unnamed until the census classifies the binding branch. See `## −0.5`.
+Successor to impl-73 (C3R.h). Origin:
 the impl-71 (C3R.f) redirect (`docs/impl-producer-lifespan-ratio.md` §−2) — a dual review proved
 lifespan is *not* the lever; the mortal chain dies via a flour-market **re-ignition deadlock**. This
 milestone attacks that deadlock directly. **Hard cap: ONE milestone.** If neither lever clears the
@@ -82,6 +82,59 @@ Both reviews verified against the code; the milestone is real but reshapes to **
 cap; closure-independent paid-purchase join; global no-death control; per-house lineage-liquidity
 minima; a 6-way disjoint outcome set with validity-gated STOP. §§0–8 below are the v1 rationale,
 superseded by this section where they conflict.
+
+## −0.5. v2.1 — second dual review converged: correct the census TRIGGER before R2 (AUTHORITATIVE over §−0 item 1)
+
+A second Codex+Fable consult (both verified against the decision-path code, not the brief)
+converged on ONE correction, and it is a real one. Fable → BUILD-CENSUS-FIRST-with-a-P1-schema-
+amendment; Codex → REVISE-SPEC-FIRST. **Same action, different label:** amend the census so its
+trigger and schema match the decision path, *then* build the census test; do NOT name R2 or its cap
+until the census classifies the binding branch.
+
+**The correction (P0). `InputPriceAbsent` proves "no computable non-self executable appraisal input,"
+NOT "zero physical flour."** `fresh_input_ask` excludes the appraiser (`mod.rs:10112`) AND
+`reservation_ask_for_money` returns `None` for a *holder* too — not only the genuine non-holder
+(`agent.rs:449`), but also a provisioning break (`agent.rs:476`) and no money-want at/above
+`lost_rank` (`agent.rs:486→975`). So the §−0 phrase **"at the zero-holder tick" is an unverified
+converse** ("None ⇒ non-holder") and must be struck. This is the exact shape of over-reads #1–8:
+a decision-path *count* (the 83–93% `InputPriceAbsent`, real) inflated into a *cause* ("nobody holds
+flour," unverified). The existing suite only aggregates the count (`baker_role_l2.rs:201`); it never
+joins the rejection to physical holder state.
+
+**Census retrigger + inference-free schema (replaces §−0 item 1).** Trigger the row on the **first
+post-death `Bake` appraisal that takes the `InputPriceAbsent` branch** (`phases.rs:2319`), seed 3,
+stop at first failure. Each row must **classify without inference**: candidate ID + own flour held;
+commons flour (`settle_estate_to_commons` is invisible to `fresh_input_ask` from the first heirless
+death); every *other living* colonist's `(flour held, free stock, reservation-ask result + which
+`None` branch of `agent.rs:449/476/975`, posted ask)`; and each miller's `(restock predicate,
+output price, free gold, imputed reservation, grain-order outcome, executed Trade, actual Mill
+execution)`. Then the outcome is read off, not inferred: genuine zero-holder / holder-without-
+computable-ask / commons-locked / miller-side failure (absent, cashless, failed imputation, no
+crossing grain seller, failed production).
+
+**The asymmetric-fix lead both raised (candidate root cause; census must be able to name it).** The
+miller's restock imputation still values its output at the **frozen** `realized_price(flour)`
+(`mod.rs:8556`), and `continue`s (skips the grain bid) when that is stale/absent (`mod.rs:8566`,
+`8590`). The L2 stale-price fix was applied to role choice (`fresh_input_ask`, live min-holder
+reservation) but **NOT** to `project_input_bids`. If the census shows the binding branch is a
+*holder-without-ask* or a *stale-price restock skip*, the wall is a **second instance of the
+stale-price bug**, and the fix is "apply L2 symmetrically to `project_input_bids`" — a smaller,
+different change than R2, which R2's inventory cap would entirely miss.
+
+**Defer R2 and the cap (P1, downstream).** R2's `held + output_qty <= 2×output_qty` (6-flour) rule
+changes behavior only at `held == 3` — the restock gate already permits restocking at flour
+holdings 0–2 (`mod.rs:8569`) — so it cannot repair miller absence, no cash, failed imputation, no
+crossing grain offer, or failed production. Name R2 and its cap (§−0 items 3 + −0.8) only AFTER the
+census classifies the branch; the census may show R2 targets a non-binding state (→ over-read #9).
+
+**Single next artifact.** A one-seed, stop-at-first-failure diagnostic test emitting the census row
+directly at the decline branch (`phases.rs:2319`), non-steering / read-only / no digest / no new
+flags (seams already exist: `BootstrapTrace` grain-bid counters `mod.rs:6802,8602`, `role_choice_diag`,
+`lineage_stats`):
+`cargo test -p sim --test flour_reignition_census first_post_death_input_absence -- --exact --nocapture`.
+
+**Verdict (both): revise the census trigger/schema per this section, then build the census; R2 stays
+unnamed until the census classifies the binding branch.**
 
 ## 0. One-paragraph summary
 
