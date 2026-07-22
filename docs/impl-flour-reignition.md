@@ -1,11 +1,48 @@
 # impl-74 — C3R.i: Post-death flour re-ignition (can the flour market re-price a de-staffed chain, so production survives the producer?)
 
-Status (spec): **v2.1 — BUILD-READY (census cut)**. Second Codex+Fable consult converged: the census TRIGGER/schema is corrected to match the decision path (`InputPriceAbsent` proves no computable executable input, NOT zero physical flour). Build the one-seed `flour_reignition_census` test first; R2 stays unnamed until the census classifies the binding branch. See `## −0.5`.
+Status (spec): **CENSUS BUILT — result `HolderWithoutAsk`; R2-as-specced closed (INTERVENTION-INVALID) before it was built.** The `flour_reignition_census` diagnostic landed (`sim/tests/flour_reignition_census.rs`, non-steering, byte-identical) and was hardened under a second adversarial Codex+Fable review. R2 is NOT built. See `## −0.9` for the result. Milestone is at its census-cut decision point; the next seam (decompose the holders' `None`) is scoped but unbuilt under the one-milestone cap.
 Successor to impl-73 (C3R.h). Origin:
 the impl-71 (C3R.f) redirect (`docs/impl-producer-lifespan-ratio.md` §−2) — a dual review proved
 lifespan is *not* the lever; the mortal chain dies via a flour-market **re-ignition deadlock**. This
 milestone attacks that deadlock directly. **Hard cap: ONE milestone.** If neither lever clears the
 five-seed gate, pin the null and STOP the C3R wall-chasing — do not chase a ninth "obvious lever".
+
+## −0.9. CENSUS RESULT — `HolderWithoutAsk` (built, dual-review-hardened; AUTHORITATIVE outcome)
+
+The census specced in `## −0.5` was built and independently verified (full suite green, no golden
+moved, `canonical_bytes_excludes_flour_census` proves it non-steering), then adversarially re-reviewed
+by Codex + Fable over the landed diff. **Result at the first post-death Bake `InputPriceAbsent`
+decline (seed 3, society tick 23, after 4 producer old-age deaths): `HolderWithoutAsk`.**
+
+- Measured, not inferred: two Millers hold **33 flour each** and a Consumer **heir** holds a further
+  **33** (>100 units present), gold 76–176, grain 0 — yet **every** living non-self holder's
+  `reservation_ask_for_money(flour)` is `None`. The wall is a **phantom seller**, not phantom stock —
+  the sibling of C3R.h's phantom price.
+- Mechanism (faithful, not a bug): the holders are money-satiated — with 33–36 flour, removing one
+  unit drops no allocation (`lost_rank = scale.len()`), and their gold already covers every money-want
+  (`econ/src/agent.rs:476`, `950–975`), so the ordinal rule yields **no reservation price**. The heir's
+  pre-adoption appraisal reads exactly that reservation (`fresh_input_ask`) and declines.
+
+**What this settles (LICENSED):** **R2-as-specced is `INTERVENTION-INVALID`** — its dose is gated to
+holders at/below one output batch and its offer leg needs a computable ask; the measured holders sit
+far above the gate with no ask, so it engages nothing. This is exactly the outcome `## −0.5`
+pre-registered; the census pre-empted a ninth over-read (building R2 against a non-stock-absence wall).
+
+**What this does NOT license (the tenth over-read, caught by the adversarial review — do NOT write
+these):** that stock-adding *in general* is inert (flour to a poor unmet-want colonist would likely
+produce a real ask); that the chain is *deadlocked* or the wall *persists* (single tick, single seed);
+that the refusal is a *defect* vs faithful satiation; or that the candidate is an inheriting *heir* vs
+a surviving founder (the schema records neither vocation-of-candidate nor oven provenance — the `## −0.5`
+schema deliberately subset the None-decomposition, which is fatal to *lever selection*, not to this
+result). The honest claim is the narrow one: **abundant flour, no seller-ask, at this appraisal.**
+
+**Next seam (scoped, UNBUILT under the one-milestone cap):** decompose *why* the holders have no
+reservation price (expected: money-want satiation at `agent.rs:975`) with free-stock + posted-ask +
+miller-restock-predicate fields, measure persistence and heir-identity across seeds, then choose among
+(a) applying the C3R.h live-price fix **symmetrically** to `project_input_bids` (`mod.rs:8556` still
+reads the frozen `realized_price(output)`), (b) a seller-side motive change, or (c) genuinely
+speculative adoption. `## −0` items 3–9 (the R2 offer, the join telemetry, the no-death control, the
+outcome tree) remain the design for that successor milestone, not this one.
 
 ## −0. v2 revision (AUTHORITATIVE — folds the Codex+Fable dual review; supersedes §§0–8 on conflict)
 
