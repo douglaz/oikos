@@ -2178,6 +2178,9 @@ fn digest_coverage_settlement(v: &Settlement) {
         saving_obs_stock_tick: _,
         saving_obs_pending_offerable: _,
         bootstrap_trace: _,
+        // Runtime-only, default-off flour re-ignition census.
+        flour_census: _,
+        flour_census_armed: _,
         bread_seller_trace: _,
         seeded_surplus_trace: _,
         seeded_minted_bread_sold_for_salt: _,
