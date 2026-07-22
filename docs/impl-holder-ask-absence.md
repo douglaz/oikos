@@ -1,7 +1,8 @@
 # impl-75 — C3R.j: Why the flour has no price — decompose the holder's absent reservation ask
 
-Status (spec): **v2 — REVISED** (Codex+Fable dual review folded; both NEEDS-REVISION, no blockers — every
-seam exists). The milestone survives but Cut 1 changes shape and lever (b) is CUT. See `## −0`.
+Status (spec): **v2.1 — BUILD-READY (Cut 1 only, diagnostic)**. Dual review + confirm pass folded; the
+reviewers conflicted on the `975` split and the code settled it (two-way, not three). Cut 2 is EMPTY —
+levers are deferred to a successor chosen by Cut 1's result. See `## −0` and `## −0.5`.
 Successor to impl-74 (C3R.i). Origin: the C3R.i
 census (`docs/impl-flour-reignition.md` §−0.9, report §37) proved the mortal wall is **`HolderWithoutAsk`**
 — at the first post-death Bake decline, living holders sit on >100 units of flour yet **not one** has a
@@ -103,10 +104,67 @@ conflates three different economies, and **two instances of over-read #11**. Rev
     of item 3, not the aggregate bucket; and note that "zero carrying cost" applies to **every** ask (no
     anticipated decay is modeled anywhere), not specifically to flour.
 
+**[VERIFIED EMPIRICALLY — the C3R.i finding generalizes to all 5 canonical seeds.]** A throwaway probe on
+the exact census config (independently reproduced) captured the first post-death Bake `InputPriceAbsent`
+on **every** canonical seed, and **every one classifies `HolderWithoutAsk`** with *all* living non-self
+asks `None`:
+
+| seed | tick | prior producer deaths | flour holders | total flour held | commons flour |
+|------|------|----------------------|---------------|------------------|---------------|
+| 3    | 23   | 4                    | 3             | 99               | 0             |
+| 7    | 11   | 4                    | 3             | 45               | 0             |
+| 11   | 17   | 2                    | 3             | 72               | 0             |
+| 19   | 12   | 3                    | 2             | 33               | 9             |
+| 23   | 7    | 2                    | 3             | 27               | 0             |
+
+This closes one of the gaps the C3R.i adversarial review explicitly left open ("all seeds classify
+`HolderWithoutAsk`" was NOT licensed by the single-seed census — it now **is measured**). Two consequences
+for this spec: (a) item 2's `OtherWall` bucket is a **conservative safety valve that never fires on this
+base** — keep it (it cannot mislabel), but do not expect it; (b) **drop the "far above R2's cap"
+framing** — that is seed-3 flavored (33/holder), while seed 23 holds ~9/holder. R2-as-specced remains
+inert on every seed (9 > its one-batch dose gate), but the *margin* is thin, so any claim must cite the
+per-seed minimum, not seed 3's 33. Persistence and heir-identity remain UNMEASURED — Cut 1 still owes both.
+
 **Net:** Cut 1 becomes a per-seed-gated, axis-structured decomposition with a total `None` taxonomy, gold
 fields, a defined "resolves", and an escalation arm; lever (b) is CUT as specced (spoilage is a trap; the
 surplus-ask needs a money-want-ladder extension with a stated pricing rule); lever (a) is contingent on
 adding restock telemetry. §§0–5 below are the v1 rationale, superseded here on conflict.
+
+## −0.5. v2.1 — confirm pass (AUTHORITATIVE over §−0 items 3, 7, 9, 11, 14)
+
+Confirm pass split: one reviewer SPEC-READY, one NEEDS-REVISION. They **conflicted on item 3**; I settled
+it against the code and the NEEDS-REVISION reading is correct. Both agreed the 5-seed generalization above
+holds (independently reproduced three ways).
+
+1. **[P0 — item 3 was WRONG: the split is TWO-way, not three]** Verified: `provisioning_with_optional_money`
+   marks a money want `provided` **exactly when gold on hand fully covers it** (greedy with
+   `reserved_money`, `econ/src/agent.rs:866–885`), and the scan's `required <= gold.0` accumulates that
+   **same** cumulative condition (`agent.rs:964–973`). The two disjuncts therefore **coincide**, and the
+   proposed "(iii) unprovided but covered by gold" state is **UNREACHABLE** — specced as-is, an
+   implementer would build a bucket that never fires. Additionally the scan reads only wants **at or above
+   `lost_rank`** (`take(upper)`, `agent.rs:957–961`), NOT the whole scale, so "no money want in the scale"
+   was also mislabeled. **Corrected:** a `975` `None` means, over money wants **at or above `lost_rank`**,
+   either
+   **(A) `NoMoneyWantInRange`** — no money want in that range at all, or
+   **(B) `MoneySatiated`** — every in-range money want is fully covered by gold on hand.
+   Record per holder: in-range money-want count, provided count, gold, and cumulative required. **§3's
+   satiation parallel applies to (B) ONLY** — (A) is an agent that simply does not want money in range
+   (e.g. the Consumer heir), and no money-want-ladder lever addresses it.
+2. **[P0 — decisions this spec must MAKE, not delegate to the implementer]**
+   - **Persistence window `W = 200` econ ticks** after the first post-death decline. (Declines land at
+     ticks 7–23 across the five seeds and the suite runs 1600 ticks in ~0.1s, so 200 is ample and cheap.)
+     Assert the window; do not leave it to the implementer.
+   - **`dominates` :=** the modal reason across the row's flour holders; ties ⇒ `MixedBranch`.
+     **Classification precedence:** identity (`NotPostDeathHeir`) → persistence (`TransientOnly`) →
+     dominant reason.
+   - **Live-ask accessor:** add `pub fn live_ask_for(&self, agent: AgentId, good: GoodId) -> Option<Gold>`
+     on `Society`, a `&self` wrapper over the private `find_live_quote` (`econ/src/society.rs:6671`).
+     Non-steering, not digested.
+3. **[P0 — Cut 2 is EMPTY: impl-75 is DIAGNOSTIC-ONLY]** Lever (b) is CUT (§−0 items 4–5), (c) is out of
+   scope as governance, and (a) **cannot be selected from Cut 1** without miller-restock telemetry that
+   would bloat this milestone. **Decision: drop Cut 2(a) from impl-75.** This milestone ships **Cut 1
+   only**; the lever is chosen in a SUCCESSOR from Cut 1's measured result — the same census-first
+   discipline that let impl-74 close R2 *before* building it, and it honors the one-milestone cap.
 
 ## 0. The three assumptions C3R.i left UNLICENSED (this is the whole reason for Cut 1)
 
@@ -119,7 +177,11 @@ changes which lever is correct:
    above `lost_rank` (`486→975`). The *expected* answer is money-want satiation at `975` (with 33–36
    flour held, removing one unit drops no allocation ⇒ `lost_rank = scale.len()` at `474`, so `476`
    cannot fire and the `950–975` scan is maximal ⇒ `None` means every money want is already provided or
-   covered by gold on hand — and the holders carry 76–176 gold). **Expected ≠ measured.** If instead
+   covered by gold on hand — and the holders carry 76–176 gold). **[SUPERSEDED by §−0 items 3+6 — the
+   stated chain is WRONG: `lost_rank = scale.len()` because these scales carry NO FLOUR WANT at all, not
+   because 33–36 units is "enough"; and the `975` result splits three ways (no money want in scale / all
+   provided / covered by gold). Measure `lost_rank`; never infer it from stock size.]**
+   **Expected ≠ measured.** If instead
    `476` fires, the wall is a provisioning break and the lever is entirely different.
 2. **Persistence.** C3R.i captured ONE tick on ONE seed and stopped. "The wall persists" is inference.
    A state that resolves next tick is not a wall.
@@ -168,7 +230,11 @@ C3R.h bug that started this arc: *a fix applied at one stage but not its sibling
   miller's output at the **frozen** `realized_price(output)` and skips the grain bid on `None`
   (`8566`, `8590`). Lever = apply the live-price fix **symmetrically** to `project_input_bids`.
   Indicated if Cut 1 shows the miller side failing to restock on a stale/absent output price.
-- **(b) The carrying-cost asymmetry.** `run_spoilage` (`sim/src/settlement/phases.rs:2080–2123`) exists
+- **(b) The carrying-cost asymmetry. [CUT — SUPERSEDED by §−0 items 4+5. Do NOT build this. Anticipated
+  decay never enters `reservation_ask_for_money`; staple spoilage works through returning HUNGER, a
+  channel flour lacks; 1500 bps flooring stops at 26. The asymmetry below is REAL but is NOT a lever.
+  Any surplus-ask lever requires extending the money-want ladder with a stated pricing rule first.]**
+  `run_spoilage` (`sim/src/settlement/phases.rs:2080–2123`) exists
   precisely to break satiation-withdrawal — its own comment: *"Targeting the satiation hoard is the
   point: when the staple decays, hunger returns and the holder must re-enter the market"* — and it
   pressures **staple + subsistence + grain**, each threshold-protected at `FREE_STORAGE = 20`. It does
@@ -207,8 +273,11 @@ in `digest_coverage_chain_config`, with off-flag byte-identity proven tick-by-ti
 
 ## 5. Acceptance
 
-Cut 1: the decomposition runs on the pinned mortal base (`config(false)` of
-`sim/tests/baker_role_diagnostic.rs`) across the 5 canonical seeds, prints the per-seed classification,
+Cut 1: the decomposition runs on the pinned mortal base (**[SUPERSEDED by §−0 item 1 — do NOT use
+`config(false)` of `sim/tests/baker_role_diagnostic.rs`: it leaves `stale_input_price_fix` OFF, which
+makes `InputPriceAbsent` unreachable (`phases.rs:2305`) and the run would observe nothing. Use the
+census config of `sim/tests/flour_reignition_census.rs:10–26` and ASSERT the flag is `true`.]**)
+across the 5 canonical seeds, prints the per-seed classification,
 and **asserts the measured bucket** (as C3R.i learned to do — an unasserted census result silently
 regresses). Full workspace `cargo test` green (plain cargo, no nix), `clippy --all-targets -D warnings`
 clean, `fmt --check` clean, no golden/digest moved.
