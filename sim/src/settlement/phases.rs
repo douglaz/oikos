@@ -2319,6 +2319,14 @@ impl Settlement {
                     match self.fresh_input_ask(id, input_good, money_good) {
                         Some(fresh) => Some(fresh),
                         None => {
+                            // Default-off, non-digested observation only: capture beside
+                            // the existing reason counter without changing this branch.
+                            if self.flour_census_armed && recipe_id == RecipeId::Bake {
+                                let row =
+                                    self.build_flour_census_row(id, flour, grain, money_good, tick);
+                                self.flour_census = Some(row);
+                                self.flour_census_armed = false;
+                            }
                             self.saving_allocation_obs
                                 .role_choice_diag
                                 .observe(recipe_id, RoleChoiceReason::InputPriceAbsent);

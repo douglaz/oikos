@@ -4209,6 +4209,42 @@ pub struct BootstrapTraceSummary {
     pub first_bootstrap_bid_tick: Option<u64>,
 }
 
+/// One non-self colonist in the flour re-ignition census.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FlourCensusColonist {
+    pub id: AgentId,
+    pub vocation: Vocation,
+    pub flour_held: u32,
+    /// The executable flour ask; its `None` sub-branch is deliberately not decomposed.
+    pub reservation_ask: Option<Gold>,
+}
+
+/// One living Miller in the flour re-ignition census.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FlourCensusMiller {
+    pub id: AgentId,
+    pub gold: u64,
+    pub grain_held: u32,
+    pub flour_held: u32,
+}
+
+/// Read-only state captured at an armed `InputPriceAbsent` Bake decline.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FlourCensusRow {
+    pub decline_tick: u64,
+    /// `mortal_producer_old_age_deaths` at the decline.
+    pub deaths_before_decline: u64,
+    pub candidate_id: AgentId,
+    pub candidate_own_flour: u32,
+    /// Every other living colonist, in live-roster order.
+    pub colonists: Vec<FlourCensusColonist>,
+    pub commons_flour: u64,
+    pub millers: Vec<FlourCensusMiller>,
+    pub bootstrap_trace_active: bool,
+    /// Zero defaults carry no evidence unless `bootstrap_trace_active`.
+    pub bootstrap: BootstrapTraceSummary,
+}
+
 /// S21e.0: runtime-only provenance row for a bread seller observed in the mints-on
 /// control or seeded-surplus diagnostic. This is a read-only trace of realized
 /// settlement-level barter, not canonical state.
@@ -5468,6 +5504,9 @@ pub struct Settlement {
     /// Maintained only while [`Self::acquisition_ledger_active`] holds; an empty default
     /// otherwise. NOT in `canonical_bytes`, so it shifts no digest (byte-identical goldens).
     bootstrap_trace: BootstrapTrace,
+    /// Default-off, non-digested flour re-ignition census.
+    flour_census: Option<FlourCensusRow>,
+    flour_census_armed: bool,
     /// S21e.0: runtime-only bread seller provenance rows, used to pin the actual
     /// seller class in the mints-on positive control. Diagnostic, not canonical.
     bread_seller_trace: Vec<BreadSellerProvenance>,
@@ -13025,6 +13064,71 @@ impl Settlement {
         let diag = &mut self.saving_allocation_obs.role_choice_diag;
         diag.bake.observe(RoleChoiceReason::Accepts);
         diag.baker_last_econ_tick = Some(diag.baker_last_econ_tick.unwrap_or(0).saturating_add(1));
+    }
+
+    /// Arm the default-off flour census for its next Bake input-price absence.
+    pub fn debug_arm_flour_census(&mut self) {
+        self.flour_census_armed = true;
+    }
+
+    /// Take the captured row without re-arming.
+    pub fn debug_take_flour_census(&mut self) -> Option<FlourCensusRow> {
+        self.flour_census.take()
+    }
+
+    /// Build the row using read-only stock, reservation, commons, and trace access.
+    fn build_flour_census_row(
+        &self,
+        appraiser: AgentId,
+        flour: GoodId,
+        grain: GoodId,
+        money_good: GoodId,
+        decline_tick: u64,
+    ) -> FlourCensusRow {
+        let candidate_own_flour = self
+            .society
+            .agents
+            .get(appraiser)
+            .map_or(0, |agent| agent.stock.get(flour));
+        let mut colonists = Vec::new();
+        let mut millers = Vec::new();
+        for &slot in &self.live_colonist_slots {
+            let colonist = &self.colonists[slot];
+            let id = colonist.id;
+            if id == appraiser {
+                continue;
+            }
+            let Some(agent) = self.society.agents.get(id) else {
+                continue;
+            };
+            let flour_held = agent.stock.get(flour);
+            let reservation_ask = agent.reservation_ask_for_money(flour, 1, money_good);
+            colonists.push(FlourCensusColonist {
+                id,
+                vocation: colonist.vocation,
+                flour_held,
+                reservation_ask,
+            });
+            if colonist.vocation == Vocation::Miller {
+                millers.push(FlourCensusMiller {
+                    id,
+                    gold: agent.gold.0,
+                    grain_held: agent.stock.get(grain),
+                    flour_held,
+                });
+            }
+        }
+        FlourCensusRow {
+            decline_tick,
+            deaths_before_decline: self.mortal_producer_old_age_deaths,
+            candidate_id: appraiser,
+            candidate_own_flour,
+            colonists,
+            commons_flour: self.commons_stock_of(flour),
+            millers,
+            bootstrap_trace_active: self.acquisition_ledger_active(),
+            bootstrap: self.bootstrap_trace_summary(),
+        }
     }
 
     /// Runtime-only per-run Baker-class round-trip counters.

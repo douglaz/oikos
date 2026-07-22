@@ -2072,6 +2072,54 @@ glossary (`CONTEXT.md`, "Realized price"). The honest state of the keystone: *pr
 producer* is now one **named, localized** seam away (C3R.i, post-death flour re-ignition), not
 achieved — and the discipline that got here is to keep measuring the mechanism, never the proxy.
 
+## 37. The flour is *there* — the mortal wall is a no-seller-ask deadlock, not stock-absence (C3R.i census)
+
+§36 named the wall a "flour re-ignition deadlock" and the natural next move was an intervention that
+*supplies* flour to a de-staffed chain (call it R2, a bounded producer restock). Before building it, a
+one-seed, stop-at-first-failure **census** measured the actual failing decision. It fires at the first
+post-founder-death Bake appraisal that declines with `InputPriceAbsent` (seed 3, the mortal producer
+base), and classifies that decline from **measured holder state, not the reason code** — living
+non-self flour holders and their reservation asks, commons flour, and the living millers — into one of
+four buckets: zero-holder, holder-without-ask, commons-locked, or miller-side production failure.
+
+The result overturns the framing. At the first post-death decline (society tick 23, after four
+producer old-age deaths) the classification is **holder-without-ask**: two Millers hold 33 flour each
+and a Consumer *heir* holds a further 33 — over a hundred units of flour physically present — yet
+**every** living non-self holder's `reservation_ask_for_money(flour)` is `None`. The wall is not that
+flour is gone; it is that no holder posts a computable price for it. The mechanism is faithful, not a
+bug: the holders are gold-rich (76–176), so selling a unit of flour would improve no provisioning on
+their value scale — the ordinal reservation rule therefore yields *no reservation price at all*, and
+the heir's pre-adoption appraisal, which reads exactly that reservation, sees no input price and
+declines. Once the bakers who bought flour die, flour loses its bid; millers, already satiated in
+money, stop pricing it; and the successor cannot appraise a market that has gone quiet — a bilateral
+bootstrap deadlock about **ask-absence**, the sibling of the stale-price wall (§36) that was about a
+phantom *price*, now a phantom *seller*.
+
+What the census legitimately settles: the pre-registered stock-adding intervention is
+**INTERVENTION-INVALID before it was built** — its dose is gated to holders at or below one output
+batch and its offer leg needs a computable ask, and the measured holders sit far above that gate with
+no ask, so it would engage nothing. The census pre-empted a *ninth* over-read (building R2 against a
+wall that is not stock-absence). What the census does **not** license, and an adversarial dual-review
+caught as an incipient *tenth*: it does not show that stock-adding *in general* is inert (flour handed
+to a poor, unmet-want colonist would likely produce a real ask), that the chain is *deadlocked* or the
+wall *persists* (a single-tick, single-seed snapshot), that the holders' refusal is a *defect* rather
+than faithful satiation, or even that the declining candidate is an inheriting *heir* rather than a
+surviving founder — the diagnostic records neither the candidate's vocation nor its oven provenance.
+The honest claim is the narrow one the measurement supports: *at this appraisal there is abundant
+flour and no seller-ask*.
+
+Methodological note. This closes a run of price/proxy over-reads at **nine** confirmed near-misses,
+and the discipline had to extend one layer further: the ninth (zero-holder read off an
+`InputPriceAbsent` *count*) was caught by the census refusing to infer holder-state from the reason
+code, and a tenth — reading one reservation-proxy failure as *persistent seller withdrawal* and *proof
+the intervention is futile* — was caught only when a fresh adversarial review held the **conclusion**,
+not just the telemetry, against what the code licenses. The rule generalizes: measure the mechanism,
+never the proxy — and audit the interpretation with the same suspicion as the data. The next seam is
+decomposing *why* the holders have no reservation price (expected: money-want satiation) and choosing
+among applying the live-price fix symmetrically to the producer's own restock imputation, changing the
+seller's motive, or a genuinely speculative adoption — measured across seeds, with persistence and
+heir-identity pinned, not assumed.
+
 ## Appendix — milestone index
 
 | Sxx | Title | Outcome |
