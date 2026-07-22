@@ -139,6 +139,14 @@ pub enum AskOutcome {
     /// money want in range*; otherwise every in-range money want is already covered.
     /// The scan covers wants at or above `lost_rank` ONLY, never the whole scale.
     NoMoneyGain {
+        /// The rank whose allocation of `good` the sale drops, or `scale_len` when it
+        /// drops none — the before/after allocation delta in the only form the rule
+        /// itself uses, and the bound on the scan below. Report it; never infer it
+        /// from stock size (that inference is what impl-75 §−0 item 6 corrects).
+        lost_rank: usize,
+        /// Ranks on the scale, so `lost_rank == scale_len` reads as "the sale dropped
+        /// no allocation" without a second lookup.
+        scale_len: usize,
         /// Money wants the scan saw (at or above `lost_rank`).
         in_range_money_wants: usize,
         /// Of those, the ones already `provided` before the sale.
@@ -575,7 +583,7 @@ impl Agent {
             // exactly the shortfall on the first unprovided in-range money want, so both
             // checks hold whenever a price was found.
             debug_assert!(
-                preserved && gained,
+                false,
                 "reservation ask: post-price validation failed (preserved={preserved}, gained={gained})"
             );
             AskOutcome::DefensiveExit
@@ -1040,9 +1048,10 @@ fn money_scan_upper(len: usize, lost_rank: usize) -> usize {
     }
 }
 
-/// The measured shape of the `first_money_gain_price_at_or_above` → `None` exit: how
-/// many money wants the scan saw, how many were already provided, and the gold the
-/// cumulative requirement was tested against.
+/// The measured shape of the `first_money_gain_price_at_or_above` → `None` exit: where
+/// the sale dropped an allocation (`lost_rank`), how many money wants the scan saw, how
+/// many were already provided, and the gold the cumulative requirement was tested
+/// against.
 fn no_money_gain_outcome(
     scale: &[Want],
     before: &[bool],
@@ -1065,6 +1074,8 @@ fn no_money_gain_outcome(
         }
     }
     AskOutcome::NoMoneyGain {
+        lost_rank,
+        scale_len: scale.len(),
         in_range_money_wants,
         provided_wants,
         gold,

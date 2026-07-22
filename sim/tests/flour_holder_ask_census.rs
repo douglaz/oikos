@@ -95,6 +95,8 @@ fn check_row(row: &FlourCensusRow) {
         };
         assert_eq!(holder.reservation_ask, projected, "holder {:?}", holder.id);
         if let AskOutcome::NoMoneyGain {
+            lost_rank,
+            scale_len,
             in_range_money_wants,
             provided_wants,
             gold,
@@ -107,23 +109,82 @@ fn check_row(row: &FlourCensusRow) {
                 "NoMoneyGain two-way split diverged for holder {:?}",
                 holder.id
             );
+            // The scan is bounded by the allocation the sale drops (ranks at or above
+            // `lost_rank`), so the in-range count can never exceed the ranks it visited.
+            let scanned = (lost_rank + 1).min(scale_len);
+            assert!(
+                in_range_money_wants <= scanned,
+                "holder {:?}: {in_range_money_wants} money wants over {scanned} scanned ranks \
+                 (lost_rank={lost_rank}, scale_len={scale_len})",
+                holder.id
+            );
         }
     }
 }
 
-fn assert_determinate(seed: u64, class: Classification) {
-    let arms = [
-        matches!(class, Classification::OtherWall(_)),
-        matches!(class, Classification::NotPostDeathHeir),
-        matches!(class, Classification::TransientOnly),
-        matches!(class, Classification::Dominant(_)),
-        matches!(class, Classification::MixedBranch),
-    ];
-    assert_eq!(
-        arms.iter().filter(|&&hit| hit).count(),
-        1,
-        "seed {seed}: indeterminate classification {class:?}"
+/// The measured axes a classification must follow from.
+#[derive(Clone, Copy, Debug)]
+struct Axes {
+    bucket: Bucket,
+    /// Identity: recorded oven inheritance, read UNSHADOWED by `ToolProvenance`
+    /// precedence (a seeded latent Baker that also inherited would report `SeededLatent`).
+    inherited: bool,
+    /// Persistence: the Bake `accepts` bucket incremented inside the window.
+    resolves: bool,
+    /// The modal holder reason; `None` on a tie.
+    dominant: Option<Reason>,
+}
+
+/// Precedence: identity → persistence → dominant reason, gated on the C3R.i bucket.
+fn classify(axes: &Axes) -> Classification {
+    if axes.bucket != Bucket::HolderWithoutAsk {
+        Classification::OtherWall(axes.bucket)
+    } else if !axes.inherited {
+        Classification::NotPostDeathHeir
+    } else if axes.resolves {
+        Classification::TransientOnly
+    } else {
+        axes.dominant
+            .map_or(Classification::MixedBranch, Classification::Dominant)
+    }
+}
+
+/// Exactly one outcome survives precedence. Checked as the INVERSE of [`classify`] —
+/// each arm re-asserts the axis state that licenses it — so a classification that stops
+/// honoring identity → persistence → reason fails here. (Counting `matches!` arms over
+/// the variants of one enum value would instead be a type-level tautology.)
+fn assert_determinate(seed: u64, class: Classification, axes: &Axes) {
+    let on_wall = axes.bucket == Bucket::HolderWithoutAsk;
+    let licensed = match class {
+        Classification::OtherWall(bucket) => bucket == axes.bucket && !on_wall,
+        Classification::NotPostDeathHeir => on_wall && !axes.inherited,
+        Classification::TransientOnly => on_wall && axes.inherited && axes.resolves,
+        Classification::Dominant(reason) => {
+            on_wall && axes.inherited && !axes.resolves && axes.dominant == Some(reason)
+        }
+        Classification::MixedBranch => {
+            on_wall && axes.inherited && !axes.resolves && axes.dominant.is_none()
+        }
+    };
+    assert!(
+        licensed,
+        "seed {seed}: {class:?} is not the precedence outcome of {axes:?}"
     );
+}
+
+/// Per-tick texture of the persistence window, from the unconditional row accessor:
+/// does the wall recur every tick, or does it oscillate? Read beside `resolves` (which
+/// is the Bake `accepts` histogram alone) so recurrence is distinguishable from a state
+/// that flickers without the chain ever re-igniting. The three counters partition the
+/// window, so `wall_ticks` reads directly as "ticks the wall was still up".
+#[derive(Clone, Copy, Debug, Default)]
+struct WindowTexture {
+    /// Ticks whose sampled row is still `HolderWithoutAsk`.
+    wall_ticks: u32,
+    /// Ticks where flour is held and every holder of it has an ask.
+    held_with_ask_ticks: u32,
+    /// Ticks where no living non-self colonist holds flour.
+    no_holder_ticks: u32,
 }
 
 struct SeedOutcome {
@@ -178,8 +239,21 @@ fn decompose(seed: u64) -> SeedOutcome {
     let baker_death_tick = first_baker_death_tick.expect("capture follows a Baker death");
     check_row(&row);
     let bucket = bucket_of(&row);
+    // The identity axis reads recorded inheritance directly, so a candidate that is BOTH
+    // a seeded latent Baker and a recorded oven heir cannot be reported "not an heir"
+    // just because `ToolProvenance` ranks seeding first.
+    let inherited =
+        row.candidate_provenance == ToolProvenance::Inherited || row.candidate_recorded_inheritor;
     if bucket != Bucket::HolderWithoutAsk {
-        let class = Classification::OtherWall(bucket);
+        // Persistence and reason are NOT measured off the wall — the axes carry their
+        // unmeasured defaults, and precedence gates on the bucket first.
+        let axes = Axes {
+            bucket,
+            inherited,
+            resolves: false,
+            dominant: None,
+        };
+        let class = classify(&axes);
         println!(
             "seed {seed}: CLASS={class:?} wall={bucket:?} decline_tick={} \
              baker_death_tick={baker_death_tick} deaths={} candidate={:?} holders={} commons={} \
@@ -191,7 +265,7 @@ fn decompose(seed: u64) -> SeedOutcome {
             row.commons_flour,
             row.millers.len(),
         );
-        assert_determinate(seed, class);
+        assert_determinate(seed, class, &axes);
         return SeedOutcome {
             class,
             bucket,
@@ -215,24 +289,32 @@ fn decompose(seed: u64) -> SeedOutcome {
     let dominant = (modal.len() == 1).then_some(modal[0]);
 
     let accepts_before = settlement.role_choice_diag().bake.accepts;
-    let mut resolves = false;
+    let mut texture = WindowTexture::default();
     for _ in 0..WINDOW {
         settlement.econ_tick();
         let sample = settlement
             .debug_flour_census_row_now(row.candidate_id)
             .expect("configured chain has a money good");
         check_row(&sample);
-        resolves |= settlement.role_choice_diag().bake.accepts > accepts_before;
+        if bucket_of(&sample) == Bucket::HolderWithoutAsk {
+            texture.wall_ticks += 1;
+        } else if sample.colonists.iter().any(|h| h.flour_held > 0) {
+            texture.held_with_ask_ticks += 1;
+        } else {
+            texture.no_holder_ticks += 1;
+        }
     }
+    // `accepts` only ever increments (`phases.rs:2331/2383/2504`, no reset site), so the
+    // post-window compare is the whole window.
     let accepts_after = settlement.role_choice_diag().bake.accepts;
-    let inherited = row.candidate_provenance == ToolProvenance::Inherited;
-    let class = if !inherited {
-        Classification::NotPostDeathHeir
-    } else if resolves {
-        Classification::TransientOnly
-    } else {
-        dominant.map_or(Classification::MixedBranch, Classification::Dominant)
+    let axes = Axes {
+        bucket,
+        inherited,
+        resolves: accepts_after > accepts_before,
+        dominant,
     };
+    let resolves = axes.resolves;
+    let class = classify(&axes);
     let ask_posted_but_unseen: Vec<_> = row
         .colonists
         .iter()
@@ -245,8 +327,9 @@ fn decompose(seed: u64) -> SeedOutcome {
     println!(
         "seed {seed}: CLASS={class:?} wall={bucket:?} decline_tick={} \
          baker_death_tick={baker_death_tick} deaths={} candidate={:?} vocation={:?} \
-         holds_oven={} provenance={:?} | holders={} reasons={reasons:?} dominant={dominant:?} \
-         | persistence={resolves} window={WINDOW} accepts={accepts_before}->{accepts_after} \
+         holds_oven={} provenance={:?} recorded_inheritor={} | holders={} reasons={reasons:?} \
+         dominant={dominant:?} | persistence={resolves} window={WINDOW} \
+         accepts={accepts_before}->{accepts_after} texture={texture:?} \
          | ask_posted_but_unseen={ask_posted_but_unseen:?}",
         row.decline_tick,
         row.deaths_before_decline,
@@ -254,6 +337,7 @@ fn decompose(seed: u64) -> SeedOutcome {
         row.candidate_vocation,
         row.candidate_holds_oven,
         row.candidate_provenance,
+        row.candidate_recorded_inheritor,
         holders.len(),
     );
     for holder in holders {
@@ -272,7 +356,7 @@ fn decompose(seed: u64) -> SeedOutcome {
             holder.ask_outcome,
         );
     }
-    assert_determinate(seed, class);
+    assert_determinate(seed, class, &axes);
     SeedOutcome {
         class,
         bucket,

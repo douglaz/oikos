@@ -4219,7 +4219,9 @@ pub enum ToolProvenance {
     /// The oven arrived by producer estate settlement (`producer_tool_inheritors`).
     Inherited,
     /// Holds an oven, is neither seeded nor a recorded inheritor, and carries the
-    /// existing `acquired_tool` marker set on self-build completion.
+    /// existing `acquired_tool` marker set on self-build completion. That marker is
+    /// good-AGNOSTIC (set on any capital build, `mod.rs:9176`), so this reads "holds
+    /// an oven and has self-built some tool", not "self-built THIS oven".
     SelfBuilt,
     /// None of the seeded, recorded-inheritance, or self-build evidence applies.
     Other,
@@ -4241,8 +4243,13 @@ pub struct FlourCensusColonist {
     /// reservation, while the posting side nets reserves and shades the limit.
     pub live_ask: Option<Gold>,
     pub gold: u64,
-    /// Gold locked by resting orders/plans. The posting side nets GOLD, so the
-    /// raw-vs-netted divergence behind `AskPostedButUnseen` is gold-side.
+    /// Gold locked by resting orders/plans. The posting side's `available_agent`
+    /// (`econ/src/society.rs:3611`) nets gold AND stock before appraising, so a
+    /// raw-vs-netted divergence behind `AskPostedButUnseen` can be gold-side or
+    /// stock-side — hence both pairs below. (It also rebuilds netted stock from
+    /// `market_goods` only, so a non-market good reads zero there; flour is always in
+    /// that list — `market_goods_for` inserts every recipe input/output,
+    /// `society.rs:7791` — so that path is not what these fields measure.)
     pub reserved_gold: u64,
     pub free_stock: u32,
     pub reserved_stock: u32,
@@ -4269,6 +4276,11 @@ pub struct FlourCensusRow {
     pub candidate_vocation: Option<Vocation>,
     pub candidate_holds_oven: bool,
     pub candidate_provenance: ToolProvenance,
+    /// C3R.j: raw membership in `producer_tool_inheritors` for the oven, INDEPENDENT of
+    /// [`ToolProvenance`]'s precedence. A seeded latent Baker that also inherited an oven
+    /// reports `SeededLatent`, so the enum alone would silently mask an heir on the
+    /// identity axis — the axis reads this too.
+    pub candidate_recorded_inheritor: bool,
     /// Every other living colonist, in live-roster order.
     pub colonists: Vec<FlourCensusColonist>,
     pub commons_flour: u64,
@@ -13112,9 +13124,11 @@ impl Settlement {
     /// C3R.j: build the census row for `appraiser` at the CURRENT tick, unconditionally.
     /// The armed capture fires only on a Bake `InputPriceAbsent` decline, so row-absence
     /// there is ambiguous between "an ask appeared", "a different rejection", and "no Bake
-    /// candidate was appraised at all" — persistence sampling reads this instead of
-    /// inferring from absence. `&self`-pure and, like the armed capture, outside
-    /// [`Self::canonical_bytes`]: it arms nothing and consumes nothing.
+    /// candidate was appraised at all" — persistence sampling reads this for the per-tick
+    /// holder texture (does the wall recur every tick, or oscillate?) instead of inferring
+    /// it from absence. `resolves` itself stays pinned to the Bake `accepts` histogram, so
+    /// this reports the shape of the window, not the stop rule. `&self`-pure and, like the
+    /// armed capture, outside [`Self::canonical_bytes`]: it arms nothing and consumes nothing.
     pub fn debug_flour_census_row_now(&self, appraiser: AgentId) -> Option<FlourCensusRow> {
         let chain = self.chain.as_ref()?;
         let flour = chain.content.flour();
@@ -13125,12 +13139,13 @@ impl Settlement {
 
     /// C3R.j: how `id` came by an oven, from state the settlement already records —
     /// no new persistent field. Seeded specialty outranks recorded inheritance, which
-    /// outranks the existing self-build marker.
+    /// outranks the existing self-build marker. That precedence LOSES information when
+    /// both hold, so `recorded_inheritor` is reported on the row unshadowed alongside.
     fn oven_provenance(
         &self,
         id: AgentId,
-        oven: Option<GoodId>,
         holds_oven: bool,
+        recorded_inheritor: bool,
     ) -> ToolProvenance {
         let Some(&slot) = self.colonist_slot_by_id.get(&id) else {
             return ToolProvenance::Other;
@@ -13139,10 +13154,7 @@ impl Settlement {
         if colonist.latent == Some(RecipeId::Bake) {
             return ToolProvenance::SeededLatent;
         }
-        let Some(oven) = oven else {
-            return ToolProvenance::Other;
-        };
-        if self.producer_tool_inheritors.contains(&(id, oven)) {
+        if recorded_inheritor {
             return ToolProvenance::Inherited;
         }
         if holds_oven && colonist.acquired_tool {
@@ -13175,6 +13187,8 @@ impl Settlement {
                 .get(appraiser)
                 .is_some_and(|agent| agent.stock.get(oven) > 0)
         });
+        let candidate_recorded_inheritor =
+            oven.is_some_and(|oven| self.producer_tool_inheritors.contains(&(appraiser, oven)));
         let mut colonists = Vec::new();
         let mut millers = Vec::new();
         for &slot in &self.live_colonist_slots {
@@ -13187,8 +13201,10 @@ impl Settlement {
                 continue;
             };
             let flour_held = agent.stock.get(flour);
-            // The executable ask and its decomposition are computed independently here,
-            // so a test comparing them is a real cross-check of the projection.
+            // Both come from ONE body (`reservation_ask_for_money` is the `Some/None`
+            // projection, `econ/src/agent.rs:487`), so they cannot disagree today; the
+            // row carries both so a consumer sees the executable value beside its reason,
+            // and the test's equality check is a tripwire against a future re-implementation.
             let reservation_ask = agent.reservation_ask_for_money(flour, 1, money_good);
             let ask_outcome = agent.reservation_ask_outcome(flour, 1, money_good);
             let gold = agent.gold.0;
@@ -13221,7 +13237,12 @@ impl Settlement {
             candidate_own_flour,
             candidate_vocation: self.vocation_of_id(appraiser),
             candidate_holds_oven,
-            candidate_provenance: self.oven_provenance(appraiser, oven, candidate_holds_oven),
+            candidate_provenance: self.oven_provenance(
+                appraiser,
+                candidate_holds_oven,
+                candidate_recorded_inheritor,
+            ),
+            candidate_recorded_inheritor,
             colonists,
             commons_flour: self.commons_stock_of(flour),
             millers,
