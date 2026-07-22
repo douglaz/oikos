@@ -1441,6 +1441,18 @@ impl Society {
             .any(|quote| quote.agent == agent && quote.side == OrderSide::Bid && quote.good == good)
     }
 
+    /// Read-only probe: the limit of `agent`'s resting spot ASK for `good`, if one is
+    /// live. The posting side nets reservations and shades the limit, so this is NOT
+    /// the raw [`crate::agent::Agent::reservation_ask_for_money`] a fresh appraisal
+    /// reads — a diagnostic uses the two together to tell "won't sell" from "is
+    /// selling, but the appraisal reads the wrong thing". Non-steering: no decision
+    /// path calls it, and live quotes are outside the canonical byte stream.
+    pub fn live_ask_for(&self, agent: AgentId, good: GoodId) -> Option<Gold> {
+        self.find_live_quote(agent, OrderSide::Ask, good)
+            .and_then(|index| self.live_quotes.get(index))
+            .map(|quote| quote.limit)
+    }
+
     pub fn money_ledgers_reconcile(&self) -> bool {
         match &self.money_system {
             Some(money_system) => {

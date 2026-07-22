@@ -120,6 +120,41 @@ pub struct Reservation {
     pub qty: u32,
 }
 
+/// Which exit [`Agent::reservation_ask_for_money`] took. Every return path of that
+/// rule has a variant here, and the rule itself is the `Price(p) => Some(p)`
+/// projection of this, so a diagnostic reading it cannot drift from the executable
+/// ask. Read-only: constructing one changes nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AskOutcome {
+    /// The reservation price the sale would need.
+    Price(Gold),
+    /// `good` is the money good, `qty` is zero, or the agent cannot part with `qty`.
+    MoneyGoodOrNonHolder,
+    /// Parting with the units would break a want ranked above the one they served.
+    ProvisioningBreak,
+    /// No money want at or above `lost_rank` would gain from the sale. This splits
+    /// exactly TWO ways, not three: `provisioning_with_optional_money` marks a money
+    /// want `provided` precisely when gold on hand covers it, so an "unprovided but
+    /// covered by gold" state is unreachable. `in_range_money_wants == 0` is *no
+    /// money want in range*; otherwise every in-range money want is already covered.
+    /// The scan covers wants at or above `lost_rank` ONLY, never the whole scale.
+    NoMoneyGain {
+        /// Money wants the scan saw (at or above `lost_rank`).
+        in_range_money_wants: usize,
+        /// Of those, the ones already `provided` before the sale.
+        provided_wants: usize,
+        /// Gold on hand the cumulative requirement was tested against.
+        gold: Gold,
+        /// Total qty over the in-range money wants.
+        cumulative_required: u64,
+    },
+    /// A defensive exit the rule's own preconditions make unreachable: removal after
+    /// `can_remove`, `checked_add` overflow, or the post-price re-validation. Each
+    /// site is debug-asserted; keeping them in their own bucket means a diagnostic
+    /// never reports one of them as a real economic reason.
+    DefensiveExit,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TickProvisions {
     pub(crate) provided: Vec<bool>,
@@ -440,20 +475,41 @@ impl Agent {
         self.reservation_ask_for_money(good, qty, GOLD)
     }
 
+    /// The executable ask, a thin projection of [`Self::reservation_ask_outcome`].
+    /// Keeping the rule in ONE body means the diagnostic can never drift from the
+    /// price the market actually reads.
     pub fn reservation_ask_for_money(
         &self,
         good: GoodId,
         qty: u32,
         money_good: GoodId,
     ) -> Option<Gold> {
+        match self.reservation_ask_outcome(good, qty, money_good) {
+            AskOutcome::Price(price) => Some(price),
+            _ => None,
+        }
+    }
+
+    /// WHY the ask rule returned what it did, over every one of its exits. Read-only
+    /// and side-effect free; [`Self::reservation_ask_for_money`] is its `Some/None`
+    /// projection.
+    pub fn reservation_ask_outcome(
+        &self,
+        good: GoodId,
+        qty: u32,
+        money_good: GoodId,
+    ) -> AskOutcome {
         if good == money_good || qty == 0 || !self.stock.can_remove(good, qty) {
-            return None;
+            return AskOutcome::MoneyGoodOrNonHolder;
         }
 
         let before = provisioning_for_money(&self.scale, &self.stock, self.gold, money_good);
         let mut removed_stock = self.stock.clone();
-        if !removed_stock.remove(good, qty) {
-            return None;
+        let removed = removed_stock.remove(good, qty);
+        // Unreachable: `can_remove(good, qty)` above already admitted this removal.
+        debug_assert!(removed, "reservation ask: removal failed after can_remove");
+        if !removed {
+            return AskOutcome::DefensiveExit;
         }
         let after_without_price =
             provisioning_for_money(&self.scale, &removed_stock, self.gold, money_good);
@@ -474,30 +530,55 @@ impl Agent {
             .unwrap_or(self.scale.len());
 
         if !preserved_above_target(&before.provided, &after_without_price.provided, lost_rank) {
-            return None;
+            return AskOutcome::ProvisioningBreak;
         }
 
-        let price = first_money_gain_price_at_or_above(
+        let Some(price) = first_money_gain_price_at_or_above(
             &self.scale,
             &before.provided,
             self.gold,
             lost_rank,
             money_good,
-        )?;
-        let after_gold = self.gold.checked_add(price)?;
-        let after = provisioning_for_money(&self.scale, &removed_stock, after_gold, money_good);
-        if preserved_above_target(&before.provided, &after.provided, lost_rank)
-            && money_want_gained_at_or_above(
+        ) else {
+            return no_money_gain_outcome(
                 &self.scale,
                 &before.provided,
-                &after.provided,
+                self.gold,
                 lost_rank,
                 money_good,
-            )
-        {
-            Some(price)
+            );
+        };
+        let after_gold = self.gold.checked_add(price);
+        // Unreachable: the price is a shortfall against wants the agent already carries,
+        // so `gold + price` stays inside any reachable holding.
+        debug_assert!(
+            after_gold.is_some(),
+            "reservation ask: gold + price overflowed"
+        );
+        let Some(after_gold) = after_gold else {
+            return AskOutcome::DefensiveExit;
+        };
+        let after = provisioning_for_money(&self.scale, &removed_stock, after_gold, money_good);
+        let preserved = preserved_above_target(&before.provided, &after.provided, lost_rank);
+        let gained = money_want_gained_at_or_above(
+            &self.scale,
+            &before.provided,
+            &after.provided,
+            lost_rank,
+            money_good,
+        );
+        if preserved && gained {
+            AskOutcome::Price(price)
         } else {
-            None
+            // Unreachable: `provided` is monotone in gold (money wants are filled greedily
+            // from gold alone, `provisioning_with_optional_money` below), and `price` is
+            // exactly the shortfall on the first unprovided in-range money want, so both
+            // checks hold whenever a price was found.
+            debug_assert!(
+                preserved && gained,
+                "reservation ask: post-price validation failed (preserved={preserved}, gained={gained})"
+            );
+            AskOutcome::DefensiveExit
         }
     }
 
@@ -947,6 +1028,50 @@ fn allocated_money_before_rank(
     Gold(grains)
 }
 
+/// The money-want scan bound shared by the price search, its gain check, and the
+/// `NoMoneyGain` decomposition: wants at or above `lost_rank` (that rank included),
+/// or the whole scale when the sale dropped no allocation. One definition, so the
+/// diagnostic reports exactly the range the rule scanned.
+fn money_scan_upper(len: usize, lost_rank: usize) -> usize {
+    if lost_rank >= len {
+        len
+    } else {
+        lost_rank + 1
+    }
+}
+
+/// The measured shape of the `first_money_gain_price_at_or_above` → `None` exit: how
+/// many money wants the scan saw, how many were already provided, and the gold the
+/// cumulative requirement was tested against.
+fn no_money_gain_outcome(
+    scale: &[Want],
+    before: &[bool],
+    gold: Gold,
+    lost_rank: usize,
+    money_good: GoodId,
+) -> AskOutcome {
+    let upper = money_scan_upper(scale.len(), lost_rank);
+    let mut in_range_money_wants = 0;
+    let mut provided_wants = 0;
+    let mut cumulative_required = 0u64;
+    for (index, want) in scale.iter().enumerate().take(upper) {
+        if want.kind != WantKind::Good(money_good) {
+            continue;
+        }
+        in_range_money_wants += 1;
+        cumulative_required = cumulative_required.saturating_add(u64::from(want.qty));
+        if before.get(index).copied().unwrap_or(false) {
+            provided_wants += 1;
+        }
+    }
+    AskOutcome::NoMoneyGain {
+        in_range_money_wants,
+        provided_wants,
+        gold,
+        cumulative_required,
+    }
+}
+
 fn first_money_gain_price_at_or_above(
     scale: &[Want],
     before: &[bool],
@@ -954,11 +1079,7 @@ fn first_money_gain_price_at_or_above(
     lost_rank: usize,
     money_good: GoodId,
 ) -> Option<Gold> {
-    let upper = if lost_rank >= scale.len() {
-        scale.len()
-    } else {
-        lost_rank + 1
-    };
+    let upper = money_scan_upper(scale.len(), lost_rank);
     let mut required = 0u64;
 
     for (index, want) in scale.iter().enumerate().take(upper) {
@@ -982,11 +1103,7 @@ fn money_want_gained_at_or_above(
     lost_rank: usize,
     money_good: GoodId,
 ) -> bool {
-    let upper = if lost_rank >= scale.len() {
-        scale.len()
-    } else {
-        lost_rank + 1
-    };
+    let upper = money_scan_upper(scale.len(), lost_rank);
     scale
         .iter()
         .zip(before)
