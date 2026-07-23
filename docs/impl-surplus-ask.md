@@ -19,10 +19,14 @@ gold-pooling/experiment-7 clause; correct the blast-radius mechanism; scope deat
   blocker of flour-quote delivery and heir adoption. `BUYER_WILLING` at `W`.
 - **INSUFFICIENT (the null):** all 5 seeds `DOWNSTREAM_NULL` — zero bread in the final 160 ticks, zero
   living Bakers at tick 1600, lever active throughout. Re-ignition is transient.
-- **Mechanism (probe-indicated, NOT durably asserted):** the re-ignited bakers **die** (tenures 1–34
-  ticks) rather than de-adopt — producer houses are `food_provision = 0`, so a new baker starves before
-  its bread can feed it; adoption ceases ~200–550 ticks past `W`. The committed test measures only the
-  collapse endpoint, not the exit mechanism — record as the next seam, not a fact.
+- **Downstream mechanism UNRESOLVED (do NOT over-read):** the committed test records only role
+  transitions + endpoint state, not per-adopter exits. The "starved-out" reading is **contradicted by the
+  config**: starvation death is disabled (`hunger_critical = need_max + 1`, mod.rs:3710 — only old-age
+  removal), and active/latent producers are fed to a floor before the market (`producer_subsistence = 4`,
+  inherited; `run_producer_subsistence`, phases.rs:944), so `food_provision = 0` on the households does
+  NOT mean a re-entering baker lacks subsistence. The short tenures are old-age exits or de-adoption, not
+  starvation; *why re-adoption ceases* (adopter age / oven-heir-lineage exhaustion / de-adoption) is not
+  measured. [This bullet corrected a committed over-read — the arc's 14th price/proxy near-miss.]
 - **NOT a gold seizure (over-read dropped):** endpoint Baker gold 0 is vacuous (no living Bakers to sum);
   the surviving Miller's 2531–3428 gold matches the OFF control AND a functioning chain (~4000) — benign
   base condition, opposite signature to Experiment-7. Removed from the finding.
@@ -31,12 +35,14 @@ gold-pooling/experiment-7 clause; correct the blast-radius mechanism; scope deat
   Flour-scoping was required for clean **attribution**; it is NOT proven a *safe* remedy on the immortal
   base (no flour-vs-all-goods immortal comparison was run).
 
-**Net:** the one-milestone cap is spent on a *tested* null — the satiation wall is genuine and the
-marginal-money-demand correction crosses it, but crossing it buys only a transient flicker of baking that
-starves out. The chain's death is not (at root) a flour-pricing-coordination failure; it is that a mortal
-producer re-entering a de-staffed chain has **no subsistence during re-entry**. That is the precise,
-measured next seam — the re-coordination question is closed; a successor (if the arc continues past its
-cap) attacks producer subsistence-during-re-entry, not the flour market.
+**Net:** the one-milestone cap is spent, and it bought a clean tested answer — the satiation wall is
+genuine, the marginal-money-demand correction crosses it and restarts baking, and that is INSUFFICIENT:
+production does not durably survive producer turnover on this base. The keystone question closes in the
+negative with the pricing wall's causal role demonstrated. The downstream persistence mechanism is
+UNRESOLVED — naming a specific successor lever (subsistence, lifespan, …) would repeat the corrected
+over-read. The honest next step if the arc reopens is an **observation-only exit-attribution** probe on
+this harness (per gate-fired heir-adopter: exits-while-alive vs `age == lifespan` vs starvation-counter,
+with `producer_subsistence`/`hunger_critical` asserted), to name the real seam before any intervention.
 
 ## −0. v2 revision (AUTHORITATIVE — folds the dual review; supersedes §§1–8 on conflict)
 

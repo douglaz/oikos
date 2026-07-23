@@ -2187,19 +2187,24 @@ blocker* of flour-quote delivery and heir adoption — not a mere accounting art
 willing at `W` on every seed. This is the milestone's positive result: **pricing the costless surplus
 does re-open the flour market and restart baking.**
 
-**What it does not achieve — and the deeper wall it exposes.** Re-ignition is transient and the chain
-does not survive. All five seeds land in the pre-registered `DOWNSTREAM_NULL` bucket: zero bread produced
-in the final 160 ticks and zero living Bakers at the 1600-tick horizon, with the lever still active
-throughout. A follow-up probe (not a durable assertion) indicates *why*: the re-ignited bakers do not
-re-satiate and de-adopt — they **die**, with tenures of 1–34 ticks, because the mortal producer houses
-carry `food_provision = 0`. A newly-adopted baker has no subsistence of its own and starves before the
-bread it bakes can feed it; re-adoption sustains only ~200–550 ticks past `W`, then ceases permanently.
-The committed test measures the collapse endpoint, not the exit mechanism, so the starvation reading is
-probe-indicated and named as the next seam, not asserted. (What the run does *not* show, contrary to the
-tempting reading: it is not a gold-distribution seizure — endpoint Baker gold is a vacuous zero because
-no Bakers are alive to sum, and the surviving Miller's ~2500–3400 gold is the same pool the OFF control
-and a *functioning* chain both hold; the Experiment-7 signature, satiated consumers starving live
-producers of money, is a different one and is not present here.)
+**What it does not achieve.** Re-ignition is transient and the chain does not survive. All five seeds
+land in the pre-registered `DOWNSTREAM_NULL` bucket: zero bread produced in the final 160 ticks and zero
+living Bakers at the 1600-tick horizon, with the lever still active throughout. So re-coordination
+*succeeds* (the wall is crossed) but *persistence* fails — which is exactly what `DOWNSTREAM_NULL` was
+pre-registered to mean; it is not a "null" for whether the ask works. **The downstream persistence
+mechanism is unresolved, and must not be over-read.** The committed test records only role transitions
+and endpoint state, not per-adopter exits — and the tempting "starved-out" reading is *contradicted by
+this base's configuration*: starvation death is disabled (`hunger_critical = need_max + 1`, so hunger
+never reaches the lethal ceiling and the only removal channel is old age), and active/latent producers
+are fed to a staple floor before the market (`producer_subsistence = 4`, inherited), so `food_provision =
+0` on the producer *households* does **not** mean a re-entering baker has no subsistence. The observed
+short baker tenures are therefore old-age exits or de-adoptions, not starvation, and *why re-adoption
+ceases* (adopter age, oven/heir-lineage exhaustion, or de-adoption once no recipe pays) is not measured.
+Two further tempting readings the run also does *not* license: it is not a gold-distribution seizure
+(endpoint Baker gold is a vacuous zero — no Bakers are alive to sum — and the surviving Miller's
+~2500–3400 gold is the pool the OFF control and a *functioning* chain both hold, the opposite signature
+to Experiment-7); and pricing was *not* irrelevant "at root" — it was a demonstrated causal blocker, just
+not the only one.
 
 **The blast-radius control.** The same rule applied to *all* goods (not just flour) fails the calibrated
 immortal-chain solvency lens on every seed — via Baker-class *insolvency* (Baker gold driven to zero),
@@ -2207,14 +2212,22 @@ not a production collapse (window output stays above the floor). Flour-scoping w
 *attribute* the causal effect cleanly; the run does not prove flour-scope is a *safe* intervention on the
 immortal base (no flour-vs-all-goods immortal comparison was run).
 
-**Where this leaves the C3R arc.** The one-milestone cap is spent, and the outcome is a *tested* null for
-the re-coordination question, which is far stronger than an untested one: the satiation wall is genuine
-and a minimal money-demand correction does cross it, but crossing it only buys a transient flicker of
-baking that starves out. The chain's death is not, at root, a pricing-coordination failure the flour ask
-can fix — it is that a mortal producer re-entering a de-staffed specialized chain has no subsistence to
-survive on while the chain rebuilds. That relocates the question from the flour *market* to producer
-*subsistence during re-entry* — the precise, measured seam a successor would attack, if the arc
-continues past its cap.
+**Where this leaves the C3R arc.** The one-milestone cap is spent, and it bought a clean, tested answer:
+the satiation wall is genuine, a minimal money-demand correction *does* cross it and restart baking, and
+that is *insufficient* — production does not durably survive producer turnover on this tested base. That
+closes the keystone question ("does production survive the producer?") in the negative, with the causal
+role of the pricing wall demonstrated rather than assumed. What it does **not** do is diagnose the
+downstream persistence failure — the re-ignition's collapse mechanism is unresolved (old-age exit vs
+de-adoption vs lineage exhaustion), and naming a specific successor lever would repeat the very over-read
+this section had to correct. The honest next step, if the arc reopens past its cap, is not another lever
+but a cheap **observation-only exit-attribution** pass on the existing five-seed harness — record, per
+gate-fired heir-adopter, whether it exits Baker while alive, dies at `age == lifespan`, or trips a
+starvation counter, with `producer_subsistence` and `hunger_critical` asserted — to identify the *real*
+downstream seam before any intervention is designed. The methodological note stands on its own: this
+section's first draft asserted a starvation/subsistence mechanism that the base's own configuration
+forbids — the fourteenth price/proxy over-read of the arc, and the first to reach a committed draft,
+caught by checking the claimed mechanism against `hunger_critical` and `producer_subsistence` rather than
+trusting the probe that suggested it.
 
 ## Appendix — milestone index
 
