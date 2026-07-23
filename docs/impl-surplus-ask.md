@@ -1,9 +1,9 @@
 # impl-76 — C3R.k: The satiated-surplus ask — does a marginal money bid on a costless surplus re-coordinate the mortal chain?
 
-Status (spec): **v2 — REVISED (dual review folded; awaiting confirm pass).** Both reviews VERIFIED the
-lever is buildable and crosses the wall end-to-end (probe: `Price(1)` is the exact limit of the existing
-pricing rule; Bake margin clears 5/5 seeds), but returned NEEDS-REVISION with seven concrete misfire
-paths — threading, companion flags, attribution, activation timing. See `## −0` (AUTHORITATIVE).
+Status (spec): **v2.1 — BUILD-READY.** Dual review + confirm pass folded; both confirm passes converged
+to NEEDS-REVISION on the flag representation ONLY, resolved via a digested activation-tick ChainConfig
+field (birth_stock_ignition_at precedent) + paired OFF/ON runs — no runtime mutation. See `## −0.5`
+(the flag design, AUTHORITATIVE) and `## −0` (the folded dual review).
 Successor to impl-75 (C3R.j Cut 1). The ONE pre-registered lever milestone the C3R arc's one-milestone
 cap was reserved for — it closes the arc either way: the chain re-coordinates (the satiation wall was
 the causal blocker), or the pre-registered null is pinned with a *tested* lever behind it.
@@ -101,6 +101,61 @@ a *costless surplus* — and it still goes unpriced. A follow-up probe indicates
 willing (executable bread price supports a flour price ~1 at each decline), so this is a satiated seller
 declining to originate a quote a willing buyer would accept, not absent demand. It blocks surviving
 seeded-latent founders and inheriting heirs alike.
+
+## −0.5. v2.1 — confirm pass (AUTHORITATIVE over §−0 items 1/4/6 — the flag design)
+
+Both confirm passes converged: **NEEDS-REVISION on item 1's flag representation only**; all other §−0 items
+verified clean (item 2 bypass required; item 3 companions correct; item 8 accessor buildable; the
+threading list complete for production). The construction-time bool of item 1 genuinely cannot be
+wall-activated (item 6) nor express the flour-vs-all scope (item 4), and a *runtime* debug setter would
+escape `digest_coverage_chain_config` (it destructures `ChainConfig` — a non-config knob is invisible to
+it) and could never carry the ON-only digest tag item 11 requires. The buildable design that satisfies
+items 1/4/6/11 at once, from existing precedent, with **NO runtime mutation** (supersedes those items):
+
+1. **`ChainConfig` gains an activation-tick + scope, not a bool.** `satiated_surplus_ask_at: Option<u64>`
+   (`None` = off) and `satiated_surplus_ask_scope` (`Flour` | `AllGoods`). Precedent: `birth_stock_ignition_at:
+   Option<u64>` (`mod.rs:1824`), evaluated per-tick behind a latch (`phases.rs:3087-3096`) and digested
+   ON-only *including the tick value* (`digest.rs:632-642`). Classify both DIGESTED in
+   `digest_coverage_chain_config` with an ON-only tag block mirroring `stale_input_price_fix` tag 36
+   (`digest.rs:173`): push tag + `at` bytes + scope byte only when `Some`.
+2. **`Society` gains a construction-time `satiated_surplus_ask: Option<(Tick, Scope)>`** (precedent
+   `multi_offer_medium`/`durability_aware_acceptance`, `society.rs:468-469`; populated from chain config at
+   generation, `generation.rs:1249`). Society owns `self.tick`, so the two Society-internal sites —
+   `ensure_ask` (`society.rs:3333`) and the change detector (`society.rs:3795`) — both compute
+   `self.satiated_surplus_ask.is_some_and(|(t, s)| self.tick >= t && scope_admits(s, good))` and pass it as
+   the new rule parameter. They read the **same per-tick value by construction**, so item 1's flap-off
+   acceptance test holds at every tick including the activation tick.
+3. **Threading is compiler-forced by the parameter.** The STEERING reads are `ensure_ask` (3333), the
+   change detector (3795), and `fresh_input_ask` (`mod.rs:10190`); the census-row reads (`mod.rs:13193-13194,
+   13900`) pass `None`/off (non-steering); the `agent.rs:483/495/1677` wrappers are test-only and the
+   compiler forces them to choose. No omitted-site flap-off path. Assert the settlement tick and
+   `Society.tick` agree at the `fresh_input_ask` boundary so the appraisal and the market activate on the
+   same tick.
+4. **Item 6 becomes PAIRED RUNS, not a mid-run flip.** Run the OFF control (`satiated_surplus_ask_at =
+   None`) to the wall; record the wall tick `W` per seed. Construct the ON run with `Some(W)` +
+   `scope = Flour` (the causal arm) or `Some(W)` + `scope = AllGoods` (the separate blast-radius arm). Because
+   parameter-threading with an inactive flag is branch-identical, the ON run's `[0, W)` prefix is
+   **byte-identical to the OFF control** — a free extra determinism assertion — and "snapshot counters at
+   activation" = read the cumulative `bake.accepts` at `W` (monotone, `flour_holder_ask_census.rs:307`) and
+   difference the post-activation window. Determinism: `None` never diverges (item 11's tick-by-tick proof
+   unchanged); `Some(W)` diverges only at/after `W`, expected and now prefix-checkable against the control.
+
+Three close-outs on other items:
+- **Item 3 (config precision):** `stale_input_price_fix` is set EXPLICITLY by the census `config()`
+  (`flour_holder_ask_census.rs:28`), NOT inherited (it defaults false) — only `project_input_bids` is
+  inherited. Build the ON-run config from that `config()`, not from `frontier_mortal_producers_heritable()`
+  alone (which yields `stale_input_price_fix = false` → a dead lever → a FALSE `INERT`).
+- **Item 8 (buyer formula):** `bread_bid` is the **third-unit marginal** resting bid price (sum resting
+  non-self bids to depth ≥ 3, since every quote is `qty:1`, `society.rs:3392`), NOT best-bid × 3 (which
+  overstates). The formula `bread_bid × output_qty − operating_cost, ÷ input_qty` matches
+  `imputed_input_reservation` (`mod.rs:15737`). When no live bread bid rests (or depth < 3) at the decline
+  tick, record **"no executable buyer surplus measured"** for that seed — a distinct baseline datum, NOT
+  counted as buyer-willing (the buyer-willingness claim is then unproven for that seed, reported honestly).
+- **Item 9 (Later-horizon): DECIDED — EXCLUDE.** The lever fires only when the holder has **no unexpired
+  `Horizon::Later` want for the good** (`agent.rs:981-983`). A good saved for a future want is not a
+  costless *surplus*; excluding it preserves the base rule's HOLD default and bounds blast radius. (Tool
+  anchors already give `lost_rank = 0 ⇒ in_range == 0`, so this is belt-and-suspenders for future-wanted
+  consumables.)
 
 ## 1. The economic claim under test (why this lever is faithful, not fake)
 The refusal is faithful to a **finite ordinal money-want ladder** — but that ladder is a modeling
