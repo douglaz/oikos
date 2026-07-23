@@ -877,6 +877,13 @@ impl Settlement {
         };
         let mut society = Society::from_scenario(scenario);
         society.enable_consumption_log();
+        // impl-76 / C3R.k: hand the satiated-surplus ask lever to the society, so its two
+        // market-steering ask sites read the same per-tick value the settlement's appraisal does.
+        society.set_satiated_surplus_ask(config.chain.as_ref().and_then(|chain| {
+            chain
+                .satiated_surplus_ask_at
+                .map(|at| (at, chain.satiated_surplus_ask_scope))
+        }));
 
         // G8b: charter the bank. The bank is a *settlement* entity (config-chartered
         // here; the player-`Command` charter is G8c/UI), so the sim adds it after the
@@ -1251,6 +1258,9 @@ impl Settlement {
                 tool_build_wood: chain.tool_build_wood,
                 tool_build_labor: chain.tool_build_labor,
                 capital_build_hunger_max: chain.capital_build_hunger_max,
+                // impl-76 / C3R.k: carry the satiated-surplus ask lever into the runtime chain.
+                satiated_surplus_ask_at: chain.satiated_surplus_ask_at,
+                satiated_surplus_ask_scope: chain.satiated_surplus_ask_scope,
             }
         });
 
@@ -1644,6 +1654,13 @@ impl Settlement {
         scenario.seed = seed;
         let mut society = Society::from_scenario(scenario.clone());
         society.enable_consumption_log();
+        // impl-76 / C3R.k: the cycle society carries no chain (`config.chain` is `None` here), so
+        // the lever stays off — but populate it uniformly with the frontier path for parity.
+        society.set_satiated_surplus_ask(config.chain.as_ref().and_then(|chain| {
+            chain
+                .satiated_surplus_ask_at
+                .map(|at| (at, chain.satiated_surplus_ask_scope))
+        }));
 
         // A minimal spatial shell: an empty grid + an exchange stockpile so the
         // (no-op) world phases and the exchange accessor have a valid world to read.

@@ -94,7 +94,7 @@ use econ::scenario::{
 };
 use econ::shadow::run_credit_disabled_shadow;
 use econ::society::{
-    AllocationExecutionStatus, AllocationRecord, QuoteOutcome, Society, TracedWant,
+    AllocationExecutionStatus, AllocationRecord, QuoteOutcome, Scope, Society, TracedWant,
 };
 use econ::timemarket::{DebtContract, DebtId, DebtState};
 
@@ -1834,6 +1834,19 @@ pub struct ChainConfig {
     /// subsidized WOOD). `None` for every existing config (support never gated off, WOOD leg intact),
     /// so the run is byte-identical (tag 33, ON-only).
     pub producer_support_until_tick: Option<u64>,
+    /// impl-76 / C3R.k: the satiated-surplus ask lever — the econ tick at or after which a
+    /// costless, fully money-satiated surplus holder prices its surplus at the minimal money
+    /// unit instead of declining (the C3R.j money-satiation wall). `None` for every existing
+    /// config, so existing runs stay byte-identical (tag 37, ON-only when configured). PAIRED
+    /// with an OFF control run to the wall tick `W`: the ON run is `Some(W)`, so its `[0, W)`
+    /// realized-state prefix stays byte-identical to the control and the lever activates exactly
+    /// at the measured wall. The configured future policy itself is canonical before activation.
+    pub satiated_surplus_ask_at: Option<u64>,
+    /// impl-76 / C3R.k: which goods the lever prices — [`Scope::Flour`] (the causal arm, scoped
+    /// to the flour intermediate) or [`Scope::AllGoods`] (the separate blast-radius arm). Unused
+    /// (inert) while `satiated_surplus_ask_at` is `None`; its default is arbitrary because the
+    /// off flag never reads it and the digest emits it ONLY when the lever is configured.
+    pub satiated_surplus_ask_scope: Scope,
 }
 
 impl ChainConfig {
@@ -2042,6 +2055,10 @@ impl ChainConfig {
             birth_stock_ignition_at: None,
             producer_house_starting_staple: 0,
             producer_support_until_tick: None,
+            // impl-76 / C3R.k off by default (tag 37, ON-only): no satiated-surplus ask, so
+            // every existing config stays byte-identical. Scope is inert while the tick is None.
+            satiated_surplus_ask_at: None,
+            satiated_surplus_ask_scope: Scope::AllGoods,
         }
     }
 
@@ -2236,6 +2253,10 @@ impl ChainConfig {
             birth_stock_ignition_at: None,
             producer_house_starting_staple: 0,
             producer_support_until_tick: None,
+            // impl-76 / C3R.k off by default (tag 37, ON-only): no satiated-surplus ask, so
+            // every existing config stays byte-identical. Scope is inert while the tick is None.
+            satiated_surplus_ask_at: None,
+            satiated_surplus_ask_scope: Scope::AllGoods,
         }
     }
 
@@ -2408,6 +2429,10 @@ impl ChainConfig {
             birth_stock_ignition_at: None,
             producer_house_starting_staple: 0,
             producer_support_until_tick: None,
+            // impl-76 / C3R.k off by default (tag 37, ON-only): no satiated-surplus ask, so
+            // every existing config stays byte-identical. Scope is inert while the tick is None.
+            satiated_surplus_ask_at: None,
+            satiated_surplus_ask_scope: Scope::AllGoods,
         }
     }
 }
@@ -6260,6 +6285,11 @@ struct ChainRuntime {
     tool_build_wood: u32,
     tool_build_labor: u32,
     capital_build_hunger_max: u16,
+    /// impl-76 / C3R.k: the satiated-surplus ask lever (see
+    /// [`ChainConfig::satiated_surplus_ask_at`]). `None` for every existing config; when
+    /// configured, the complete future policy is digested under ON-only tag 37.
+    satiated_surplus_ask_at: Option<u64>,
+    satiated_surplus_ask_scope: Scope,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -9790,7 +9820,8 @@ impl Settlement {
         let mut other = 0u64;
         for agent in self.society.agents.iter() {
             if agent
-                .reservation_ask_for_money(staple, 1, money_good)
+                // Diagnostic counterfactual (non-steering), so the C3R.k lever stays OFF.
+                .reservation_ask_for_money(staple, 1, money_good, false)
                 .is_some()
             {
                 if snapshot.contains(&agent.id) {
@@ -10175,6 +10206,27 @@ impl Settlement {
         input_good: GoodId,
         money_good: GoodId,
     ) -> Option<Gold> {
+        // impl-76 / C3R.k: derive the per-tick appraisal flag from the runtime chain and settlement
+        // tick, then assert it agrees with the Society-owned market flag. That keeps the two clocks
+        // and the Flour-vs-AllGoods scope aligned at the fresh-input boundary.
+        debug_assert_eq!(
+            self.econ_tick, self.society.tick.0,
+            "fresh-input appraisal and market ticks must agree"
+        );
+        let satiated_surplus_ask = self.chain.as_ref().is_some_and(|chain| {
+            chain
+                .satiated_surplus_ask_at
+                .is_some_and(|at| self.econ_tick >= at)
+                && match chain.satiated_surplus_ask_scope {
+                    Scope::Flour(flour) => input_good == flour,
+                    Scope::AllGoods => true,
+                }
+        });
+        debug_assert_eq!(
+            satiated_surplus_ask,
+            self.society.satiated_surplus_ask_flag(input_good),
+            "fresh-input appraisal and market scope must agree"
+        );
         let mut best: Option<Gold> = None;
         for &slot in &self.live_colonist_slots {
             let id = self.colonists[slot].id;
@@ -10187,7 +10239,9 @@ impl Settlement {
             // `reservation_ask_for_money` already returns `None` for a non-holder (it
             // requires `stock.can_remove(good, qty)`), so this is the "other living
             // colonists that currently hold the input good" filter.
-            let Some(ask) = agent.reservation_ask_for_money(input_good, 1, money_good) else {
+            let Some(ask) =
+                agent.reservation_ask_for_money(input_good, 1, money_good, satiated_surplus_ask)
+            else {
                 continue;
             };
             best = Some(best.map_or(ask, |best: Gold| best.min(ask)));
@@ -13190,8 +13244,10 @@ impl Settlement {
             // projection, `econ/src/agent.rs:487`), so they cannot disagree today; the
             // row carries both so a consumer sees the executable value beside its reason,
             // and the test's equality check is a tripwire against a future re-implementation.
-            let reservation_ask = agent.reservation_ask_for_money(flour, 1, money_good);
-            let ask_outcome = agent.reservation_ask_outcome(flour, 1, money_good);
+            // Census diagnostic (non-steering): the OFF-flag reason breakdown, so the C3R.k
+            // lever is OFF here. The ON price is measured through the market, not the census.
+            let reservation_ask = agent.reservation_ask_for_money(flour, 1, money_good, false);
+            let ask_outcome = agent.reservation_ask_outcome(flour, 1, money_good, false);
             colonists.push(FlourCensusColonist {
                 id,
                 vocation: colonist.vocation,
@@ -13897,7 +13953,10 @@ impl Settlement {
                 continue;
             };
             let bid = agent.reservation_bid_for_money(good, 1, money).map(|g| g.0);
-            let ask = agent.reservation_ask_for_money(good, 1, money).map(|g| g.0);
+            // Diagnostic intent probe (non-steering): the C3R.k lever is OFF here.
+            let ask = agent
+                .reservation_ask_for_money(good, 1, money, false)
+                .map(|g| g.0);
             let stat = match out.iter_mut().find(|s| s.vocation == colonist.vocation) {
                 Some(stat) => stat,
                 None => {

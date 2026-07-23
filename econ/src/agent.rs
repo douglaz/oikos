@@ -409,7 +409,9 @@ impl Agent {
     ) -> bool {
         price > Gold::ZERO
             && self
-                .reservation_ask_for_money(good, qty, money_good)
+                // A hypothetical acceptance query, never the market-steering ask, so the
+                // satiated-surplus rule (impl-76 / C3R.k) is OFF here.
+                .reservation_ask_for_money(good, qty, money_good, false)
                 .map(|reservation| price >= reservation)
                 .unwrap_or(false)
     }
@@ -480,19 +482,25 @@ impl Agent {
     }
 
     pub fn reservation_ask(&self, good: GoodId, qty: u32) -> Option<Gold> {
-        self.reservation_ask_for_money(good, qty, GOLD)
+        // The base rule: the satiated-surplus lever (impl-76 / C3R.k) is OFF.
+        self.reservation_ask_for_money(good, qty, GOLD, false)
     }
 
     /// The executable ask, a thin projection of [`Self::reservation_ask_outcome`].
     /// Keeping the rule in ONE body means the diagnostic can never drift from the
     /// price the market actually reads.
+    ///
+    /// `satiated_surplus_ask` is the impl-76 / C3R.k lever (default off, threaded from
+    /// [`crate::society::Society::satiated_surplus_ask`]): when true it prices a costless,
+    /// fully money-satiated surplus at the minimal money unit instead of declining.
     pub fn reservation_ask_for_money(
         &self,
         good: GoodId,
         qty: u32,
         money_good: GoodId,
+        satiated_surplus_ask: bool,
     ) -> Option<Gold> {
-        match self.reservation_ask_outcome(good, qty, money_good) {
+        match self.reservation_ask_outcome(good, qty, money_good, satiated_surplus_ask) {
             AskOutcome::Price(price) => Some(price),
             _ => None,
         }
@@ -500,12 +508,13 @@ impl Agent {
 
     /// WHY the ask rule returned what it did, over every one of its exits. Read-only
     /// and side-effect free; [`Self::reservation_ask_for_money`] is its `Some/None`
-    /// projection.
+    /// projection. `satiated_surplus_ask` is the impl-76 / C3R.k lever (see that method).
     pub fn reservation_ask_outcome(
         &self,
         good: GoodId,
         qty: u32,
         money_good: GoodId,
+        satiated_surplus_ask: bool,
     ) -> AskOutcome {
         if good == money_good || qty == 0 || !self.stock.can_remove(good, qty) {
             return AskOutcome::MoneyGoodOrNonHolder;
@@ -548,13 +557,24 @@ impl Agent {
             lost_rank,
             money_good,
         ) else {
-            return no_money_gain_outcome(
+            let outcome = no_money_gain_outcome(
                 &self.scale,
                 &before.provided,
                 self.gold,
                 lost_rank,
                 money_good,
             );
+            // impl-76 / C3R.k: under the lever a costless, fully money-satiated surplus is
+            // priced at the minimal money unit instead of declined — returned HERE, at the
+            // `NoMoneyGain` exit, NOT via the normal `Price` exit below (whose
+            // `money_want_gained_at_or_above` debug_assert is false in this state). Cash-balance
+            // (Mengerian) money demand does not satiate: a holder of a costless surplus weakly
+            // gains from any positive money price. The posted quote still flows through
+            // `ensure_ask`'s ordinary netting/shading — no forced fill, no credited goods.
+            if satiated_surplus_ask && self.satiated_surplus_priced(good, &outcome) {
+                return AskOutcome::Price(Gold(1));
+            }
+            return outcome;
         };
         let after_gold = self.gold.checked_add(price);
         // Unreachable: the price is a shortfall against wants the agent already carries,
@@ -588,6 +608,42 @@ impl Agent {
             );
             AskOutcome::DefensiveExit
         }
+    }
+
+    /// impl-76 / C3R.k — the satiated-surplus gate. Holds when parting with the unit
+    /// drops NO allocation (`lost_rank == scale_len`, a *costless* surplus), every
+    /// in-range money want is already provided (fully money-satiated), the scan saw at
+    /// least one NON-vacuous money want (`in_range > 0` AND `cumulative_required > 0` —
+    /// a `qty == 0` want counts as `provided` yet is not real demand, so it must not
+    /// license the price), and the good is NOT held against an unexpired future want (a
+    /// `Later`-horizon want is not a *surplus*, so it stays HELD — spec §−0.5 item 9).
+    /// Read-only; only ever consulted for the `NoMoneyGain` outcome.
+    fn satiated_surplus_priced(&self, good: GoodId, outcome: &AskOutcome) -> bool {
+        let AskOutcome::NoMoneyGain {
+            lost_rank,
+            scale_len,
+            in_range_money_wants,
+            provided_wants,
+            cumulative_required,
+            ..
+        } = *outcome
+        else {
+            return false;
+        };
+        lost_rank == scale_len
+            && in_range_money_wants > 0
+            && provided_wants == in_range_money_wants
+            && cumulative_required > 0
+            && !self.has_unexpired_later_want(good)
+    }
+
+    /// Whether the value scale carries a `Horizon::Later` want for `good` — a unit saved
+    /// against a future need, which the surplus gate must EXCLUDE (spec §−0.5 item 9).
+    /// The scale is the current tick's scale, so any `Later` want on it is unexpired.
+    fn has_unexpired_later_want(&self, good: GoodId) -> bool {
+        self.scale.iter().any(|want| {
+            want.kind == WantKind::Good(good) && matches!(want.horizon, Horizon::Later(_))
+        })
     }
 
     pub fn would_accept_barter_swap(
@@ -1148,7 +1204,7 @@ fn reserve(reservations: &mut Vec<(GoodId, u32)>, good: GoodId, qty: u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Agent, AgentId, Want, WantKind};
+    use super::{Agent, AgentId, AskOutcome, Want, WantKind};
     use crate::good::{Gold, Horizon, Stock, CLOTH, FOOD, GOLD, NET, SALT, WOOD};
 
     #[test]
@@ -1674,7 +1730,7 @@ mod tests {
         );
         assert_eq!(
             agent.reservation_ask(FOOD, 1),
-            agent.reservation_ask_for_money(FOOD, 1, GOLD)
+            agent.reservation_ask_for_money(FOOD, 1, GOLD, false)
         );
     }
 
@@ -1856,5 +1912,104 @@ mod tests {
             qty: 1,
             satisfied: false,
         }
+    }
+
+    /// impl-76 / C3R.k: a fully money-satiated holder of a *costless* surplus (a good on
+    /// no `Now`/`Next` want, so its sale drops no allocation). Two GOLD savings wants, both
+    /// provisioned by the gold on hand — exactly the C3R.j money-satiation wall.
+    fn satiated_surplus_agent() -> Agent {
+        let mut stock = Stock::new(3);
+        stock.add(NET, 1);
+        market_agent(
+            Gold(2),
+            stock,
+            vec![
+                good_want(GOLD, Horizon::Later(1)),
+                good_want(GOLD, Horizon::Later(1)),
+            ],
+        )
+    }
+
+    #[test]
+    fn satiated_surplus_flag_off_still_declines() {
+        let agent = satiated_surplus_agent();
+        // The wall: fully money-satiated over the whole scale, costless surplus of NET.
+        assert!(matches!(
+            agent.reservation_ask_outcome(NET, 1, GOLD, false),
+            AskOutcome::NoMoneyGain {
+                lost_rank,
+                scale_len,
+                in_range_money_wants,
+                provided_wants,
+                cumulative_required,
+                ..
+            } if lost_rank == scale_len
+                && in_range_money_wants == 2
+                && provided_wants == 2
+                && cumulative_required == 2
+        ));
+        // Projection property: off-flag, the executable ask matches the diagnostic.
+        assert_eq!(agent.reservation_ask_for_money(NET, 1, GOLD, false), None);
+        assert_eq!(agent.reservation_ask(NET, 1), None);
+    }
+
+    #[test]
+    fn satiated_surplus_flag_on_prices_at_one() {
+        let agent = satiated_surplus_agent();
+        assert_eq!(
+            agent.reservation_ask_outcome(NET, 1, GOLD, true),
+            AskOutcome::Price(Gold(1)),
+            "the lever prices the costless satiated surplus at the minimal money unit"
+        );
+        assert_eq!(
+            agent.reservation_ask_for_money(NET, 1, GOLD, true),
+            Some(Gold(1))
+        );
+    }
+
+    #[test]
+    fn satiated_surplus_excludes_future_wanted_good() {
+        // A NET unit saved against a `Later` want is not a *surplus*: the lever must not
+        // flip its HOLD default to SELL (spec §−0.5 item 9).
+        let mut stock = Stock::new(3);
+        stock.add(NET, 1);
+        let agent = market_agent(
+            Gold(2),
+            stock,
+            vec![
+                good_want(GOLD, Horizon::Later(1)),
+                good_want(GOLD, Horizon::Later(1)),
+                good_want(NET, Horizon::Later(4)),
+            ],
+        );
+        assert!(matches!(
+            agent.reservation_ask_outcome(NET, 1, GOLD, true),
+            AskOutcome::NoMoneyGain { .. }
+        ));
+    }
+
+    #[test]
+    fn satiated_surplus_rejects_vacuous_zero_qty_want() {
+        // A `qty == 0` money want reads as `provided` but is not real demand, so
+        // `in_range == provided` alone must NOT license the price.
+        let mut stock = Stock::new(3);
+        stock.add(NET, 1);
+        let agent = market_agent(
+            Gold::ZERO,
+            stock,
+            vec![Want {
+                kind: WantKind::Good(GOLD),
+                horizon: Horizon::Later(1),
+                qty: 0,
+                satisfied: false,
+            }],
+        );
+        assert!(matches!(
+            agent.reservation_ask_outcome(NET, 1, GOLD, true),
+            AskOutcome::NoMoneyGain {
+                cumulative_required: 0,
+                ..
+            }
+        ));
     }
 }
