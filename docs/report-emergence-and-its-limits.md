@@ -2133,9 +2133,16 @@ The reason is money satiation, and stronger than expected: every flour holder's 
 *every* money want on its **entire** value scale (the sale's `lost_rank` equals the scale length, so the
 scan runs the whole scale and finds no want a sale would newly fund), so the ordinal ask rule yields no
 reservation price and the holder posts no ask — the flour is genuinely unpriced to any money buyer. The
-sharpest form of the finding: because `lost_rank` is the scale end, parting with the unit drops *no*
-allocation — the flour is **costless to give up**, and the holder still will not price it. It is a
-demand-side pricing wall, not a supply or a capacity constraint.
+sharpest form of the finding: because `lost_rank` is the scale end, parting with the unit drops *no
+current-period provisioning allocation* — the flour is **costless to give up in that sense** (this says
+nothing of future, option, or transaction cost), and the holder still will not price it. Precise: the
+constraint is not physical supply or capacity (both ruled out — the flour is present) but **satiated
+money-demand surfacing as seller-side ask withdrawal** — the holder wants no additional money a sale
+would provide, so no quote is originated. A follow-up probe sharpens it further and is the hinge for the
+successor: at each decline tick the executable bread price supports a flour price of ~1, so a *buyer*
+would pay — the wall is a satiated seller declining to originate a quote a willing buyer would accept,
+not absent buyer demand. (That two-sided reading, and the actor-independence below, rest on probes, not
+yet on durable assertions in the merged diagnostic — the successor is where they are pinned.)
 
 The actor, though, is where the honest version diverges from the tempting one — and an adversarial check
 of the claim caught the divergence before it was written. The *first captured* decliner is, in every

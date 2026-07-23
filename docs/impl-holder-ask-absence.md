@@ -22,8 +22,14 @@ reviews both narrowed the first-draft "wrong actor" wording; the recorded claim 
   found no money want a sale would newly fund, because gold on hand already provisions all of them. The
   ordinal rule yields no reservation price; `ensure_ask` posts none (`society.rs:3333`). The flour is
   genuinely unpriced to any money buyer. Because `lost_rank == scale_len`, the unit's sale drops **no
-  allocation** — it is *costless to part with* and still goes unpriced.
-- **Actor = independent (the corrected finding).** The first *captured* decliner is, every seed, a
+  current-period provisioning allocation** — it is *costless to part with in that sense* (not future/
+  option/transaction cost) and still goes unpriced. Precisely: not physical supply/capacity (ruled out)
+  but **satiated money-demand as seller-side ask withdrawal**. NOTE (per-holder assert gap): the merged
+  test pins the *modal* reason `MoneySatiated`, not per-holder; a durable per-holder assert is a
+  successor tightening. NOTE (buyer side, probe-indicated): the executable bread price supports a flour
+  price ~1 at each decline tick, so a buyer *would* pay — the wall is a satiated seller not originating a
+  quote a willing buyer would accept, NOT absent buyer demand (durably pinning this is the successor's job).
+- **Actor = independent (the corrected finding; probe-indicated, not yet durably asserted).** The first *captured* decliner is, every seed, a
   surviving `SeededLatent` oven holder (`recorded_inheritor == false`) — but that is a selection effect
   (latent slots precede heir slots; capture disarms after the first decline, `phases.rs:2324`). The
   inheritor registry **is** populated (`demography.rs:417-423`; a living recorded oven-heir is present at
