@@ -3391,7 +3391,11 @@ impl Society {
             self.cancel_existing(existing);
             return;
         };
+        // The counterfactual (would this ask have declined WITHOUT the lever?) feeds ONLY the
+        // gate-marker trace record below, so skip it entirely unless tracing is recording —
+        // `ensure_ask` runs per agent × market good × tick and each reservation clones stock.
         let satiated_surplus_gate_ask = satiated_surplus_ask
+            && self.allocation_trace_recording()
             && agent
                 .reservation_ask_for_money(good, 1, money_good, false)
                 .is_none();
@@ -3409,7 +3413,7 @@ impl Society {
             },
             filled,
         );
-        if satiated_surplus_gate_ask && self.allocation_trace_recording() {
+        if satiated_surplus_gate_ask {
             let posted =
                 self.allocation_trace[trace_start..]
                     .iter()
@@ -4895,6 +4899,11 @@ impl Society {
     /// `OrderBook.bids` (the live CDA book); `live_quotes` stays private. Every quote is qty 1
     /// (`ensure_bid`), so element `n` is the (n+1)-th-unit marginal bid — the depth the
     /// third-unit-marginal formula needs.
+    ///
+    /// Only LIVE bids count: an order with `expires_tick <= self.tick` is already dead — the CDA
+    /// refuses to match it (`add_order_inner`) and `purge_expired` removes it at the next market
+    /// step — so counting one would overstate executable buyer demand between ticks at a TTL
+    /// boundary. Filter with the market's own liveness predicate.
     pub fn live_non_self_bid_prices(&self, good: GoodId, exclude: AgentId) -> Vec<Gold> {
         let Some(book) = self.books.iter().find(|book| book.good == good) else {
             return Vec::new();
@@ -4902,7 +4911,7 @@ impl Society {
         // `bids` is keyed `(Reverse<Gold>, seq)`, so iteration is already highest-price-first.
         book.bids
             .values()
-            .filter(|order| order.agent != exclude)
+            .filter(|order| order.agent != exclude && order.expires_tick > self.tick.0)
             .map(|order| order.limit)
             .collect()
     }

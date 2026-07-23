@@ -20,7 +20,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use econ::society::{AllocationExecutionStatus, AllocationRecord, Scope};
+use econ::agent::AskOutcome;
+use econ::society::{AllocationExecutionStatus, AllocationRecord};
+// `SurplusAskScope` is reached through the already-public `settlement` module rather than a new
+// crate-root re-export, so the change stays inside the locked file set.
+use sim::settlement::SurplusAskScope;
 use sim::{AgentId, GoodId, Settlement, SettlementConfig, Vocation};
 
 const SEEDS: [u64; 5] = [3, 7, 11, 19, 23];
@@ -126,7 +130,7 @@ fn find_wall(seed: u64) -> u64 {
 
 /// Build the CAUSAL-arm ON config: the lever activates at the measured wall `W`, scoped to
 /// flour (the single-good causal arm, `impl-surplus-ask.md` §−0 item 4).
-fn on_config(w: u64, scope: Scope) -> SettlementConfig {
+fn on_config(w: u64, scope: SurplusAskScope) -> SettlementConfig {
     let mut cfg = config();
     let chain = cfg.chain.as_mut().expect("chain");
     chain.satiated_surplus_ask_at = Some(w);
@@ -166,7 +170,6 @@ struct SeedResult {
     /// The same measurement on the paired OFF control — the causal trace: it MUST be zero.
     off_flour_baked: u64,
     on_window_bread: u64,
-    ever_baker: bool,
     bakers_end: usize,
     baker_gold: u64,
     miller_gold: u64,
@@ -275,7 +278,53 @@ fn gate_target_present(s: &Settlement, flour: GoodId, candidate: Option<sim::Age
     false
 }
 
-fn run_causal(seed: u64, w: u64, scope: Scope) -> SeedResult {
+/// Actor-independence (`impl-surplus-ask.md` §3, per-holder): EVERY living flour holder at the wall
+/// is at the money-satiation state — its OFF-flag ask outcome is a fully-provided `NoMoneyGain`
+/// (not `ProvisioningBreak`, not an actual `Price`). This is the durable form of the C3R.j
+/// "actor-independent satiation wall": the wall is not one lucky holder declining while others
+/// decline for a different reason (which would leave the gate's traced delivery unattributable to
+/// the wall). Reads the OFF projection off the live society; steers nothing.
+fn assert_actor_independent_satiation(seed: u64, s: &Settlement, flour: GoodId) {
+    let money = s.society().current_money_good().expect("money good");
+    let mut holders = 0usize;
+    for idx in 0..s.population() {
+        if !s.is_alive(idx) {
+            continue;
+        }
+        let Some(id) = s.colonist_id(idx) else {
+            continue;
+        };
+        let Some(agent) = s.society().agents.get(id) else {
+            continue;
+        };
+        if agent.stock.get(flour) == 0 {
+            continue;
+        }
+        holders += 1;
+        match agent.reservation_ask_outcome(flour, 1, money, false) {
+            AskOutcome::NoMoneyGain {
+                in_range_money_wants,
+                provided_wants,
+                ..
+            } => assert_eq!(
+                provided_wants, in_range_money_wants,
+                "seed {seed}: flour holder {id:?} declines but is not fully money-satiated \
+                 (provided={provided_wants} of in_range={in_range_money_wants}) — the wall is not \
+                 actor-independent"
+            ),
+            other => panic!(
+                "seed {seed}: flour holder {id:?} is not at the money-satiation wall (OFF outcome \
+                 {other:?}) — the wall is not actor-independent"
+            ),
+        }
+    }
+    assert!(
+        holders > 0,
+        "seed {seed}: no living flour holder at the wall — actor-independence is vacuous"
+    );
+}
+
+fn run_causal(seed: u64, w: u64, scope: SurplusAskScope) -> SeedResult {
     let off_cfg = config();
     let on_cfg = on_config(w, scope);
     let flour = flour_of(&on_cfg);
@@ -305,6 +354,9 @@ fn run_causal(seed: u64, w: u64, scope: Scope) -> SeedResult {
     );
     assert_eq!(on.econ_tick_count(), w, "seed {seed}: prefix ran to W");
 
+    // The wall is actor-independent: every living flour holder is money-satiated (declines off-flag
+    // for the NoMoneyGain reason), so the gate targets the whole wall, not a single outlier.
+    assert_actor_independent_satiation(seed, &on, flour);
     let gate_target = gate_target_present(&on, flour, None);
     let accepts_before = on.role_choice_diag().bake.accepts;
     // Reuse the exact CDA allocation trace: `SatiatedSurplusAsk` marks gate-only ask seqs and
@@ -314,7 +366,6 @@ fn run_causal(seed: u64, w: u64, scope: Scope) -> SeedResult {
     let mut on_flour_baked = 0u64;
     let mut off_flour_baked = 0u64;
     let mut on_window_bread = 0u64;
-    let mut ever_baker = false;
     let mut gate_asks = BTreeMap::<u64, (AgentId, u64)>::new();
     let mut gate_asks_posted = 0u64;
     let mut gate_ask_crosses = 0u64;
@@ -411,9 +462,6 @@ fn run_causal(seed: u64, w: u64, scope: Scope) -> SeedResult {
                 .or_insert((ro.econ_tick, inherited));
         }
         baker_ids = current_bakers;
-        if !baker_ids.is_empty() {
-            ever_baker = true;
-        }
         if k >= remaining - FINAL_WINDOW {
             on_window_bread += ro.produced_of(bread);
         }
@@ -452,7 +500,6 @@ fn run_causal(seed: u64, w: u64, scope: Scope) -> SeedResult {
         on_flour_baked,
         off_flour_baked,
         on_window_bread,
-        ever_baker,
         bakers_end: on.living_count(Vocation::Baker),
         baker_gold: class_gold(&on, Vocation::Baker),
         miller_gold: class_gold(&on, Vocation::Miller),
@@ -557,13 +604,13 @@ fn satiated_surplus_ask_causal() {
     let mut outcomes = Vec::new();
     for seed in SEEDS {
         let w = find_wall(seed);
-        let r = run_causal(seed, w, Scope::Flour(flour_of(&config())));
+        let r = run_causal(seed, w, SurplusAskScope::Flour);
         println!(
             "C3R.k causal seed={seed} W={w} outcome={:?} downstream_reason={} gate_target={} \
              gate_posts={} gate_crosses={} gate_fills={} gate_adoptions={} heir_adoptions={} \
              accepts_delta={} \
              on_flour_baked={} off_flour_baked={} on_window_bread={} \
-             ever_baker={} bakers_end={} baker_gold={} miller_gold={} first_gate_ask={:?} \
+             bakers_end={} baker_gold={} miller_gold={} first_gate_ask={:?} \
              fill_latency={:?} ask_limit_trajectory={:?}",
             r.outcome,
             downstream_reason(&r),
@@ -577,7 +624,6 @@ fn satiated_surplus_ask_causal() {
             r.on_flour_baked,
             r.off_flour_baked,
             r.on_window_bread,
-            r.ever_baker,
             r.bakers_end,
             r.baker_gold,
             r.miller_gold,
@@ -666,19 +712,16 @@ fn off_flag_is_byte_identical() {
 fn configured_policy_is_canonical_before_activation() {
     let seed = SEEDS[0];
     let off_cfg = config();
-    let flour = flour_of(&off_cfg);
-    let bread = bread_of(&off_cfg);
-    let flour_cfg = on_config(MAX_TICKS, Scope::Flour(flour));
-    let other_good_cfg = on_config(MAX_TICKS, Scope::Flour(bread));
-    let all_goods_cfg = on_config(MAX_TICKS, Scope::AllGoods);
+    let flour_cfg = on_config(MAX_TICKS, SurplusAskScope::Flour);
+    let all_goods_cfg = on_config(MAX_TICKS, SurplusAskScope::AllGoods);
 
     let off = Settlement::generate(seed, &off_cfg);
     let flour_on = Settlement::generate(seed, &flour_cfg);
-    let other_good_on = Settlement::generate(seed, &other_good_cfg);
     let all_goods_on = Settlement::generate(seed, &all_goods_cfg);
 
+    // The activation tick + scope discriminant both land in the digest: an off config, the
+    // Flour arm, and the AllGoods arm are pairwise distinct before activation.
     assert_ne!(off.canonical_bytes(), flour_on.canonical_bytes());
-    assert_ne!(flour_on.canonical_bytes(), other_good_on.canonical_bytes());
     assert_ne!(flour_on.canonical_bytes(), all_goods_on.canonical_bytes());
     assert_eq!(
         off.canonical_bytes_without_satiated_surplus_config(),
@@ -696,7 +739,7 @@ fn configured_policy_is_canonical_before_activation() {
 fn gate_fired_ask_survives_reconciliation() {
     let seed = SEEDS[0];
     let w = find_wall(seed);
-    let cfg = on_config(w, Scope::Flour(flour_of(&config())));
+    let cfg = on_config(w, SurplusAskScope::Flour);
     let flour = flour_of(&cfg);
     let mut s = Settlement::generate(seed, &cfg);
     for _ in 0..w {
@@ -819,7 +862,7 @@ fn blast_radius_all_goods() {
         {
             let chain = on.chain.as_mut().expect("chain");
             chain.satiated_surplus_ask_at = Some(50);
-            chain.satiated_surplus_ask_scope = Scope::AllGoods;
+            chain.satiated_surplus_ask_scope = SurplusAskScope::AllGoods;
         }
         let (base_bakers, base_window, base_baker_gold, base_miller_gold) = run(seed, &base);
         let (on_bakers, on_window, on_baker_gold, on_miller_gold) = run(seed, &on);
@@ -848,10 +891,16 @@ fn blast_radius_all_goods() {
              anything (control regressed): bakers={base_bakers} window={base_window} \
              baker_gold={base_baker_gold} miller_gold={base_miller_gold}"
         );
+        // Pre-registered result: the GENERAL (AllGoods) rule DESTABILIZES the calibrated immortal
+        // base on every seed (`impl-surplus-ask.md` §−0 item 7 / §5). Pin it — a legitimate change
+        // that makes AllGoods stop breaking the base (or that regresses the base itself) FAILS
+        // here and forces a re-read, exactly as the causal arm pins DOWNSTREAM_NULL.
         assert_eq!(
-            outcome == BlastOutcome::Destabilizes,
-            base_ok && !on_ok,
-            "seed {seed}: blast-radius classification is not determined by control/on sustainment"
+            outcome,
+            BlastOutcome::Destabilizes,
+            "seed {seed}: AllGoods no longer destabilizes the immortal base — the blast-radius \
+             finding changed: on=(bakers={on_bakers},window={on_window},baker_gold={on_baker_gold},\
+             miller_gold={on_miller_gold})"
         );
     }
 }

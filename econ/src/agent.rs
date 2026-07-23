@@ -615,9 +615,10 @@ impl Agent {
     /// in-range money want is already provided (fully money-satiated), the scan saw at
     /// least one NON-vacuous money want (`in_range > 0` AND `cumulative_required > 0` —
     /// a `qty == 0` want counts as `provided` yet is not real demand, so it must not
-    /// license the price), and the good is NOT held against an unexpired future want (a
-    /// `Later`-horizon want is not a *surplus*, so it stays HELD — spec §−0.5 item 9).
-    /// Read-only; only ever consulted for the `NoMoneyGain` outcome.
+    /// license the price), the minimal payment fits in the holder's balance, and the good
+    /// is NOT held against an unexpired positive-quantity future want (a `Later`-horizon
+    /// want is not a *surplus*, so it stays HELD — spec §−0.5 item 9). Read-only; only
+    /// ever consulted for the `NoMoneyGain` outcome.
     fn satiated_surplus_priced(&self, good: GoodId, outcome: &AskOutcome) -> bool {
         let AskOutcome::NoMoneyGain {
             lost_rank,
@@ -634,6 +635,7 @@ impl Agent {
             && in_range_money_wants > 0
             && provided_wants == in_range_money_wants
             && cumulative_required > 0
+            && self.gold.checked_add(Gold(1)).is_some()
             && !self.has_unexpired_later_want(good)
     }
 
@@ -642,7 +644,9 @@ impl Agent {
     /// The scale is the current tick's scale, so any `Later` want on it is unexpired.
     fn has_unexpired_later_want(&self, good: GoodId) -> bool {
         self.scale.iter().any(|want| {
-            want.kind == WantKind::Good(good) && matches!(want.horizon, Horizon::Later(_))
+            want.kind == WantKind::Good(good)
+                && want.qty > 0
+                && matches!(want.horizon, Horizon::Later(_))
         })
     }
 
@@ -1968,6 +1972,21 @@ mod tests {
     }
 
     #[test]
+    fn satiated_surplus_rejects_unreceivable_minimum_price() {
+        let mut agent = satiated_surplus_agent();
+        agent.gold = Gold(u64::MAX);
+        assert!(matches!(
+            agent.reservation_ask_outcome(NET, 1, GOLD, true),
+            AskOutcome::NoMoneyGain { .. }
+        ));
+        assert_eq!(
+            agent.reservation_ask_for_money(NET, 1, GOLD, true),
+            None,
+            "the lever must not post an ask whose payment would overflow the seller balance"
+        );
+    }
+
+    #[test]
     fn satiated_surplus_excludes_future_wanted_good() {
         // A NET unit saved against a `Later` want is not a *surplus*: the lever must not
         // flip its HOLD default to SELL (spec §−0.5 item 9).
@@ -1986,6 +2005,22 @@ mod tests {
             agent.reservation_ask_outcome(NET, 1, GOLD, true),
             AskOutcome::NoMoneyGain { .. }
         ));
+    }
+
+    #[test]
+    fn satiated_surplus_ignores_zero_qty_future_want() {
+        let mut agent = satiated_surplus_agent();
+        agent.scale.push(Want {
+            kind: WantKind::Good(NET),
+            horizon: Horizon::Later(4),
+            qty: 0,
+            satisfied: false,
+        });
+        assert_eq!(
+            agent.reservation_ask_for_money(NET, 1, GOLD, true),
+            Some(Gold(1)),
+            "a zero-quantity future want reserves no stock and must not suppress the gate"
+        );
     }
 
     #[test]

@@ -94,7 +94,7 @@ use econ::scenario::{
 };
 use econ::shadow::run_credit_disabled_shadow;
 use econ::society::{
-    AllocationExecutionStatus, AllocationRecord, QuoteOutcome, Scope, Society, TracedWant,
+    AllocationExecutionStatus, AllocationRecord, QuoteOutcome, Society, TracedWant,
 };
 use econ::timemarket::{DebtContract, DebtId, DebtState};
 
@@ -995,6 +995,20 @@ pub struct BirthStockInjectionRecord {
     pub birth_succeeded: bool,
 }
 
+/// impl-76 / C3R.k: which goods the satiated-surplus ask lever prices, at the CONFIG layer.
+/// Deliberately id-free — the causal `Flour` arm names the flour intermediate SYMBOLICALLY and
+/// [`Settlement::generate`] resolves it to the chain's own `content.flour()` id, so a config can
+/// never steer a different good than it claims. (`econ`'s [`Scope`](econ::society::Scope) carries
+/// the resolved id because that crate has no chain-content concept; this is the pre-resolution
+/// form.) Exactly two variants by design — no speculative generality.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SurplusAskScope {
+    /// The single-good causal arm: only the chain's flour intermediate is priced.
+    Flour,
+    /// The separate blast-radius arm: every costless-satiated surplus is priced.
+    AllGoods,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChainConfig {
     /// The interned chain goods and recipes (built once at generation).
@@ -1842,11 +1856,13 @@ pub struct ChainConfig {
     /// realized-state prefix stays byte-identical to the control and the lever activates exactly
     /// at the measured wall. The configured future policy itself is canonical before activation.
     pub satiated_surplus_ask_at: Option<u64>,
-    /// impl-76 / C3R.k: which goods the lever prices — [`Scope::Flour`] (the causal arm, scoped
-    /// to the flour intermediate) or [`Scope::AllGoods`] (the separate blast-radius arm). Unused
-    /// (inert) while `satiated_surplus_ask_at` is `None`; its default is arbitrary because the
-    /// off flag never reads it and the digest emits it ONLY when the lever is configured.
-    pub satiated_surplus_ask_scope: Scope,
+    /// impl-76 / C3R.k: which goods the lever prices — [`SurplusAskScope::Flour`] (the causal arm,
+    /// scoped to the flour intermediate) or [`SurplusAskScope::AllGoods`] (the separate
+    /// blast-radius arm). Id-free at the config layer; generation resolves `Flour` to the chain's
+    /// own `content.flour()`. Unused (inert) while `satiated_surplus_ask_at` is `None`; its default
+    /// is arbitrary because the off flag never reads it and the digest emits it ONLY when the lever
+    /// is configured.
+    pub satiated_surplus_ask_scope: SurplusAskScope,
 }
 
 impl ChainConfig {
@@ -2058,7 +2074,7 @@ impl ChainConfig {
             // impl-76 / C3R.k off by default (tag 37, ON-only): no satiated-surplus ask, so
             // every existing config stays byte-identical. Scope is inert while the tick is None.
             satiated_surplus_ask_at: None,
-            satiated_surplus_ask_scope: Scope::AllGoods,
+            satiated_surplus_ask_scope: SurplusAskScope::AllGoods,
         }
     }
 
@@ -2256,7 +2272,7 @@ impl ChainConfig {
             // impl-76 / C3R.k off by default (tag 37, ON-only): no satiated-surplus ask, so
             // every existing config stays byte-identical. Scope is inert while the tick is None.
             satiated_surplus_ask_at: None,
-            satiated_surplus_ask_scope: Scope::AllGoods,
+            satiated_surplus_ask_scope: SurplusAskScope::AllGoods,
         }
     }
 
@@ -2432,7 +2448,7 @@ impl ChainConfig {
             // impl-76 / C3R.k off by default (tag 37, ON-only): no satiated-surplus ask, so
             // every existing config stays byte-identical. Scope is inert while the tick is None.
             satiated_surplus_ask_at: None,
-            satiated_surplus_ask_scope: Scope::AllGoods,
+            satiated_surplus_ask_scope: SurplusAskScope::AllGoods,
         }
     }
 }
@@ -6289,7 +6305,7 @@ struct ChainRuntime {
     /// [`ChainConfig::satiated_surplus_ask_at`]). `None` for every existing config; when
     /// configured, the complete future policy is digested under ON-only tag 37.
     satiated_surplus_ask_at: Option<u64>,
-    satiated_surplus_ask_scope: Scope,
+    satiated_surplus_ask_scope: SurplusAskScope,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -10206,27 +10222,15 @@ impl Settlement {
         input_good: GoodId,
         money_good: GoodId,
     ) -> Option<Gold> {
-        // impl-76 / C3R.k: derive the per-tick appraisal flag from the runtime chain and settlement
-        // tick, then assert it agrees with the Society-owned market flag. That keeps the two clocks
-        // and the Flour-vs-AllGoods scope aligned at the fresh-input boundary.
+        // impl-76 / C3R.k: read the lever from the Society flag — the SINGLE source of truth the
+        // two market-steering ask sites also read, so the appraisal cannot price on a value the
+        // market disagrees with. The appraisal (settlement) and market (society) clocks must agree
+        // so both activate on the same tick; assert that (debug-only) at this boundary.
         debug_assert_eq!(
             self.econ_tick, self.society.tick.0,
             "fresh-input appraisal and market ticks must agree"
         );
-        let satiated_surplus_ask = self.chain.as_ref().is_some_and(|chain| {
-            chain
-                .satiated_surplus_ask_at
-                .is_some_and(|at| self.econ_tick >= at)
-                && match chain.satiated_surplus_ask_scope {
-                    Scope::Flour(flour) => input_good == flour,
-                    Scope::AllGoods => true,
-                }
-        });
-        debug_assert_eq!(
-            satiated_surplus_ask,
-            self.society.satiated_surplus_ask_flag(input_good),
-            "fresh-input appraisal and market scope must agree"
-        );
+        let satiated_surplus_ask = self.society.satiated_surplus_ask_flag(input_good);
         let mut best: Option<Gold> = None;
         for &slot in &self.live_colonist_slots {
             let id = self.colonists[slot].id;

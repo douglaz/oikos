@@ -9,6 +9,9 @@
 //! unchanged with no re-import.
 
 use super::*;
+// impl-76 / C3R.k: the resolved econ-level scope this generator hands the society (the id-free
+// config [`SurplusAskScope`] resolves to the chain's own flour id here).
+use econ::society::Scope;
 
 impl Settlement {
     /// Generate a settlement from `seed` and a [`SettlementConfig`]. All
@@ -879,10 +882,16 @@ impl Settlement {
         society.enable_consumption_log();
         // impl-76 / C3R.k: hand the satiated-surplus ask lever to the society, so its two
         // market-steering ask sites read the same per-tick value the settlement's appraisal does.
+        // Resolve the id-free config scope to THIS chain's own flour id, so a config can never
+        // steer a good other than the one it names.
         society.set_satiated_surplus_ask(config.chain.as_ref().and_then(|chain| {
-            chain
-                .satiated_surplus_ask_at
-                .map(|at| (at, chain.satiated_surplus_ask_scope))
+            chain.satiated_surplus_ask_at.map(|at| {
+                let scope = match chain.satiated_surplus_ask_scope {
+                    SurplusAskScope::Flour => Scope::Flour(chain.content.flour()),
+                    SurplusAskScope::AllGoods => Scope::AllGoods,
+                };
+                (at, scope)
+            })
         }));
 
         // G8b: charter the bank. The bank is a *settlement* entity (config-chartered
@@ -1657,9 +1666,13 @@ impl Settlement {
         // impl-76 / C3R.k: the cycle society carries no chain (`config.chain` is `None` here), so
         // the lever stays off — but populate it uniformly with the frontier path for parity.
         society.set_satiated_surplus_ask(config.chain.as_ref().and_then(|chain| {
-            chain
-                .satiated_surplus_ask_at
-                .map(|at| (at, chain.satiated_surplus_ask_scope))
+            chain.satiated_surplus_ask_at.map(|at| {
+                let scope = match chain.satiated_surplus_ask_scope {
+                    SurplusAskScope::Flour => Scope::Flour(chain.content.flour()),
+                    SurplusAskScope::AllGoods => Scope::AllGoods,
+                };
+                (at, scope)
+            })
         }));
 
         // A minimal spatial shell: an empty grid + an exchange stockpile so the

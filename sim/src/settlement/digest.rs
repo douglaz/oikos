@@ -192,19 +192,17 @@ impl Settlement {
             }
             // impl-76 / C3R.k (L: satiated-surplus ask): a configured future activation steers
             // later behavior even before it fires, so it joins the canonical identity whenever
-            // `Some`. Tag 37 is distinct from every adjacent ON-only block; the activation tick,
-            // scope discriminant, and Flour payload distinguish every behaviorally distinct
-            // policy. Off emits nothing, so every prior golden remains byte-identical.
+            // `Some`. Tag 37 is distinct from every adjacent ON-only block; the activation tick and
+            // scope discriminant distinguish every behaviorally distinct policy (the resolved flour
+            // id is already captured by the chain content elsewhere in the digest). Off emits
+            // nothing, so every prior golden remains byte-identical.
             if include_satiated_surplus_config {
                 if let Some(at) = chain.satiated_surplus_ask_at {
                     out.push(37);
                     out.extend_from_slice(&at.to_le_bytes());
                     match chain.satiated_surplus_ask_scope {
-                        Scope::Flour(flour) => {
-                            out.push(0);
-                            out.extend_from_slice(&flour.0.to_le_bytes());
-                        }
-                        Scope::AllGoods => out.push(1),
+                        SurplusAskScope::Flour => out.push(0),
+                        SurplusAskScope::AllGoods => out.push(1),
                     }
                 }
             }
