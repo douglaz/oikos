@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use econ::agent::AskOutcome;
-use sim::settlement::{FlourCensusRow, ToolProvenance};
+use sim::settlement::FlourCensusRow;
 use sim::{Settlement, SettlementConfig};
 
 const SEEDS: [u64; 5] = [3, 7, 11, 19, 23];
@@ -239,11 +239,11 @@ fn decompose(seed: u64) -> SeedOutcome {
     let baker_death_tick = first_baker_death_tick.expect("capture follows a Baker death");
     check_row(&row);
     let bucket = bucket_of(&row);
-    // The identity axis reads recorded inheritance directly, so a candidate that is BOTH
-    // a seeded latent Baker and a recorded oven heir cannot be reported "not an heir"
-    // just because `ToolProvenance` ranks seeding first.
-    let inherited =
-        row.candidate_provenance == ToolProvenance::Inherited || row.candidate_recorded_inheritor;
+    // The identity axis reads recorded inheritance directly. `oven_provenance` reports
+    // `Inherited` only when the candidate is already in the inheritor set, so the
+    // `ToolProvenance` value carries no identity signal `candidate_recorded_inheritor`
+    // lacks — it is the reported provenance breakdown, not an axis input.
+    let inherited = row.candidate_recorded_inheritor;
     if bucket != Bucket::HolderWithoutAsk {
         // Persistence and reason are NOT measured off the wall — the axes carry their
         // unmeasured defaults, and precedence gates on the bucket first.
@@ -315,22 +315,13 @@ fn decompose(seed: u64) -> SeedOutcome {
     };
     let resolves = axes.resolves;
     let class = classify(&axes);
-    let ask_posted_but_unseen: Vec<_> = row
-        .colonists
-        .iter()
-        .filter_map(|h| match (h.reservation_ask, h.live_ask) {
-            (None, Some(limit)) => Some((h.id, limit)),
-            _ => None,
-        })
-        .collect();
 
     println!(
         "seed {seed}: CLASS={class:?} wall={bucket:?} decline_tick={} \
          baker_death_tick={baker_death_tick} deaths={} candidate={:?} vocation={:?} \
          holds_oven={} provenance={:?} recorded_inheritor={} | holders={} reasons={reasons:?} \
          dominant={dominant:?} | persistence={resolves} window={WINDOW} \
-         accepts={accepts_before}->{accepts_after} texture={texture:?} \
-         | ask_posted_but_unseen={ask_posted_but_unseen:?}",
+         accepts={accepts_before}->{accepts_after} texture={texture:?}",
         row.decline_tick,
         row.deaths_before_decline,
         row.candidate_id,
@@ -342,17 +333,11 @@ fn decompose(seed: u64) -> SeedOutcome {
     );
     for holder in holders {
         println!(
-            "  holder={:?} vocation={:?} flour={} free={} reserved={} gold={} reserved_gold={} \
-             raw_ask={:?} live_ask={:?} outcome={:?}",
+            "  holder={:?} vocation={:?} flour={} raw_ask={:?} outcome={:?}",
             holder.id,
             holder.vocation,
             holder.flour_held,
-            holder.free_stock,
-            holder.reserved_stock,
-            holder.gold,
-            holder.reserved_gold,
             holder.reservation_ask,
-            holder.live_ask,
             holder.ask_outcome,
         );
     }
@@ -370,24 +355,41 @@ fn decompose(seed: u64) -> SeedOutcome {
 fn holder_ask_absence_decomposition() {
     for seed in SEEDS {
         let outcome = decompose(seed);
-        if seed == 3 {
-            assert_eq!(outcome.bucket, Bucket::HolderWithoutAsk);
-            assert!(outcome.row.colonists.iter().any(|h| h.flour_held > 0));
-            assert!(
-                outcome
-                    .row
-                    .colonists
-                    .iter()
-                    .all(|h| h.reservation_ask.is_none()),
-                "seed 3: every living non-self raw flour ask must be None"
-            );
-        }
-        if outcome.bucket != Bucket::HolderWithoutAsk {
-            continue;
-        }
-        assert_eq!(outcome.class, Classification::NotPostDeathHeir);
-        assert_eq!(outcome.dominant, Some(Reason::MoneySatiated));
-        assert!(!outcome.resolves, "seed {seed}: unexpectedly transient");
+        // All five canonical seeds are MEASURED to reach the same state, so pin it for
+        // every seed (not just seed 3). A regression to any sibling bucket, a resolved
+        // window, an inheriting candidate, or a non-satiation reason must fail here —
+        // `OtherWall` is reserved for non-canonical classification inputs.
+        assert_eq!(
+            outcome.bucket,
+            Bucket::HolderWithoutAsk,
+            "seed {seed}: expected the holder-without-ask wall"
+        );
+        assert!(
+            outcome.row.colonists.iter().any(|h| h.flour_held > 0),
+            "seed {seed}: flour must be physically present"
+        );
+        assert!(
+            outcome
+                .row
+                .colonists
+                .iter()
+                .all(|h| h.reservation_ask.is_none()),
+            "seed {seed}: every living non-self raw flour ask must be None"
+        );
+        assert_eq!(
+            outcome.class,
+            Classification::NotPostDeathHeir,
+            "seed {seed}: the post-death Bake decliner is a seeded-latent oven holder, not an heir"
+        );
+        assert_eq!(
+            outcome.dominant,
+            Some(Reason::MoneySatiated),
+            "seed {seed}: the absent ask is money-want satiation"
+        );
+        assert!(
+            !outcome.resolves,
+            "seed {seed}: the wall must persist across the window"
+        );
     }
 }
 

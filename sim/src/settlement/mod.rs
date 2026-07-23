@@ -4238,21 +4238,6 @@ pub struct FlourCensusColonist {
     /// C3R.j: WHICH exit the ask rule took — the decomposition of the `None` above.
     /// `reservation_ask` is this value's `Some/None` projection, by construction.
     pub ask_outcome: AskOutcome,
-    /// C3R.j: the limit of a resting spot ask for flour. `Some` here beside a `None`
-    /// `reservation_ask` is `AskPostedButUnseen` — the appraisal reads the raw
-    /// reservation, while the posting side nets reserves and shades the limit.
-    pub live_ask: Option<Gold>,
-    pub gold: u64,
-    /// Gold locked by resting orders/plans. The posting side's `available_agent`
-    /// (`econ/src/society.rs:3611`) nets gold AND stock before appraising, so a
-    /// raw-vs-netted divergence behind `AskPostedButUnseen` can be gold-side or
-    /// stock-side — hence both pairs below. (It also rebuilds netted stock from
-    /// `market_goods` only, so a non-market good reads zero there; flour is always in
-    /// that list — `market_goods_for` inserts every recipe input/output,
-    /// `society.rs:7791` — so that path is not what these fields measure.)
-    pub reserved_gold: u64,
-    pub free_stock: u32,
-    pub reserved_stock: u32,
 }
 
 /// One living Miller in the flour re-ignition census.
@@ -13207,19 +13192,12 @@ impl Settlement {
             // and the test's equality check is a tripwire against a future re-implementation.
             let reservation_ask = agent.reservation_ask_for_money(flour, 1, money_good);
             let ask_outcome = agent.reservation_ask_outcome(flour, 1, money_good);
-            let gold = agent.gold.0;
-            let free_stock = self.society.free_stock_after_all_reserves(id, flour);
             colonists.push(FlourCensusColonist {
                 id,
                 vocation: colonist.vocation,
                 flour_held,
                 reservation_ask,
                 ask_outcome,
-                live_ask: self.society.live_ask_for(id, flour),
-                gold,
-                reserved_gold: gold.saturating_sub(self.society.free_gold_after_all_reserves(id).0),
-                free_stock,
-                reserved_stock: flour_held.saturating_sub(free_stock),
             });
             if colonist.vocation == Vocation::Miller {
                 millers.push(FlourCensusMiller {
