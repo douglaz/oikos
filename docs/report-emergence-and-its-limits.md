@@ -2120,6 +2120,46 @@ among applying the live-price fix symmetrically to the producer's own restock im
 seller's motive, or a genuinely speculative adoption — measured across seeds, with persistence and
 heir-identity pinned, not assumed.
 
+## 38. The wall is actor-independent — a demand-side satiation wall that flour holders won't price (C3R.j Cut 1)
+
+§37 measured *that* the mortal wall is holders-without-ask, and named money-want satiation as the
+expected reason. C3R.j Cut 1 decomposed it: a diagnostic that captures the first post-Baker-death Bake
+`InputPriceAbsent` decline across the five canonical seeds and classifies it from measured axes — the
+holder's `None`-branch, the candidate's oven provenance, and whether the wall resolves in a 200-tick
+window. The result is uniform across all five seeds, and it is **not** the "heir fails to re-ignite the
+chain" story the succession framing invited.
+
+The reason is money satiation, and stronger than expected: every flour holder's gold already provisions
+*every* money want on its **entire** value scale (the sale's `lost_rank` equals the scale length, so the
+scan runs the whole scale and finds no want a sale would newly fund), so the ordinal ask rule yields no
+reservation price and the holder posts no ask — the flour is genuinely unpriced to any money buyer. The
+sharpest form of the finding: because `lost_rank` is the scale end, parting with the unit drops *no*
+allocation — the flour is **costless to give up**, and the holder still will not price it. It is a
+demand-side pricing wall, not a supply or a capacity constraint.
+
+The actor, though, is where the honest version diverges from the tempting one — and an adversarial check
+of the claim caught the divergence before it was written. The *first captured* decliner is, in every
+seed, a surviving **seeded-latent** oven holder (an original founder, not recorded as inheriting its oven
+through the estate seam) — which invites "the heir framing measured the wrong actor." But that
+over-identifies. Probing the same runs shows the oven-inheritor registry **is** populated — a living,
+oven-holding recorded heir is present at each decline tick — and recorded heirs appraise Bake on the same
+ticks (tool-acquisition eligibility is on); in two of the five seeds a recorded heir had *already adopted
+the Baker vocation* before the wall de-adopted it. Heir re-ignition is not absent — it **happens and is
+then walled**, exactly as the surviving latent is. So the wall is **actor-independent**: it blocks
+surviving founders and inheriting heirs alike, and the succession framing did not mis-locate the actor so
+much as it distracted from an actor-independent cause. No Bake adoption is accepted anywhere in the
+200-tick window on any seed.
+
+This is C3R.j's methodological entry in the price/proxy ledger, and it is an eleventh near-miss caught at
+the *interpretation* layer rather than the telemetry: the diagnostic's own output was clean, but the
+first-draft claim ("wrong actor / not an heir-re-ignition failure") read the *first captured* actor's
+identity as the phenomenon's, when a probe showed heirs present, appraising, and equally walled. The
+recorded claim narrows to what the measurement licenses: an actor-independent demand-side satiation wall.
+What Cut 1 does **not** establish — deferred, not assumed — is the ultimate cause of the chain's death
+beyond this wall, or any behaviour on the non-money (barter) channel it never measured. The lever choice
+(does one make a satiated holder price surplus, or is the re-ignition genuinely a governance question)
+belongs to a successor, chosen by this measured wall rather than by the succession intuition it retired.
+
 ## Appendix — milestone index
 
 | Sxx | Title | Outcome |

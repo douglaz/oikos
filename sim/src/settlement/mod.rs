@@ -60,7 +60,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use econ::agent::{Agent, AgentId, Role, Want, WantKind};
+use econ::agent::{Agent, AgentId, AskOutcome, Role, Want, WantKind};
 use econ::agio::{provisioning_bitmap_for_money, TemporalEndowment};
 use econ::bank::{Bank, BankPolicy};
 use econ::barter::{BarterReason, BarterTrade};
@@ -4209,14 +4209,35 @@ pub struct BootstrapTraceSummary {
     pub first_bootstrap_bid_tick: Option<u64>,
 }
 
+/// C3R.j (impl-75): how the census candidate came by its oven. Measured, not
+/// assumed — this base has `producible_capital`, so an oven may be self-built, and a
+/// self-builder mislabeled "seeded" would misfire the identity axis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolProvenance {
+    /// A seeded latent Baker (`Colonist::latent == Some(RecipeId::Bake)`).
+    SeededLatent,
+    /// The oven arrived by producer estate settlement (`producer_tool_inheritors`).
+    Inherited,
+    /// Holds an oven, is neither seeded nor a recorded inheritor, and carries the
+    /// existing `acquired_tool` marker set on self-build completion. That marker is
+    /// good-AGNOSTIC (set on any capital build, `mod.rs:9176`), so this reads "holds
+    /// an oven and has self-built some tool", not "self-built THIS oven".
+    SelfBuilt,
+    /// None of the seeded, recorded-inheritance, or self-build evidence applies.
+    Other,
+}
+
 /// One non-self colonist in the flour re-ignition census.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FlourCensusColonist {
     pub id: AgentId,
     pub vocation: Vocation,
     pub flour_held: u32,
-    /// The executable flour ask; its `None` sub-branch is deliberately not decomposed.
+    /// The executable flour ask.
     pub reservation_ask: Option<Gold>,
+    /// C3R.j: WHICH exit the ask rule took — the decomposition of the `None` above.
+    /// `reservation_ask` is this value's `Some/None` projection, by construction.
+    pub ask_outcome: AskOutcome,
 }
 
 /// One living Miller in the flour re-ignition census.
@@ -4236,6 +4257,15 @@ pub struct FlourCensusRow {
     pub deaths_before_decline: u64,
     pub candidate_id: AgentId,
     pub candidate_own_flour: u32,
+    /// C3R.j identity axis. `None` for a non-colonist appraiser id.
+    pub candidate_vocation: Option<Vocation>,
+    pub candidate_holds_oven: bool,
+    pub candidate_provenance: ToolProvenance,
+    /// C3R.j: raw membership in `producer_tool_inheritors` for the oven, INDEPENDENT of
+    /// [`ToolProvenance`]'s precedence. A seeded latent Baker that also inherited an oven
+    /// reports `SeededLatent`, so the enum alone would silently mask an heir on the
+    /// identity axis — the axis reads this too.
+    pub candidate_recorded_inheritor: bool,
     /// Every other living colonist, in live-roster order.
     pub colonists: Vec<FlourCensusColonist>,
     pub commons_flour: u64,
@@ -13076,6 +13106,49 @@ impl Settlement {
         self.flour_census.take()
     }
 
+    /// C3R.j: build the census row for `appraiser` at the CURRENT tick, unconditionally.
+    /// The armed capture fires only on a Bake `InputPriceAbsent` decline, so row-absence
+    /// there is ambiguous between "an ask appeared", "a different rejection", and "no Bake
+    /// candidate was appraised at all" — persistence sampling reads this for the per-tick
+    /// holder texture (does the wall recur every tick, or oscillate?) instead of inferring
+    /// it from absence. `resolves` itself stays pinned to the Bake `accepts` histogram, so
+    /// this reports the shape of the window, not the stop rule. `&self`-pure and, like the
+    /// armed capture, outside [`Self::canonical_bytes`]: it arms nothing and consumes nothing.
+    pub fn debug_flour_census_row_now(&self, appraiser: AgentId) -> Option<FlourCensusRow> {
+        let chain = self.chain.as_ref()?;
+        let flour = chain.content.flour();
+        let grain = chain.content.grain();
+        let money_good = self.current_money_good()?;
+        Some(self.build_flour_census_row(appraiser, flour, grain, money_good, self.society.tick.0))
+    }
+
+    /// C3R.j: how `id` came by an oven, from state the settlement already records —
+    /// no new persistent field. Seeded specialty outranks recorded inheritance, which
+    /// outranks the existing self-build marker. That precedence LOSES information when
+    /// both hold, so `recorded_inheritor` is reported on the row unshadowed alongside.
+    fn oven_provenance(
+        &self,
+        id: AgentId,
+        holds_oven: bool,
+        recorded_inheritor: bool,
+    ) -> ToolProvenance {
+        let Some(&slot) = self.colonist_slot_by_id.get(&id) else {
+            return ToolProvenance::Other;
+        };
+        let colonist = &self.colonists[slot];
+        if colonist.latent == Some(RecipeId::Bake) {
+            return ToolProvenance::SeededLatent;
+        }
+        if recorded_inheritor {
+            return ToolProvenance::Inherited;
+        }
+        if holds_oven && colonist.acquired_tool {
+            ToolProvenance::SelfBuilt
+        } else {
+            ToolProvenance::Other
+        }
+    }
+
     /// Build the row using read-only stock, reservation, commons, and trace access.
     fn build_flour_census_row(
         &self,
@@ -13090,6 +13163,17 @@ impl Settlement {
             .agents
             .get(appraiser)
             .map_or(0, |agent| agent.stock.get(flour));
+        // C3R.j identity axis: the oven good comes from the chain content the capture
+        // site already resolved, so the builder's signature is unchanged.
+        let oven = self.chain.as_ref().map(|chain| chain.content.oven());
+        let candidate_holds_oven = oven.is_some_and(|oven| {
+            self.society
+                .agents
+                .get(appraiser)
+                .is_some_and(|agent| agent.stock.get(oven) > 0)
+        });
+        let candidate_recorded_inheritor =
+            oven.is_some_and(|oven| self.producer_tool_inheritors.contains(&(appraiser, oven)));
         let mut colonists = Vec::new();
         let mut millers = Vec::new();
         for &slot in &self.live_colonist_slots {
@@ -13102,12 +13186,18 @@ impl Settlement {
                 continue;
             };
             let flour_held = agent.stock.get(flour);
+            // Both come from ONE body (`reservation_ask_for_money` is the `Some/None`
+            // projection, `econ/src/agent.rs:487`), so they cannot disagree today; the
+            // row carries both so a consumer sees the executable value beside its reason,
+            // and the test's equality check is a tripwire against a future re-implementation.
             let reservation_ask = agent.reservation_ask_for_money(flour, 1, money_good);
+            let ask_outcome = agent.reservation_ask_outcome(flour, 1, money_good);
             colonists.push(FlourCensusColonist {
                 id,
                 vocation: colonist.vocation,
                 flour_held,
                 reservation_ask,
+                ask_outcome,
             });
             if colonist.vocation == Vocation::Miller {
                 millers.push(FlourCensusMiller {
@@ -13123,6 +13213,14 @@ impl Settlement {
             deaths_before_decline: self.mortal_producer_old_age_deaths,
             candidate_id: appraiser,
             candidate_own_flour,
+            candidate_vocation: self.vocation_of_id(appraiser),
+            candidate_holds_oven,
+            candidate_provenance: self.oven_provenance(
+                appraiser,
+                candidate_holds_oven,
+                candidate_recorded_inheritor,
+            ),
+            candidate_recorded_inheritor,
             colonists,
             commons_flour: self.commons_stock_of(flour),
             millers,

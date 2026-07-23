@@ -1,13 +1,47 @@
 # impl-75 — C3R.j: Why the flour has no price — decompose the holder's absent reservation ask
 
-Status (spec): **v2.1 — BUILD-READY (Cut 1 only, diagnostic)**. Dual review + confirm pass folded; the
-reviewers conflicted on the `975` split and the code settled it (two-way, not three). Cut 2 is EMPTY —
-levers are deferred to a successor chosen by Cut 1's result. See `## −0` and `## −0.5`.
+Status (spec): **CUT 1 BUILT + MERGED — result: the wall is an actor-independent demand-side satiation
+wall.** The `flour_holder_ask_census` diagnostic landed (PR #5) and its claim was adversarially checked.
+Cut 2 (the lever) stays deferred to a successor chosen by this result. See `## −0.9` for the outcome,
+`## −0`/`## −0.5` for the build history.
 Successor to impl-74 (C3R.i). Origin: the C3R.i
 census (`docs/impl-flour-reignition.md` §−0.9, report §37) proved the mortal wall is **`HolderWithoutAsk`**
 — at the first post-death Bake decline, living holders sit on >100 units of flour yet **not one** has a
 computable `reservation_ask_for_money(flour)`. R2-as-specced was closed INTERVENTION-INVALID before it
 was built. **This milestone does NOT pull a lever until Cut 1 measures why.**
+
+## −0.9. CUT 1 RESULT — actor-independent money-satiation wall (AUTHORITATIVE outcome; report §38)
+
+`flour_holder_ask_census` (merged, PR #5) decomposes the first post-Baker-death Bake `InputPriceAbsent`
+decline across the 5 canonical seeds `[3,7,11,19,23]`, from measured axes, non-steering (default-off,
+digest-excluded, `canonical_bytes` unchanged). Uniform result, adversarially checked (two independent
+reviews both narrowed the first-draft "wrong actor" wording; the recorded claim is the narrowed one):
+
+- **Reason = money satiation, whole-scale.** Every flour holder's `NoMoneyGain` has `provided_wants ==
+  in_range_money_wants` AND `lost_rank == scale_len` — the ask scan ran the *entire* value scale and
+  found no money want a sale would newly fund, because gold on hand already provisions all of them. The
+  ordinal rule yields no reservation price; `ensure_ask` posts none (`society.rs:3333`). The flour is
+  genuinely unpriced to any money buyer. Because `lost_rank == scale_len`, the unit's sale drops **no
+  allocation** — it is *costless to part with* and still goes unpriced.
+- **Actor = independent (the corrected finding).** The first *captured* decliner is, every seed, a
+  surviving `SeededLatent` oven holder (`recorded_inheritor == false`) — but that is a selection effect
+  (latent slots precede heir slots; capture disarms after the first decline, `phases.rs:2324`). The
+  inheritor registry **is** populated (`demography.rs:417-423`; a living recorded oven-heir is present at
+  each decline), recorded heirs appraise Bake the same ticks (tool-acquisition eligibility on), and in
+  **seeds 19 and 23 a recorded heir had already adopted `Baker`** before de-adopting at the wall. So the
+  wall blocks surviving founders and inheriting heirs **alike** — it is not an heir-identity or
+  actor-specific re-ignition failure. "Won't **sell**" is narrowed to "**won't price it for money**"
+  (barter unmeasured); "baker" to "seeded-latent Bake candidate" (vocation `Unassigned` in 3/7/11).
+- **Persistence = the wall holds.** No Bake `accepts` increments in the 200-tick window on any seed.
+- **`AskPostedButUnseen` never fires** — cut from the diagnostic as an unobserved state (a satiated
+  holder posts no ask by construction), which resolved the build's review split.
+
+**What Cut 1 does NOT establish (deferred, not assumed):** the ultimate cause of the chain's death beyond
+this wall; anything on the non-money barter channel; how the lever should work. **Cut 2 stays empty** —
+the successor chooses among (a) a seller-side motive so a satiated holder prices genuine surplus (the
+money-want-ladder extension of `## −0` item 5, whose pricing rule must be specified first), (b) the
+symmetric live-price fix to `project_input_bids` (`mod.rs:8556`), or (c) governance/speculative
+re-ignition — selected by *this measured demand-side wall*, not by the succession intuition it retired.
 
 ## −0. v2 revision (AUTHORITATIVE — folds the Codex+Fable dual review; supersedes §§0–5 on conflict)
 
