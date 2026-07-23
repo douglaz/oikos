@@ -2167,6 +2167,55 @@ beyond this wall, or any behaviour on the non-money (barter) channel it never me
 (does one make a satiated holder price surplus, or is the re-ignition genuinely a governance question)
 belongs to a successor, chosen by this measured wall rather than by the succession intuition it retired.
 
+## 39. The lever crosses the wall — and the re-ignition starves (C3R.k, the arc's one tested lever)
+
+§38 measured the mortal wall (money-satiated flour holders won't originate a quote) and left one
+pre-registered lever milestone in the C3R cap: post a marginal `Price(1)` ask on a holder's *costless*
+surplus and see whether pricing the flour re-coordinates the chain. C3R.k built it as a controlled
+intervention — a flour-scoped, digested, activation-tick flag (`Price(1)` at the satiated `NoMoneyGain`
+exit), a paired OFF/ON design that activates exactly at the measured wall tick `W` with a byte-identical
+`[0, W)` prefix, order-sequence attribution telemetry, and a pre-registered four-way outcome tree. The
+result was adversarially checked twice; the recorded version is the narrowed one (the first draft
+overreached — the *fourteenth* near-miss in the price/proxy ledger, again at the interpretation layer).
+
+**What is causally established.** The lever crosses the wall. Across all five seeds a gate-only flour ask
+— one that exists *only* because the flag turned a `None` reservation into `Price(1)` — posts, fills, and
+is bought by an oven-inheriting heir on that heir's own Baker-adoption tick (9–17 heirs per seed, joined
+by exact order sequence). Settlement-wide flour consumed as recipe input is 116–293 units ON versus
+**0 OFF** under an identical seeded state. So the C3R.j seller-satiation refusal was a *real, causal
+blocker* of flour-quote delivery and heir adoption — not a mere accounting artifact. The buyer side is
+willing at `W` on every seed. This is the milestone's positive result: **pricing the costless surplus
+does re-open the flour market and restart baking.**
+
+**What it does not achieve — and the deeper wall it exposes.** Re-ignition is transient and the chain
+does not survive. All five seeds land in the pre-registered `DOWNSTREAM_NULL` bucket: zero bread produced
+in the final 160 ticks and zero living Bakers at the 1600-tick horizon, with the lever still active
+throughout. A follow-up probe (not a durable assertion) indicates *why*: the re-ignited bakers do not
+re-satiate and de-adopt — they **die**, with tenures of 1–34 ticks, because the mortal producer houses
+carry `food_provision = 0`. A newly-adopted baker has no subsistence of its own and starves before the
+bread it bakes can feed it; re-adoption sustains only ~200–550 ticks past `W`, then ceases permanently.
+The committed test measures the collapse endpoint, not the exit mechanism, so the starvation reading is
+probe-indicated and named as the next seam, not asserted. (What the run does *not* show, contrary to the
+tempting reading: it is not a gold-distribution seizure — endpoint Baker gold is a vacuous zero because
+no Bakers are alive to sum, and the surviving Miller's ~2500–3400 gold is the same pool the OFF control
+and a *functioning* chain both hold; the Experiment-7 signature, satiated consumers starving live
+producers of money, is a different one and is not present here.)
+
+**The blast-radius control.** The same rule applied to *all* goods (not just flour) fails the calibrated
+immortal-chain solvency lens on every seed — via Baker-class *insolvency* (Baker gold driven to zero),
+not a production collapse (window output stays above the floor). Flour-scoping was therefore necessary to
+*attribute* the causal effect cleanly; the run does not prove flour-scope is a *safe* intervention on the
+immortal base (no flour-vs-all-goods immortal comparison was run).
+
+**Where this leaves the C3R arc.** The one-milestone cap is spent, and the outcome is a *tested* null for
+the re-coordination question, which is far stronger than an untested one: the satiation wall is genuine
+and a minimal money-demand correction does cross it, but crossing it only buys a transient flicker of
+baking that starves out. The chain's death is not, at root, a pricing-coordination failure the flour ask
+can fix — it is that a mortal producer re-entering a de-staffed specialized chain has no subsistence to
+survive on while the chain rebuilds. That relocates the question from the flour *market* to producer
+*subsistence during re-entry* — the precise, measured seam a successor would attack, if the arc
+continues past its cap.
+
 ## Appendix — milestone index
 
 | Sxx | Title | Outcome |
