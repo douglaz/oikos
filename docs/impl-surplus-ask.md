@@ -19,14 +19,18 @@ gold-pooling/experiment-7 clause; correct the blast-radius mechanism; scope deat
   blocker of flour-quote delivery and heir adoption. `BUYER_WILLING` at `W`.
 - **INSUFFICIENT (the null):** all 5 seeds `DOWNSTREAM_NULL` — zero bread in the final 160 ticks, zero
   living Bakers at tick 1600, lever active throughout. Re-ignition is transient.
-- **Downstream mechanism UNRESOLVED (do NOT over-read):** the committed test records only role
-  transitions + endpoint state, not per-adopter exits. The "starved-out" reading is **contradicted by the
+- **Downstream mechanism = old-age death + reproduction collapse, NOT starvation (probe-indicated).** The
+  "starved-out" reading was a committed over-read (the arc's 14th near-miss), **contradicted by the
   config**: starvation death is disabled (`hunger_critical = need_max + 1`, mod.rs:3710 — only old-age
-  removal), and active/latent producers are fed to a floor before the market (`producer_subsistence = 4`,
-  inherited; `run_producer_subsistence`, phases.rs:944), so `food_provision = 0` on the households does
-  NOT mean a re-entering baker lacks subsistence. The short tenures are old-age exits or de-adoption, not
-  starvation; *why re-adoption ceases* (adopter age / oven-heir-lineage exhaustion / de-adoption) is not
-  measured. [This bullet corrected a committed over-read — the arc's 14th price/proxy near-miss.]
+  removal), and producers are fed to a floor (`producer_subsistence = 4`, inherited; `run_producer_subsistence`
+  phases.rs:944), so `food_provision = 0` (an override of the default 3, the no-subsidy regime) does NOT
+  starve a re-entering baker. A paired probe (`food_provision ∈ {0,3}` × lever, 2 seeds; probe-indicated,
+  not durable): re-ignited bakers **exit by old-age death, not de-adoption** (≈30/31 of exits), and
+  `food_provision = 0` stops producer-house **reproduction** (the birth-endowment gate needs a member
+  holding `child_food_endowment = 4` staple, mod.rs:3649) so the heir stream dries up. Restoring the
+  hearth restores births but flour baked stays **0 with the lever on** (the staple mint destroys the bake
+  margin — §28/§36 replayed); a conserved `subsistence_advance` is byte-inert (no fund). Both cheap
+  subsistence remedies fail in opposite directions.
 - **NOT a gold seizure (over-read dropped):** endpoint Baker gold 0 is vacuous (no living Bakers to sum);
   the surviving Miller's 2531–3428 gold matches the OFF control AND a functioning chain (~4000) — benign
   base condition, opposite signature to Experiment-7. Removed from the finding.
@@ -35,14 +39,17 @@ gold-pooling/experiment-7 clause; correct the blast-radius mechanism; scope deat
   Flour-scoping was required for clean **attribution**; it is NOT proven a *safe* remedy on the immortal
   base (no flour-vs-all-goods immortal comparison was run).
 
-**Net:** the one-milestone cap is spent, and it bought a clean tested answer — the satiation wall is
-genuine, the marginal-money-demand correction crosses it and restarts baking, and that is INSUFFICIENT:
-production does not durably survive producer turnover on this base. The keystone question closes in the
-negative with the pricing wall's causal role demonstrated. The downstream persistence mechanism is
-UNRESOLVED — naming a specific successor lever (subsistence, lifespan, …) would repeat the corrected
-over-read. The honest next step if the arc reopens is an **observation-only exit-attribution** probe on
-this harness (per gate-fired heir-adopter: exits-while-alive vs `age == lifespan` vs starvation-counter,
-with `producer_subsistence`/`hunger_critical` asserted), to name the real seam before any intervention.
+**Net:** the one-milestone cap is spent on a clean tested answer — the satiation wall is genuine, the
+marginal-money-demand correction crosses it and restarts baking, and that is INSUFFICIENT: production does
+not durably survive producer turnover on this base. The keystone closes in the negative with the pricing
+wall's causal role demonstrated. The terminal wall is NOT a new one — old-age adopters on a late
+succession clock die before the chain re-establishes, and `food_provision = 0` has stopped the heir
+stream that would replace them — it is the arc's already-established **reproduction-financing** trap
+(§29/§30/§34–35/§25) seen from a third side, and both cheap subsistence remedies were probed to fail.
+**Recommendation: STOP and write up C3R a–k.** The genuinely new question exposed — endogenous financing
+of producer reproduction across re-entry, conserved — is a *different arc* with its own cap, not an
+extension. One durable strengthening worth committing first (optional): the exit-attribution split
+(exits-alive vs `age == lifespan`) so the mechanism rests on a test, using existing accessors.
 
 ## −0. v2 revision (AUTHORITATIVE — folds the dual review; supersedes §§1–8 on conflict)
 

@@ -2191,15 +2191,23 @@ does re-open the flour market and restart baking.**
 land in the pre-registered `DOWNSTREAM_NULL` bucket: zero bread produced in the final 160 ticks and zero
 living Bakers at the 1600-tick horizon, with the lever still active throughout. So re-coordination
 *succeeds* (the wall is crossed) but *persistence* fails — which is exactly what `DOWNSTREAM_NULL` was
-pre-registered to mean; it is not a "null" for whether the ask works. **The downstream persistence
-mechanism is unresolved, and must not be over-read.** The committed test records only role transitions
-and endpoint state, not per-adopter exits — and the tempting "starved-out" reading is *contradicted by
-this base's configuration*: starvation death is disabled (`hunger_critical = need_max + 1`, so hunger
-never reaches the lethal ceiling and the only removal channel is old age), and active/latent producers
-are fed to a staple floor before the market (`producer_subsistence = 4`, inherited), so `food_provision =
-0` on the producer *households* does **not** mean a re-entering baker has no subsistence. The observed
-short baker tenures are therefore old-age exits or de-adoptions, not starvation, and *why re-adoption
-ceases* (adopter age, oven/heir-lineage exhaustion, or de-adoption once no recipe pays) is not measured.
+pre-registered to mean; it is not a "null" for whether the ask works. **The collapse mechanism is not
+starvation.** A first draft of this section said it was — the fourteenth price/proxy over-read of the
+arc, and the first to reach a committed draft, corrected by checking the claim against the base's own
+config: starvation death is *disabled* here (`hunger_critical = need_max + 1`, so hunger never reaches
+the lethal ceiling — the only removal channel is old age), and active/latent producers are fed to a
+staple floor before the market (`producer_subsistence = 4`, inherited), so `food_provision = 0` — an
+explicit override of the constructor's default 3, the arc's deliberate no-subsidy regime — does **not**
+starve a re-entering baker. What the collapse *is*, from a paired probe (`food_provision ∈ {0,3}` ×
+lever, two seeds; the specifics probe-indicated, not a durable assertion): the re-ignited bakers **exit
+by old-age death, not de-adoption** (≈30 of 31 exits are deaths — the only channel the config allows),
+and `food_provision = 0` kills producer-house **reproduction** — the birth-endowment gate needs a
+household member holding `child_food_endowment = 4` staple, so the producer houses stop birthing and the
+heir stream that would replace the dying adopters dries up. Restoring the hearth (`food_provision = 3`)
+*does* restore births and adoptions — yet flour baked stays **0 even with the lever on**, because the
+staple mint destroys the bake margin the lever needs (the §28 subsidy-cap and §36 composition-reversal
+findings, replayed); and a conserved `subsistence_advance` is byte-inert on the collapsed chain, which
+has no bread fund to advance from. So *both* cheap subsistence remedies fail, in opposite directions.
 Two further tempting readings the run also does *not* license: it is not a gold-distribution seizure
 (endpoint Baker gold is a vacuous zero — no Bakers are alive to sum — and the surviving Miller's
 ~2500–3400 gold is the pool the OFF control and a *functioning* chain both hold, the opposite signature
@@ -2212,22 +2220,26 @@ not a production collapse (window output stays above the floor). Flour-scoping w
 *attribute* the causal effect cleanly; the run does not prove flour-scope is a *safe* intervention on the
 immortal base (no flour-vs-all-goods immortal comparison was run).
 
-**Where this leaves the C3R arc.** The one-milestone cap is spent, and it bought a clean, tested answer:
-the satiation wall is genuine, a minimal money-demand correction *does* cross it and restart baking, and
-that is *insufficient* — production does not durably survive producer turnover on this tested base. That
-closes the keystone question ("does production survive the producer?") in the negative, with the causal
-role of the pricing wall demonstrated rather than assumed. What it does **not** do is diagnose the
-downstream persistence failure — the re-ignition's collapse mechanism is unresolved (old-age exit vs
-de-adoption vs lineage exhaustion), and naming a specific successor lever would repeat the very over-read
-this section had to correct. The honest next step, if the arc reopens past its cap, is not another lever
-but a cheap **observation-only exit-attribution** pass on the existing five-seed harness — record, per
-gate-fired heir-adopter, whether it exits Baker while alive, dies at `age == lifespan`, or trips a
-starvation counter, with `producer_subsistence` and `hunger_critical` asserted — to identify the *real*
-downstream seam before any intervention is designed. The methodological note stands on its own: this
-section's first draft asserted a starvation/subsistence mechanism that the base's own configuration
-forbids — the fourteenth price/proxy over-read of the arc, and the first to reach a committed draft,
-caught by checking the claimed mechanism against `hunger_critical` and `producer_subsistence` rather than
-trusting the probe that suggested it.
+**Where this leaves the C3R arc — the keystone closes.** The one-milestone cap is spent, and it bought a
+clean, tested answer: the satiation wall is genuine, a minimal money-demand correction *does* cross it
+and restart baking, and that is *insufficient* — production does not durably survive producer turnover on
+this base. That answers the keystone ("does production survive the producer?") in the negative, with the
+causal role of the pricing wall demonstrated rather than assumed. And the failure is not a new problem:
+the probed mechanism — old-age producers adopt on a late succession clock, die before a chain can
+re-establish, and `food_provision = 0` has stopped the producer houses from birthing the heirs that would
+replace them — relocates the terminal wall onto the arc's **most-established result, seen from a third
+side**: income feeds the living but never funds reproduction (§29), the saving trap holds (§30), the wall
+is income not atomicity (§34–35), and an advance can come only out of a prior fund a dead chain does not
+have (§25). Both cheap subsistence remedies were probed and fail — the staple mint destroys the bake
+margin, the conserved advance is inert for want of a fund — so "subsistence during re-entry" is not an
+open lever but that same wall wearing a new mask. Continuing would be the arc refusing to end after a
+clean null; the genuinely new question it exposes — *endogenous financing of producer reproduction
+across re-entry, conserved, from within the chain* — is a different research arc deserving its own
+pre-registered cap, not an extension of this one. **Recommendation: stop and write up C3R a–k.** (The
+one durable strengthening worth committing first, if the mechanism claim is to rest on a test rather than
+a probe, is the exit-attribution split — per gate-fired heir-adopter: exits-while-alive vs
+`age == lifespan` vs a starvation counter, with `producer_subsistence`/`hunger_critical` asserted — using
+only existing accessors.)
 
 ## Appendix — milestone index
 
