@@ -1,12 +1,55 @@
 # impl-76 — C3R.k: The satiated-surplus ask — does a marginal money bid on a costless surplus re-coordinate the mortal chain?
 
-Status (spec): **v2.1 — BUILD-READY.** Dual review + confirm pass folded; both confirm passes converged
-to NEEDS-REVISION on the flag representation ONLY, resolved via a digested activation-tick ChainConfig
-field (birth_stock_ignition_at precedent) + paired OFF/ON runs — no runtime mutation. See `## −0.5`
-(the flag design, AUTHORITATIVE) and `## −0` (the folded dual review).
+Status (spec): **BUILT + VERIFIED — result: `DOWNSTREAM_NULL` (the lever crosses the wall; re-ignition
+starves).** Built via the loop, verified green (off-flag byte-identical, no golden moved), result
+adversarially checked twice. See `## −0.9` for the outcome; `## −0.5`/`## −0` for the build design.
 Successor to impl-75 (C3R.j Cut 1). The ONE pre-registered lever milestone the C3R arc's one-milestone
-cap was reserved for — it closes the arc either way: the chain re-coordinates (the satiation wall was
-the causal blocker), or the pre-registered null is pinned with a *tested* lever behind it.
+cap was reserved for — it closed the arc's re-coordination question with a *tested* null.
+
+## −0.9. RESULT — `DOWNSTREAM_NULL` on all 5 seeds (AUTHORITATIVE outcome; report §39)
+
+`sim/tests/surplus_ask.rs` (5 tests, green; off-flag tick-by-tick `canonical_bytes` == base, no golden
+moved; ON-only digest tag). Adversarially checked twice — the first-draft finding OVERREACHED (drop the
+gold-pooling/experiment-7 clause; correct the blast-radius mechanism; scope death to a probe). Recorded:
+
+- **CAUSAL (established):** the lever crosses the C3R.j wall. A gate-only flour ask (exists *only*
+  because the flag turned `None` → `Price(1)`) posts → fills → is bought by an oven heir on that heir's
+  Baker-adoption tick (9–17 heirs/seed, exact order-sequence join). Settlement-wide flour-as-input =
+  116–293 ON vs **0 OFF** (identical seeded state). The seller-satiation refusal *was* a real causal
+  blocker of flour-quote delivery and heir adoption. `BUYER_WILLING` at `W`.
+- **INSUFFICIENT (the null):** all 5 seeds `DOWNSTREAM_NULL` — zero bread in the final 160 ticks, zero
+  living Bakers at tick 1600, lever active throughout. Re-ignition is transient.
+- **Downstream mechanism = old-age death + reproduction collapse, NOT starvation (probe-indicated).** The
+  "starved-out" reading was a committed over-read (the arc's 14th near-miss), **contradicted by the
+  config**: starvation death is disabled (`hunger_critical = need_max + 1`, mod.rs:3710 — only old-age
+  removal), and producers are fed to a floor (`producer_subsistence = 4`, inherited; `run_producer_subsistence`
+  phases.rs:944), so `food_provision = 0` (an override of the default 3, the no-subsidy regime) does NOT
+  starve a re-entering baker. A paired probe (`food_provision ∈ {0,3}` × lever, 2 seeds; probe-indicated,
+  not durable): re-ignited bakers **exit by old-age death, not de-adoption** (≈30/31 of exits), and
+  `food_provision = 0` stops producer-house **reproduction** (the birth-endowment gate needs a member
+  holding `child_food_endowment = 4` staple, mod.rs:3649) so the heir stream dries up. Restoring the
+  hearth restores births but flour baked stays **0 with the lever on** (the staple mint destroys the bake
+  margin — §28/§36 replayed); a conserved `subsistence_advance` is byte-inert (no fund). Both cheap
+  subsistence remedies fail in opposite directions.
+- **NOT a gold seizure (over-read dropped):** endpoint Baker gold 0 is vacuous (no living Bakers to sum);
+  the surviving Miller's 2531–3428 gold matches the OFF control AND a functioning chain (~4000) — benign
+  base condition, opposite signature to Experiment-7. Removed from the finding.
+- **Blast-radius:** the AllGoods arm fails the calibrated immortal solvency lens on all 5 seeds via
+  Baker-class **insolvency** (Baker gold → 0), NOT window collapse (output stays above the 300 floor).
+  Flour-scoping was required for clean **attribution**; it is NOT proven a *safe* remedy on the immortal
+  base (no flour-vs-all-goods immortal comparison was run).
+
+**Net:** the one-milestone cap is spent on a clean tested answer — the satiation wall is genuine, the
+marginal-money-demand correction crosses it and restarts baking, and that is INSUFFICIENT: production does
+not durably survive producer turnover on this base. The keystone closes in the negative with the pricing
+wall's causal role demonstrated. The terminal wall is NOT a new one — old-age adopters on a late
+succession clock die before the chain re-establishes, and `food_provision = 0` has stopped the heir
+stream that would replace them — it is the arc's already-established **reproduction-financing** trap
+(§29/§30/§34–35/§25) seen from a third side, and both cheap subsistence remedies were probed to fail.
+**Recommendation: STOP and write up C3R a–k.** The genuinely new question exposed — endogenous financing
+of producer reproduction across re-entry, conserved — is a *different arc* with its own cap, not an
+extension. One durable strengthening worth committing first (optional): the exit-attribution split
+(exits-alive vs `age == lifespan`) so the mechanism rests on a test, using existing accessors.
 
 ## −0. v2 revision (AUTHORITATIVE — folds the dual review; supersedes §§1–8 on conflict)
 

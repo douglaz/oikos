@@ -126,6 +126,17 @@ pub enum AllocationRecord {
         side: OrderSide,
         outcome: QuoteOutcome,
     },
+    /// impl-76 / C3R.k: a freshly posted ask whose reservation exists only because the
+    /// satiated-surplus gate returned `Price(1)`. Ordinary [`Self::Execution`] rows carry the
+    /// exact sequence ids needed to trace crossings and fills back to this ask. Runtime-only,
+    /// opt-in with the existing allocation trace, and never read by a decision path.
+    SatiatedSurplusAsk {
+        tick: u64,
+        seller: AgentId,
+        good: GoodId,
+        seq: u64,
+        limit: Gold,
+    },
     /// An intra-pass cancellation/exit of a live quote (routes `PostExitConsumption`).
     QuoteExit {
         tick: u64,
@@ -395,6 +406,29 @@ pub struct Estate {
     pub stock: Stock,
 }
 
+/// impl-76 / C3R.k — which goods the satiated-surplus ask lever
+/// ([`Society::satiated_surplus_ask`]) prices at the minimal money unit. The CAUSAL arm
+/// scopes to a single good (flour, the intermediate whose satiation wall this milestone
+/// tests); [`Scope::AllGoods`] is the SEPARATE blast-radius arm that opens the rule for
+/// every good. Exactly two variants by design — no speculative generality. `Flour` carries
+/// the resolved good id because `econ` has no chain-content concept of its own; the settlement
+/// resolves it from [`crate::good::GoodId`] content at generation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope {
+    /// Only the named good is priced (the flour-scoped causal arm).
+    Flour(GoodId),
+    /// Every costless-satiated surplus is priced (the blast-radius arm).
+    AllGoods,
+}
+
+/// Whether the satiated-surplus lever admits `good` under `scope` (impl-76 / C3R.k).
+fn scope_admits(scope: Scope, good: GoodId) -> bool {
+    match scope {
+        Scope::Flour(flour) => good == flour,
+        Scope::AllGoods => true,
+    }
+}
+
 pub struct Society {
     pub tick: Tick,
     pub agents: AgentArena,
@@ -467,6 +501,15 @@ pub struct Society {
     v2_enabled: bool,
     multi_offer_medium: bool,
     durability_aware_acceptance: bool,
+    /// impl-76 / C3R.k — the satiated-surplus ask lever: the activation tick and scope, or
+    /// `None` (off). Construction-time config populated from `ChainConfig` at generation
+    /// (precedent [`Self::multi_offer_medium`]); the two market-steering ask sites
+    /// ([`Self::ensure_ask`] and the live-quote change detector) both read the SAME per-tick
+    /// value through [`Self::satiated_surplus_ask_flag`], so a gate-fired ask cannot be
+    /// cancelled by a reconciliation pass that dropped the flag. `None` in every lab scenario,
+    /// so the conformance goldens are byte-identical (the configured flag is digested ON-only;
+    /// paired runs compare their realized pre-activation state with the policy record omitted).
+    satiated_surplus_ask: Option<(u64, Scope)>,
     marketability: MarketabilityConfig,
     barter_book: BarterBook,
     legacy_runner_enabled: bool,
@@ -537,8 +580,22 @@ pub struct Society {
 
 impl Society {
     pub fn from_scenario(scenario: MarketScenario) -> Self {
-        Self::try_from_scenario(scenario)
-            .unwrap_or_else(|err| panic!("market scenario must be valid: {err}"))
+        Self::from_scenario_with_satiated_surplus_ask(scenario, None)
+    }
+
+    /// Build a society with the impl-76 / C3R.k policy fixed before the society is exposed.
+    ///
+    /// This construction seam keeps the behavior-steering policy immutable at runtime while
+    /// allowing the settlement layer to resolve its id-free chain scope to an econ [`GoodId`].
+    #[doc(hidden)]
+    pub fn from_scenario_with_satiated_surplus_ask(
+        scenario: MarketScenario,
+        satiated_surplus_ask: Option<(u64, Scope)>,
+    ) -> Self {
+        let mut society = Self::try_from_scenario(scenario)
+            .unwrap_or_else(|err| panic!("market scenario must be valid: {err}"));
+        society.satiated_surplus_ask = satiated_surplus_ask;
+        society
     }
 
     pub fn try_from_scenario(scenario: MarketScenario) -> Result<Self, SocietyBuildError> {
@@ -661,6 +718,9 @@ impl Society {
             v2_enabled,
             multi_offer_medium,
             durability_aware_acceptance,
+            // impl-76 / C3R.k: off by default; the settlement's construction seam replaces this
+            // local value from ChainConfig before exposing the society. No lab scenario carries it.
+            satiated_surplus_ask: None,
             marketability,
             barter_book: BarterBook::new(),
             legacy_runner_enabled,
@@ -3310,6 +3370,9 @@ impl Society {
             return;
         };
         let existing = self.find_live_quote(agent_id, OrderSide::Ask, good);
+        // impl-76 / C3R.k: read the SAME per-tick lever value the change detector reads, so a
+        // gate-fired ask posted here is not cancelled by the next reconciliation pass.
+        let satiated_surplus_ask = self.satiated_surplus_ask_flag(good);
         let Some(agent) = self.available_agent(agent_index, existing) else {
             self.allocation_trace_record_attempt(
                 agent_id,
@@ -3330,7 +3393,9 @@ impl Society {
             self.cancel_existing(existing);
             return;
         }
-        let Some(reservation) = agent.reservation_ask_for_money(good, 1, money_good) else {
+        let Some(reservation) =
+            agent.reservation_ask_for_money(good, 1, money_good, satiated_surplus_ask)
+        else {
             self.allocation_trace_record_attempt(
                 agent_id,
                 good,
@@ -3340,8 +3405,17 @@ impl Society {
             self.cancel_existing(existing);
             return;
         };
+        // The counterfactual (would this ask have declined WITHOUT the lever?) feeds ONLY the
+        // gate-marker trace record below, so skip it entirely unless tracing is recording —
+        // `ensure_ask` runs per agent × market good × tick and each reservation clones stock.
+        let satiated_surplus_gate_ask = satiated_surplus_ask
+            && self.allocation_trace_recording()
+            && agent
+                .reservation_ask_for_money(good, 1, money_good, false)
+                .is_none();
         let belief = belief_for(&self.agents[agent_index], good);
         let limit = belief.shade_ask(reservation);
+        let trace_start = self.allocation_trace.len();
         self.ensure_order(
             QuotePlan {
                 agent_index,
@@ -3353,6 +3427,31 @@ impl Society {
             },
             filled,
         );
+        if satiated_surplus_gate_ask {
+            let posted =
+                self.allocation_trace[trace_start..]
+                    .iter()
+                    .find_map(|record| match record {
+                        AllocationRecord::QuoteAttempt {
+                            agent,
+                            good: posted_good,
+                            side: OrderSide::Ask,
+                            outcome: QuoteOutcome::Posted { seq, limit, .. },
+                            ..
+                        } if *agent == agent_id && *posted_good == good => Some((*seq, *limit)),
+                        _ => None,
+                    });
+            if let Some((seq, limit)) = posted {
+                self.allocation_trace
+                    .push(AllocationRecord::SatiatedSurplusAsk {
+                        tick: self.tick.0,
+                        seller: agent_id,
+                        good,
+                        seq,
+                        limit,
+                    });
+            }
+        }
     }
 
     fn ensure_order(&mut self, plan: QuotePlan, filled: &mut Vec<FillKey>) {
@@ -3752,6 +3851,11 @@ impl Society {
 
     fn live_quote_changed(&self, quote_index: usize) -> bool {
         let quote = self.live_quotes[quote_index];
+        // impl-76 / C3R.k (CRITICAL): re-price the ask with the SAME lever value `ensure_ask`
+        // used to POST it. Recomputing without the flag would see the raw reservation return
+        // `None`, flag the quote as changed, and cancel the gate-fired ask every reconciliation
+        // pass — the lever would flap off invisibly.
+        let satiated_surplus_ask = self.satiated_surplus_ask_flag(quote.good);
         let Some(money_good) = self.money.current_money_good() else {
             return true;
         };
@@ -3791,9 +3895,12 @@ impl Society {
                 quote.reservation != reservation || quote.limit != limit || limit == Gold::ZERO
             }
             OrderSide::Ask => {
-                let Some(reservation) =
-                    agent.reservation_ask_for_money(quote.good, quote.qty, money_good)
-                else {
+                let Some(reservation) = agent.reservation_ask_for_money(
+                    quote.good,
+                    quote.qty,
+                    money_good,
+                    satiated_surplus_ask,
+                ) else {
                     return true;
                 };
                 let limit = belief.shade_ask(reservation);
@@ -4782,6 +4889,37 @@ impl Society {
     /// the FOOD price); it changes no engine behavior.
     pub fn realized_price(&self, good: GoodId) -> Option<Gold> {
         self.realized_prices.get(&good).copied()
+    }
+
+    /// impl-76 / C3R.k: whether the lever prices a satiated surplus of `good` THIS tick — the
+    /// activation tick has arrived (`tick >= at`) AND the scope admits the good. The SINGLE
+    /// source of truth for the two market-steering ask sites ([`Self::ensure_ask`] and the
+    /// live-quote change detector), so they cannot disagree and flap a gate-fired ask off.
+    pub fn satiated_surplus_ask_flag(&self, good: GoodId) -> bool {
+        self.satiated_surplus_ask
+            .is_some_and(|(at, scope)| self.tick.0 >= at && scope_admits(scope, good))
+    }
+
+    /// impl-76 / C3R.k (buyer-willingness baseline, read-only): the resting NON-self bid limits
+    /// on `good`, highest price first, excluding `exclude`'s own quotes. Reads only
+    /// `OrderBook.bids` (the live CDA book); `live_quotes` stays private. Every quote is qty 1
+    /// (`ensure_bid`), so element `n` is the (n+1)-th-unit marginal bid — the depth the
+    /// third-unit-marginal formula needs.
+    ///
+    /// Only LIVE bids count: an order with `expires_tick <= self.tick` is already dead — the CDA
+    /// refuses to match it (`add_order_inner`) and `purge_expired` removes it at the next market
+    /// step — so counting one would overstate executable buyer demand between ticks at a TTL
+    /// boundary. Filter with the market's own liveness predicate.
+    pub fn live_non_self_bid_prices(&self, good: GoodId, exclude: AgentId) -> Vec<Gold> {
+        let Some(book) = self.books.iter().find(|book| book.good == good) else {
+            return Vec::new();
+        };
+        // `bids` is keyed `(Reverse<Gold>, seq)`, so iteration is already highest-price-first.
+        book.bids
+            .values()
+            .filter(|order| order.agent != exclude && order.expires_tick > self.tick.0)
+            .map(|order| order.limit)
+            .collect()
     }
 
     /// Enable the per-tick consumption log (off by default). The G1 `Camp` calls

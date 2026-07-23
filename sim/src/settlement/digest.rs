@@ -15,6 +15,23 @@ impl Settlement {
     /// world, econ holdings, needs, and realized prices. Two settlements are
     /// byte-identical iff these are equal (the determinism tripwire).
     pub fn canonical_bytes(&self) -> Vec<u8> {
+        self.canonical_bytes_with_satiated_surplus_config(true)
+    }
+
+    /// impl-76 / C3R.k paired-run seam: serialize the complete dynamic state while omitting
+    /// only the pre-registered satiated-surplus policy record. The configured ON arm must be
+    /// canonically distinct before activation because it has different future behavior; this
+    /// focused view lets the experiment separately prove that its `[0, W)` realized-state prefix
+    /// remains identical to the OFF control.
+    #[doc(hidden)]
+    pub fn canonical_bytes_without_satiated_surplus_config(&self) -> Vec<u8> {
+        self.canonical_bytes_with_satiated_surplus_config(false)
+    }
+
+    fn canonical_bytes_with_satiated_surplus_config(
+        &self,
+        include_satiated_surplus_config: bool,
+    ) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(&self.econ_tick.to_le_bytes());
         out.extend_from_slice(&self.world.canonical_bytes());
@@ -172,6 +189,22 @@ impl Settlement {
             // not split from the flag-off stream.
             if self.stale_input_price_fix_can_run() {
                 out.push(36);
+            }
+            // impl-76 / C3R.k (L: satiated-surplus ask): a configured future activation steers
+            // later behavior even before it fires, so it joins the canonical identity whenever
+            // `Some`. Tag 37 is distinct from every adjacent ON-only block; the activation tick and
+            // scope discriminant distinguish every behaviorally distinct policy (the resolved flour
+            // id is already captured by the chain content elsewhere in the digest). Off emits
+            // nothing, so every prior golden remains byte-identical.
+            if include_satiated_surplus_config {
+                if let Some(at) = chain.satiated_surplus_ask_at {
+                    out.push(37);
+                    out.extend_from_slice(&at.to_le_bytes());
+                    match chain.satiated_surplus_ask_scope {
+                        SurplusAskScope::Flour => out.push(0),
+                        SurplusAskScope::AllGoods => out.push(1),
+                    }
+                }
             }
             // S12: the own-labor subsistence gate retires the food mints and steers the
             // forage phase + the per-colonist `foraging` state below. When it can run,
@@ -2455,6 +2488,11 @@ fn digest_coverage_chain_config(v: &ChainConfig) {
         // as tag 36, pushed ON-only by `stale_input_price_fix_can_run` so a flag-off
         // stream stays byte-identical to the pre-C3R.h one.
         stale_input_price_fix: _,
+        // impl-76 / C3R.k: steers `ensure_ask` + the input appraisal, so both are DIGESTED —
+        // as tag 37 whenever configured (`Some`), including the activation tick and complete
+        // scope payload. A flag-off (`None`) stream stays byte-identical.
+        satiated_surplus_ask_at: _,
+        satiated_surplus_ask_scope: _,
         // NOT DIGESTED — inherited baseline at guard introduction (each was
         // implicitly omitted by the hand-maintained digest; kept as-is so the
         // guard lands with zero byte-stream change). Every NEW field added below
