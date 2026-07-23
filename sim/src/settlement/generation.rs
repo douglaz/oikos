@@ -878,13 +878,11 @@ impl Settlement {
             events: Vec::new(),
             money,
         };
-        let mut society = Society::from_scenario(scenario);
-        society.enable_consumption_log();
         // impl-76 / C3R.k: hand the satiated-surplus ask lever to the society, so its two
         // market-steering ask sites read the same per-tick value the settlement's appraisal does.
         // Resolve the id-free config scope to THIS chain's own flour id, so a config can never
         // steer a good other than the one it names.
-        society.set_satiated_surplus_ask(config.chain.as_ref().and_then(|chain| {
+        let satiated_surplus_ask = config.chain.as_ref().and_then(|chain| {
             chain.satiated_surplus_ask_at.map(|at| {
                 let scope = match chain.satiated_surplus_ask_scope {
                     SurplusAskScope::Flour => Scope::Flour(chain.content.flour()),
@@ -892,7 +890,10 @@ impl Settlement {
                 };
                 (at, scope)
             })
-        }));
+        });
+        let mut society =
+            Society::from_scenario_with_satiated_surplus_ask(scenario, satiated_surplus_ask);
+        society.enable_consumption_log();
 
         // G8b: charter the bank. The bank is a *settlement* entity (config-chartered
         // here; the player-`Command` charter is G8c/UI), so the sim adds it after the
@@ -1661,11 +1662,10 @@ impl Settlement {
             }
         });
         scenario.seed = seed;
-        let mut society = Society::from_scenario(scenario.clone());
-        society.enable_consumption_log();
         // impl-76 / C3R.k: the cycle society carries no chain (`config.chain` is `None` here), so
-        // the lever stays off — but populate it uniformly with the frontier path for parity.
-        society.set_satiated_surplus_ask(config.chain.as_ref().and_then(|chain| {
+        // the lever stays off — but construct it uniformly with the frontier path as required by
+        // the two-site generation contract.
+        let satiated_surplus_ask = config.chain.as_ref().and_then(|chain| {
             chain.satiated_surplus_ask_at.map(|at| {
                 let scope = match chain.satiated_surplus_ask_scope {
                     SurplusAskScope::Flour => Scope::Flour(chain.content.flour()),
@@ -1673,7 +1673,12 @@ impl Settlement {
                 };
                 (at, scope)
             })
-        }));
+        });
+        let mut society = Society::from_scenario_with_satiated_surplus_ask(
+            scenario.clone(),
+            satiated_surplus_ask,
+        );
+        society.enable_consumption_log();
 
         // A minimal spatial shell: an empty grid + an exchange stockpile so the
         // (no-op) world phases and the exchange accessor have a valid world to read.

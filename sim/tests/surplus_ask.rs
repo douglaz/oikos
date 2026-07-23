@@ -25,7 +25,7 @@ use econ::society::{AllocationExecutionStatus, AllocationRecord};
 // `SurplusAskScope` is reached through the already-public `settlement` module rather than a new
 // crate-root re-export, so the change stays inside the locked file set.
 use sim::settlement::SurplusAskScope;
-use sim::{AgentId, GoodId, Settlement, SettlementConfig, Vocation};
+use sim::{AgentId, Gold, GoodId, Settlement, SettlementConfig, Vocation};
 
 const SEEDS: [u64; 5] = [3, 7, 11, 19, 23];
 const MAX_TICKS: u64 = 1_600;
@@ -324,9 +324,9 @@ fn assert_actor_independent_satiation(seed: u64, s: &Settlement, flour: GoodId) 
                      (in_range={in_range_money_wants} cumulative_required={cumulative_required}) — \
                      `provided == in_range` is vacuous, so the gate does not target this holder"
                 );
-                // … and parting with the unit drops NO allocation (a costless surplus). Together
-                // these are the core gate predicate, so the flag flips EVERY holder from decline to
-                // `Price(1)`: the gate targets the whole wall, not a single outlier.
+                // … and parting with the unit drops NO allocation (a costless surplus). These are
+                // the outcome-exposed gate fields; the enabled projection below checks the full
+                // predicate, including receivable headroom and the Later-want exclusion.
                 assert_eq!(
                     lost_rank, scale_len,
                     "seed {seed}: flour holder {id:?} is money-satiated but its surplus is NOT \
@@ -336,9 +336,15 @@ fn assert_actor_independent_satiation(seed: u64, s: &Settlement, flour: GoodId) 
             }
             other => panic!(
                 "seed {seed}: flour holder {id:?} is not at the money-satiation wall (OFF outcome \
-                 {other:?}) — the wall is not actor-independent"
+                {other:?}) — the wall is not actor-independent"
             ),
         }
+        assert_eq!(
+            agent.reservation_ask_for_money(flour, 1, money, true),
+            Some(Gold(1)),
+            "seed {seed}: flour holder {id:?} satisfies the visible NoMoneyGain gate fields but \
+             fails the complete enabled gate (unreceivable minimum price or unexpired Later want)"
+        );
     }
     assert!(
         holders > 0,

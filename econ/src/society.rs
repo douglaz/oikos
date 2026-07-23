@@ -580,8 +580,22 @@ pub struct Society {
 
 impl Society {
     pub fn from_scenario(scenario: MarketScenario) -> Self {
-        Self::try_from_scenario(scenario)
-            .unwrap_or_else(|err| panic!("market scenario must be valid: {err}"))
+        Self::from_scenario_with_satiated_surplus_ask(scenario, None)
+    }
+
+    /// Build a society with the impl-76 / C3R.k policy fixed before the society is exposed.
+    ///
+    /// This construction seam keeps the behavior-steering policy immutable at runtime while
+    /// allowing the settlement layer to resolve its id-free chain scope to an econ [`GoodId`].
+    #[doc(hidden)]
+    pub fn from_scenario_with_satiated_surplus_ask(
+        scenario: MarketScenario,
+        satiated_surplus_ask: Option<(u64, Scope)>,
+    ) -> Self {
+        let mut society = Self::try_from_scenario(scenario)
+            .unwrap_or_else(|err| panic!("market scenario must be valid: {err}"));
+        society.satiated_surplus_ask = satiated_surplus_ask;
+        society
     }
 
     pub fn try_from_scenario(scenario: MarketScenario) -> Result<Self, SocietyBuildError> {
@@ -704,8 +718,8 @@ impl Society {
             v2_enabled,
             multi_offer_medium,
             durability_aware_acceptance,
-            // impl-76 / C3R.k: off by default; the settlement sets it from ChainConfig at
-            // generation (`set_satiated_surplus_ask`). No lab scenario carries it.
+            // impl-76 / C3R.k: off by default; the settlement's construction seam replaces this
+            // local value from ChainConfig before exposing the society. No lab scenario carries it.
             satiated_surplus_ask: None,
             marketability,
             barter_book: BarterBook::new(),
@@ -4875,14 +4889,6 @@ impl Society {
     /// the FOOD price); it changes no engine behavior.
     pub fn realized_price(&self, good: GoodId) -> Option<Gold> {
         self.realized_prices.get(&good).copied()
-    }
-
-    /// impl-76 / C3R.k: set the satiated-surplus ask lever once at construction (off by
-    /// default). The settlement calls this from `ChainConfig` at generation. Behavior-steering
-    /// and digested ON-only by the settlement, so a lab society (which never sets it) is
-    /// byte-identical.
-    pub fn set_satiated_surplus_ask(&mut self, config: Option<(u64, Scope)>) {
-        self.satiated_surplus_ask = config;
     }
 
     /// impl-76 / C3R.k: whether the lever prices a satiated surplus of `good` THIS tick — the
