@@ -303,15 +303,37 @@ fn assert_actor_independent_satiation(seed: u64, s: &Settlement, flour: GoodId) 
         holders += 1;
         match agent.reservation_ask_outcome(flour, 1, money, false) {
             AskOutcome::NoMoneyGain {
+                lost_rank,
+                scale_len,
                 in_range_money_wants,
                 provided_wants,
+                cumulative_required,
                 ..
-            } => assert_eq!(
-                provided_wants, in_range_money_wants,
-                "seed {seed}: flour holder {id:?} declines but is not fully money-satiated \
-                 (provided={provided_wants} of in_range={in_range_money_wants}) — the wall is not \
-                 actor-independent"
-            ),
+            } => {
+                // Fully money-satiated: every in-range money want is already provided …
+                assert_eq!(
+                    provided_wants, in_range_money_wants,
+                    "seed {seed}: flour holder {id:?} declines but is not fully money-satiated \
+                     (provided={provided_wants} of in_range={in_range_money_wants}) — the wall is \
+                     not actor-independent"
+                );
+                // … that money demand is REAL, not a vacuous `0 == 0` or a zero-quantity want …
+                assert!(
+                    in_range_money_wants > 0 && cumulative_required > 0,
+                    "seed {seed}: flour holder {id:?} has no real in-range money demand \
+                     (in_range={in_range_money_wants} cumulative_required={cumulative_required}) — \
+                     `provided == in_range` is vacuous, so the gate does not target this holder"
+                );
+                // … and parting with the unit drops NO allocation (a costless surplus). Together
+                // these are the core gate predicate, so the flag flips EVERY holder from decline to
+                // `Price(1)`: the gate targets the whole wall, not a single outlier.
+                assert_eq!(
+                    lost_rank, scale_len,
+                    "seed {seed}: flour holder {id:?} is money-satiated but its surplus is NOT \
+                     costless (lost_rank={lost_rank} < scale_len={scale_len}) — the gate does not \
+                     target this holder"
+                );
+            }
             other => panic!(
                 "seed {seed}: flour holder {id:?} is not at the money-satiation wall (OFF outcome \
                  {other:?}) — the wall is not actor-independent"
