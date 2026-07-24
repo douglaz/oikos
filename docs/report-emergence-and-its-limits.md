@@ -1476,6 +1476,10 @@ question it depended on is answered.
 
 ---
 
+> **The C3R keystone arc (§§27–32, §§36–39) is consolidated as one argument in
+> [`c3r-keystone.md`](c3r-keystone.md)** — *does production survive the producer?* The sections below remain
+> the incremental, per-milestone record and the source of every number in that write-up.
+
 ## 27. The production chain dies with its producers — the keystone's first slice, an honest collapse (C3R.a)
 
 The whole voluntary-labor arc (§§22–26) ran on a base with one quiet exemption: the grain→flour→bread
@@ -2167,7 +2171,7 @@ beyond this wall, or any behaviour on the non-money (barter) channel it never me
 (does one make a satiated holder price surplus, or is the re-ignition genuinely a governance question)
 belongs to a successor, chosen by this measured wall rather than by the succession intuition it retired.
 
-## 39. The lever crosses the wall — and the re-ignition starves (C3R.k, the arc's one tested lever)
+## 39. The lever crosses the wall — and the re-ignition does not persist (C3R.k, the arc's one tested lever)
 
 §38 measured the mortal wall (money-satiated flour holders won't originate a quote) and left one
 pre-registered lever milestone in the C3R cap: post a marginal `Price(1)` ask on a holder's *costless*
