@@ -19,18 +19,19 @@ gold-pooling/experiment-7 clause; correct the blast-radius mechanism; scope deat
   blocker of flour-quote delivery and heir adoption. `BUYER_WILLING` at `W`.
 - **INSUFFICIENT (the null):** all 5 seeds `DOWNSTREAM_NULL` — zero bread in the final 160 ticks, zero
   living Bakers at tick 1600, lever active throughout. Re-ignition is transient.
-- **Downstream mechanism = old-age death + reproduction collapse, NOT starvation (probe-indicated).** The
-  "starved-out" reading was a committed over-read (the arc's 14th near-miss), **contradicted by the
-  config**: starvation death is disabled (`hunger_critical = need_max + 1`, mod.rs:3710 — only old-age
-  removal), and producers are fed to a floor (`producer_subsistence = 4`, inherited; `run_producer_subsistence`
-  phases.rs:944), so `food_provision = 0` (an override of the default 3, the no-subsidy regime) does NOT
-  starve a re-entering baker. A paired probe (`food_provision ∈ {0,3}` × lever, 2 seeds; probe-indicated,
-  not durable): re-ignited bakers **exit by old-age death, not de-adoption** (≈30/31 of exits), and
-  `food_provision = 0` stops producer-house **reproduction** (the birth-endowment gate needs a member
-  holding `child_food_endowment = 4` staple, mod.rs:3649) so the heir stream dries up. Restoring the
-  hearth restores births but flour baked stays **0 with the lever on** (the staple mint destroys the bake
-  margin — §28/§36 replayed); a conserved `subsistence_advance` is byte-inert (no fund). Both cheap
-  subsistence remedies fail in opposite directions.
+- **Downstream mechanism = old-age death + reproduction collapse, NOT starvation.** The "starved-out"
+  reading was a committed over-read (the arc's 14th near-miss), **contradicted by the config**: starvation
+  death is disabled (`hunger_critical = need_max + 1`, mod.rs:3710 — only old-age removal), and producers
+  are fed to a floor (`producer_subsistence = 4`, inherited; `run_producer_subsistence` phases.rs:944), so
+  `food_provision = 0` (an override of the default 3, the no-subsidy regime) does NOT starve a re-entering
+  baker. **TEST-BACKED** (durable exit-attribution asserts in `surplus_ask.rs`, 5 seeds): zero starvation
+  deaths, hundreds of old-age deaths, and **every** gate-fired heir-adopter exits by **death, not
+  de-adoption** (14/14, 9/9, 17/17, 14/14, 17/17; zero de-adoptions). **PROBE-INDICATED** (paired
+  `food_provision ∈ {0,3}` × lever, not durable): `food_provision = 0` stops producer-house
+  **reproduction** (the birth-endowment gate needs a member holding `child_food_endowment = 4` staple,
+  mod.rs:3649) so the heir stream dries up; restoring the hearth restores births but flour baked stays
+  **0 with the lever on** (the staple mint destroys the bake margin — §28/§36 replayed), and a conserved
+  `subsistence_advance` is byte-inert (no fund). Both cheap subsistence remedies fail in opposite directions.
 - **NOT a gold seizure (over-read dropped):** endpoint Baker gold 0 is vacuous (no living Bakers to sum);
   the surviving Miller's 2531–3428 gold matches the OFF control AND a functioning chain (~4000) — benign
   base condition, opposite signature to Experiment-7. Removed from the finding.
