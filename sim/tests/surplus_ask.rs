@@ -179,6 +179,17 @@ struct SeedResult {
     /// Gate-fired ask limit changes, `(tick, seller_id, limit)`, separating each seller's belief
     /// walk-down from refusal.
     ask_limit_trajectory: Vec<(u64, u64, u64)>,
+    /// C3R.k exit attribution — makes the collapse mechanism a test, not a probe. Run-total
+    /// starvation deaths: MUST be 0 on this base (`hunger_critical = need_max + 1`, mod.rs:3710), so a
+    /// re-ignited baker cannot starve and old age is the only removal channel.
+    starvation_deaths_total: u64,
+    /// Run-total old-age deaths (the only death channel here).
+    old_age_deaths_total: u64,
+    /// Of the gate-fired HEIR adopters, how many are DEAD at the horizon (an old-age exit, since
+    /// starvation is impossible) versus still alive but no longer a Baker (de-adopted). Backs
+    /// "the re-ignited bakers exit by old-age death, not de-adoption".
+    heir_adopters_dead: u64,
+    heir_adopters_de_adopted: u64,
 }
 
 fn sustained(r: &SeedResult) -> bool {
@@ -516,6 +527,30 @@ fn run_causal(seed: u64, w: u64, scope: SurplusAskScope) -> SeedResult {
         .zip(first_gate_fill_tick)
         .map(|(ask, fill)| fill.saturating_sub(ask));
 
+    // C3R.k exit attribution: classify each gate-fired HEIR adopter's fate at the horizon. Starvation
+    // is impossible on this base (asserted below), so a dead adopter died of old age — this backs the
+    // mechanism claim (old-age death, not starvation, not de-adoption) with a test rather than a probe.
+    let id_to_index: BTreeMap<AgentId, usize> = (0..on.population())
+        .filter_map(|i| on.colonist_id(i).map(|id| (id, i)))
+        .collect();
+    let mut heir_adopters_dead = 0u64;
+    let mut heir_adopters_de_adopted = 0u64;
+    for buyer in &adopting_buyers {
+        let is_heir = baker_transitions
+            .get(buyer)
+            .is_some_and(|(_, inherited)| *inherited);
+        if !is_heir {
+            continue;
+        }
+        match id_to_index.get(buyer).copied() {
+            Some(idx) if !on.is_alive(idx) => heir_adopters_dead += 1,
+            Some(idx) if on.vocation_of(idx) != Some(Vocation::Baker) => {
+                heir_adopters_de_adopted += 1
+            }
+            _ => {} // still a living Baker at the horizon
+        }
+    }
+
     let mut r = SeedResult {
         outcome: Outcome::NotDelivered,
         gate_target_present: gate_target,
@@ -534,6 +569,10 @@ fn run_causal(seed: u64, w: u64, scope: SurplusAskScope) -> SeedResult {
         first_gate_ask_tick,
         fill_latency,
         ask_limit_trajectory,
+        starvation_deaths_total: on.starvation_deaths_total(),
+        old_age_deaths_total: on.old_age_deaths_total(),
+        heir_adopters_dead,
+        heir_adopters_de_adopted,
     };
     r.outcome = classify(&r);
     r
@@ -659,6 +698,15 @@ fn satiated_surplus_ask_causal() {
             r.fill_latency,
             r.ask_limit_trajectory,
         );
+        println!(
+            "C3R.k exit-attribution seed={seed} starvation_deaths={} old_age_deaths={} \
+             heir_adopters_dead={} heir_adopters_de_adopted={} (of {} heir adoptions)",
+            r.starvation_deaths_total,
+            r.old_age_deaths_total,
+            r.heir_adopters_dead,
+            r.heir_adopters_de_adopted,
+            r.gate_fill_heir_adoptions,
+        );
         assert_determinate(seed, &r);
         // The control must remain walled. Delivery attribution itself is stricter: `delivered`
         // joins an exact gate-only ask seq to its successful fill and the buyer's real heir-Baker
@@ -671,6 +719,26 @@ fn satiated_surplus_ask_causal() {
         assert!(
             r.gate_target_present,
             "seed {seed}: the wall has no satiated flour holder the gate targets"
+        );
+        // Exit attribution — the collapse mechanism, now a test rather than a probe. Starvation death
+        // is impossible on this base (`hunger_critical = need_max + 1`), so a re-ignited baker cannot
+        // starve; every gate-fired heir-adopter that leaves does so by OLD-AGE DEATH, not de-adoption.
+        assert_eq!(
+            r.starvation_deaths_total, 0,
+            "seed {seed}: starvation death must be impossible on this base (hunger_critical = \
+             need_max + 1) — the 'starved-out' reading is a config-contradicted over-read"
+        );
+        assert!(
+            r.old_age_deaths_total > 0,
+            "seed {seed}: old age must be the operative removal channel"
+        );
+        assert!(
+            r.heir_adopters_dead > 0 && r.heir_adopters_dead > r.heir_adopters_de_adopted,
+            "seed {seed}: re-ignited heir-adopters must exit predominantly by death, not de-adoption \
+             (dead={}, de_adopted={}, of {} heir adoptions)",
+            r.heir_adopters_dead,
+            r.heir_adopters_de_adopted,
+            r.gate_fill_heir_adoptions,
         );
         outcomes.push((seed, r));
     }

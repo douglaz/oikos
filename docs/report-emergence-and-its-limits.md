@@ -2202,12 +2202,16 @@ config: starvation death is *disabled* here (`hunger_critical = need_max + 1`, s
 the lethal ceiling — the only removal channel is old age), and active/latent producers are fed to a
 staple floor before the market (`producer_subsistence = 4`, inherited), so `food_provision = 0` — an
 explicit override of the constructor's default 3, the arc's deliberate no-subsidy regime — does **not**
-starve a re-entering baker. What the collapse *is*, from a paired probe (`food_provision ∈ {0,3}` ×
-lever, two seeds; the specifics probe-indicated, not a durable assertion): the re-ignited bakers **exit
-by old-age death, not de-adoption** (≈30 of 31 exits are deaths — the only channel the config allows),
-and `food_provision = 0` kills producer-house **reproduction** — the birth-endowment gate needs a
-household member holding `child_food_endowment = 4` staple, so the producer houses stop birthing and the
-heir stream that would replace the dying adopters dries up. Restoring the hearth (`food_provision = 3`)
+starve a re-entering baker. What the collapse *is* splits into a test-backed part and a probe-indicated
+part. **Test-backed** (durable exit-attribution assertions in the committed harness, five seeds): the
+run records **zero** starvation deaths and hundreds of old-age deaths, and **every** gate-fired
+heir-adopter that leaves does so by **death, not de-adoption** (14/14, 9/9, 17/17, 14/14, 17/17 across
+the seeds; zero de-adoptions) — so "the re-ignited bakers die of old age, not starvation and not
+re-satiation" now rests on a test, not a probe. **Probe-indicated** (a paired `food_provision ∈ {0,3}` ×
+lever probe, not a durable assertion): `food_provision = 0` kills producer-house **reproduction** — the
+birth-endowment gate needs a household member holding `child_food_endowment = 4` staple, so the producer
+houses stop birthing and the heir stream that would replace the dying adopters dries up. Restoring the
+hearth (`food_provision = 3`)
 *does* restore births and adoptions — yet flour baked stays **0 even with the lever on**, because the
 staple mint destroys the bake margin the lever needs (the §28 subsidy-cap and §36 composition-reversal
 findings, replayed); and a conserved `subsistence_advance` is byte-inert on the collapsed chain, which

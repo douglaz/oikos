@@ -166,11 +166,18 @@ allocation failure is economic rather than microstructural; that a stale input p
 money-satiation refusal to price a costless surplus; and that a marginal money-demand correction *causally*
 crosses that wall and is *insufficient*.
 
-What it does **not** establish: that these results generalize beyond the tested bases and seeds; that the
-downstream persistence mechanism in C3R.k is proven rather than probe-indicated (the committed test measures
-the collapse endpoint, not per-adopter exits); that flour-scoping the ask is *safe* rather than merely
-necessary for attribution; or that any of the untried institutions — a granary, a priority set-aside, a
-binding forward order, endogenous reproduction finance — would fail. Several milestones close with named,
+The C3R.k collapse mechanism is now **partly test-backed**: the committed harness durably asserts, on all
+five seeds, that starvation death never occurs, that removal is old age, and that every gate-fired
+heir-adopter exits by *death, not de-adoption* — so "the re-ignition dies out rather than re-satiating or
+starving" rests on a test. What remains **probe-indicated**, not durable, is the *reproduction* half of the
+mechanism (that `food_provision = 0` dries the heir stream via the birth-endowment gate, and that both
+cheap subsistence remedies fail).
+
+What the arc does **not** establish: that these results generalize beyond the tested bases and seeds; that
+the reproduction-financing half of C3R.k's mechanism is proven rather than probe-indicated; that
+flour-scoping the ask is *safe* rather than merely necessary for attribution; or that any of the untried
+institutions — a granary, a priority set-aside, a binding forward order, endogenous reproduction finance —
+would fail. Several milestones close with named,
 undischarged verification debt, disclosed in their sections.
 
 ---
